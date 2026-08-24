@@ -380,7 +380,10 @@ impl<S: HttpSend> RemoteDatabase<S> {
             }
             let response: ListTablesResponse = rsp.json().await.err_to_http(request_id)?;
             names.extend(response.tables);
-            match response.page_token {
+            // An empty token is the end of the listing, not a token to send back: a server
+            // that reads an empty token as "start from the beginning" would hand back the
+            // first page again.
+            match response.page_token.filter(|token| !token.is_empty()) {
                 // A server that repeated a token would never finish; treat that as the end
                 // rather than looping on it.
                 Some(token) if Some(&token) != page_token.as_ref() => page_token = Some(token),
@@ -1344,6 +1347,35 @@ mod tests {
         // The guard bounds the walk instead of letting it run forever. The repeat is the
         // server breaking the token contract and is not papered over here.
         assert_eq!(names, vec!["a", "a"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_in_a_namespace_stops_on_an_empty_token() {
+        // An empty token ends the listing. Sending it back would ask a server that reads it
+        // as "start from the beginning" for the first page a second time, and every name on
+        // that page would be collected twice.
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !request.url().query().unwrap_or("").contains("page_token"),
+                "an empty token must never be sent back"
+            );
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["a"], "page_token": ""}"#)
+                .unwrap()
+        });
+
+        let names = conn
+            .table_names()
+            .namespace(vec!["ns".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["a"]);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
