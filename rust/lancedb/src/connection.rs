@@ -625,9 +625,16 @@ impl Connection {
 
     /// Repair the database by purging corrupted or empty table stubs.
     ///
-    /// Attempts to repair any corrupted table stubs across all namespaces in the database.
-    /// Tables that are corrupted but still contain raw data files are safely skipped and
-    /// not automatically deleted.
+    /// Attempts to repair unopenable table stubs across all namespaces in the database.
+    /// Tables that fail to open due to corruption but still contain raw data files, or tables
+    /// that encounter transient I/O errors during manifest loading, are safely skipped and preserved.
+    ///
+    /// # Precondition
+    /// This is an administrative maintenance command. `repair` must not be executed concurrently
+    /// with new table creations (`create_table`), as in-flight writes performed during new table
+    /// creation (which declare the table in the catalog before committing the initial manifest)
+    /// may be detected as uninitialized stubs and purged. Normal reads and writes (appends,
+    /// updates, merges) on existing tables are unaffected.
     ///
     /// ```rust
     /// # use lancedb::Connection;

@@ -1255,38 +1255,53 @@ impl Database for ListingDatabase {
         let mut purged_tables = vec![];
 
         // Repair root namespace
-        let response = self.list_tables(ListTablesRequest::default()).await?;
+        let mut page_token = None;
+        loop {
+            let response = self
+                .list_tables(ListTablesRequest {
+                    page_token: page_token.clone(),
+                    ..Default::default()
+                })
+                .await?;
 
-        for table in response.tables {
-            let open_req = OpenTableRequest {
-                name: table.clone(),
-                index_cache_size: Some(0),
-                ..Default::default()
-            };
-            match self.open_table(open_req).await {
-                Ok(table) => drop(table),
-                Err(Error::TableNotFound { .. })
-                | Err(Error::TableCorrupted { .. })
-                | Err(Error::Lance { .. }) => {
-                    let table_path = self
-                        .base_path
-                        .clone()
-                        .join(format!("{}.{}", table, LANCE_FILE_EXTENSION));
-                    if self.table_has_raw_data(&table_path).await {
-                        log::warn!(
-                            "Table '{}' is corrupted but contains raw files. Skipping automatic purge.",
-                            table
-                        );
-                    } else if let Err(e) = self.drop_table(&table, &[]).await {
-                        log::warn!("Failed to drop corrupted table {}: {}", table, e);
-                    } else {
-                        purged_tables.push(table);
+            for table in response.tables {
+                let open_req = OpenTableRequest {
+                    name: table.clone(),
+                    index_cache_size: Some(0),
+                    ..Default::default()
+                };
+                match self.open_table(open_req).await {
+                    Ok(table) => drop(table),
+                    Err(Error::TableNotFound { .. })
+                    | Err(Error::TableCorrupted { .. })
+                    | Err(Error::Lance {
+                        source: lance::Error::CorruptFile { .. },
+                    }) => {
+                        let table_path = self
+                            .base_path
+                            .clone()
+                            .join(format!("{}.{}", table, LANCE_FILE_EXTENSION));
+                        if self.table_has_raw_data(&table_path).await {
+                            log::warn!(
+                                "Table '{}' is corrupted but contains raw files. Skipping automatic purge.",
+                                table
+                            );
+                        } else if let Err(e) = self.drop_table(&table, &[]).await {
+                            log::warn!("Failed to drop corrupted table {}: {}", table, e);
+                        } else {
+                            purged_tables.push(table);
+                        }
+                    }
+                    Err(other_err) => {
+                        log::warn!("Unexpected error checking table '{}': {}", table, other_err);
                     }
                 }
-                Err(other_err) => {
-                    log::warn!("Unexpected error checking table '{}': {}", table, other_err);
-                }
             }
+
+            if response.page_token.is_none() || response.page_token.as_deref() == Some("") {
+                break;
+            }
+            page_token = response.page_token;
         }
 
         // Visit child namespaces only (root was already safely repaired above)
@@ -3396,5 +3411,173 @@ mod tests {
             vec!["nested_valid".to_string(), "nested_with_data".to_string()]
         );
         assert!(preserved_path.exists());
+    }
+
+    #[derive(Debug)]
+    struct InjectedFailureStore {
+        inner: Arc<dyn object_store::ObjectStore>,
+        fail_prefix: String,
+    }
+
+    impl std::fmt::Display for InjectedFailureStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "InjectedFailureStore")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl object_store::ObjectStore for InjectedFailureStore {
+        async fn put_opts(
+            &self,
+            location: &object_store::path::Path,
+            payload: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &object_store::path::Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &object_store::path::Path,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            if location.as_ref().contains(&self.fail_prefix) {
+                return Err(object_store::Error::Generic {
+                    store: "InjectedFailureStore",
+                    source: "injected manifest read I/O error".into(),
+                });
+            }
+            self.inner.get_opts(location, options).await
+        }
+
+        async fn get_ranges(
+            &self,
+            location: &object_store::path::Path,
+            ranges: &[std::ops::Range<u64>],
+        ) -> object_store::Result<Vec<bytes::Bytes>> {
+            if location.as_ref().contains(&self.fail_prefix) {
+                return Err(object_store::Error::Generic {
+                    store: "InjectedFailureStore",
+                    source: "injected manifest read I/O error".into(),
+                });
+            }
+            self.inner.get_ranges(location, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<
+                'static,
+                object_store::Result<object_store::path::Path>,
+            >,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+        {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list(prefix)
+        }
+
+        fn list_with_offset(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+            offset: &object_store::path::Path,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list_with_offset(prefix, offset)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::RenameOptions,
+        ) -> object_store::Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    #[derive(Debug)]
+    struct InjectedFailureWrapper {
+        fail_prefix: String,
+    }
+
+    impl WrappingObjectStore for InjectedFailureWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            inner: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            Arc::new(InjectedFailureStore {
+                inner,
+                fail_prefix: self.fail_prefix.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repair_preserves_table_on_injected_manifest_read_failure() {
+        let (tmp_dir, mut db) = setup_database().await;
+        let wrapper = Arc::new(InjectedFailureWrapper {
+            fail_prefix: "injected_error_table".to_string(),
+        });
+        db.store_wrapper = Some(wrapper);
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+
+        // 1. Create a table that will experience injected read failure
+        db.create_table(CreateTableRequest::new(
+            "injected_error_table".to_string(),
+            Box::new(batch.clone()),
+        ))
+        .await
+        .unwrap();
+
+        // 2. Create an actual empty stub that should be purged
+        let stub_path = tmp_dir
+            .path()
+            .join(format!("empty_stub.{}", LANCE_FILE_EXTENSION));
+        std::fs::create_dir_all(&stub_path).unwrap();
+
+        // Run repair
+        let resp = db.repair().await.unwrap();
+
+        // Only empty_stub should be purged; injected_error_table must be preserved
+        assert_eq!(resp.purged_tables, vec!["empty_stub".to_string()]);
+
+        let tables = db.list_tables(ListTablesRequest::default()).await.unwrap();
+        assert!(tables.tables.contains(&"injected_error_table".to_string()));
+        assert!(!tables.tables.contains(&"empty_stub".to_string()));
     }
 }

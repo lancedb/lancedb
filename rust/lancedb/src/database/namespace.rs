@@ -293,66 +293,76 @@ impl LanceNamespaceDatabase {
     }
 
     pub(crate) async fn repair_namespace(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        let response = self
-            .list_tables(ListTablesRequest {
-                id: Some(namespace_path.to_vec()),
-                page_token: None,
-                limit: None,
-                ..Default::default()
-            })
-            .await?;
-
         let mut purged = vec![];
-        for table in &response.tables {
-            let open_table_req = OpenTableRequest {
-                name: table.clone(),
-                namespace_path: namespace_path.to_vec(),
-                index_cache_size: Some(0),
-                ..Default::default()
-            };
+        let mut page_token = None;
+        loop {
+            let response = self
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace_path.to_vec()),
+                    page_token: page_token.clone(),
+                    limit: None,
+                    ..Default::default()
+                })
+                .await?;
 
-            match self.open_table(open_table_req).await {
-                Ok(table) => drop(table),
-                Err(Error::TableNotFound { .. })
-                | Err(Error::TableCorrupted { .. })
-                | Err(Error::Lance { .. }) => {
-                    let has_data = self.table_has_raw_data(table, namespace_path).await;
-                    if has_data {
-                        log::warn!(
-                            "Table '{}' in namespace '{:?}' is corrupted but contains raw files. Skipping automatic purge.",
-                            table,
-                            namespace_path
-                        );
-                    } else {
-                        match self.drop_table(table, namespace_path).await {
-                            Ok(_) => {
-                                let full_path = if namespace_path.is_empty() {
-                                    table.clone()
-                                } else {
-                                    format!("{}/{}", namespace_path.join("/"), table)
-                                };
-                                purged.push(full_path);
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to drop table '{}' in namespace '{:?}': {}",
-                                    table,
-                                    namespace_path,
-                                    e
-                                );
+            for table in &response.tables {
+                let open_table_req = OpenTableRequest {
+                    name: table.clone(),
+                    namespace_path: namespace_path.to_vec(),
+                    index_cache_size: Some(0),
+                    ..Default::default()
+                };
+
+                match self.open_table(open_table_req).await {
+                    Ok(table) => drop(table),
+                    Err(Error::TableNotFound { .. })
+                    | Err(Error::TableCorrupted { .. })
+                    | Err(Error::Lance {
+                        source: lance::Error::CorruptFile { .. },
+                    }) => {
+                        let has_data = self.table_has_raw_data(table, namespace_path).await;
+                        if has_data {
+                            log::warn!(
+                                "Table '{}' in namespace '{:?}' is corrupted but contains raw files. Skipping automatic purge.",
+                                table,
+                                namespace_path
+                            );
+                        } else {
+                            match self.drop_table(table, namespace_path).await {
+                                Ok(_) => {
+                                    let full_path = if namespace_path.is_empty() {
+                                        table.clone()
+                                    } else {
+                                        format!("{}/{}", namespace_path.join("/"), table)
+                                    };
+                                    purged.push(full_path);
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Failed to drop table '{}' in namespace '{:?}': {}",
+                                        table,
+                                        namespace_path,
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
-                }
-                Err(other_err) => {
-                    log::warn!(
-                        "Unexpected error checking table '{}' in namespace '{:?}': {}",
-                        table,
-                        namespace_path,
-                        other_err
-                    );
+                    Err(other_err) => {
+                        log::warn!(
+                            "Unexpected error checking table '{}' in namespace '{:?}': {}",
+                            table,
+                            namespace_path,
+                            other_err
+                        );
+                    }
                 }
             }
+
+            if response.page_token.is_none() || response.page_token.as_deref() == Some("") {
+                break;
+            }
+            page_token = response.page_token;
         }
         Ok(purged)
     }
@@ -361,35 +371,51 @@ impl LanceNamespaceDatabase {
         let mut purged_tables = vec![];
         let mut namespaces_to_visit = vec![];
 
-        if let Ok(resp) = self
-            .list_namespaces(ListNamespacesRequest {
-                id: Some(parent.to_vec()),
-                ..Default::default()
-            })
-            .await
-        {
+        let mut page_token = None;
+        loop {
+            let resp = self
+                .list_namespaces(ListNamespacesRequest {
+                    id: Some(parent.to_vec()),
+                    page_token: page_token.clone(),
+                    ..Default::default()
+                })
+                .await?;
+
             namespaces_to_visit.extend(resp.namespaces.into_iter().map(|child| {
                 let mut path = parent.to_vec();
                 path.push(child);
                 path
             }));
+
+            if resp.page_token.is_none() || resp.page_token.as_deref() == Some("") {
+                break;
+            }
+            page_token = resp.page_token;
         }
 
         while let Some(ns_path) = namespaces_to_visit.pop() {
             purged_tables.extend(self.repair_namespace(&ns_path).await?);
 
-            if let Ok(resp) = self
-                .list_namespaces(ListNamespacesRequest {
-                    id: Some(ns_path.clone()),
-                    ..Default::default()
-                })
-                .await
-            {
+            let mut child_page_token = None;
+            loop {
+                let resp = self
+                    .list_namespaces(ListNamespacesRequest {
+                        id: Some(ns_path.clone()),
+                        page_token: child_page_token.clone(),
+                        ..Default::default()
+                    })
+                    .await?;
+
                 namespaces_to_visit.extend(resp.namespaces.into_iter().map(|child| {
                     let mut next = ns_path.clone();
                     next.push(child);
                     next
                 }));
+
+                if resp.page_token.is_none() || resp.page_token.as_deref() == Some("") {
+                    break;
+                }
+                child_page_token = resp.page_token;
             }
         }
 
@@ -1844,6 +1870,187 @@ mod tests {
         assert_eq!(
             nested_tables,
             vec!["nested_valid".to_string(), "nested_with_data".to_string()]
+        );
+    }
+
+    #[derive(Debug, Default)]
+    struct FailingListNamespaceClient;
+
+    #[async_trait::async_trait]
+    impl LanceNamespace for FailingListNamespaceClient {
+        fn namespace_id(&self) -> String {
+            "failing_list".to_string()
+        }
+
+        async fn list_tables(
+            &self,
+            _request: ListTablesRequest,
+        ) -> lance::Result<ListTablesResponse> {
+            Ok(ListTablesResponse {
+                tables: vec![],
+                page_token: None,
+                context: None,
+            })
+        }
+
+        async fn list_namespaces(
+            &self,
+            _request: ListNamespacesRequest,
+        ) -> lance::Result<ListNamespacesResponse> {
+            Err(lance::Error::io_source(Box::new(std::io::Error::other(
+                "injected list namespaces error",
+            ))))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repair_child_namespaces_propagates_error() {
+        let client = Arc::new(FailingListNamespaceClient);
+        let db = LanceNamespaceDatabase::from_namespace_client(
+            client,
+            "failing_mock".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+        );
+
+        let res = db.repair().await;
+        assert!(res.is_err(), "repair must propagate list_namespaces error");
+    }
+
+    #[derive(Debug)]
+    struct PaginatedMockNamespaceClient {
+        dropped_tables: Arc<Mutex<Vec<String>>>,
+        tmp_dir: String,
+    }
+
+    #[async_trait::async_trait]
+    impl LanceNamespace for PaginatedMockNamespaceClient {
+        fn namespace_id(&self) -> String {
+            "paginated_mock".to_string()
+        }
+
+        async fn list_namespaces(
+            &self,
+            request: ListNamespacesRequest,
+        ) -> lance::Result<ListNamespacesResponse> {
+            let ns_path = request.id.unwrap_or_default();
+            if ns_path.is_empty() {
+                match request.page_token.as_deref() {
+                    None => Ok(ListNamespacesResponse {
+                        namespaces: vec!["child1".to_string()],
+                        page_token: Some("ns_p2".to_string()),
+                        context: None,
+                    }),
+                    Some("ns_p2") => Ok(ListNamespacesResponse {
+                        namespaces: vec!["child2".to_string()],
+                        page_token: None,
+                        context: None,
+                    }),
+                    _ => Ok(ListNamespacesResponse::default()),
+                }
+            } else {
+                Ok(ListNamespacesResponse::default())
+            }
+        }
+
+        async fn list_tables(
+            &self,
+            request: ListTablesRequest,
+        ) -> lance::Result<ListTablesResponse> {
+            let ns_path = request.id.unwrap_or_default();
+            let prefix = if ns_path.is_empty() {
+                "root".to_string()
+            } else {
+                ns_path.join("_")
+            };
+
+            match request.page_token.as_deref() {
+                None => Ok(ListTablesResponse {
+                    tables: vec![format!("{}_t1", prefix)],
+                    page_token: Some("tbl_p2".to_string()),
+                    context: None,
+                }),
+                Some("tbl_p2") => Ok(ListTablesResponse {
+                    tables: vec![format!("{}_t2", prefix)],
+                    page_token: None,
+                    context: None,
+                }),
+                _ => Ok(ListTablesResponse::default()),
+            }
+        }
+
+        async fn describe_table(
+            &self,
+            request: DescribeTableRequest,
+        ) -> lance::Result<lance_namespace::models::DescribeTableResponse> {
+            let id = request.id.unwrap_or_default();
+            let table_name = id.last().cloned().unwrap_or_default();
+            let table_dir = format!("{}/{}", self.tmp_dir, table_name);
+            std::fs::create_dir_all(&table_dir).ok();
+            Ok(lance_namespace::models::DescribeTableResponse {
+                location: Some(table_dir),
+                is_only_declared: Some(true),
+                ..Default::default()
+            })
+        }
+
+        async fn drop_table(
+            &self,
+            request: DropTableRequest,
+        ) -> lance::Result<lance_namespace::models::DropTableResponse> {
+            let id = request.id.unwrap_or_default();
+            self.dropped_tables.lock().unwrap().push(id.join("/"));
+            Ok(lance_namespace::models::DropTableResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repair_paginated_namespaces_and_tables() {
+        let tmp = tempdir().unwrap();
+        let dropped = Arc::new(Mutex::new(Vec::new()));
+        let client = Arc::new(PaginatedMockNamespaceClient {
+            dropped_tables: dropped.clone(),
+            tmp_dir: tmp.path().to_str().unwrap().to_string(),
+        });
+
+        let db = LanceNamespaceDatabase::from_namespace_client(
+            client,
+            "paginated_mock".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+        );
+
+        let resp = db.repair().await.unwrap();
+
+        assert_eq!(
+            resp.purged_tables,
+            vec![
+                "root_t1".to_string(),
+                "root_t2".to_string(),
+                "child2/child2_t1".to_string(),
+                "child2/child2_t2".to_string(),
+                "child1/child1_t1".to_string(),
+                "child1/child1_t2".to_string(),
+            ]
+        );
+
+        let dropped_lock = dropped.lock().unwrap();
+        assert_eq!(
+            *dropped_lock,
+            vec![
+                "root_t1".to_string(),
+                "root_t2".to_string(),
+                "child2/child2_t1".to_string(),
+                "child2/child2_t2".to_string(),
+                "child1/child1_t1".to_string(),
+                "child1/child1_t2".to_string(),
+            ]
         );
     }
 }

@@ -363,8 +363,13 @@ pub trait Database:
     }
     /// Drop all tables in the database
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()>;
-    /// Repair the database, purging corrupted table stubs across all namespaces
-    /// and logging warnings for tables that are corrupted but still contain raw data files.
+    /// Repair the database by purging corrupted or empty table stubs across all namespaces.
+    ///
+    /// # Precondition
+    /// `repair` must not be executed concurrently with new table creations (`create_table`),
+    /// as in-flight writes during new table creation (which declare the table before committing
+    /// the initial manifest) may be detected as uninitialized stubs. Reads and writes on existing
+    /// tables are unaffected.
     async fn repair(&self) -> Result<RepairDatabaseResponse>;
     fn as_any(&self) -> &dyn std::any::Any;
 
