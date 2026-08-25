@@ -12,6 +12,7 @@ use arrow_schema::{DataType, Field};
 use lance::index::DatasetIndexExt;
 use lance::index::vector::VectorIndexParams;
 use lance::index::vector::utils::infer_vector_dim;
+use lance_arrow::json::is_json_field;
 use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
@@ -219,6 +220,14 @@ impl NativeTable {
                 )))
             }
             Index::Bitmap(_) => {
+                if is_json_field(field) {
+                    return Err(Error::Schema {
+                        message: format!(
+                            "A BITMAP index cannot be created on the whole-document lance.json field `{}`. Create a JSON-path scalar index for structured equality or range predicates, or use FTS for document search",
+                            field.name()
+                        ),
+                    });
+                }
                 Self::validate_index_type(field, "Bitmap", supported_bitmap_data_type)?;
                 Ok(Box::new(ScalarIndexParams::for_builtin(
                     BuiltinIndexType::Bitmap,
@@ -1463,6 +1472,35 @@ mod tests {
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(stats.distance_type, None);
+    }
+
+    #[tokio::test]
+    async fn test_create_bitmap_index_rejects_lance_json() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![lance_arrow::json::json_field(
+            "metadata", true,
+        )]));
+        let table = conn
+            .create_empty_table("json_bitmap", schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let err = table
+            .create_index(&["metadata"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .expect_err("a whole-document lance.json field must not support a bitmap index");
+        let message = err.to_string();
+        assert!(
+            message.contains("lance.json"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("JSON-path scalar index"),
+            "unexpected error: {message}"
+        );
+        assert!(message.contains("FTS"), "unexpected error: {message}");
     }
 
     #[tokio::test]

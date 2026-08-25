@@ -1,0 +1,518 @@
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / AutoQuery
+
+# Class: AutoQuery
+
+A builder for automatic string searches.
+
+Automatic search determines whether to use full-text or vector search from
+the table revision selected for each execution. This builder exposes the
+common operations supported by both query families.
+
+## Extends
+
+- `StandardQueryBase`&lt;`NativeQuery` \| `NativeVectorQuery`&gt;
+
+## Properties
+
+### inner
+
+```ts
+protected inner: Query | VectorQuery | Promise<Query | VectorQuery>;
+```
+
+#### Inherited from
+
+`StandardQueryBase.inner`
+
+## Methods
+
+### analyzePlan()
+
+```ts
+analyzePlan(distributedMetrics?): Promise<string>
+```
+
+Executes the query and returns the physical query plan annotated with runtime metrics.
+
+This is useful for debugging and performance analysis, as it shows how the query was executed
+and includes metrics such as elapsed time, rows processed, and I/O statistics.
+
+#### Parameters
+
+* **distributedMetrics?**: [`AnalyzePlanDistributedMetrics`](../type-aliases/AnalyzePlanDistributedMetrics.md)
+    How distributed worker metrics are displayed for remote query plans.
+    Defaults to `"aggregate"`.
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+A query execution plan with runtime metrics for each step.
+
+#### Example
+
+```ts
+import * as lancedb from "@lancedb/lancedb"
+
+const db = await lancedb.connect("./.lancedb");
+const table = await db.createTable("my_table", [
+  { vector: [1.1, 0.9], id: "1" },
+]);
+
+const plan = await table.query().nearestTo([0.5, 0.2]).analyzePlan();
+
+Example output (with runtime metrics inlined):
+AnalyzeExec verbose=true, metrics=[]
+ ProjectionExec: expr=[id@3 as id, vector@0 as vector, _distance@2 as _distance], metrics=[output_rows=1, elapsed_compute=3.292µs]
+  Take: columns="vector, _rowid, _distance, (id)", metrics=[output_rows=1, elapsed_compute=66.001µs, batches_processed=1, bytes_read=8, iops=1, requests=1]
+   CoalesceBatchesExec: target_batch_size=1024, metrics=[output_rows=1, elapsed_compute=3.333µs]
+    GlobalLimitExec: skip=0, fetch=10, metrics=[output_rows=1, elapsed_compute=167ns]
+     FilterExec: _distance@2 IS NOT NULL, metrics=[output_rows=1, elapsed_compute=8.542µs]
+      SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], metrics=[output_rows=1, elapsed_compute=63.25µs, row_replacements=1]
+       KNNVectorDistance: metric=l2, metrics=[output_rows=1, elapsed_compute=114.333µs, output_batches=1]
+        LanceScan: uri=/path/to/data, projection=[vector], row_id=true, row_addr=false, ordered=false, metrics=[output_rows=1, elapsed_compute=103.626µs, bytes_read=549, iops=2, requests=2]
+```
+
+#### Inherited from
+
+`StandardQueryBase.analyzePlan`
+
+***
+
+### execute()
+
+```ts
+protected execute(options?): AsyncGenerator<RecordBatch<any>, void, unknown>
+```
+
+Execute the query and return the results as an
+
+#### Parameters
+
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
+
+#### Returns
+
+`AsyncGenerator`&lt;`RecordBatch`&lt;`any`&gt;, `void`, `unknown`&gt;
+
+#### See
+
+ - AsyncIterator
+of
+ - RecordBatch.
+
+By default, LanceDb will use many threads to calculate results and, when
+the result set is large, multiple batches will be processed at one time.
+This readahead is limited however and backpressure will be applied if this
+stream is consumed slowly (this constrains the maximum memory used by a
+single query)
+
+#### Inherited from
+
+`StandardQueryBase.execute`
+
+***
+
+### explainPlan()
+
+```ts
+explainPlan(verbose): Promise<string>
+```
+
+Generates an explanation of the query execution plan.
+
+#### Parameters
+
+* **verbose**: `boolean` = `false`
+    If true, provides a more detailed explanation. Defaults to false.
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+A Promise that resolves to a string containing the query execution plan explanation.
+
+#### Example
+
+```ts
+import * as lancedb from "@lancedb/lancedb"
+const db = await lancedb.connect("./.lancedb");
+const table = await db.createTable("my_table", [
+  { vector: [1.1, 0.9], id: "1" },
+]);
+const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
+```
+
+#### Inherited from
+
+`StandardQueryBase.explainPlan`
+
+***
+
+### fastSearch()
+
+```ts
+fastSearch(): this
+```
+
+Skip searching un-indexed data. This can make search faster, but will miss
+any data that is not yet indexed.
+
+Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.fastSearch`
+
+***
+
+### ~~filter()~~
+
+```ts
+filter(predicate): this
+```
+
+A filter statement to be applied to this query.
+
+#### Parameters
+
+* **predicate**: `string`
+
+#### Returns
+
+`this`
+
+#### See
+
+where
+
+#### Deprecated
+
+Use `where` instead
+
+#### Inherited from
+
+`StandardQueryBase.filter`
+
+***
+
+### fullTextSearch()
+
+```ts
+fullTextSearch(query, options?): this
+```
+
+#### Parameters
+
+* **query**: `string` \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
+
+* **options?**: `Partial`&lt;[`FullTextSearchOptions`](../interfaces/FullTextSearchOptions.md)&gt;
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.fullTextSearch`
+
+***
+
+### limit()
+
+```ts
+limit(limit): this
+```
+
+Set the maximum number of results to return.
+
+By default, a plain search has no limit.  If this method is not
+called then every valid row from the table will be returned.
+
+#### Parameters
+
+* **limit**: `number`
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.limit`
+
+***
+
+### offset()
+
+```ts
+offset(offset): this
+```
+
+Set the number of rows to skip before returning results.
+
+This is useful for pagination.
+
+#### Parameters
+
+* **offset**: `number`
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.offset`
+
+***
+
+### orderBy()
+
+```ts
+orderBy(ordering): this
+```
+
+Sort the results by the specified column(s).
+
+#### Parameters
+
+* **ordering**: [`ColumnOrdering`](../interfaces/ColumnOrdering.md) \| [`ColumnOrdering`](../interfaces/ColumnOrdering.md)[]
+
+#### Returns
+
+`this`
+
+This query builder.
+
+#### Inherited from
+
+`StandardQueryBase.orderBy`
+
+***
+
+### outputSchema()
+
+```ts
+outputSchema(): Promise<Schema<any>>
+```
+
+Returns the schema of the output that will be returned by this query.
+
+This can be used to inspect the types and names of the columns that will be
+returned by the query before executing it.
+
+#### Returns
+
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+
+An Arrow Schema describing the output columns.
+
+#### Inherited from
+
+`StandardQueryBase.outputSchema`
+
+***
+
+### select()
+
+```ts
+select(columns): this
+```
+
+Return only the specified columns.
+
+By default a query will return all columns from the table.  However, this can have
+a very significant impact on latency.  LanceDb stores data in a columnar fashion.  This
+means we can finely tune our I/O to select exactly the columns we need.
+
+As a best practice you should always limit queries to the columns that you need.  If you
+pass in an array of column names then only those columns will be returned.
+
+You can also use this method to create new "dynamic" columns based on your existing columns.
+For example, you may not care about "a" or "b" but instead simply want "a + b".  This is often
+seen in the SELECT clause of an SQL query (e.g. `SELECT a+b FROM my_table`).
+
+To create dynamic columns you can pass in a Map<string, string>.  A column will be returned
+for each entry in the map.  The key provides the name of the column.  The value is
+an SQL string used to specify how the column is calculated.
+
+For example, an SQL query might state `SELECT a + b AS combined, c`.  The equivalent
+input to this method would be:
+
+#### Parameters
+
+* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+
+#### Returns
+
+`this`
+
+#### Example
+
+```ts
+new Map([["combined", "a + b"], ["c", "c"]])
+
+Columns will always be returned in the order given, even if that order is different than
+the order used when adding the data.
+
+Note that you can pass in a `Record<string, string>` (e.g. an object literal). This method
+uses `Object.entries` which should preserve the insertion order of the object.  However,
+object insertion order is easy to get wrong and `Map` is more foolproof.
+```
+
+#### Inherited from
+
+`StandardQueryBase.select`
+
+***
+
+### toArray()
+
+```ts
+toArray(options?): Promise<any[]>
+```
+
+Collect the results as an array of objects.
+
+#### Parameters
+
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
+
+#### Returns
+
+`Promise`&lt;`any`[]&gt;
+
+#### Inherited from
+
+`StandardQueryBase.toArray`
+
+***
+
+### toArrow()
+
+```ts
+toArrow(options?): Promise<Table<any>>
+```
+
+Collect the results as an Arrow
+
+#### Parameters
+
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
+
+#### Returns
+
+`Promise`&lt;`Table`&lt;`any`&gt;&gt;
+
+#### See
+
+ArrowTable.
+
+#### Inherited from
+
+`StandardQueryBase.toArrow`
+
+***
+
+### useLsm()
+
+```ts
+useLsm(enable): this
+```
+
+Control MemWAL read routing for this query.
+
+By default (unset), when the table carries a MemWAL write spec (see
+[Table#setLsmWriteSpec](Table.md#setlsmwritespec)), reads are routed through the LSM scanner so
+they also return data written via the `mergeInsert` LSM path that has not yet
+been compacted into the base table (the active/frozen in-memory memtables and
+the flushed generations), deduplicated by primary key; a table without a spec
+reads the base table.
+
+#### Parameters
+
+* **enable**: `boolean`
+    `true` forces the LSM scanner and errors if the table has no
+    MemWAL write spec. `false` bypasses the MemWAL and reads the base table only,
+    even when a spec is present.
+    Note: the LSM scanner does not support every query shape (e.g. reranking,
+    hybrid search, `orderBy`). On a MemWAL table those shapes error unless
+    `useLsm(false)` is set, because a base-only read would silently exclude
+    un-compacted MemWAL data.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.useLsm`
+
+***
+
+### where()
+
+```ts
+where(predicate): this
+```
+
+A filter statement to be applied to this query.
+
+The filter should be supplied as an SQL query string.  For example:
+
+#### Parameters
+
+* **predicate**: `string`
+
+#### Returns
+
+`this`
+
+#### Example
+
+```ts
+x > 10
+y > 0 AND y < 100
+x > 5 OR y = 'test'
+
+Filtering performance can often be improved by creating a scalar index
+on the filter column(s).
+
+Calling this multiple times combines the filters with a logical AND rather
+than replacing the previous filter.
+```
+
+#### Inherited from
+
+`StandardQueryBase.where`
+
+***
+
+### withRowId()
+
+```ts
+withRowId(): this
+```
+
+Whether to return the row id in the results.
+
+This column can be used to match results between different queries. For
+example, to match results from a full text search and a vector search in
+order to perform hybrid search.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.withRowId`

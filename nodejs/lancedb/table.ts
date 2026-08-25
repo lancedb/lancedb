@@ -31,8 +31,11 @@ import {
   IndexConfig,
   IndexStatistics,
   Job,
+  LsmStats,
   Branches as NativeBranches,
   OptimizeStats,
+  RefreshColumnResult,
+  RefreshMaterializedViewResult,
   TableStatistics,
   Tags,
   UpdateFieldMetadataResult,
@@ -40,6 +43,7 @@ import {
   Table as _NativeTable,
 } from "./native";
 import {
+  AutoQuery,
   FullTextQuery,
   Query,
   TakeQuery,
@@ -49,6 +53,12 @@ import {
 import { sanitizeType } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
+export {
+  BucketStats,
+  GenerationStats,
+  LsmStats,
+  MemtableStats,
+} from "./native";
 
 /**
  * Progress snapshot for a write operation, delivered to the `progress`
@@ -514,7 +524,7 @@ export abstract class Table {
     query: string | IntoVector | MultiVector | FullTextQuery,
     queryType?: string,
     ftsColumns?: string | string[],
-  ): VectorQuery | Query;
+  ): VectorQuery | Query | AutoQuery;
   /**
    * Search the table with a given query vector.
    *
@@ -525,17 +535,86 @@ export abstract class Table {
   abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
+   *
+   * The `{ computed }` form stores the expression rather than evaluating it
+   * now: the column is committed with no values, and rows get them from
+   * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
+   * large table as on an empty one.
+   *
+   * A refresh does not revisit rows it has already filled, so mutating an
+   * input leaves the value computed at fill time; recomputing means dropping
+   * the column and declaring it again. While a declaration reads a column,
+   * that column cannot be renamed, retyped or dropped.
+   *
+   * On LanceDB Cloud and Enterprise the expression is planned by the
+   * server, and the refresh runs as a server job -- see
+   * {@link Table#refreshColumnAsync}.
    * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
    *   - An array of objects with column names and SQL expressions to calculate values
    *   - A single Arrow Field defining one column with its data type (column will be initialized with null values)
    *   - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
    *   - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
+   *   - `{ computed }`, declaring columns defined by a SQL expression whose type and inputs are derived from it
    * @returns {Promise<AddColumnsResult>} A promise that resolves to an object
    * containing the new version number of the table after adding the columns.
+   * @example
+   * ```ts
+   * await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+   * const { rowsFilled } = await table.refreshColumn("doubled");
+   * ```
    */
   abstract addColumns(
-    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult>;
+
+  /**
+   * Fill the rows of a computed column that hold no value yet.
+   *
+   * Rows appended since the last refresh are filled by the next one; rows
+   * already filled are left as they are, so the call is idempotent and does
+   * not observe a mutated input. Local tables only: a remote refresh runs
+   * as a server job, through {@link Table#refreshColumnAsync}.
+   * @param {string} column The name of the computed column to fill.
+   * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
+   * number of rows filled and the new version number of the table.
+   */
+  abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
+
+  /**
+   * Like {@link Table#refreshColumn}, but returns a handle to the refresh
+   * job instead of blocking until it completes.
+   *
+   * The job may already be complete when returned; callers must not assume
+   * the column is filled until {@link Job.wait} resolves. Invalid input --
+   * an unknown column, or one that is not computed -- rejects here rather
+   * than failing the job. On local tables the job runs in-process; on
+   * LanceDB Cloud and Enterprise it is the server's backfill job.
+   * @param {string} column The name of the computed column to fill.
+   * @example
+   * ```ts
+   * const job = await table.refreshColumnAsync("doubled");
+   * await job.wait();
+   * console.log(await job.status()); // "finished"
+   * ```
+   */
+  abstract refreshColumnAsync(column: string): Promise<Job>;
+
+  /**
+   * Recompute this table's contents from its materialized-view definition.
+   *
+   * Plumbing for {@link MaterializedView.refresh}, which is the way to call
+   * it: rejects tables that carry no view definition. Local tables only.
+   * @ignore
+   */
+  abstract refreshMaterializedView(
+    full?: boolean,
+    sourceVersion?: number,
+  ): Promise<RefreshMaterializedViewResult>;
 
   /**
    * Alter the name or nullability of columns.
@@ -648,6 +727,59 @@ export abstract class Table {
    * @returns {Promise<void>}
    */
   abstract closeLsmWriters(): Promise<void>;
+  /**
+   * Seal every bucket's active memtable into a new L0 generation.
+   *
+   * Returns once the seal is committed. Sealing an empty memtable is a no-op,
+   * so this is safe to call repeatedly.
+   * @returns {Promise<void>}
+   */
+  abstract flushLsm(): Promise<void>;
+  /**
+   * Trigger a background L0 → base compaction pass per bucket.
+   *
+   * Returns once the passes are *dispatched*, not once they finish — watch
+   * {@link Table#getLsmStats} for progress, or use
+   * {@link Table#checkpointLsm} to wait for convergence.
+   * @returns {Promise<void>}
+   */
+  abstract compactLsm(): Promise<void>;
+  /**
+   * Converge this table's LSM write path into its base table.
+   *
+   * Seals once, then triggers compaction and polls until the L0 that existed
+   * at the start is gone. The target set is fixed at the start, so
+   * generations created *during* the checkpoint are ignored — that is what
+   * lets it terminate under write load, and what makes it best-effort: it
+   * converges the fresh tier as of some instant. Idempotent, abandonable at
+   * any point, and safe to run on a cadence.
+   *
+   * There is no liveness bound — the compactor pool is shared across tables,
+   * so a checkpoint queued behind unrelated work looks exactly like one that
+   * is merging. The caller owns the deadline.
+   * @returns {Promise<void>}
+   * @example
+   * ```ts
+   * const before = await table.getLsmStats();
+   * await table.checkpointLsm();
+   * const after = await table.getLsmStats();
+   * ```
+   */
+  abstract checkpointLsm(): Promise<void>;
+  /**
+   * Read live per-bucket LSM state.
+   *
+   * Answers "how far behind is my fresh tier", "which bucket is hot", and
+   * "why is my fresh-tier vector search brute-force". Mutates no table state.
+   *
+   * Resolves to `undefined` only when the LSM write path is not enabled.
+   * @param {boolean} includeGenerationRows Also count rows per L0 generation.
+   *   Off by default because each count opens an uncached Lance dataset.
+   * @returns {Promise<LsmStats | undefined>}
+   */
+  abstract getLsmStats(
+    includeGenerationRows?: boolean,
+  ): Promise<LsmStats | undefined>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -844,10 +976,11 @@ export class LocalTable extends Table {
     return this.inner.display();
   }
 
-  private async getEmbeddingFunctions(): Promise<
-    Map<string, EmbeddingFunctionConfig>
-  > {
-    const schema = await this.schema();
+  private async getEmbeddingFunctions(
+    inner: _NativeTable = this.inner,
+  ): Promise<Map<string, EmbeddingFunctionConfig>> {
+    const schemaBuf = await inner.schema();
+    const schema = tableFromIPC(schemaBuf).schema;
     const registry = getRegistry();
     return registry.parseFunctions(schema.metadata);
   }
@@ -1029,7 +1162,7 @@ export class LocalTable extends Table {
     query: string | IntoVector | MultiVector | FullTextQuery,
     queryType: string = "auto",
     ftsColumns?: string | string[],
-  ): VectorQuery | Query {
+  ): VectorQuery | Query | AutoQuery {
     if (typeof query !== "string" && !instanceOfFullTextQuery(query)) {
       if (queryType === "fts") {
         throw new Error("Cannot perform full text search on a vector query");
@@ -1044,15 +1177,33 @@ export class LocalTable extends Table {
       });
     }
 
-    // The query type is auto or vector
-    // fall back to full text search if no embedding functions are defined and the query is a string
-    if (
-      queryType === "auto" &&
-      (getRegistry().length() === 0 || instanceOfFullTextQuery(query))
-    ) {
+    if (queryType === "auto" && typeof query !== "string") {
       return this.query().fullTextSearch(query, {
         columns: ftsColumns,
       });
+    }
+
+    if (queryType === "auto" && typeof query === "string") {
+      const vector = async (snapshot: _NativeTable) => {
+        const functions = await this.getEmbeddingFunctions(snapshot);
+        // TODO: Support multiple embedding functions
+        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+          .values()
+          .next().value;
+        if (embeddingFunc === undefined) {
+          return undefined;
+        }
+        return await embeddingFunc.function.computeQueryEmbeddings(query);
+      };
+
+      const columns =
+        typeof ftsColumns === "string" ? [ftsColumns] : ftsColumns;
+      return Query.autoSearch(
+        () => this.inner.checkoutCurrent(),
+        query,
+        vector,
+        columns,
+      );
     }
 
     const queryPromise = this.getEmbeddingFunctions().then(
@@ -1088,8 +1239,22 @@ export class LocalTable extends Table {
   // TODO: Support BatchUDF
 
   async addColumns(
-    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult> {
+    // Columns defined by an expression are declared, not materialized here.
+    if (
+      typeof newColumnTransforms === "object" &&
+      !Array.isArray(newColumnTransforms) &&
+      "computed" in newColumnTransforms
+    ) {
+      return await this.inner.addComputedColumns(newColumnTransforms.computed);
+    }
+
     // Handle single Field -> convert to array of Fields
     if (newColumnTransforms instanceof Field) {
       newColumnTransforms = [newColumnTransforms];
@@ -1122,6 +1287,21 @@ export class LocalTable extends Table {
     }
 
     throw new Error("Invalid input type for addColumns");
+  }
+
+  async refreshColumn(column: string): Promise<RefreshColumnResult> {
+    return await this.inner.refreshColumn(column);
+  }
+
+  async refreshColumnAsync(column: string): Promise<Job> {
+    return await this.inner.refreshColumnAsync(column);
+  }
+
+  async refreshMaterializedView(
+    full?: boolean,
+    sourceVersion?: number,
+  ): Promise<RefreshMaterializedViewResult> {
+    return await this.inner.refreshMaterializedView(full, sourceVersion);
   }
 
   async alterColumns(
@@ -1184,6 +1364,24 @@ export class LocalTable extends Table {
 
   async closeLsmWriters(): Promise<void> {
     return await this.inner.closeLsmWriters();
+  }
+
+  async flushLsm(): Promise<void> {
+    return await this.inner.flushLsm();
+  }
+
+  async compactLsm(): Promise<void> {
+    return await this.inner.compactLsm();
+  }
+
+  async checkpointLsm(): Promise<void> {
+    return await this.inner.checkpointLsm();
+  }
+
+  async getLsmStats(
+    includeGenerationRows: boolean = false,
+  ): Promise<LsmStats | undefined> {
+    return (await this.inner.getLsmStats(includeGenerationRows)) ?? undefined;
   }
 
   async version(): Promise<number> {
@@ -1399,8 +1597,8 @@ export interface BranchRowCountSummary {
   deltaAvailable: boolean;
 }
 
-/** A reason why a branch cannot currently be merged. */
-export interface MergeBlocker {
+/** A reason why a cherry-pick cannot currently land. */
+export interface CherryPickError {
   code: string;
   message: string;
 }
@@ -1420,20 +1618,19 @@ export interface BranchDiff {
   changedColumns: BranchColumnChange[];
   addedIndexes: BranchIndexSummary[];
   removedIndexes: BranchIndexSummary[];
-  mergeable: boolean;
-  mergeBlockers: MergeBlocker[];
+  errors: CherryPickError[];
 }
 
-/** Changes that would be, or were, promoted by a branch merge. */
-export interface MergePreview {
+/** Changes that would be, or were, promoted by a cherry-pick. */
+export interface CherryPickPreview {
   promotedColumns: string[];
 }
 
-/** Result of previewing or attempting a branch merge. */
-export interface MergeBranchResult {
-  status: "ready" | "rejected" | "notImplemented" | "merged" | "unknown";
+/** Result of previewing or attempting a cherry-pick. */
+export interface CherryPickResult {
+  status: "ready" | "failed" | "notImplemented" | "cherryPicked" | "unknown";
   diff: BranchDiff;
-  preview: MergePreview;
+  preview: CherryPickPreview;
   mainVersionAfter?: number;
 }
 
@@ -1496,21 +1693,21 @@ export class Branches {
   }
 
   /**
-   * Merge a branch into main.
+   * Cherry-pick a branch onto main.
    *
-   * Set `dryRun` to `true` to preview the merge. A rejected merge resolves
-   * with `status: "rejected"` instead of throwing.
+   * Set `dryRun` to `true` to preview. A failed cherry-pick resolves
+   * with `status: "failed"` instead of throwing.
    *
-   * @param fromBranch Branch to merge from.
-   * @param dryRun When true, only preview the merge. Defaults to false.
+   * @param fromBranch Branch to cherry-pick from.
+   * @param dryRun When true, only preview. Defaults to false.
    */
-  async merge(
+  async cherryPick(
     fromBranch: string,
     dryRun: boolean = false,
-  ): Promise<MergeBranchResult> {
-    return (await this.#inner.merge(
+  ): Promise<CherryPickResult> {
+    return (await this.#inner.cherryPick(
       fromBranch,
       dryRun,
-    )) as unknown as MergeBranchResult;
+    )) as unknown as CherryPickResult;
   }
 }
