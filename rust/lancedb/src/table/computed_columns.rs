@@ -13,7 +13,7 @@
 //! self-describing -- both are derived from the expression, so a caller writes
 //! neither -- while a kind resolved through a registry cannot be typed without
 //! consulting it. Registered Functions use an exact remote version plus a
-//! schema-level grouped binding; unknown newer kinds remain readable and fail
+//! schema-level Function binding; unknown newer kinds remain readable and fail
 //! closed before mutation.
 //!
 //! [`computed_columns`] and [`computed_column_from_field`] read declarations
@@ -46,16 +46,16 @@ pub const EXPRESSION_META_KEY: &str = "computed_column.expression";
 /// Field metadata key holding the column's inputs, as a JSON array of names.
 pub const INPUTS_META_KEY: &str = "computed_column.inputs";
 
-/// Field metadata key holding the grouped Function binding identity.
+/// Field metadata key holding the Function binding identity.
 pub const FUNCTION_BINDING_ID_META_KEY: &str = "computed_column.function.binding_id";
 
 /// Field metadata key holding this sibling's ordered Function output ordinal.
 pub const FUNCTION_OUTPUT_ORDINAL_META_KEY: &str = "computed_column.function.output_ordinal";
 
-/// Schema metadata key holding all immutable grouped Function bindings.
+/// Schema metadata key holding all immutable Function bindings.
 pub const FUNCTION_BINDINGS_META_KEY: &str = "lancedb::function_bindings";
 
-/// Version of the schema-level grouped Function binding envelope.
+/// Version of the schema-level Function binding envelope.
 pub const FUNCTION_BINDINGS_VERSION: u32 = 1;
 
 /// Value of [`KIND_META_KEY`] for a column defined by a SQL expression.
@@ -81,7 +81,7 @@ pub enum ComputedColumnKind {
         /// The expression.
         expression: String,
     },
-    /// One physical output in an immutable grouped registered-Function
+    /// One physical output in an immutable registered-Function
     /// binding. The full binding lives in schema metadata.
     Function {
         /// Shared immutable binding identity.
@@ -159,7 +159,7 @@ struct FunctionBindingEnvelope {
     bindings: Vec<Value>,
 }
 
-/// Encode immutable grouped bindings for schema-level persistence.
+/// Encode immutable Function bindings for schema-level persistence.
 pub fn function_bindings_metadata(bindings: &[FunctionBinding]) -> Result<String> {
     let bindings = bindings
         .iter()
@@ -177,7 +177,7 @@ pub fn function_bindings_metadata(bindings: &[FunctionBinding]) -> Result<String
     })
 }
 
-/// Decode known grouped Function bindings without rewriting their raw schema
+/// Decode known Function bindings without rewriting their raw schema
 /// metadata. Unknown envelope versions fail closed.
 pub fn function_bindings(schema: &ArrowSchema) -> Result<Vec<FunctionBinding>> {
     let Some(envelope) = function_binding_envelope(schema)? else {
@@ -238,21 +238,15 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
                 message: format!("duplicate Function binding '{}'", binding.binding_id()),
             });
         }
-        if binding.revision() == 0 || binding.outputs().is_empty() {
+        if binding.outputs().is_empty() {
             return Err(Error::InvalidInput {
-                message: format!(
-                    "Function binding '{}' has no immutable revision or outputs",
-                    binding.binding_id()
-                ),
+                message: format!("Function binding '{}' has no outputs", binding.binding_id()),
             });
         }
-        if binding.function().name.is_empty()
-            || binding.function().version.is_empty()
-            || binding.group_id().is_empty()
-        {
+        if binding.function().name.is_empty() || binding.function().version.is_empty() {
             return Err(Error::InvalidInput {
                 message: format!(
-                    "Function binding '{}' has no exact version or group identity",
+                    "Function binding '{}' has no exact version",
                     binding.binding_id()
                 ),
             });
@@ -493,9 +487,7 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
         value,
         &[
             "binding_id",
-            "revision",
             "function",
-            "group_id",
             "inputs",
             "outputs",
             "input_schema",
@@ -786,12 +778,9 @@ pub(crate) fn plan_function_application(
             message: "Function application contains fields from a newer contract".into(),
         });
     }
-    if application.function().name.is_empty()
-        || application.function().version.is_empty()
-        || application.group_id().is_empty()
-    {
+    if application.function().name.is_empty() || application.function().version.is_empty() {
         return Err(invalid_function(
-            "Function application requires an exact version and group identity",
+            "Function application requires an exact version",
         ));
     }
 
@@ -2261,7 +2250,6 @@ mod tests {
                     {{"name":"normalized_text","arrow_type":"utf8","nullable":false}},
                     {{"name":"token_count","arrow_type":"int64","nullable":false}}
                 ]}},
-                "group_id":"fg_exact",
                 "columns":{columns}
             }}"#
         ))
@@ -2442,8 +2430,7 @@ mod tests {
             r#"{
                 "function":{"name":"f","version":"fv"},
                 "inputs":[{"parameter":"title","kind":"future_source","value":{"path":"title"}}],
-                "output":{"kind":"scalar","arrow_type":"int64","nullable":false},
-                "group_id":"fg"
+                "output":{"kind":"scalar","arrow_type":"int64","nullable":false}
             }"#,
         )
         .unwrap();
@@ -2456,7 +2443,6 @@ mod tests {
                 "function":{"name":"f","version":"fv"},
                 "inputs":[],
                 "output":{"kind":"scalar","arrow_type":"int64","nullable":false},
-                "group_id":"fg",
                 "future_declaration":{"mode":"managed"}
             }"#,
         )
@@ -2470,8 +2456,7 @@ mod tests {
             r#"{
                 "function":{"name":"f","version":"fv"},
                 "inputs":[],
-                "output":{"kind":"scalar","arrow_type":"int64","nullable":false,"assignment":"cell_flag"},
-                "group_id":"fg"
+                "output":{"kind":"scalar","arrow_type":"int64","nullable":false,"assignment":"cell_flag"}
             }"#,
         )
         .unwrap();

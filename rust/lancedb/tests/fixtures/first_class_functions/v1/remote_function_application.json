@@ -11,7 +11,6 @@
       {"name": "token_count", "arrow_type": "int64", "nullable": false}
     ]
   },
-  "group_id": "fg_01K3TEXT",
   "columns": {
     "normalized_text": "search_text",
     "token_count": "search_token_count"

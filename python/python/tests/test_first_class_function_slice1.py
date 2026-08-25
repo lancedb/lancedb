@@ -121,7 +121,7 @@ def test_function_version_identity_is_immutable_and_exact():
     assert FunctionVersion(**changed) != version
 
 
-def test_function_version_binds_named_columns_as_one_immutable_group():
+def test_function_version_binds_named_columns_as_one_immutable_application():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))
     )
@@ -131,13 +131,10 @@ def test_function_version_binds_named_columns_as_one_immutable_group():
     assert application.function.name == version.name
     assert application.function.version == version.version
     assert application.output is version.signature.output
-    assert application.group_id.startswith("fg_")
     assert [
         (value.parameter, value.kind, value.value["path"])
         for value in application.inputs
     ] == [("text", "column", "documents.body")]
-    with pytest.raises((TypeError, ValueError)):
-        application.group_id = "fg_changed"
 
 
 def test_function_version_binding_validates_names_and_direct_columns():
@@ -156,7 +153,7 @@ def test_function_version_binding_validates_names_and_direct_columns():
 def test_function_version_keeps_named_struct_outputs_in_one_application():
     value = job_result("remote_function_job.json")
     value["name"] = "text_features"
-    value["version"] = "fv_grouped"
+    value["version"] = "fv_multi_output"
     value["signature"] = {
         "inputs": [
             {"name": "title", "arrow_type": "utf8", "nullable": True},
@@ -221,7 +218,6 @@ def test_function_application_uses_rename_columns_only():
     assert application.columns["normalized_text"] == "search_text"
     assert renamed.columns["normalized_text"] == "body_normalized"
     assert renamed.function == application.function
-    assert renamed.group_id == application.group_id
     assert not hasattr(application, "rename_outputs")
     with pytest.raises(TypeError, match="immutable"):
         renamed.columns["normalized_text"] = "changed"
@@ -242,7 +238,6 @@ def test_function_application_uses_rename_columns_only():
 
 def test_binding_and_refresh_result_keep_stable_remote_fields():
     binding = FunctionBinding.from_json(fixture("remote_function_binding.json"))
-    assert binding.revision == 3
     assert binding.function.version == "fv_01K3TEXT"
     assert [output.output_ordinal for output in binding.outputs] == [0, 1]
     assert binding.input_schema is not None
@@ -322,7 +317,7 @@ def known_application() -> FunctionApplication:
 
 
 @pytest.mark.asyncio
-async def test_add_columns_routes_struct_as_one_and_grouped_expansion_atomically():
+async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomically():
     inner = _FunctionDeclarationInner()
     table = AsyncTable(inner)
     application = known_application()
@@ -343,12 +338,12 @@ async def test_add_columns_routes_struct_as_one_and_grouped_expansion_atomically
 
 
 @pytest.mark.asyncio
-async def test_add_columns_rejects_mixed_groups_and_unknown_newer_application():
+async def test_add_columns_rejects_multiple_bindings_and_unknown_newer_application():
     inner = _FunctionDeclarationInner()
     table = AsyncTable(inner)
     application = known_application()
 
-    with pytest.raises(ValueError, match="exactly one Function sibling group"):
+    with pytest.raises(ValueError, match="exactly one Function binding"):
         await table.add_columns({"a": application, "b": application})
 
     future = json.loads(fixture("remote_function_application.json"))
@@ -376,7 +371,6 @@ def test_rename_requires_named_struct_and_keeps_partial_mapping_immutable():
                     "arrow_type": "list<float32>",
                     "nullable": False,
                 },
-                "group_id": "fg_scalar",
             }
         )
     )

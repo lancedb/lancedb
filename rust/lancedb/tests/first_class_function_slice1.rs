@@ -84,7 +84,6 @@ fn application_and_binding_match_shared_remote_goldens() {
 
     let binding = FunctionBinding::from_json(&fixture("remote_function_binding.json"))
         .expect("binding fixture");
-    assert_eq!(binding.revision(), 3);
     assert_eq!(binding.function().version, "fv_01K3TEXT");
     assert_eq!(binding.outputs()[0].output_ordinal, 0);
     assert_eq!(binding.outputs()[1].output_ordinal, 1);

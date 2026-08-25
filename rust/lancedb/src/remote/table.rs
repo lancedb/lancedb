@@ -6787,8 +6787,7 @@ mod tests {
             r#"{
                 "function":{"name":"embed","version":"fv_01K3EXACT"},
                 "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
-                "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false},
-                "group_id":"fg_scalar"
+                "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false}
             }"#,
         )
         .unwrap();
@@ -6834,8 +6833,7 @@ mod tests {
             r#"{
                 "function":{"name":"embed","version":"fv_01K3EXACT"},
                 "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
-                "output":{"kind":"scalar","arrow_type":"fixed_size_list<float32, 3>","nullable":false},
-                "group_id":"fg_fixed"
+                "output":{"kind":"scalar","arrow_type":"fixed_size_list<float32, 3>","nullable":false}
             }"#,
         )
         .unwrap();
@@ -6850,7 +6848,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_named_struct_function_expands_one_atomic_sibling_group() {
+    async fn test_add_named_struct_function_expands_one_atomic_binding() {
         let table = Table::new_with_handler("my_table", |request| match request.url().path() {
             "/v1/table/my_table/describe/" => http::Response::builder()
                 .status(200)
@@ -6865,7 +6863,7 @@ mod tests {
                 let actual: serde_json::Value =
                     serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
                 let expected: serde_json::Value = serde_json::from_str(include_str!(
-                    "../../tests/fixtures/first_class_functions/v1/remote_grouped_declaration_request.json"
+                    "../../tests/fixtures/first_class_functions/v1/remote_multi_output_declaration_request.json"
                 ))
                 .unwrap();
                 assert_eq!(actual, expected);
@@ -6887,7 +6885,6 @@ mod tests {
                     {"name":"normalized_text","arrow_type":"utf8","nullable":false},
                     {"name":"token_count","arrow_type":"int64","nullable":false}
                 ]},
-                "group_id":"fg_01K3TEXT",
                 "columns":{"normalized_text":"search_text"}
             }"#,
         )

@@ -25,7 +25,6 @@ import re
 import sys
 import textwrap
 import types
-import uuid
 from collections.abc import Mapping
 from datetime import date, datetime
 from typing import (
@@ -276,7 +275,7 @@ class FunctionVersion(_RemoteValue):
 
         Every input must be a direct [lancedb.col][lancedb.expr.col]
         reference. The returned application is immutable and retains a
-        named-struct output as one sibling group, so every row's sibling values
+        named-struct output as one binding, so every row's sibling values
         come from one logical Function evaluation. Map result fields to table
         columns with
         [FunctionApplication.rename][lancedb.functions.FunctionApplication.rename],
@@ -326,7 +325,6 @@ class FunctionVersion(_RemoteValue):
             function=FunctionVersionRef(name=self.name, version=self.version),
             inputs=tuple(bindings),
             output=self.signature.output,
-            group_id=f"fg_{uuid.uuid4().hex}",
         )
 
 
@@ -370,7 +368,7 @@ class ApplicationInput(_OpenRemoteValue):
 class FunctionApplication(_OpenRemoteValue):
     """Immutable pre-declaration application of an exact Function version.
 
-    A named-struct output remains one grouped application through table
+    A named-struct output remains one application through table
     declaration and execution.
     [FunctionApplication.rename][lancedb.functions.FunctionApplication.rename]
     records the result-field to table-column mapping without splitting sibling
@@ -380,7 +378,6 @@ class FunctionApplication(_OpenRemoteValue):
     function: FunctionVersionRef
     inputs: tuple[ApplicationInput, ...]
     output: FunctionOutput
-    group_id: str
     columns: Mapping[str, str] = Field(default_factory=dict)
 
     def _known_dict(self) -> dict[str, Any]:
@@ -452,12 +449,10 @@ class OutputMapping(_RemoteValue):
 
 
 class FunctionBinding(_RemoteValue):
-    """Immutable grouped binding persisted by the Enterprise table service."""
+    """Immutable Function binding persisted by the Enterprise table service."""
 
     binding_id: str
-    revision: _UInt64
     function: FunctionVersionRef
-    group_id: str
     inputs: tuple[InputBinding, ...]
     outputs: tuple[OutputMapping, ...]
     input_schema: Optional[Mapping[str, Any]] = None
