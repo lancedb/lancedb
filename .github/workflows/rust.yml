@@ -121,7 +121,6 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
-      GH_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -165,11 +164,40 @@ jobs:
       - name: Run feature tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run  --profile ci --example simple --locked
+        run: cargo run --profile ci --all-features --example simple --locked
+
+  remote:
+    timeout-minutes: 30
+    # Running this requires access to secrets, so skip if this is a PR from a
+    # fork. Keep it separate from the all-features build so Cargo does not
+    # retain both dependency graphs in one target directory.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-2404-4x-x64
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      GH_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Remote tests use a different feature graph from the main Linux
+          # job. Cache downloads, but build into a fresh target directory.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - uses: rui314/setup-mold@v1
       - name: Run remote tests
-        # Running this requires access to secrets, so skip if this is
-        # a PR from a fork.
-        if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
         run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
@@ -296,16 +324,18 @@ jobs:
           cargo update -p aws-types --precise 1.3.9
           cargo update -p aws-sigv4 --precise 1.3.5
           cargo update -p aws-credential-types --precise 1.2.8
-          cargo update -p aws-smithy-checksums --precise 0.63.9
+          # aws-smithy-checksums must stay at or above 0.63.13: OpenDAL's S3
+          # service needs crc-fast ~1.9, and older releases pin it to ~1.3.
+          cargo update -p aws-smithy-checksums --precise 0.63.13
           cargo update -p aws-smithy-runtime --precise 1.9.3
-          cargo update -p aws-smithy-http --precise 0.62.4
-          cargo update -p aws-smithy-eventstream --precise 0.60.12
+          cargo update -p aws-smithy-http --precise 0.62.6
+          cargo update -p aws-smithy-eventstream --precise 0.60.14
           cargo update -p aws-smithy-http-client --precise 1.1.3
           cargo update -p aws-smithy-observability --precise 0.1.4
           cargo update -p aws-smithy-query --precise 0.60.8
-          cargo update -p aws-smithy-runtime-api --precise 1.9.1
-          cargo update -p aws-smithy-async --precise 1.2.6
-          cargo update -p aws-smithy-types --precise 1.3.5
+          cargo update -p aws-smithy-runtime-api --precise 1.9.3
+          cargo update -p aws-smithy-async --precise 1.2.7
+          cargo update -p aws-smithy-types --precise 1.3.6
           cargo update -p aws-smithy-xml --precise 0.60.11
           cargo update -p home --precise 0.5.9
       - name: cargo +${{ matrix.msrv }} check
