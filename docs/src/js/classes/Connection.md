@@ -169,6 +169,45 @@ Creates a new empty Table
 
 ***
 
+### createMaterializedView()
+
+```ts
+abstract createMaterializedView(
+   name,
+   source,
+   options?): Promise<MaterializedView>
+```
+
+Define a materialized view named `name` over the table `source`.
+
+The view is created empty, with the query recorded in its schema
+metadata; `view.refresh()` computes the rows. The view is a normal
+table: it can be queried, indexed and searched, and it appears in
+`tableNames`. The source table must have stable row ids (create it with
+the `newTableEnableStableRowIds` storage option); they keep the view's
+provenance valid across source compactions and cannot be enabled after
+a table exists. Local databases only.
+
+#### Parameters
+
+* **name**: `string`
+
+* **source**: `string`
+
+* **options?**
+
+* **options.limit?**: `number`
+
+* **options.select?**: [`MaterializedViewSelect`](../type-aliases/MaterializedViewSelect.md)
+
+* **options.where?**: `string`
+
+#### Returns
+
+`Promise`&lt;[`MaterializedView`](MaterializedView.md)&gt;
+
+***
+
 ### createNamespace()
 
 ```ts
@@ -386,6 +425,29 @@ Drop an existing table.
 
 ***
 
+### dropTableAsync()
+
+```ts
+abstract dropTableAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping a table and return its cleanup job.
+
+The table may become unavailable before its data files are removed. Wait
+on the returned job to know when cleanup has finished.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### getJob()
 
 ```ts
@@ -476,6 +538,22 @@ List server-side jobs across the database's tables.
 
 ***
 
+### listMaterializedViews()
+
+```ts
+abstract listMaterializedViews(): Promise<string[]>
+```
+
+The names of the materialized views in this database.
+
+Found by reading every table's schema, so this costs an open per table.
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
+
+***
+
 ### listNamespaces()
 
 ```ts
@@ -506,6 +584,90 @@ Child namespace names and
 
 ***
 
+### listTables()
+
+#### listTables(options)
+
+```ts
+abstract listTables(options?): Promise<ListTablesResponse>
+```
+
+List a page of the tables in this database.
+
+To retrieve the tables after the page, pass the `pageToken` the response
+carries back in. A page can be shorter than `limit` without being the last
+one, so walk until a response carries no page token:
+
+```ts
+const names = [];
+let pageToken = undefined;
+do {
+  const page = await conn.listTables({ pageToken, limit: 100 });
+  names.push(...page.tables);
+  pageToken = page.pageToken;
+} while (pageToken);
+```
+
+##### Parameters
+
+* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
+    Pagination options
+    (`pageToken`, `limit`).
+
+##### Returns
+
+`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
+
+A page of table names and an
+  optional token for the tables after it.
+
+#### listTables(namespacePath, options)
+
+```ts
+abstract listTables(namespacePath?, options?): Promise<ListTablesResponse>
+```
+
+List a page of the tables in this database.
+
+##### Parameters
+
+* **namespacePath?**: `string`[]
+    The namespace path to list tables from
+    (defaults to root namespace)
+
+* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
+    Pagination options
+    (`pageToken`, `limit`).
+
+##### Returns
+
+`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
+
+A page of table names and an
+  optional token for the tables after it.
+
+***
+
+### openMaterializedView()
+
+```ts
+abstract openMaterializedView(name): Promise<MaterializedView>
+```
+
+Open the materialized view named `name`.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+#### Returns
+
+`Promise`&lt;[`MaterializedView`](MaterializedView.md)&gt;
+
+***
+
 ### openTable()
 
 ```ts
@@ -515,18 +677,13 @@ abstract openTable(
    options?): Promise<Table>
 ```
 
-Open a table in the database.
-
 #### Parameters
 
 * **name**: `string`
-    The name of the table
 
 * **namespacePath?**: `string`[]
-    The namespace path of the table (defaults to root namespace)
 
 * **options?**: `Partial`&lt;[`OpenTableOptions`](../interfaces/OpenTableOptions.md)&gt;
-    Additional options
 
 #### Returns
 
@@ -567,7 +724,7 @@ a "not supported" error.
 
 ***
 
-### tableNames()
+### ~~tableNames()~~
 
 #### tableNames(options)
 
@@ -588,6 +745,10 @@ Tables will be returned in lexicographical order.
 ##### Returns
 
 `Promise`&lt;`string`[]&gt;
+
+##### Deprecated
+
+Use [Connection.listTables](Connection.md#listtables) instead.
 
 #### tableNames(namespacePath, options)
 
@@ -611,3 +772,7 @@ Tables will be returned in lexicographical order.
 ##### Returns
 
 `Promise`&lt;`string`[]&gt;
+
+##### Deprecated
+
+Use [Connection.listTables](Connection.md#listtables) instead.

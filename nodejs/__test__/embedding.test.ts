@@ -11,8 +11,11 @@ import {
   Float16,
   Float32,
   Float64,
+  Int32,
   Schema,
   Utf8,
+  fromDataToBuffer,
+  tableFromIPC,
 } from "../lancedb/arrow";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
@@ -184,6 +187,63 @@ describe("embedding functions", () => {
     const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
     expect(vector0).toEqual([1, 2, 3]);
   });
+
+  it("should append generated vectors to a non-nullable schema", async () => {
+    @register("non_nullable_schema_test")
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float64();
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map(() => [1, 2, 3]);
+      }
+    }
+
+    const schema = new Schema([
+      new Field("id", new Int32()),
+      new Field("text", new Utf8()),
+      new Field("type", new Utf8()),
+      new Field(
+        "vector",
+        new FixedSizeList(3, new Field("item", new Float64())),
+      ),
+    ]);
+    const func = new MockEmbeddingFunction();
+    const db = await connect(tmpDir.name);
+    const table = await db.createEmptyTable("test_non_nullable", schema, {
+      embeddingFunction: {
+        function: func,
+        sourceColumn: "text",
+      },
+    });
+
+    const data = [
+      { id: 1, text: "Carrot", type: "vegetable" },
+      { id: 2, text: "Apple", type: "fruit" },
+    ];
+    const buffer = await fromDataToBuffer(
+      data,
+      undefined,
+      await table.schema(),
+    );
+    const generatedTable = tableFromIPC(buffer);
+    const vectorField = generatedTable.schema.fields.find(
+      (field) => field.name === "vector",
+    );
+    expect(vectorField?.nullable).toBe(false);
+
+    await table.add(data);
+
+    const rows = await table.query().toArray();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect([...row.vector]).toEqual([1, 2, 3]);
+    }
+  });
+
   it("should error when appending to a table with an unregistered embedding function", async () => {
     @register("mock")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
@@ -427,4 +487,52 @@ describe("embedding functions", () => {
       expect(stringSchema3).toEqual(stringExpectedSchema);
     },
   );
+  test("parses one function writing several vector columns", async () => {
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const registry = getRegistry();
+    registry.register("multi_output_mock")(MockEmbeddingFunction);
+
+    // A materialized view can project one source vector column under two
+    // names, so a table's configuration names the same function twice.
+    const parsed = await registry.parseFunctions(
+      new Map([
+        [
+          "embedding_functions",
+          JSON.stringify([
+            {
+              name: "multi_output_mock",
+              sourceColumn: "text",
+              vectorColumn: "vector_a",
+              model: {},
+            },
+            {
+              name: "multi_output_mock",
+              sourceColumn: "text",
+              vectorColumn: "vector_b",
+              model: {},
+            },
+          ]),
+        ],
+      ]),
+    );
+
+    expect(
+      [...parsed.values()].map(({ vectorColumn }) => vectorColumn).sort(),
+    ).toEqual(["vector_a", "vector_b"]);
+  });
 });

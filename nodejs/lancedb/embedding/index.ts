@@ -24,12 +24,15 @@ export {
 
 export {
   EmbeddingFunctionRegistry,
+  parseEmbeddingMetadata,
   register,
 } from "./registry";
 export type {
   CreateReturnType,
   EmbeddingFunctionConfig,
   EmbeddingFunctionCreate,
+  EmbeddingMetadataEntry,
+  ResolvedEmbeddingFunctionConfig,
 } from "./registry";
 
 function initializeBuiltInProviders() {
