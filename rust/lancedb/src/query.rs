@@ -1661,14 +1661,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_setters_getters() {
-        // TODO: Switch back to memory://foo after https://github.com/lancedb/lancedb/issues/1051
-        // is fixed
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-
         let batches = make_test_batches();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://foo").execute().await.unwrap();
         let table = conn
             .create_table("my_table", batches)
             .execute()
@@ -1763,14 +1757,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute() {
-        // TODO: Switch back to memory://foo after https://github.com/lancedb/lancedb/issues/1051
-        // is fixed
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-
         let batches = make_non_empty_batches();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://foo").execute().await.unwrap();
         let table = conn
             .create_table("my_table", batches)
             .execute()
@@ -1786,11 +1774,14 @@ mod tests {
             .postfilter();
         let result = query.execute().await;
         let mut stream = result.expect("should have result");
-        // should only have one batch
+        let mut num_rows = 0;
         while let Some(batch) = stream.next().await {
-            // post filter should have removed some rows
-            assert!(batch.expect("should be Ok").num_rows() < 10);
+            let batch = batch.expect("should be Ok");
+            let ids: &Int32Array = batch["id"].as_primitive();
+            assert!(ids.iter().all(|id| id.unwrap() % 2 == 0));
+            num_rows += batch.num_rows();
         }
+        assert!(num_rows <= 10);
 
         let query = table
             .query()
@@ -1889,14 +1880,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_select_with_transform() {
-        // TODO: Switch back to memory://foo after https://github.com/lancedb/lancedb/issues/1051
-        // is fixed
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-
         let batches = make_non_empty_batches();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://foo").execute().await.unwrap();
         let table = conn
             .create_table("my_table", batches)
             .execute()
@@ -1993,15 +1978,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_no_vector() {
-        // TODO: Switch back to memory://foo after https://github.com/lancedb/lancedb/issues/1051
-        // is fixed
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-
         // test that it's ok to not specify a query vector (just filter / limit)
         let batches = make_non_empty_batches();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://foo").execute().await.unwrap();
         let table = conn
             .create_table("my_table", batches)
             .execute()

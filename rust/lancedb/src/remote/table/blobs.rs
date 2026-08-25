@@ -90,7 +90,7 @@ struct RemoteBlobState {
 
 /// Seekable Cloud blob handle over HTTP Range.
 #[derive(Debug)]
-pub(crate) struct RemoteBlobFile {
+pub struct RemoteBlobFile {
     requester: Arc<dyn BlobRangeRequester>,
     state: Mutex<RemoteBlobState>,
     closed: AtomicBool,

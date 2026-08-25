@@ -21,6 +21,11 @@ import type { BaseTokenizer } from "./indices";
 import type { FtsToken } from "./table";
 
 // Re-export native header provider for use with connectWithHeaderProvider
+export {
+  MaterializedView,
+  MaterializedViewDefinition,
+  MaterializedViewSelect,
+} from "./materialized_view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 // OpenTelemetry metrics bridge. Only the high-level entry point is public; the
@@ -50,6 +55,8 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnResult,
+  RefreshMaterializedViewResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
   DeleteResult,
@@ -74,11 +81,13 @@ export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
+  ListTablesOptions,
   OpenTableOptions,
   ListNamespacesOptions,
   CreateNamespaceOptions,
   DropNamespaceOptions,
   ListNamespacesResponse,
+  ListTablesResponse,
   CreateNamespaceResponse,
   DropNamespaceResponse,
   DescribeNamespaceResponse,
@@ -94,6 +103,7 @@ export {
 } from "./native.js";
 
 export {
+  AutoQuery,
   ExecutableQuery,
   Query,
   QueryBase,
@@ -134,10 +144,10 @@ export {
   BranchColumnChange,
   BranchIndexSummary,
   BranchRowCountSummary,
-  MergeBlocker,
+  CherryPickError,
   BranchDiff,
-  MergePreview,
-  MergeBranchResult,
+  CherryPickPreview,
+  CherryPickResult,
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
@@ -146,6 +156,10 @@ export {
   FtsToken,
   TokenizeTableOptions,
   LsmWriteSpec,
+  LsmStats,
+  BucketStats,
+  GenerationStats,
+  MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
 } from "./table";

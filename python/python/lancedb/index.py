@@ -163,6 +163,15 @@ class FTS:
         The number of documents per compressed posting block. Supported values
         are 128 and 256. A value of 256 uses the experimental FTS V3 format
         and may introduce breaking changes.
+    memory_limit : int, optional
+        The total memory limit in MiB for the local FTS build stage. The limit
+        is divided evenly among indexing workers. This build-only setting is
+        not persisted with the index and does not apply to remote tables.
+    num_workers : int, optional
+        The number of workers for a local FTS build. By default Lance uses
+        roughly half of the available CPU cores. The effective value is
+        limited by the available compute capacity. This build-only setting is
+        not persisted with the index and does not apply to remote tables.
 
     Notes
     -----
@@ -185,6 +194,8 @@ class FTS:
     prefix_only: bool = False
     block_size: int = 128
     custom_stop_words: Optional[List[str]] = None
+    memory_limit: Optional[int] = None
+    num_workers: Optional[int] = None
 
 
 @dataclass

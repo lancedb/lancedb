@@ -14,9 +14,12 @@ pub struct Job {
 }
 
 impl Job {
-    pub(crate) fn new(inner: lancedb::Job) -> Self {
+    pub(crate) fn new<T>(inner: lancedb::Job<T>) -> Self
+    where
+        T: Clone + Send + Sync + 'static,
+    {
         Self {
-            inner: Arc::new(inner),
+            inner: Arc::new(inner.map(|_| ())),
         }
     }
 }
