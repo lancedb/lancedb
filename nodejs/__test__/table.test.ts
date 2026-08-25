@@ -3424,6 +3424,30 @@ describe("column name options", () => {
     expect(results[1].query_index).toBe(1);
   });
 
+  test("observes promised additional vectors while the query is pending", async () => {
+    const initialVector = new Promise<number[]>(() => undefined);
+    const query = table.query().nearestTo(initialVector);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      query.addQueryVector(Promise.reject(new Error("extra vector failed")));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+
+      const rejectedQuery = table
+        .query()
+        .nearestTo([0.1, 0.2])
+        .addQueryVector(Promise.reject(new Error("consumed vector failed")));
+      await expect(rejectedQuery.toArray()).rejects.toThrow(
+        "consumed vector failed",
+      );
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("index and search multivectors", async () => {
     const db = await connect(tmpDir.name);
     const data = [];

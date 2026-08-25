@@ -3077,8 +3077,7 @@ impl BaseTable for NativeTable {
     }
 
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
-        let dataset = self.dataset.get().await?;
-        let snapshot = self.dataset.new_query_snapshot(dataset);
+        let snapshot = self.dataset.new_query_snapshot().await?;
         let mut table = self.with_dataset(snapshot);
         // QueryTable requests do not carry a revision. A pinned snapshot must
         // execute locally until the namespace API can accept that revision.

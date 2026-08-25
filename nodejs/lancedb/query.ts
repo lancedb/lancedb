@@ -735,9 +735,20 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    */
   addQueryVector(vector: IntoVector): VectorQuery {
     if (vector instanceof Promise) {
+      // Observe the promise as soon as it is accepted. The existing native
+      // query may still be pending, and delaying observation until it resolves
+      // can otherwise surface a fast rejection as unhandled.
+      const settledVector = vector.then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason) => ({ status: "rejected" as const, reason }),
+      );
       const res = (async () => {
         const inner = await this.getInner();
-        addQueryVectorToNative(inner, await vector);
+        const outcome = await settledVector;
+        if (outcome.status === "rejected") {
+          throw outcome.reason;
+        }
+        addQueryVectorToNative(inner, outcome.value);
         return inner;
       })();
       return new VectorQuery(res);
