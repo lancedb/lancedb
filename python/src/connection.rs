@@ -333,6 +333,40 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None))]
+    pub fn create_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        source: String,
+        projections: Option<Vec<(String, String)>>,
+        filter: Option<String>,
+        limit: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.create_materialized_view(name, source);
+            if let Some(projections) = projections {
+                builder = builder.select(projections);
+            }
+            if let Some(filter) = filter {
+                builder = builder.only_if(filter);
+            }
+            if let Some(limit) = limit {
+                builder = builder.limit(limit);
+            }
+            let view = builder.execute().await.infer_error()?;
+            Ok(Table::new(view.table().clone()))
+        })
+    }
+
+    pub fn list_materialized_views(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let views = inner.list_materialized_views().await.infer_error()?;
+            Ok(views.into_iter().map(|view| view.name).collect::<Vec<_>>())
+        })
+    }
+
     #[pyo3(signature = (name, namespace_path=None))]
     pub fn drop_table(
         self_: PyRef<'_, Self>,
@@ -343,6 +377,23 @@ impl Connection {
         let ns_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner.drop_table(name, &ns_path).await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_table_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let ns_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_table_async(name, &ns_path)
+                .await
+                .infer_error()
+                .map(crate::job::Job::new)
         })
     }
 
@@ -544,6 +595,38 @@ impl Connection {
     pub fn job(&self, job_id: String) -> PyResult<crate::job::Job> {
         let inner = self.get_inner()?.clone();
         Ok(crate::job::Job::new(inner.job(job_id).infer_error()?))
+    }
+
+    pub fn create_function_async(
+        self_: PyRef<'_, Self>,
+        request_json: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
+            .infer_error()?;
+        future_into_py(self_.py(), async move {
+            inner
+                .create_function_async(request)
+                .await
+                .infer_error()
+                .map(crate::job::Job::new_typed)
+        })
+    }
+
+    pub fn get_function(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .get_function(name, version)
+                .await
+                .infer_error()?
+                .to_canonical_json()
+                .infer_error()
+        })
     }
 
     pub fn list_jobs(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {

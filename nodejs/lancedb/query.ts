@@ -100,26 +100,6 @@ export interface FullTextSearchOptions {
   columns?: string | string[];
 }
 
-type NativeQueryLike = NativeQuery | NativeVectorQuery | NativeTakeQuery;
-
-class DeferredNativeQuery<NativeQueryType extends NativeQueryLike> {
-  protected readonly calls: Array<(inner: NativeQueryType) => void> = [];
-
-  constructor(private readonly factory: () => Promise<NativeQueryType>) {}
-
-  doCall(fn: (inner: NativeQueryType) => void) {
-    this.calls.push(fn);
-  }
-
-  async resolve(): Promise<NativeQueryType> {
-    const inner = await this.factory();
-    for (const call of this.calls) {
-      call(inner);
-    }
-    return inner;
-  }
-}
-
 function nearestToNative(
   inner: NativeQuery,
   vector: Awaited<IntoVector>,
@@ -154,24 +134,15 @@ export class QueryBase<
   NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
 > implements AsyncIterable<RecordBatch>
 {
-  /**
-   * @hidden
-   */
-  protected inner:
-    | NativeQueryType
-    | Promise<NativeQueryType>
-    | DeferredNativeQuery<NativeQueryType>;
+  protected inner!: NativeQueryType | Promise<NativeQueryType>;
 
   /**
    * @hidden
    */
-  protected constructor(
-    inner:
-      | NativeQueryType
-      | Promise<NativeQueryType>
-      | DeferredNativeQuery<NativeQueryType>,
-  ) {
-    this.inner = inner;
+  protected constructor(inner?: NativeQueryType | Promise<NativeQueryType>) {
+    if (inner !== undefined) {
+      this.inner = inner;
+    }
   }
 
   // call a function on the inner (either a promise or the actual object)
@@ -179,9 +150,7 @@ export class QueryBase<
    * @hidden
    */
   protected doCall(fn: (inner: NativeQueryType) => void) {
-    if (this.inner instanceof DeferredNativeQuery) {
-      this.inner.doCall(fn);
-    } else if (this.inner instanceof Promise) {
+    if (this.inner instanceof Promise) {
       this.inner = this.inner.then((inner) => {
         fn(inner);
         return inner;
@@ -192,12 +161,11 @@ export class QueryBase<
   }
 
   /**
+   * Return the native query used by the next terminal operation.
+   *
    * @hidden
    */
-  protected resolveInner(): NativeQueryType | Promise<NativeQueryType> {
-    if (this.inner instanceof DeferredNativeQuery) {
-      return this.inner.resolve();
-    }
+  protected async getInner(): Promise<NativeQueryType> {
     return this.inner;
   }
 
@@ -273,17 +241,11 @@ export class QueryBase<
   /**
    * @hidden
    */
-  protected nativeExecute(
+  protected async nativeExecute(
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
-    const inner = this.resolveInner();
-    if (inner instanceof Promise) {
-      return inner.then((inner) =>
-        inner.execute(options?.maxBatchLength, options?.timeoutMs),
-      );
-    } else {
-      return inner.execute(options?.maxBatchLength, options?.timeoutMs);
-    }
+    const inner = await this.getInner();
+    return inner.execute(options?.maxBatchLength, options?.timeoutMs);
   }
 
   /**
@@ -312,7 +274,7 @@ export class QueryBase<
   /** Collect the results as an Arrow @see {@link ArrowTable}. */
   async toArrow(options?: Partial<QueryExecutionOptions>): Promise<ArrowTable> {
     const batches = [];
-    const inner = await this.resolveInner();
+    const inner = await this.getInner();
     for await (const batch of new RecordBatchIterable(inner, options)) {
       batches.push(batch);
     }
@@ -341,12 +303,8 @@ export class QueryBase<
    * @returns A Promise that resolves to a string containing the query execution plan explanation.
    */
   async explainPlan(verbose = false): Promise<string> {
-    const inner = this.resolveInner();
-    if (inner instanceof Promise) {
-      return inner.then((inner) => inner.explainPlan(verbose));
-    } else {
-      return inner.explainPlan(verbose);
-    }
+    const inner = await this.getInner();
+    return inner.explainPlan(verbose);
   }
 
   /**
@@ -384,12 +342,8 @@ export class QueryBase<
     distributedMetrics?: AnalyzePlanDistributedMetrics,
   ): Promise<string> {
     const distributedMetricsMode = distributedMetrics ?? "aggregate";
-    const inner = this.resolveInner();
-    if (inner instanceof Promise) {
-      return inner.then((inner) => inner.analyzePlan(distributedMetricsMode));
-    } else {
-      return inner.analyzePlan(distributedMetricsMode);
-    }
+    const inner = await this.getInner();
+    return inner.analyzePlan(distributedMetricsMode);
   }
 
   /**
@@ -401,13 +355,8 @@ export class QueryBase<
    * @returns An Arrow Schema describing the output columns.
    */
   async outputSchema(): Promise<import("./arrow").Schema> {
-    let schemaBuffer: Buffer;
-    const inner = this.resolveInner();
-    if (inner instanceof Promise) {
-      schemaBuffer = await inner.then((inner) => inner.outputSchema());
-    } else {
-      schemaBuffer = await inner.outputSchema();
-    }
+    const inner = await this.getInner();
+    const schemaBuffer = await inner.outputSchema();
     const schema = tableFromIPC(schemaBuffer).schema;
     return schema;
   }
@@ -419,12 +368,7 @@ export class StandardQueryBase<
   extends QueryBase<NativeQueryType>
   implements ExecutableQuery
 {
-  constructor(
-    inner:
-      | NativeQueryType
-      | Promise<NativeQueryType>
-      | DeferredNativeQuery<NativeQueryType>,
-  ) {
+  constructor(inner?: NativeQueryType | Promise<NativeQueryType>) {
     super(inner);
   }
 
@@ -574,12 +518,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   /**
    * @hidden
    */
-  constructor(
-    inner:
-      | NativeVectorQuery
-      | Promise<NativeVectorQuery>
-      | DeferredNativeQuery<NativeVectorQuery>,
-  ) {
+  constructor(inner: NativeVectorQuery | Promise<NativeVectorQuery>) {
     super(inner);
   }
 
@@ -797,7 +736,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   addQueryVector(vector: IntoVector): VectorQuery {
     if (vector instanceof Promise) {
       const res = (async () => {
-        const inner = (await this.resolveInner()) as NativeVectorQuery;
+        const inner = await this.getInner();
         addQueryVectorToNative(inner, await vector);
         return inner;
       })();
@@ -828,70 +767,6 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   }
 }
 
-type AutoQueryResolution = {
-  inner: NativeQuery | NativeVectorQuery;
-  route: "fts" | "vector";
-};
-
-class DeferredAutoNativeQuery extends DeferredNativeQuery<NativeVectorQuery> {
-  private readonly vectorCalls: Array<
-    (inner: NativeVectorQuery) => void | Promise<void>
-  > = [];
-
-  constructor(
-    private readonly autoFactory: () => Promise<AutoQueryResolution>,
-  ) {
-    super(async () => (await autoFactory()).inner as NativeVectorQuery);
-  }
-
-  doVectorCall(fn: (inner: NativeVectorQuery) => void | Promise<void>) {
-    this.vectorCalls.push(fn);
-  }
-
-  async resolve(): Promise<NativeVectorQuery> {
-    const resolution = await this.autoFactory();
-    for (const call of this.calls) {
-      call(resolution.inner as NativeVectorQuery);
-    }
-    if (resolution.route === "vector") {
-      for (const call of this.vectorCalls) {
-        await call(resolution.inner as NativeVectorQuery);
-      }
-    }
-    return resolution.inner as NativeVectorQuery;
-  }
-}
-
-class DeferredAutoQuery extends VectorQuery {
-  constructor(private readonly deferred: DeferredAutoNativeQuery) {
-    super(deferred);
-  }
-
-  protected doVectorCall(fn: (inner: NativeVectorQuery) => void) {
-    this.deferred.doVectorCall(fn);
-  }
-
-  addQueryVector(vector: IntoVector): VectorQuery {
-    // Observe promised vectors immediately so a rejection cannot become an
-    // unhandled rejection while auto routing is still resolving (or when the
-    // eventual route is FTS and vector-only calls are intentionally skipped).
-    // The settled outcome remains fulfilled and is rethrown only if a vector
-    // execution actually consumes it.
-    const settledVector = Promise.resolve(vector).then(
-      (value) => ({ status: "fulfilled" as const, value }),
-      (reason) => ({ status: "rejected" as const, reason }),
-    );
-    this.deferred.doVectorCall(async (inner) => {
-      const outcome = await settledVector;
-      if (outcome.status === "rejected") {
-        throw outcome.reason;
-      }
-      addQueryVectorToNative(inner, outcome.value);
-    });
-    return this;
-  }
-}
-
 /**
  * Create a string query whose vector/FTS routing is resolved against the active
  * table schema when the query executes.
@@ -903,7 +778,7 @@ export function createAutoQuery(
   query: string,
   columns: string[] | null,
   getVector: (metadata: string) => Promise<Awaited<IntoVector>>,
-): VectorQuery {
+): AutoQuery {
   type RouteSnapshot = {
     table: NativeTable;
     embeddingMetadata: string | undefined;
@@ -911,7 +786,6 @@ export function createAutoQuery(
   type CachedPreparation = {
     metadata: string;
     vector: Promise<Awaited<IntoVector>>;
-    settled: boolean;
   };
 
   let cachedPreparation: CachedPreparation | undefined;
@@ -925,75 +799,37 @@ export function createAutoQuery(
     };
   };
 
-  const deferred = new DeferredAutoNativeQuery(async () => {
-    while (true) {
-      const initial = await snapshotRoute();
-      if (initial.embeddingMetadata === undefined) {
-        const inner = initial.table.query();
-        inner.fullTextSearch({ query, columns });
-        return { inner, route: "fts" };
-      }
+  const createInner = async (): Promise<NativeQuery | NativeVectorQuery> => {
+    const route = await snapshotRoute();
+    if (route.embeddingMetadata === undefined) {
+      const inner = route.table.query();
+      inner.fullTextSearch({ query, columns });
+      return inner;
+    }
 
-      const metadata = initial.embeddingMetadata;
-      if (cachedPreparation?.metadata !== metadata) {
-        const vector = Promise.resolve().then(() => getVector(metadata));
-        const preparation: CachedPreparation = {
-          metadata,
-          settled: false,
-          vector,
-        };
-        void vector.then(
-          () => {
-            preparation.settled = true;
-          },
-          () => {
-            preparation.settled = true;
-          },
-        );
-        cachedPreparation = preparation;
-      }
-
-      const preparation = cachedPreparation;
-      const preparationWasWarm = preparation.settled;
-      let vector: Awaited<IntoVector>;
-      try {
-        vector = await preparation.vector;
-      } catch (error) {
-        if (cachedPreparation === preparation) {
-          cachedPreparation = undefined;
-        }
-        throw error;
-      }
-
-      // Newly started (or still in-flight) provider preparation can perform
-      // arbitrary asynchronous work. Revalidate after that work, but reuse the
-      // initial pinned snapshot once preparation was already warm. This avoids
-      // a second remote describe request on every repeated execution.
-      if (!preparationWasWarm) {
-        const current = await snapshotRoute();
-        if (current.embeddingMetadata !== metadata) {
-          // A stale execution must not erase another revision's newer in-flight
-          // preparation.
-          if (cachedPreparation === preparation) {
-            cachedPreparation = undefined;
-          }
-          continue;
-        }
-
-        return {
-          inner: nearestToNative(current.table.query(), vector),
-          route: "vector",
-        };
-      }
-
-      return {
-        inner: nearestToNative(initial.table.query(), vector),
-        route: "vector",
+    const metadata = route.embeddingMetadata;
+    if (cachedPreparation?.metadata !== metadata) {
+      cachedPreparation = {
+        metadata,
+        vector: Promise.resolve().then(() => getVector(metadata)),
       };
     }
-  });
 
-  return new DeferredAutoQuery(deferred);
+    const preparation = cachedPreparation;
+    let vector: Awaited<IntoVector>;
+    try {
+      vector = await preparation.vector;
+    } catch (error) {
+      if (cachedPreparation === preparation) {
+        cachedPreparation = undefined;
+      }
+      throw error;
+    }
+
+    return nearestToNative(route.table.query(), vector);
+  };
+
+  return new AutoQuery(createInner);
 }
 
 /**
@@ -1018,6 +854,51 @@ export class TakeQuery extends QueryBase<NativeTakeQuery> {
   useLsm(enable: boolean): this {
     this.doCall((inner: NativeTakeQuery) => inner.useLsm(enable));
     return this;
+  }
+}
+
+/**
+ * A builder for automatic string searches.
+ *
+ * Automatic search determines whether to use full-text or vector search from
+ * the table revision selected for each execution. This builder exposes the
+ * common operations supported by both query families.
+ *
+ * @hideconstructor
+ */
+export class AutoQuery extends StandardQueryBase<
+  NativeQuery | NativeVectorQuery
+> {
+  private readonly calls: Array<
+    (inner: NativeQuery | NativeVectorQuery) => void
+  > = [];
+
+  /** @hidden */
+  constructor(
+    private readonly createInner: () => Promise<
+      NativeQuery | NativeVectorQuery
+    >,
+  ) {
+    super();
+  }
+
+  /** @hidden */
+  protected override doCall(
+    fn: (inner: NativeQuery | NativeVectorQuery) => void,
+  ) {
+    this.calls.push(fn);
+  }
+
+  /** @hidden */
+  protected override async getInner(): Promise<
+    NativeQuery | NativeVectorQuery
+  > {
+    const calls = [...this.calls];
+    const inner = await this.createInner();
+    for (const call of calls) {
+      call(inner);
+    }
+    return inner;
   }
 }
 
@@ -1073,33 +954,19 @@ export class Query extends StandardQueryBase<NativeQuery> {
    * a default `limit` of 10 will be used.  @see {@link Query#limit}
    */
   nearestTo(vector: IntoVector): VectorQuery {
-    const inner = this.resolveInner();
+    const inner = this.inner;
     if (inner instanceof Promise) {
-      const nativeQuery = inner.then(async (inner) => {
-        const resolved = vector instanceof Promise ? await vector : vector;
-        return nearestToNative(inner, resolved);
-      });
+      const nativeQuery = inner.then(async (resolvedInner) =>
+        nearestToNative(resolvedInner, await vector),
+      );
       return new VectorQuery(nativeQuery);
     }
     if (vector instanceof Promise) {
-      const res = (async () => {
-        try {
-          const v = await vector;
-          // biome-ignore lint/suspicious/noExplicitAny: we need to get the `inner`, but js has no package scoping
-          const value: any = this.nearestTo(v);
-          const inner = value.inner as
-            | NativeVectorQuery
-            | Promise<NativeVectorQuery>;
-          return inner;
-        } catch (e) {
-          return Promise.reject(e);
-        }
-      })();
-      return new VectorQuery(res);
-    } else {
-      const vectorQuery = nearestToNative(inner, vector);
-      return new VectorQuery(vectorQuery);
+      return new VectorQuery(
+        vector.then((resolvedVector) => nearestToNative(inner, resolvedVector)),
+      );
     }
+    return new VectorQuery(nearestToNative(inner, vector));
   }
 
   nearestToText(query: string | FullTextQuery, columns?: string[]): Query {
