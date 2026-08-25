@@ -399,6 +399,21 @@ async fn normalized_l2_ann_indices(plan: &dyn ExecutionPlan) -> Result<HashSet<S
     Ok(normalized_l2)
 }
 
+/// Normalize affected ANN outputs before their parent plan nodes consume them.
+///
+/// This is used by planners that do not support distance ranges, such as the MemWAL
+/// LSM planner. The standard scanner path rebuilds a second plan when it also needs
+/// to translate range bounds, then calls [`normalize_ann_branches`] directly.
+pub(super) async fn normalize_cosine_ann_branches(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let normalized_l2_indices = normalized_l2_ann_indices(plan.as_ref()).await?;
+    if normalized_l2_indices.is_empty() {
+        return Ok(plan);
+    }
+    normalize_ann_branches(plan.clone(), plan, &normalized_l2_indices)
+}
+
 fn find_ann_plans<'a>(plan: &'a dyn ExecutionPlan, ann_plans: &mut Vec<&'a ANNIvfSubIndexExec>) {
     if let Some(ann) = plan.downcast_ref::<ANNIvfSubIndexExec>() {
         ann_plans.push(ann);
