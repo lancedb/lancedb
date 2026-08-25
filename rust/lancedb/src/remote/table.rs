@@ -88,20 +88,21 @@ const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
 
 /// Per-table state driving the freshness headers (`x-lancedb-min-version`,
-/// `x-lancedb-min-timestamp`, and `x-lancedb-min-read-version`) sent on read
+/// `x-lancedb-min-timestamp`, and `x-lancedb-min-read-version`) sent on table
 /// requests.
 #[derive(Debug, Default, Clone, Copy)]
 struct FreshnessState {
     /// Provides read-your-write within a single handle: writes that return a
     /// version update this, and reads send it as `x-lancedb-min-version`.
     min_version: Option<u64>,
-    /// Highest dataset version observed in a *read* response on this handle.
-    /// Reads send it as `x-lancedb-min-read-version` so a load-balanced query
+    /// Highest committed dataset version advertised by a successful table
+    /// response on this handle. Later requests send it as
+    /// `x-lancedb-min-read-version` so a load-balanced query
     /// node whose cache is behind this version must refresh before serving,
     /// giving monotonic reads across nodes regardless of which one the load
-    /// balancer routes to. Sourced only from reads (always committed dataset
-    /// versions), never from writes (which may return WAL entry ids), so it is
-    /// unaffected by the WAL/version mismatch that retired `min_version`.
+    /// balancer routes to. Unlike write result bodies, this is sourced only
+    /// from the server's committed dataset-version response header or other
+    /// typed dataset-version fields, so WAL entry ids cannot enter it.
     min_read_version: Option<u64>,
     /// Wall-clock time captured at the last [`BaseTable::checkout_latest`]
     /// call. Subsequent reads send
@@ -118,7 +119,7 @@ struct FreshnessState {
     checkout_baseline: Option<SystemTime>,
 }
 
-/// Snapshot of the headers that should be attached to a single read request.
+/// Snapshot of the headers that should be attached to a single table request.
 #[derive(Debug, Default, Clone, Copy)]
 struct FreshnessHeaders {
     min_version: Option<u64>,
@@ -142,6 +143,27 @@ impl FreshnessHeaders {
     }
 }
 
+fn track_read_version(freshness: &Mutex<FreshnessState>, version: u64) {
+    if version == 0 {
+        return;
+    }
+    let mut state = freshness.lock().unwrap();
+    state.min_read_version = Some(state.min_read_version.map_or(version, |v| v.max(version)));
+}
+
+fn track_read_version_from_headers(
+    freshness: &Mutex<FreshnessState>,
+    headers: &reqwest::header::HeaderMap,
+) {
+    if let Some(version) = headers
+        .get(&VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        track_read_version(freshness, version);
+    }
+}
+
 /// A backfill job whose successful wait establishes a read-freshness
 /// baseline on the submitting handle, so a later read cannot be served
 /// from a cache older than the completed fill. A handle pinned by checkout
@@ -150,6 +172,7 @@ struct FreshnessJob<S: HttpSend> {
     inner: RemoteJob<S>,
     freshness: Arc<Mutex<FreshnessState>>,
     version: Arc<RwLock<Option<u64>>>,
+    track_refresh_result: bool,
 }
 
 #[async_trait]
@@ -166,7 +189,27 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         let result = crate::job::JobHandle::wait(&self.inner).await?;
         let version = self.version.read().await;
         if version.is_none() {
-            self.freshness.lock().unwrap().checkout_baseline = Some(SystemTime::now());
+            let result_version = self
+                .track_refresh_result
+                .then(|| result.value())
+                .flatten()
+                .and_then(|value| {
+                    serde_json::from_value::<crate::function::RefreshColumnResult>(value.clone())
+                        .ok()
+                })
+                .map(|result| {
+                    result
+                        .published_version
+                        .map_or(result.source_version, |version| {
+                            version.max(result.source_version)
+                        })
+                })
+                .filter(|version| *version != 0);
+            if let Some(version) = result_version {
+                track_read_version(&self.freshness, version);
+            } else {
+                self.freshness.lock().unwrap().checkout_baseline = Some(SystemTime::now());
+            }
         }
         Ok(result)
     }
@@ -193,6 +236,18 @@ fn compute_min_timestamp(
     }
 }
 
+fn freshness_headers_snapshot(
+    freshness: &Mutex<FreshnessState>,
+    interval: Option<Duration>,
+) -> FreshnessHeaders {
+    let state = *freshness.lock().unwrap();
+    FreshnessHeaders {
+        min_version: state.min_version,
+        min_timestamp: compute_min_timestamp(&state, interval, SystemTime::now()),
+        min_read_version: state.min_read_version,
+    }
+}
+
 /// Normalize a branch selector: trim whitespace and treat `""` or `"main"` as
 /// the (absent) main branch, matching the server's convention.
 fn normalize_branch(branch: Option<String>) -> Option<String> {
@@ -210,7 +265,8 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
     async fn list(&self) -> Result<HashMap<String, TagContents>> {
         let request = self
             .inner
-            .post_read(&format!("/v1/table/{}/tags/list/", self.inner.identifier));
+            .client
+            .post(&format!("/v1/table/{}/tags/list/", self.inner.identifier));
         let (request_id, response) = self.inner.send(request, true).await?;
         let response = self
             .inner
@@ -241,12 +297,12 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
     }
 
     async fn get_version(&self, tag: &str) -> Result<u64> {
-        let request = self.inner.post_read(&format!(
+        let request = self.inner.client.post(&format!(
             "/v1/table/{}/tags/version/",
             self.inner.identifier
         ));
         self.inner
-            .resolve_tag_version_with_request(tag, request)
+            .resolve_tag_version_with_request(tag, request, true)
             .await
     }
 
@@ -468,6 +524,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let Ok(description) = serde_json::from_str::<TableDescription>(describe_body) else {
             return;
         };
+        self.track_read_version(description.version);
         if let Ok(schema) = arrow_schema::Schema::try_from(description.schema) {
             self.schema_cache.seed(Arc::new(schema));
         }
@@ -515,18 +572,25 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn describe_version(&self, version: Option<u64>) -> Result<TableDescription> {
-        let request = self.post_read(&format!("/v1/table/{}/describe/", self.identifier));
-        self.describe_with_request(request, version).await
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/describe/", self.identifier));
+        self.describe_with_request(request, version, true).await
     }
 
     async fn resolve_tag_version_with_request(
         &self,
         tag: &str,
         request: RequestBuilder,
+        fenced: bool,
     ) -> Result<u64> {
         let request = request.json(&serde_json::json!({ "tag": tag }));
 
-        let (request_id, response) = self.send(request, true).await?;
+        let (request_id, response) = if fenced {
+            self.send(request, true).await?
+        } else {
+            self.send_unfenced(request, true).await?
+        };
         let response = self.check_table_response(&request_id, response).await?;
 
         match response.text().await {
@@ -565,7 +629,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/tags/version/", self.identifier))
             .json(&serde_json::json!({ "tag": tag }));
-        let (request_id, response) = self.send(request, true).await?;
+        let (request_id, response) = self.send_unfenced(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
         let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
@@ -592,21 +656,33 @@ impl<S: HttpSend> RemoteTable<S> {
         &self,
         request: RequestBuilder,
         version: Option<u64>,
+        fenced: bool,
     ) -> Result<TableDescription> {
         let mut body = serde_json::json!({ "version": version });
         self.apply_branch_body(&mut body);
         let request = request.json(&body);
 
-        let (request_id, response) = self.send(request, true).await?;
+        let (request_id, response) = if fenced {
+            self.send(request, true).await?
+        } else {
+            self.send_unfenced(request, true).await?
+        };
 
         let response = self.check_table_response(&request_id, response).await?;
 
         match response.text().await {
-            Ok(body) => serde_json::from_str(&body).map_err(|e| Error::Http {
-                source: format!("Failed to parse table description: {}", e).into(),
-                request_id,
-                status_code: None,
-            }),
+            Ok(body) => {
+                let description: TableDescription =
+                    serde_json::from_str(&body).map_err(|e| Error::Http {
+                        source: format!("Failed to parse table description: {}", e).into(),
+                        request_id,
+                        status_code: None,
+                    })?;
+                if fenced {
+                    self.track_read_version(description.version);
+                }
+                Ok(description)
+            }
             Err(err) => {
                 let status_code = err.status();
                 Err(Error::Http {
@@ -619,12 +695,28 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
+        let req = self.snapshot_freshness_headers().apply(req);
         let res = if with_retry {
             self.client.send_with_retry(req, None, true).await?
         } else {
             self.client.send(req).await?
         };
+        if res.1.status().is_success() {
+            track_read_version_from_headers(&self.freshness, res.1.headers());
+        }
         Ok(res)
+    }
+
+    async fn send_unfenced(
+        &self,
+        req: RequestBuilder,
+        with_retry: bool,
+    ) -> Result<(String, Response)> {
+        if with_retry {
+            self.client.send_with_retry(req, None, true).await
+        } else {
+            self.client.send(req).await
+        }
     }
 
     pub(super) async fn handle_table_not_found(
@@ -1008,19 +1100,10 @@ impl<S: HttpSend> RemoteTable<S> {
         *read_guard
     }
 
-    /// Snapshot the freshness headers to attach to a single read request.
+    /// Snapshot the freshness headers to attach to a single table request.
     /// Computed at call time so that retries reuse the same snapshot.
     fn snapshot_freshness_headers(&self) -> FreshnessHeaders {
-        let state = *self.freshness.lock().unwrap();
-        FreshnessHeaders {
-            min_version: state.min_version,
-            min_timestamp: compute_min_timestamp(
-                &state,
-                self.client.read_consistency_interval,
-                SystemTime::now(),
-            ),
-            min_read_version: state.min_read_version,
-        }
+        freshness_headers_snapshot(&self.freshness, self.client.read_consistency_interval)
     }
 
     /// Send an LSM operator request with the transport retry layer **off**.
@@ -1035,13 +1118,6 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok((request_id, response))
     }
 
-    /// Build a POST request and attach the read-freshness headers
-    /// (`x-lancedb-min-version`, `x-lancedb-min-timestamp`).
-    fn post_read(&self, uri: &str) -> RequestBuilder {
-        self.snapshot_freshness_headers()
-            .apply(self.client.post(uri))
-    }
-
     /// Record a version returned by a write so subsequent reads can request at
     /// least that version via `x-lancedb-min-version`. A returned `0` from a
     /// backward-compatible old server is ignored.
@@ -1053,28 +1129,13 @@ impl<S: HttpSend> RemoteTable<S> {
         state.min_version = Some(state.min_version.map_or(version, |v| v.max(version)));
     }
 
-    /// Record a dataset version observed in a *read* response so subsequent
-    /// reads request at least this version via `x-lancedb-min-read-version`,
+    /// Record a committed dataset version observed in a table response so
+    /// subsequent requests ask for at least this version via
+    /// `x-lancedb-min-read-version`,
     /// giving monotonic reads across load-balanced query nodes. A returned `0`
     /// (or absent header from an old server) is ignored.
     fn track_read_version(&self, version: u64) {
-        if version == 0 {
-            return;
-        }
-        let mut state = self.freshness.lock().unwrap();
-        state.min_read_version = Some(state.min_read_version.map_or(version, |v| v.max(version)));
-    }
-
-    /// Parse the `x-lancedb-version` response header (the dataset version a read
-    /// reflects) and fold it into the read-version watermark.
-    fn track_read_version_from_headers(&self, headers: &reqwest::header::HeaderMap) {
-        if let Some(version) = headers
-            .get(&VERSION_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-        {
-            self.track_read_version(version);
-        }
+        track_read_version(&self.freshness, version);
     }
 
     async fn execute_query(
@@ -1082,7 +1143,9 @@ impl<S: HttpSend> RemoteTable<S> {
         query: &AnyQuery,
         options: &QueryExecutionOptions,
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
-        let mut request = self.post_read(&format!("/v1/table/{}/query/", self.identifier));
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/query/", self.identifier));
 
         if let Some(timeout) = options.timeout {
             // Also send to server, so it can abort the query if it takes too long.
@@ -1100,7 +1163,6 @@ impl<S: HttpSend> RemoteTable<S> {
 
         let futures = requests.into_iter().map(|req| async move {
             let (request_id, response) = self.send(req, true).await?;
-            self.track_read_version_from_headers(response.headers());
             self.read_arrow_response(&request_id, response).await
         });
         let streams = futures::future::try_join_all(futures);
@@ -1233,6 +1295,7 @@ async fn fetch_schema<S: HttpSend>(
     version: Option<u64>,
     branch: Option<String>,
     freshness_headers: FreshnessHeaders,
+    freshness: Arc<Mutex<FreshnessState>>,
 ) -> Result<SchemaRef> {
     let mut body = serde_json::json!({ "version": version });
     if let Some(branch) = &branch {
@@ -1257,6 +1320,7 @@ async fn fetch_schema<S: HttpSend>(
     }
 
     let response = client.check_response(&request_id, response).await?;
+    track_read_version_from_headers(&freshness, response.headers());
     let body = response.text().await.map_err(|e| {
         let status_code = e.status();
         Error::Http {
@@ -1271,6 +1335,7 @@ async fn fetch_schema<S: HttpSend>(
         request_id,
         status_code: None,
     })?;
+    track_read_version(&freshness, description.version);
 
     let arrow_schema: arrow_schema::Schema = description.schema.try_into()?;
     Ok(Arc::new(arrow_schema))
@@ -1732,7 +1797,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/describe/", self.identifier));
-        self.describe_with_request(request, Some(version))
+        self.describe_with_request(request, Some(version), false)
             .await
             .map_err(|e| match e {
                 // try to map the error to a more user-friendly error telling them
@@ -1804,7 +1869,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn list_versions(&self) -> Result<Vec<Version>> {
         let request = self.apply_branch_query(
-            self.post_read(&format!("/v1/table/{}/version/list/", self.identifier)),
+            self.client
+                .post(&format!("/v1/table/{}/version/list/", self.identifier)),
         );
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -1878,6 +1944,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let table_name = self.name.clone();
         let branch = self.branch.clone();
         let freshness_headers = self.snapshot_freshness_headers();
+        let freshness = self.freshness.clone();
 
         self.schema_cache
             .get(move || async move {
@@ -1888,6 +1955,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     version,
                     branch,
                     freshness_headers,
+                    freshness,
                 )
                 .await
             })
@@ -1934,7 +2002,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         // Send without retry so the expected 409 (branch already exists) is
         // surfaced as a response we can map, rather than being retried.
-        let (request_id, response) = self.send(request, false).await?;
+        let (request_id, response) = self.send_unfenced(request, false).await?;
         match response.status() {
             StatusCode::CONFLICT => {
                 return Err(Error::TableAlreadyExists {
@@ -1995,7 +2063,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn list_branches(&self) -> Result<HashMap<String, lance::dataset::refs::BranchContents>> {
         use lance::dataset::refs::BranchContents;
 
-        let request = self.post_read(&format!("/v1/table/{}/branches/list/", self.identifier));
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/branches/list/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -2050,7 +2120,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/branches/diff/", self.identifier))
             .json(&serde_json::json!({ "from_branch": from_branch }));
-        let (request_id, response) = self.send(request, true).await?;
+        let (request_id, response) = self.send_unfenced(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::TableNotFound {
                 name: format!("{} (branch: {})", self.name, from_branch),
@@ -2087,7 +2157,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 "dry_run": dry_run,
             }));
         // No retry. HTTP 409 is CherryPickStatus::Failed with a body, not a transport error.
-        let (request_id, response) = self.send(request, false).await?;
+        let (request_id, response) = self.send_unfenced(request, false).await?;
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
             return Err(Error::TableNotFound {
@@ -2121,7 +2191,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
-        let mut request = self.post_read(&format!("/v1/table/{}/count_rows/", self.identifier));
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/count_rows/", self.identifier));
 
         let version = self.current_version().await;
 
@@ -2149,7 +2221,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         };
 
-        self.track_read_version_from_headers(response.headers());
         let body = response.text().await.err_to_http(request_id.clone())?;
 
         serde_json::from_str(&body).map_err(|e| Error::Http {
@@ -2273,7 +2344,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
-        let base_request = self.post_read(&format!("/v1/table/{}/explain_plan/", self.identifier));
+        let base_request = self
+            .client
+            .post(&format!("/v1/table/{}/explain_plan/", self.identifier));
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -2320,7 +2393,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<String> {
-        let mut request = self.post_read(&format!("/v1/table/{}/analyze_plan/", self.identifier));
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/analyze_plan/", self.identifier));
 
         if options.analyze_plan_distributed_metrics != AnalyzePlanDistributedMetrics::Aggregate {
             request = request.query(&[(
@@ -2441,7 +2516,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn create_index_async(&self, index: IndexBuilder) -> Result<Job> {
         Ok(match self.submit_create_index(index).await? {
-            Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
+            Some(job_id) => Job::new(Box::new(FreshnessJob {
+                inner: RemoteJob::new(self.client.clone(), job_id),
+                freshness: self.freshness.clone(),
+                version: self.version.clone(),
+                track_refresh_result: false,
+            })),
             None => Job::new_done(),
         })
     }
@@ -2547,7 +2627,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
         // Read-semantics POST, like `get_lsm_write_spec`.
         let request = self
-            .post_read(&format!("/v1/table/{}/get_lsm_stats/", self.identifier))
+            .client
+            .post(&format!("/v1/table/{}/get_lsm_stats/", self.identifier))
             .json(&serde_json::json!({
                 "include_generation_rows": include_generation_rows,
             }));
@@ -2621,7 +2702,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // re-encodes it into the same sophon-owned shape the set endpoint
         // accepts — no lance/lancedb types cross the wire. `lsm_write_spec` is
         // null when the LSM write path is not enabled for the table.
-        let request = self.post_read(&format!(
+        let request = self.client.post(&format!(
             "/v1/table/{}/get_lsm_write_spec/",
             self.identifier
         ));
@@ -2687,7 +2768,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/tags/version/", self.identifier));
-        let version = self.resolve_tag_version_with_request(tag, request).await?;
+        let version = self
+            .resolve_tag_version_with_request(tag, request, false)
+            .await?;
 
         let mut write_guard = self.version.write().await;
         *write_guard = Some(version);
@@ -2884,7 +2967,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let mut body = serde_json::json!({ "column": column });
         self.apply_branch_body(&mut body);
         let request = self
-            .post_read(&format!("/v1/table/{}/backfill_column", self.identifier))
+            .client
+            .post(&format!("/v1/table/{}/backfill_column", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -2904,6 +2988,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             inner: RemoteJob::new(self.client.clone(), response.job_id),
             freshness: self.freshness.clone(),
             version: self.version.clone(),
+            track_refresh_result: true,
         })))
     }
 
@@ -3016,7 +3101,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
-        let mut request = self.post_read(&format!("/v1/table/{}/index/list/", self.identifier));
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/index/list/", self.identifier));
         let version = self.current_version().await;
         let mut body = serde_json::json!({ "version": version });
         self.apply_branch_body(&mut body);
@@ -3033,7 +3120,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
         let encoded_name = urlencoding::encode(index_name);
-        let mut request = self.post_read(&format!(
+        let mut request = self.client.post(&format!(
             "/v1/table/{}/index/{encoded_name}/stats/",
             self.identifier
         ));
@@ -3148,7 +3235,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn stats(&self) -> Result<TableStatistics> {
-        let mut request = self.post_read(&format!("/v1/table/{}/stats/", self.identifier));
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/stats/", self.identifier));
         if let Some(branch) = &self.branch {
             request = request.json(&serde_json::json!({ "branch": branch }));
         }
@@ -6989,12 +7078,12 @@ mod tests {
     }
 
     /// The gate's reproducer: after a successful wait, a same-handle read
-    /// must carry a freshness baseline so a stale server cache cannot serve
-    /// the pre-backfill snapshot.
+    /// must carry the exact published version so a stale server cache cannot
+    /// serve the pre-backfill snapshot.
     #[tokio::test]
     async fn test_backfill_wait_establishes_read_freshness() {
-        let saw_min_timestamp = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let saw = saw_min_timestamp.clone();
+        let saw_published_version = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw = saw_published_version.clone();
         let table =
             Table::new_with_handler("my_table", move |request| match request.url().path() {
                 "/v1/table/my_table/backfill_column" => http::Response::builder()
@@ -7007,7 +7096,11 @@ mod tests {
                     .unwrap(),
                 "/v1/table/my_table/count_rows/" => {
                     saw.store(
-                        request.headers().contains_key("x-lancedb-min-timestamp"),
+                        request
+                            .headers()
+                            .get("x-lancedb-min-read-version")
+                            .and_then(|value| value.to_str().ok())
+                            == Some("8"),
                         std::sync::atomic::Ordering::SeqCst,
                     );
                     http::Response::builder()
@@ -7024,8 +7117,8 @@ mod tests {
         assert_eq!(result.published_version, Some(8));
         table.count_rows(None).await.unwrap();
         assert!(
-            saw_min_timestamp.load(std::sync::atomic::Ordering::SeqCst),
-            "read after wait carried no freshness baseline"
+            saw_published_version.load(std::sync::atomic::Ordering::SeqCst),
+            "read after wait did not carry the published version"
         );
     }
 
@@ -10165,6 +10258,42 @@ mod tests {
                 .to_str()
                 .unwrap(),
             "100"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_schema_response_advances_read_watermark() {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            captured
+                .lock()
+                .unwrap()
+                .push((request.url().path().to_string(), request.headers().clone()));
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .header("x-lancedb-version", "100")
+                    .body(r#"{"version":100,"schema":{"fields":[]}}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/count_rows/" => http::Response::builder()
+                    .status(200)
+                    .body("42".to_string())
+                    .unwrap(),
+                path => panic!("unexpected path: {path}"),
+            }
+        });
+
+        table.schema().await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 42);
+
+        let requests = requests.lock().unwrap();
+        let count_headers = &requests[1].1;
+        assert_eq!(
+            count_headers
+                .get("x-lancedb-min-read-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("100")
         );
     }
 

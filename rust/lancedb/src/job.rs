@@ -47,6 +47,10 @@ impl TerminalResult {
         }
     }
 
+    pub(crate) fn value(&self) -> Option<&Value> {
+        self.value.as_ref()
+    }
+
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let value = self.value.ok_or_else(|| match &self.request_id {
             Some(request_id) => Error::Http {

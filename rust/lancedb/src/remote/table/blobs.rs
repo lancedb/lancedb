@@ -6,6 +6,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use arrow_array::{Array, LargeBinaryArray};
 use arrow_schema::DataType;
@@ -20,7 +21,9 @@ use crate::error::Result;
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 use crate::table::BaseTable;
 
-use super::{FreshnessHeaders, RemoteTable};
+use super::{
+    FreshnessState, RemoteTable, freshness_headers_snapshot, track_read_version_from_headers,
+};
 
 #[derive(Debug, Clone, Copy)]
 enum RangeRequestMode {
@@ -43,7 +46,8 @@ struct TableBlobRangeRequester<S: HttpSend> {
     path: String,
     version: Option<u64>,
     branch: Option<String>,
-    freshness: FreshnessHeaders,
+    freshness: Arc<std::sync::Mutex<FreshnessState>>,
+    read_consistency_interval: Option<Duration>,
 }
 
 #[async_trait::async_trait]
@@ -53,10 +57,10 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
         range_header: &str,
         mode: RangeRequestMode,
     ) -> Result<(String, Response)> {
-        let mut request = self
-            .freshness
-            .apply(self.client.get(&self.path))
-            .header(header::RANGE, range_header);
+        let mut request =
+            freshness_headers_snapshot(&self.freshness, self.read_consistency_interval)
+                .apply(self.client.get(&self.path))
+                .header(header::RANGE, range_header);
         if let Some(version) = self.version {
             request = request.query(&[("version", version)]);
         }
@@ -71,6 +75,7 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
             return Ok((request_id, response));
         }
         let response = self.client.check_response(&request_id, response).await?;
+        track_read_version_from_headers(&self.freshness, response.headers());
         Ok((request_id, response))
     }
 }
@@ -370,7 +375,8 @@ impl<S: HttpSend> RemoteTable<S> {
         self.apply_branch_body(&mut body);
 
         let request = self
-            .post_read(&format!("/v1/table/{}/fetch_blobs/", self.identifier))
+            .client
+            .post(&format!("/v1/table/{}/fetch_blobs/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let mut stream = self.read_arrow_response(&request_id, response).await?;
@@ -449,7 +455,6 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         let version = self.current_version().await;
-        let freshness = self.snapshot_freshness_headers();
         let encoded_column = urlencoding::encode(column);
         let requesters = row_ids
             .iter()
@@ -463,7 +468,8 @@ impl<S: HttpSend> RemoteTable<S> {
                     path,
                     version,
                     branch: self.branch.clone(),
-                    freshness,
+                    freshness: self.freshness.clone(),
+                    read_consistency_interval: self.client.read_consistency_interval,
                 });
                 requester
             })
