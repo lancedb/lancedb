@@ -2177,6 +2177,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
 
+        if add.allow_external_blob_outside_bases {
+            return Err(Error::NotSupported {
+                message: "allow_external_blob_outside_bases is only supported on local tables"
+                    .to_string(),
+            });
+        }
+        // String blob values still coerce to the uri child in into_plan.
+        // Remote and local share that input shape.
+
         let table_schema = self.schema().await?;
         crate::table::computed_columns::ensure_supported_function_metadata(table_schema.as_ref())?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
@@ -3285,7 +3294,10 @@ mod tests {
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::Array;
     use arrow_array::builder::LargeBinaryBuilder;
-    use arrow_array::{BinaryArray, Int32Array, RecordBatch, RecordBatchIterator, record_batch};
+    use arrow_array::{
+        BinaryArray, Int32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+        StructArray, record_batch,
+    };
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, future::BoxFuture};
@@ -3635,6 +3647,88 @@ mod tests {
         let body = collect_body(body).await;
         let expected_body = write_ipc_stream(&data);
         assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn add_rejects_external_blob_flag_before_any_request() {
+        let table = Table::new_with_handler::<String>("my_table", |request| {
+            panic!("Unexpected request: {}", request.url().path())
+        });
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+
+        let err = table
+            .add(data)
+            .allow_external_blob_outside_bases(true)
+            .execute()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
+        assert!(err.to_string().contains("local tables"));
+    }
+
+    #[tokio::test]
+    async fn add_string_blob_becomes_uri_struct_without_the_local_flag() {
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            crate::blob("image", true),
+        ]);
+        let describe_body = describe_response(&table_schema);
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("image", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![Some("s3://bucket/key")])),
+            ],
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table =
+            Table::new_with_handler("my_table", move |mut request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    let mut body_out = reqwest::Body::from(Vec::new());
+                    std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                    sender.send(body_out).unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {path}"),
+            });
+
+        table.add(input).execute().await.unwrap();
+
+        let body = collect_body(receiver.recv().unwrap()).await;
+        let mut reader =
+            arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(body), None).unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        let image = batch
+            .column_by_name("image")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("remote add should send the coerced blob struct");
+        let uri: &StringArray = image
+            .column_by_name("uri")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(uri.value(0), "s3://bucket/key");
+        assert!(image.column_by_name("data").unwrap().is_null(0));
     }
 
     #[rstest]
@@ -6803,8 +6897,7 @@ mod tests {
             r#"{
                 "function":{"name":"embed","version":"fv_01K3EXACT"},
                 "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
-                "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false},
-                "group_id":"fg_scalar"
+                "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false}
             }"#,
         )
         .unwrap();
@@ -6819,7 +6912,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_named_struct_function_expands_one_atomic_sibling_group() {
+    async fn test_add_fixed_size_list_function_column_declares_the_vector_type() {
+        let table = Table::new_with_handler("my_table", |request| {
+            match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":1,"schema":{"fields":[{"name":"description","nullable":true,"type":{"type":"string"}}]}}"#,
+                )
+                .unwrap(),
+            "/v1/table/my_table/add_columns/" => {
+                let actual: serde_json::Value = serde_json::from_slice(
+                    request.body().unwrap().as_bytes().unwrap(),
+                )
+                .unwrap();
+                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/first_class_functions/v1/remote_fixed_size_declaration_request.json"
+                ))
+                .unwrap();
+                assert_eq!(actual, expected);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":8}"#)
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
+        }
+        });
+        let application = crate::function::FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"embed","version":"fv_01K3EXACT"},
+                "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
+                "output":{"kind":"scalar","arrow_type":"fixed_size_list<float32, 3>","nullable":false}
+            }"#,
+        )
+        .unwrap();
+
+        let result = table
+            .add_columns()
+            .function_as("embedding", application)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 8);
+    }
+
+    #[tokio::test]
+    async fn test_add_named_struct_function_expands_one_atomic_binding() {
         let table = Table::new_with_handler("my_table", |request| match request.url().path() {
             "/v1/table/my_table/describe/" => http::Response::builder()
                 .status(200)
@@ -6834,7 +6973,7 @@ mod tests {
                 let actual: serde_json::Value =
                     serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
                 let expected: serde_json::Value = serde_json::from_str(include_str!(
-                    "../../tests/fixtures/first_class_functions/v1/remote_grouped_declaration_request.json"
+                    "../../tests/fixtures/first_class_functions/v1/remote_multi_output_declaration_request.json"
                 ))
                 .unwrap();
                 assert_eq!(actual, expected);
@@ -6856,7 +6995,6 @@ mod tests {
                     {"name":"normalized_text","arrow_type":"utf8","nullable":false},
                     {"name":"token_count","arrow_type":"int64","nullable":false}
                 ]},
-                "group_id":"fg_01K3TEXT",
                 "columns":{"normalized_text":"search_text"}
             }"#,
         )

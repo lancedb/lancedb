@@ -1,8 +1,6 @@
 {
   "binding_id": "fb_01K3TEXT",
-  "revision": 3,
   "function": {"name": "text_features", "version": "fv_01K3TEXT"},
-  "group_id": "fg_01K3TEXT",
   "inputs": [
     {"parameter": "title", "field_id": 11, "field_path": "title", "arrow_type": "utf8", "nullable": true},
     {"parameter": "body", "field_id": 12, "field_path": "body", "arrow_type": "utf8", "nullable": true}
@@ -23,5 +21,5 @@
       {"name": "search_token_count", "nullable": true, "type": {"type": "int64"}}
     ]
   },
-  "future_binding": {"metadata_revision": 1}
+  "future_binding": {"mode": "managed"}
 }

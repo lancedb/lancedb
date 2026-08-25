@@ -283,6 +283,7 @@ class Table:
         mode: Literal["append", "overwrite"],
         progress: Optional[Any] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]

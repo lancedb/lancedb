@@ -751,7 +751,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are not supported on this table type".into(),
         })
     }
-    /// Declare one immutable registered-Function output group.
+    /// Declare one immutable registered-Function binding.
     async fn add_function_columns(
         &self,
         _application: &crate::function::FunctionApplication,
@@ -3240,7 +3240,7 @@ impl BaseTable for NativeTable {
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        let lance_params = output
+        let mut lance_params = output
             .write_options
             .lance_write_params
             .unwrap_or(WriteParams {
@@ -3250,6 +3250,9 @@ impl BaseTable for NativeTable {
                 },
                 ..Default::default()
             });
+        if output.allow_external_blob_outside_bases {
+            lance_params.allow_external_blob_outside_bases = true;
+        }
 
         // Repartition for write parallelism if beneficial.
         let plan = if num_partitions > 1 {
