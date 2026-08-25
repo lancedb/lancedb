@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Canonical values exchanged with the Enterprise Function service.
+//! Canonical Function values exchanged with the Enterprise service, plus the
+//! backend-neutral terminal result of a computed-column refresh.
 //!
 //! This module contains client/wire values only. Catalog persistence,
 //! environment bake, secret resolution, and execution are owned by Sophon.
@@ -580,13 +581,22 @@ impl FunctionBinding {
 
 impl_json!(FunctionBinding);
 
-/// Stable terminal result of a remote Function-column refresh Job.
+/// Stable terminal result of an expression-backed or Function-backed column
+/// refresh [`crate::Job`].
+///
+/// Local refresh jobs produce this value in process. LanceDB Cloud and
+/// Enterprise decode the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
+    /// Rows assigned a value by this refresh.
     pub rows_assigned: u64,
+    /// Rows whose computation failed.
     pub rows_failed: u64,
+    /// Rows that still need a value when the job completes.
     pub rows_remaining: u64,
+    /// Exact table version the refresh read.
     pub source_version: u64,
+    /// Table version made visible by the refresh, when one was published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_version: Option<u64>,
 }

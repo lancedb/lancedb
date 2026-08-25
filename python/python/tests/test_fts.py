@@ -245,6 +245,14 @@ def test_create_inverted_index_rejects_invalid_block_size(table):
         table.create_index("text", config=FTS(block_size=129))
 
 
+def test_create_inverted_index_respects_build_memory_limit(table):
+    with pytest.raises(ValueError, match="exceeds worker memory limit"):
+        table.create_index(
+            "text",
+            config=FTS(memory_limit=0, num_workers=1),
+        )
+
+
 def test_custom_stop_words_list(table):
     table.create_index(
         "text",

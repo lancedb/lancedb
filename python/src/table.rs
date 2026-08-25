@@ -441,6 +441,41 @@ impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
     }
 }
 
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct RefreshMaterializedViewResult {
+    pub mode: String,
+    pub rows_written: u64,
+    pub source_version: u64,
+    pub version: u64,
+}
+
+#[pymethods]
+impl RefreshMaterializedViewResult {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "RefreshMaterializedViewResult(mode={}, rows_written={}, source_version={}, version={})",
+            self.mode, self.rows_written, self.source_version, self.version
+        )
+    }
+}
+
+impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
+    fn from(result: lancedb::RefreshMaterializedViewResult) -> Self {
+        let mode = match result.mode {
+            lancedb::RefreshMode::Rebuild => "rebuild",
+            lancedb::RefreshMode::Incremental => "incremental",
+            lancedb::RefreshMode::NoOp => "no_op",
+        };
+        Self {
+            mode: mode.to_string(),
+            rows_written: result.rows_written,
+            source_version: result.source_version,
+            version: result.version,
+        }
+    }
+}
+
 #[pymethods]
 impl AddColumnsResult {
     pub fn __repr__(&self) -> String {
@@ -1584,7 +1619,27 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner.refresh_column_async(column).await.infer_error()?;
-            Ok(crate::job::Job::new(job))
+            Ok(crate::job::Job::new_typed(job))
+        })
+    }
+
+    #[pyo3(signature = (full=false, source_version=None))]
+    pub fn refresh_materialized_view(
+        self_: PyRef<'_, Self>,
+        full: bool,
+        source_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            let mut builder = view.refresh().full(full);
+            if let Some(version) = source_version {
+                builder = builder.source_version(version);
+            }
+            let result = builder.execute().await.infer_error()?;
+            Ok(RefreshMaterializedViewResult::from(result))
         })
     }
 
@@ -1885,7 +1940,7 @@ impl Branches {
     }
 
     #[pyo3(signature = (from_branch, dry_run=false))]
-    pub fn merge(
+    pub fn cherry_pick(
         self_: PyRef<'_, Self>,
         from_branch: String,
         dry_run: bool,
@@ -1893,7 +1948,7 @@ impl Branches {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let result = inner
-                .merge_branch(&from_branch, dry_run)
+                .cherry_pick(&from_branch, dry_run)
                 .await
                 .infer_error()?;
             Python::attach(|py| struct_to_wire_py(py, &result))

@@ -1,19 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Canonical values exchanged with LanceDB Enterprise Function services.
+"""Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
 environment bake, secret resolution, and execution are owned by Sophon.
+``RefreshColumnResult`` is also the backend-neutral result of a local
+expression-backed refresh job.
 """
 
 from __future__ import annotations
 
 import ast
+import builtins
 import base64
 import functools
 import hashlib
+import importlib
 import inspect
+import symtable
 import json
 import math
 import re
@@ -460,7 +465,11 @@ class FunctionBinding(_RemoteValue):
 
 
 class RefreshColumnResult(_RemoteValue):
-    """Terminal result of a remote Function-column refresh Job."""
+    """Terminal result of an expression-backed or Function-backed refresh Job.
+
+    Local jobs produce this value in process. LanceDB Cloud and Enterprise
+    decode the same value from the durable server-job terminal payload.
+    """
 
     rows_assigned: _UInt64
     rows_failed: _UInt64
@@ -483,57 +492,56 @@ _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+_GRAMMAR_PRIMITIVES = (
+    (pa.bool_(), "bool"),
+    (pa.int8(), "int8"),
+    (pa.int16(), "int16"),
+    (pa.int32(), "int32"),
+    (pa.int64(), "int64"),
+    (pa.uint8(), "uint8"),
+    (pa.uint16(), "uint16"),
+    (pa.uint32(), "uint32"),
+    (pa.uint64(), "uint64"),
+    (pa.float16(), "float16"),
+    (pa.float32(), "float32"),
+    (pa.float64(), "float64"),
+    (pa.string(), "utf8"),
+    (pa.binary(), "binary"),
+    (pa.date32(), "date32"),
+    (pa.date64(), "date64"),
+)
+
+
 def _canonical_arrow_type(data_type: pa.DataType) -> str:
-    primitive_types = (
-        (pa.bool_(), "bool"),
-        (pa.int8(), "int8"),
-        (pa.int16(), "int16"),
-        (pa.int32(), "int32"),
-        (pa.int64(), "int64"),
-        (pa.uint8(), "uint8"),
-        (pa.uint16(), "uint16"),
-        (pa.uint32(), "uint32"),
-        (pa.uint64(), "uint64"),
-        (pa.float16(), "float16"),
-        (pa.float32(), "float32"),
-        (pa.float64(), "float64"),
-        (pa.string(), "utf8"),
-        (pa.large_utf8(), "large_utf8"),
-        (pa.binary(), "binary"),
-        (pa.large_binary(), "large_binary"),
-        (pa.date32(), "date32"),
-        (pa.date64(), "date64"),
-    )
-    for candidate, name in primitive_types:
+    """The server's V1 Function type grammar. Anything outside it is rejected
+    here rather than at registration."""
+    for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
             return name
-    if pa.types.is_fixed_size_binary(data_type):
-        return f"fixed_size_binary[{data_type.byte_width}]"
-    if pa.types.is_list(data_type):
-        return f"list<{_canonical_arrow_type(data_type.value_type)}>"
-    if pa.types.is_large_list(data_type):
-        return f"large_list<{_canonical_arrow_type(data_type.value_type)}>"
-    if pa.types.is_fixed_size_list(data_type):
+    if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
+        prefix = "list" if pa.types.is_list(data_type) else "large_list"
+        return f"{prefix}<{_canonical_list_item(data_type)}>"
+    if pa.types.is_fixed_size_list(data_type) and data_type.list_size > 0:
         return (
-            f"fixed_size_list<{_canonical_arrow_type(data_type.value_type)}>"
-            f"[{data_type.list_size}]"
+            f"fixed_size_list<{_canonical_list_item(data_type)}, {data_type.list_size}>"
         )
-    if pa.types.is_struct(data_type):
-        fields = ",".join(
-            f"{field.name}:{_canonical_arrow_type(field.type)}" for field in data_type
-        )
-        return f"struct<{fields}>"
-    if pa.types.is_timestamp(data_type):
-        timezone = f",tz={data_type.tz}" if data_type.tz is not None else ""
-        return f"timestamp[{data_type.unit}{timezone}]"
-    if pa.types.is_time32(data_type) or pa.types.is_time64(data_type):
-        return f"time[{data_type.unit}]"
-    if pa.types.is_duration(data_type):
-        return f"duration[{data_type.unit}]"
-    if pa.types.is_decimal(data_type):
-        bit_width = data_type.bit_width
-        return f"decimal{bit_width}({data_type.precision},{data_type.scale})"
     raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
+
+
+def _canonical_list_item(data_type: pa.DataType) -> str:
+    """The grammar names only the item type; it always means a non-nullable
+    child called `item`, so any other child metadata cannot be represented."""
+    child = data_type.value_field
+    if child.name != "item" or child.nullable or child.metadata:
+        raise TypeError(
+            "unsupported Arrow type for Function signature: list items must be a "
+            f"non-nullable field named 'item', got {child}"
+        )
+    return _canonical_arrow_type(child.type)
+
+
+def _list_of(item: pa.DataType) -> pa.DataType:
+    return pa.list_(pa.field("item", item, nullable=False))
 
 
 def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
@@ -583,7 +591,7 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
         value_type, value_nullable = _annotation_type(arguments[0])
         if value_nullable:
             raise TypeError("nullable Function list elements are not supported")
-        return pa.list_(value_type), nullable
+        return _list_of(value_type), nullable
     raise TypeError(f"unsupported Function annotation: {annotation!r}")
 
 
@@ -730,6 +738,104 @@ def _literal_source(value: Any) -> str:
     )
 
 
+_DYNAMIC_NAMESPACE_ACCESS = frozenset(
+    {"globals", "locals", "vars", "eval", "exec", "compile", "__import__"}
+)
+# Modules that hand out namespaces (`sys.modules`, `builtins`, importers,
+# introspection). The artifact's module namespace holds only the names it was
+# packaged with, so reaching around it cannot be represented.
+_NAMESPACE_MODULES = frozenset(
+    {"sys", "builtins", "importlib", "inspect", "gc", "ctypes", "types"}
+)
+
+
+def _namespace_acquisition(
+    definition: ast.FunctionDef, references: set[str]
+) -> list[str]:
+    found = set(references & _DYNAMIC_NAMESPACE_ACCESS)
+    for node in ast.walk(definition):
+        if isinstance(node, ast.Import):
+            found.update(
+                alias.name
+                for alias in node.names
+                if alias.name.split(".")[0] in _NAMESPACE_MODULES
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.split(".")[0] in _NAMESPACE_MODULES:
+                found.add(node.module)
+    return sorted(found)
+
+
+def _module_references(module_source: str) -> set[str]:
+    """Names any scope in `module_source` binds or loads at module scope.
+    Python's own scope analysis on the exact text that ships: free variables
+    belong to an enclosing scope inside the function, and postponed
+    annotations are not runtime loads."""
+
+    def visit(table: symtable.SymbolTable, found: set[str]) -> None:
+        for symbol in table.get_symbols():
+            if symbol.is_global() and (
+                symbol.is_referenced() or symbol.is_declared_global()
+            ):
+                found.add(symbol.get_name())
+        for child in table.get_children():
+            visit(child, found)
+
+    found: set[str] = set()
+    for table in symtable.symtable(module_source, "<udf>", "exec").get_children():
+        visit(table, found)
+    return found
+
+
+def _global_source(name: str, value: Any) -> str:
+    """One module-level line that rebinds `name` to `value` in the artifact:
+    an import for modules and importable classes/functions, a literal otherwise."""
+    if isinstance(value, types.ModuleType):
+        if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
+            raise ValueError(
+                f"@udf cannot package dynamic namespace access: {value.__name__!r}"
+            )
+        try:
+            imported = importlib.import_module(value.__name__)
+        except ImportError:
+            imported = None
+        if imported is not value:
+            raise TypeError(
+                f"Function source references module {name!r} that does not import "
+                f"as {value.__name__!r}"
+            )
+        return f"import {value.__name__} as {name}"
+    module_name = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    if (
+        isinstance(module_name, str)
+        and isinstance(qualname, str)
+        and module_name != "__main__"
+        and "." not in qualname
+        and "<" not in qualname
+    ):
+        try:
+            imported = getattr(importlib.import_module(module_name), qualname)
+        except (ImportError, AttributeError):
+            imported = None
+        if imported is value:
+            return f"from {module_name} import {qualname} as {name}"
+    return f"{name} = {_literal_source(value)}"
+
+
+def _is_recursive_reference(function: Callable[..., Any], name: str) -> bool:
+    """`name` inside the body means the function itself unless the module has
+    since bound it to something else."""
+    if name != function.__name__:
+        return False
+    bound = function.__globals__.get(name, function)
+    if bound is function:
+        return True
+    # The decorator's own result is the one wrapper known to call `function`
+    # unchanged; any other binding may behave differently from a self-call.
+    return type(bound) is UdfDefinition and bound._function is function
+
+
 def _package_source(function: Callable[..., Any]) -> bytes:
     if not inspect.isfunction(function) or inspect.iscoroutinefunction(function):
         raise TypeError("@udf requires a synchronous Python function")
@@ -754,23 +860,46 @@ def _package_source(function: Callable[..., Any]) -> bytes:
     closure = inspect.getclosurevars(function)
     if closure.nonlocals:
         raise ValueError("@udf cannot package functions that capture closure values")
-    if closure.unbound:
-        raise ValueError(
-            f"@udf source contains unresolved global names: {sorted(closure.unbound)!r}"
-        )
-    globals_source = []
-    for name, value in sorted(closure.globals.items()):
-        if isinstance(value, types.ModuleType):
-            globals_source.append(f"import {value.__name__} as {name}")
-        else:
-            globals_source.append(f"{name} = {_literal_source(value)}")
-
     function_source = ast.unparse(definition)
-    parts = ["from __future__ import annotations"]
+    module_header = "from __future__ import annotations"
+    references = _module_references(f"{module_header}\n\n{function_source}\n")
+    dynamic = _namespace_acquisition(definition, references)
+    if dynamic:
+        raise ValueError(f"@udf cannot package dynamic namespace access: {dynamic!r}")
+    # Resolve every module-scope reference the way the interpreter would: the
+    # function's own globals first (a module global may shadow a builtin, and
+    # nested scopes are not visible to getclosurevars), then its builtins.
+    # The artifact runs under the standard builtins; only the exact mapping is
+    # provably equivalent (a subclass or copy can change lookups and hooks).
+    if function.__builtins__ is not vars(builtins):
+        raise ValueError("@udf cannot package a non-standard builtins environment")
+    globals_source = []
+    unresolved = []
+    for name in sorted(references):
+        if name == function.__name__:
+            if not _is_recursive_reference(function, name):
+                raise ValueError(
+                    f"@udf cannot package {name!r}: the module binds that name to "
+                    "another value, which the artifact's own definition would shadow"
+                )
+            continue
+        if name in function.__globals__:
+            globals_source.append(_global_source(name, function.__globals__[name]))
+        elif hasattr(builtins, name):
+            pass
+        else:
+            unresolved.append(name)
+    if unresolved:
+        raise ValueError(
+            f"@udf source contains unresolved global names: {unresolved!r}"
+        )
+
+    parts = [module_header]
     if globals_source:
         parts.extend(["", *globals_source])
     parts.extend(["", function_source, ""])
-    return "\n".join(parts).encode("utf-8")
+    packaged = "\n".join(parts)
+    return packaged.encode("utf-8")
 
 
 class UdfDefinition:
@@ -916,6 +1045,13 @@ def udf(
         accepted by this API or included in the registration request.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
+
+    The packaged artifact is a snapshot: the function source plus exactly
+    the module-level names it references (modules as imports, importable
+    classes and functions as imports, literals inline). Code that reaches the
+    module namespace another way -- ``globals()``/``eval``, ``sys.modules``,
+    ``builtins`` -- is rejected where it can be seen and otherwise
+    unsupported; closures and a non-standard ``__builtins__`` are rejected.
 
     Returns
     -------

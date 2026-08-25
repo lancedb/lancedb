@@ -974,17 +974,15 @@ impl Database for ListingDatabase {
             f.drain(0..index);
         }
 
-        // Determine if there's a next page
-        let next_page_token = if let Some(limit) = request.limit {
-            if f.len() > limit as usize {
-                let token = f[limit as usize].clone();
+        // Determine if there's a next page. The token is the last name of this page,
+        // not the first of the next one: the next page resumes strictly after the
+        // token, so naming the next page's first entry would skip it.
+        let next_page_token = match request.limit {
+            Some(limit) if f.len() > limit as usize => {
                 f.truncate(limit as usize);
-                Some(token)
-            } else {
-                None
+                f.last().cloned()
             }
-        } else {
-            None
+            _ => None,
         };
 
         Ok(ListTablesResponse {
@@ -2745,6 +2743,21 @@ mod tests {
                 "az://container/prefix/test.lance"
             );
         }
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/2283.
+    ///
+    /// Object-store URIs must use `/` on every platform. In particular, joining
+    /// with `std::path::Path` used to insert a `\\` into Azure blob keys on
+    /// Windows.
+    #[tokio::test]
+    async fn test_table_uri_uses_forward_slashes_for_azure() {
+        let (_tempdir, mut db) = setup_database().await;
+        db.uri = "az://test/db/test".to_string();
+
+        let uri = db.table_uri("test").unwrap();
+
+        assert_eq!(uri, "az://test/db/test/test.lance");
     }
 
     /// Regression: connecting via a URL-style URI (which goes through
