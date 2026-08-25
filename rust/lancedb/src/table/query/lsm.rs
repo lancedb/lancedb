@@ -383,7 +383,6 @@ fn base_scanner(
     snapshots: Vec<ShardSnapshot>,
     in_memory: HashMap<Uuid, InMemoryMemTables>,
 ) -> Result<LsmScanner> {
-    let schema = ArrowSchema::from(dataset.schema());
     let mut scanner = LsmScanner::new(Arc::new(dataset.clone()), snapshots, pk_columns);
     for (shard_id, memtables) in in_memory {
         scanner = scanner.with_in_memory_memtables(shard_id, memtables);
@@ -398,6 +397,7 @@ fn base_scanner(
                 // Parse here instead of inside `LsmScanner::filter` so the typed
                 // DataFusion `FieldNotFound` error is still available for the
                 // same nested-field enrichment used by the ordinary scanner.
+                let schema = ArrowSchema::from(dataset.schema());
                 let df_schema = schema.clone().to_dfschema().map_err(|error| {
                     enrich_filter_error(error, &schema, "Failed to create DFSchema")
                 })?;
