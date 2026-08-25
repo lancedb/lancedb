@@ -66,8 +66,8 @@ use self::merge::MergeInsertBuilder;
 
 pub mod add_columns;
 mod add_data;
-pub mod branch_merge;
 pub mod checkpoint;
+pub mod cherry_pick;
 pub mod computed_columns;
 mod create_index;
 pub mod datafusion;
@@ -87,9 +87,9 @@ pub use add_columns::AddColumnsBuilder;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
-pub use branch_merge::{
-    BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
-    MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
+pub use cherry_pick::{
+    BranchDiff, CherryPickError, CherryPickErrorCode, CherryPickPreview, CherryPickResult,
+    CherryPickStatus, ColumnChange, ColumnSummary, IndexSummary, RowCountSummary,
 };
 pub use chrono::Duration;
 pub use computed_columns::{
@@ -643,15 +643,6 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "set_lsm_write_spec is not supported on this table type".into(),
         })
     }
-    /// Switch this table to required index catch-up, one way.
-    ///
-    /// The default implementation returns `NotSupported`. Implementations
-    /// that support the MemWAL LSM write path must override this.
-    async fn require_mem_wal_index_catchup(&self) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "require_mem_wal_index_catchup is not supported on this table type".into(),
-        })
-    }
     /// Remove the [`LsmWriteSpec`] from this table.
     ///
     /// This is a no-op if no spec is currently set.
@@ -760,6 +751,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are not supported on this table type".into(),
         })
     }
+    /// Declare one immutable registered-Function binding.
+    async fn add_function_columns(
+        &self,
+        _application: &crate::function::FunctionApplication,
+        _output_name: Option<&str>,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
+        })
+    }
     /// Fill a computed column's unfilled rows.
     ///
     /// The default returns `NotSupported`; Lance-backed tables override it.
@@ -770,7 +771,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
     /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
     /// the operation.
-    async fn refresh_column_async(&self, _column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        _column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         Err(Error::NotSupported {
             message: "computed columns are supported only on local tables".into(),
         })
@@ -788,6 +792,21 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Return an independent handle pinned to the version currently selected.
+    ///
+    /// Backends that can advance between requests should override this for
+    /// multi-request operations that need snapshot consistency. Backends whose
+    /// existing handles already provide the desired behavior return `None`.
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        Ok(None)
+    }
+    /// Whether repeated identical scans return rows in the same order.
+    ///
+    /// Callers that assign meaning to a row's position must order the results
+    /// themselves when this is false.  Defaults to false so a table type opts in.
+    fn scan_order_is_deterministic(&self) -> bool {
+        false
+    }
     /// Restore the table to the currently checked out version.
     async fn restore(&self) -> Result<()>;
     /// List the versions of the table.
@@ -824,14 +843,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Diff a branch against main. Remote only.
     async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
         Err(Error::NotSupported {
-            message: "diff_branch is only supported on remote tables".into(),
+            message: "Branch diffs are only supported on Enterprise tables.".into(),
         })
     }
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    async fn merge_branch(&self, _from_branch: &str, _dry_run: bool) -> Result<MergeBranchResult> {
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
         Err(Error::NotSupported {
-            message: "merge_branch is only supported on remote tables".into(),
+            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
         })
     }
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -1056,6 +1075,11 @@ impl Table {
 
     pub fn database(&self) -> &Arc<dyn Database> {
         self.database.as_ref().unwrap()
+    }
+
+    /// The database this handle was opened through, when it was.
+    pub fn database_opt(&self) -> Option<&Arc<dyn Database>> {
+        self.database.as_ref()
     }
 
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
@@ -1695,7 +1719,9 @@ impl Table {
     /// operation instead of blocking until it completes.
     ///
     /// The job may already be complete when returned, and callers must not
-    /// assume the column is filled until [`Job::wait`] returns. Invalid input
+    /// assume the column is filled until [`Job::wait`] returns. A successful
+    /// wait returns the durable [`crate::function::RefreshColumnResult`] for
+    /// both expression-backed and Function-backed columns. Invalid input
     /// -- an unknown column, or one that is not computed -- is reported by
     /// this call rather than by the job. On local tables the job runs as an
     /// in-process task; on LanceDB Cloud and Enterprise it is the server's
@@ -1706,11 +1732,15 @@ impl Table {
     /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// let job = table.refresh_column_async("doubled").await?;
     /// println!("refresh running: {:?}", job.status().await?);
-    /// job.wait().await?;
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn refresh_column_async(&self, column: impl AsRef<str>) -> Result<Job> {
+    pub async fn refresh_column_async(
+        &self,
+        column: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
     }
 
@@ -1781,20 +1811,6 @@ impl Table {
     /// ```
     pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
         self.inner.set_lsm_write_spec(spec).await
-    }
-
-    /// Switch this table to required index catch-up, one way.
-    ///
-    /// Separate from [`Self::set_lsm_write_spec`] on purpose: a table carrying
-    /// the bit retains its SSTables until an index records that it holds the
-    /// compacted rows, so turn it on only once something can repair coverage.
-    /// A writer that already holds the dataset can call the equivalent on
-    /// `DatasetMemWalExt` instead; this is the table-level entry point.
-    ///
-    /// Errors if no spec is set, or if the table already records SSTable
-    /// compaction progress from before this protocol.
-    pub async fn require_mem_wal_index_catchup(&self) -> Result<()> {
-        self.inner.require_mem_wal_index_catchup().await
     }
 
     /// Remove the [`LsmWriteSpec`] from this table, reverting to the standard
@@ -2264,14 +2280,10 @@ impl Table {
         self.inner.diff_branch(from_branch).await
     }
 
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    pub async fn merge_branch(
-        &self,
-        from_branch: &str,
-        dry_run: bool,
-    ) -> Result<MergeBranchResult> {
-        self.inner.merge_branch(from_branch, dry_run).await
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    pub async fn cherry_pick(&self, from_branch: &str, dry_run: bool) -> Result<CherryPickResult> {
+        self.inner.cherry_pick(from_branch, dry_run).await
     }
 
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -3009,6 +3021,12 @@ impl BaseTable for NativeTable {
         self
     }
 
+    /// Lance scans fragments in order (`Scanner::ordered` defaults to true, and we
+    /// never clear it), so repeated identical scans agree.
+    fn scan_order_is_deterministic(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         self.name.as_str()
     }
@@ -3158,6 +3176,7 @@ impl BaseTable for NativeTable {
         let ds = self.dataset.get().await?;
 
         let table_schema = Schema::from(&ds.schema().clone());
+        computed_columns::ensure_supported_function_metadata(&table_schema)?;
         computed_columns::ensure_not_written(
             &table_schema,
             add.data.schema().fields().iter().map(|f| f.name().as_str()),
@@ -3343,10 +3362,6 @@ impl BaseTable for NativeTable {
         merge::lsm::set_lsm_write_spec(self, spec).await
     }
 
-    async fn require_mem_wal_index_catchup(&self) -> Result<()> {
-        merge::lsm::require_mem_wal_index_catchup(self).await
-    }
-
     async fn unset_lsm_write_spec(&self) -> Result<()> {
         merge::lsm::unset_lsm_write_spec(self).await
     }
@@ -3427,7 +3442,10 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
-    async fn refresh_column_async(&self, column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         refresh::execute_refresh_column_async(self, column).await
     }
 

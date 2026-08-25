@@ -24,8 +24,9 @@ use crate::database::{
     JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
+use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
-use crate::remote::job::RemoteJob;
+use crate::remote::job::{DescribeJobResponse, RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
@@ -343,6 +344,62 @@ impl<S: HttpSend> RemoteDatabase<S> {
         self.table_cache.remove(&cache_key).await;
         Ok((request_id, resp))
     }
+
+    /// Collect the tables of a namespace in name order, for `table_names`.
+    ///
+    /// `table_names` promises name order and resumes after a table name, but the namespace
+    /// route's `page_token` is opaque -- it belongs to the store the listing walks, and a
+    /// token this client invented would resume from the wrong place. So the whole namespace is
+    /// walked by handing each response's token straight back, and the name semantics are
+    /// applied here. Constructing no token is what makes this work against a server on either
+    /// side of the change: it only ever repeats what the server said.
+    ///
+    /// This is the cost `table_names` already paid -- the server used to enumerate and sort the
+    /// namespace on every request -- and it is why `list_tables` replaces it.
+    async fn table_names_in_namespace(
+        &self,
+        request: &TableNamesRequest,
+    ) -> Result<(Vec<String>, ServerVersion)> {
+        let namespace_id =
+            build_namespace_identifier(&request.namespace_path, &self.client.id_delimiter);
+        let path = format!("/v1/namespace/{}/table/list", namespace_id);
+
+        let mut names = Vec::new();
+        // Every page reports the same server, so keep the first page's version.
+        let mut version: Option<ServerVersion> = None;
+        let mut page_token: Option<String> = None;
+        loop {
+            let mut req = self.client.get(&path);
+            if let Some(ref token) = page_token {
+                req = req.query(&[("page_token", token)]);
+            }
+            let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+            let rsp = self.client.check_response(&request_id, rsp).await?;
+            if version.is_none() {
+                version = Some(parse_server_version(&request_id, &rsp)?);
+            }
+            let response: ListTablesResponse = rsp.json().await.err_to_http(request_id)?;
+            names.extend(response.tables);
+            // An empty token is the end of the listing, not a token to send back: a server
+            // that reads an empty token as "start from the beginning" would hand back the
+            // first page again.
+            match response.page_token.filter(|token| !token.is_empty()) {
+                // A server that repeated a token would never finish; treat that as the end
+                // rather than looping on it.
+                Some(token) if Some(&token) != page_token.as_ref() => page_token = Some(token),
+                _ => break,
+            }
+        }
+
+        names.sort();
+        if let Some(ref start_after) = request.start_after {
+            names.retain(|name| name > start_after);
+        }
+        if let Some(limit) = request.limit {
+            names.truncate(limit as usize);
+        }
+        Ok((names, version.unwrap_or_default()))
+    }
 }
 
 #[cfg(all(test, feature = "remote"))]
@@ -472,48 +529,6 @@ struct RemoteListJobsResponse {
     page_token: Option<String>,
 }
 
-/// The server's account of why a job failed. Absent from older servers,
-/// which report only the terminal state.
-#[derive(serde::Deserialize)]
-struct RemoteReportedFailure {
-    #[serde(default)]
-    phase: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    retryable: Option<bool>,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteDescribeJobResponse {
-    job_id: String,
-    #[serde(default)]
-    job_type: String,
-    job_state: String,
-    #[serde(default)]
-    creation_ms: i64,
-    #[serde(default)]
-    spec: serde_json::Value,
-    #[serde(default)]
-    failure: Option<RemoteReportedFailure>,
-}
-
-/// Server job states -> the client vocabulary ("running" / "finished" /
-/// "failed" / "cancelled"). Covers both the describe enum (IN_PROGRESS /
-/// DONE / FAILED / CANCELLED) and the registry's lowercase list-row states
-/// (in_progress / succeeded / failed / canceled / timed_out). States this
-/// client version does not know (e.g. created, queued) pass through as-is.
-fn job_state_to_client(state: &str) -> String {
-    match state {
-        "IN_PROGRESS" | "in_progress" => "running",
-        "DONE" | "done" | "succeeded" => "finished",
-        "FAILED" | "failed" | "TIMED_OUT" | "timed_out" => "failed",
-        "CANCELLED" | "cancelled" | "canceled" => "cancelled",
-        other => other,
-    }
-    .to_string()
-}
-
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -529,6 +544,39 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             message: "Getting the read consistency of a remote database is not yet supported"
                 .to_string(),
         })
+    }
+
+    async fn create_function_async(
+        &self,
+        request: FunctionRegistrationRequest,
+    ) -> Result<Job<FunctionVersion>> {
+        let req = self.client.post("/v1/functions/create").json(&request);
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+            source: "Function registration response did not contain a valid job_id".into(),
+            request_id,
+            status_code: Some(status),
+        })?;
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
+    async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
+        let req = self
+            .client
+            .post("/v1/functions/describe")
+            .json(&serde_json::json!({
+                "name": name,
+                "version": version,
+            }));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
     }
 
     fn job(&self, job_id: &str) -> Result<crate::job::Job> {
@@ -586,19 +634,14 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let body: RemoteDescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        let body: DescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
         Ok(Some(JobDescription {
             job_id: body.job_id,
             job_type: body.job_type,
             state: job_state_to_client(&body.job_state),
             creation_ms: body.creation_ms,
             spec: body.spec,
-            failure: body.failure.map(|reported| crate::error::JobFailure {
-                phase: reported.phase,
-                message: reported.message,
-                retryable: reported.retryable,
-                source: None,
-            }),
+            failure: body.failure.map(|reported| reported.into_job_failure()),
         }))
     }
 
@@ -634,29 +677,29 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
-        let mut req = if !request.namespace_path.is_empty() {
-            let namespace_id =
-                build_namespace_identifier(&request.namespace_path, &self.client.id_delimiter);
-            self.client
-                .get(&format!("/v1/namespace/{}/table/list", namespace_id))
+        let (tables, version) = if request.namespace_path.is_empty() {
+            // The flat route resumes after a table name and orders by name, which is exactly
+            // what `start_after` means, so the server does the paging.
+            let mut req = self.client.get("/v1/table/");
+            if let Some(limit) = request.limit {
+                req = req.query(&[("limit", limit)]);
+            }
+            if let Some(ref start_after) = request.start_after {
+                req = req.query(&[("page_token", start_after)]);
+            }
+            let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+            let rsp = self.client.check_response(&request_id, rsp).await?;
+            let version = parse_server_version(&request_id, &rsp)?;
+            let tables = rsp
+                .json::<ListTablesResponse>()
+                .await
+                .err_to_http(request_id)?
+                .tables;
+            (tables, version)
         } else {
-            self.client.get("/v1/table/")
+            self.table_names_in_namespace(&request).await?
         };
 
-        if let Some(limit) = request.limit {
-            req = req.query(&[("limit", limit)]);
-        }
-        if let Some(start_after) = request.start_after {
-            req = req.query(&[("page_token", start_after)]);
-        }
-        let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
-        let rsp = self.client.check_response(&request_id, rsp).await?;
-        let version = parse_server_version(&request_id, &rsp)?;
-        let tables = rsp
-            .json::<ListTablesResponse>()
-            .await
-            .err_to_http(request_id)?
-            .tables;
         for table in &tables {
             let table_identifier =
                 build_table_identifier(table, &request.namespace_path, &self.client.id_delimiter);
@@ -1238,6 +1281,101 @@ mod tests {
         });
         let names = conn.table_names().execute().await.unwrap();
         assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_in_a_namespace_never_invents_a_page_token() {
+        // The namespace route's token belongs to the store, so `table_names` cannot build one
+        // from `start_after`. It walks the namespace on the server's own tokens and applies the
+        // name semantics itself, which is what keeps it working either side of the change.
+        let page = Arc::new(AtomicUsize::new(0));
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/namespace/ns/table/list");
+            let query = request.url().query().unwrap_or("");
+            assert!(
+                !query.contains("page_token=users"),
+                "a table name must never be sent as a page token: {query}"
+            );
+            match page.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(
+                        !query.contains("page_token"),
+                        "the walk starts with no token"
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"tables": ["users", "orders"], "page_token": "opaque-1"}"#)
+                        .unwrap()
+                }
+                _ => {
+                    assert!(query.contains("page_token=opaque-1"));
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"tables": ["widgets"]}"#)
+                        .unwrap()
+                }
+            }
+        });
+
+        let names = conn
+            .table_names()
+            .namespace(vec!["ns".to_string()])
+            .start_after("users")
+            .execute()
+            .await
+            .unwrap();
+        // Name order, resumed after "users": "orders" sorts before it and is dropped.
+        assert_eq!(names, vec!["widgets"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_in_a_namespace_stops_on_a_repeated_token() {
+        // A server that handed back the token it was given would never finish the walk.
+        let conn = Connection::new_with_handler(|_request| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["a"], "page_token": "same"}"#)
+                .unwrap()
+        });
+
+        let names = conn
+            .table_names()
+            .namespace(vec!["ns".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        // The guard bounds the walk instead of letting it run forever. The repeat is the
+        // server breaking the token contract and is not papered over here.
+        assert_eq!(names, vec!["a", "a"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_in_a_namespace_stops_on_an_empty_token() {
+        // An empty token ends the listing. Sending it back would ask a server that reads it
+        // as "start from the beginning" for the first page a second time, and every name on
+        // that page would be collected twice.
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                !request.url().query().unwrap_or("").contains("page_token"),
+                "an empty token must never be sent back"
+            );
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["a"], "page_token": ""}"#)
+                .unwrap()
+        });
+
+        let names = conn
+            .table_names()
+            .namespace(vec!["ns".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["a"]);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -2494,6 +2632,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_function_async_sends_canonical_request_and_decodes_typed_job() {
+        const REQUEST: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+        );
+        const FUNCTION_JOB: &str =
+            include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
+        let expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/functions/create" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body, expected);
+                http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id":"job-function-1"}"#)
+                    .unwrap()
+            }
+            "/v1/jobs/describe" => http::Response::builder()
+                .status(200)
+                .body(FUNCTION_JOB)
+                .unwrap(),
+            path => panic!("unexpected path: {path}"),
+        });
+        let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        let job = conn.create_function_async(request).await.unwrap();
+        assert_eq!(job.id(), Some("job-function-1"));
+        let version = job.wait().await.unwrap();
+        assert_eq!(version.name(), "embed");
+        assert_eq!(version.version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_get_function_requires_and_sends_exact_version() {
+        const VERSION: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/functions/describe");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
+            );
+            http::Response::builder().status(200).body(VERSION).unwrap()
+        });
+        let version = conn.get_function("embed", "fv_01K3EXACT").await.unwrap();
+        assert_eq!(version.name(), "embed");
+        assert_eq!(version.version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
     async fn test_conn_job_waits_to_done() {
         let polls = Arc::new(AtomicUsize::new(0));
         let polls_ref = polls.clone();
@@ -2507,7 +2699,7 @@ mod tests {
             http::Response::builder()
                 .status(200)
                 .body(format!(
-                    r#"{{"job_id": "job-1", "job_type": "create_index", "job_state": "{}", "creation_ms": 1}}"#,
+                    r#"{{"job_id": "job-1", "job_type": "create_function", "job_state": "{}", "creation_ms": 1, "result": {{"name": "embed", "version": "fv_1"}}}}"#,
                     state
                 ))
                 .unwrap()

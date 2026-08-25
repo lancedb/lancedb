@@ -213,6 +213,39 @@ version of the table.
 
 ***
 
+### checkpointLsm()
+
+```ts
+abstract checkpointLsm(): Promise<void>
+```
+
+Converge this table's LSM write path into its base table.
+
+Seals once, then triggers compaction and polls until the L0 that existed
+at the start is gone. The target set is fixed at the start, so
+generations created *during* the checkpoint are ignored — that is what
+lets it terminate under write load, and what makes it best-effort: it
+converges the fresh tier as of some instant. Idempotent, abandonable at
+any point, and safe to run on a cadence.
+
+There is no liveness bound — the compactor pool is shared across tables,
+so a checkpoint queued behind unrelated work looks exactly like one that
+is merging. The caller owns the deadline.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Example
+
+```ts
+const before = await table.getLsmStats();
+await table.checkpointLsm();
+const after = await table.getLsmStats();
+```
+
+***
+
 ### close()
 
 ```ts
@@ -243,6 +276,24 @@ When an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) is installed, `mergeInsert
 shard writers and caches them for reuse across calls. This closes them,
 flushing pending data; writers reopen lazily on the next `mergeInsert`.
 It is a no-op when no writers are cached.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### compactLsm()
+
+```ts
+abstract compactLsm(): Promise<void>
+```
+
+Trigger a background L0 → base compaction pass per bucket.
+
+Returns once the passes are *dispatched*, not once they finish — watch
+[Table#getLsmStats](Table.md#getlsmstats) for progress, or use
+[Table#checkpointLsm](Table.md#checkpointlsm) to wait for convergence.
 
 #### Returns
 
@@ -445,6 +496,48 @@ Drop an index from the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### flushLsm()
+
+```ts
+abstract flushLsm(): Promise<void>
+```
+
+Seal every bucket's active memtable into a new L0 generation.
+
+Returns once the seal is committed. Sealing an empty memtable is a no-op,
+so this is safe to call repeatedly.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### getLsmStats()
+
+```ts
+abstract getLsmStats(includeGenerationRows?): Promise<undefined | LsmStats>
+```
+
+Read live per-bucket LSM state.
+
+Answers "how far behind is my fresh tier", "which bucket is hot", and
+"why is my fresh-tier vector search brute-force". Mutates no table state.
+
+Resolves to `undefined` only when the LSM write path is not enabled.
+
+#### Parameters
+
+* **includeGenerationRows?**: `boolean`
+    Also count rows per L0 generation.
+    Off by default because each count opens an uncached Lance dataset.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`LsmStats`](../interfaces/LsmStats.md)&gt;
 
 ***
 

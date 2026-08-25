@@ -31,9 +31,11 @@ import {
   IndexConfig,
   IndexStatistics,
   Job,
+  LsmStats,
   Branches as NativeBranches,
   OptimizeStats,
   RefreshColumnResult,
+  RefreshMaterializedViewResult,
   TableStatistics,
   Tags,
   UpdateFieldMetadataResult,
@@ -50,6 +52,12 @@ import {
 import { sanitizeType } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
+export {
+  BucketStats,
+  GenerationStats,
+  LsmStats,
+  MemtableStats,
+} from "./native";
 
 /**
  * Progress snapshot for a write operation, delivered to the `progress`
@@ -596,6 +604,18 @@ export abstract class Table {
   abstract refreshColumnAsync(column: string): Promise<Job>;
 
   /**
+   * Recompute this table's contents from its materialized-view definition.
+   *
+   * Plumbing for {@link MaterializedView.refresh}, which is the way to call
+   * it: rejects tables that carry no view definition. Local tables only.
+   * @ignore
+   */
+  abstract refreshMaterializedView(
+    full?: boolean,
+    sourceVersion?: number,
+  ): Promise<RefreshMaterializedViewResult>;
+
+  /**
    * Alter the name or nullability of columns.
    * @param {ColumnAlteration[]} columnAlterations One or more alterations to
    * apply to columns.
@@ -706,6 +726,59 @@ export abstract class Table {
    * @returns {Promise<void>}
    */
   abstract closeLsmWriters(): Promise<void>;
+  /**
+   * Seal every bucket's active memtable into a new L0 generation.
+   *
+   * Returns once the seal is committed. Sealing an empty memtable is a no-op,
+   * so this is safe to call repeatedly.
+   * @returns {Promise<void>}
+   */
+  abstract flushLsm(): Promise<void>;
+  /**
+   * Trigger a background L0 → base compaction pass per bucket.
+   *
+   * Returns once the passes are *dispatched*, not once they finish — watch
+   * {@link Table#getLsmStats} for progress, or use
+   * {@link Table#checkpointLsm} to wait for convergence.
+   * @returns {Promise<void>}
+   */
+  abstract compactLsm(): Promise<void>;
+  /**
+   * Converge this table's LSM write path into its base table.
+   *
+   * Seals once, then triggers compaction and polls until the L0 that existed
+   * at the start is gone. The target set is fixed at the start, so
+   * generations created *during* the checkpoint are ignored — that is what
+   * lets it terminate under write load, and what makes it best-effort: it
+   * converges the fresh tier as of some instant. Idempotent, abandonable at
+   * any point, and safe to run on a cadence.
+   *
+   * There is no liveness bound — the compactor pool is shared across tables,
+   * so a checkpoint queued behind unrelated work looks exactly like one that
+   * is merging. The caller owns the deadline.
+   * @returns {Promise<void>}
+   * @example
+   * ```ts
+   * const before = await table.getLsmStats();
+   * await table.checkpointLsm();
+   * const after = await table.getLsmStats();
+   * ```
+   */
+  abstract checkpointLsm(): Promise<void>;
+  /**
+   * Read live per-bucket LSM state.
+   *
+   * Answers "how far behind is my fresh tier", "which bucket is hot", and
+   * "why is my fresh-tier vector search brute-force". Mutates no table state.
+   *
+   * Resolves to `undefined` only when the LSM write path is not enabled.
+   * @param {boolean} includeGenerationRows Also count rows per L0 generation.
+   *   Off by default because each count opens an uncached Lance dataset.
+   * @returns {Promise<LsmStats | undefined>}
+   */
+  abstract getLsmStats(
+    includeGenerationRows?: boolean,
+  ): Promise<LsmStats | undefined>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -1204,6 +1277,13 @@ export class LocalTable extends Table {
     return await this.inner.refreshColumnAsync(column);
   }
 
+  async refreshMaterializedView(
+    full?: boolean,
+    sourceVersion?: number,
+  ): Promise<RefreshMaterializedViewResult> {
+    return await this.inner.refreshMaterializedView(full, sourceVersion);
+  }
+
   async alterColumns(
     columnAlterations: ColumnAlteration[],
   ): Promise<AlterColumnsResult> {
@@ -1264,6 +1344,24 @@ export class LocalTable extends Table {
 
   async closeLsmWriters(): Promise<void> {
     return await this.inner.closeLsmWriters();
+  }
+
+  async flushLsm(): Promise<void> {
+    return await this.inner.flushLsm();
+  }
+
+  async compactLsm(): Promise<void> {
+    return await this.inner.compactLsm();
+  }
+
+  async checkpointLsm(): Promise<void> {
+    return await this.inner.checkpointLsm();
+  }
+
+  async getLsmStats(
+    includeGenerationRows: boolean = false,
+  ): Promise<LsmStats | undefined> {
+    return (await this.inner.getLsmStats(includeGenerationRows)) ?? undefined;
   }
 
   async version(): Promise<number> {
@@ -1479,8 +1577,8 @@ export interface BranchRowCountSummary {
   deltaAvailable: boolean;
 }
 
-/** A reason why a branch cannot currently be merged. */
-export interface MergeBlocker {
+/** A reason why a cherry-pick cannot currently land. */
+export interface CherryPickError {
   code: string;
   message: string;
 }
@@ -1500,20 +1598,19 @@ export interface BranchDiff {
   changedColumns: BranchColumnChange[];
   addedIndexes: BranchIndexSummary[];
   removedIndexes: BranchIndexSummary[];
-  mergeable: boolean;
-  mergeBlockers: MergeBlocker[];
+  errors: CherryPickError[];
 }
 
-/** Changes that would be, or were, promoted by a branch merge. */
-export interface MergePreview {
+/** Changes that would be, or were, promoted by a cherry-pick. */
+export interface CherryPickPreview {
   promotedColumns: string[];
 }
 
-/** Result of previewing or attempting a branch merge. */
-export interface MergeBranchResult {
-  status: "ready" | "rejected" | "notImplemented" | "merged" | "unknown";
+/** Result of previewing or attempting a cherry-pick. */
+export interface CherryPickResult {
+  status: "ready" | "failed" | "notImplemented" | "cherryPicked" | "unknown";
   diff: BranchDiff;
-  preview: MergePreview;
+  preview: CherryPickPreview;
   mainVersionAfter?: number;
 }
 
@@ -1576,21 +1673,21 @@ export class Branches {
   }
 
   /**
-   * Merge a branch into main.
+   * Cherry-pick a branch onto main.
    *
-   * Set `dryRun` to `true` to preview the merge. A rejected merge resolves
-   * with `status: "rejected"` instead of throwing.
+   * Set `dryRun` to `true` to preview. A failed cherry-pick resolves
+   * with `status: "failed"` instead of throwing.
    *
-   * @param fromBranch Branch to merge from.
-   * @param dryRun When true, only preview the merge. Defaults to false.
+   * @param fromBranch Branch to cherry-pick from.
+   * @param dryRun When true, only preview. Defaults to false.
    */
-  async merge(
+  async cherryPick(
     fromBranch: string,
     dryRun: boolean = false,
-  ): Promise<MergeBranchResult> {
-    return (await this.#inner.merge(
+  ): Promise<CherryPickResult> {
+    return (await this.#inner.cherryPick(
       fromBranch,
       dryRun,
-    )) as unknown as MergeBranchResult;
+    )) as unknown as CherryPickResult;
   }
 }

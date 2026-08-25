@@ -487,4 +487,52 @@ describe("embedding functions", () => {
       expect(stringSchema3).toEqual(stringExpectedSchema);
     },
   );
+  test("parses one function writing several vector columns", async () => {
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const registry = getRegistry();
+    registry.register("multi_output_mock")(MockEmbeddingFunction);
+
+    // A materialized view can project one source vector column under two
+    // names, so a table's configuration names the same function twice.
+    const parsed = await registry.parseFunctions(
+      new Map([
+        [
+          "embedding_functions",
+          JSON.stringify([
+            {
+              name: "multi_output_mock",
+              sourceColumn: "text",
+              vectorColumn: "vector_a",
+              model: {},
+            },
+            {
+              name: "multi_output_mock",
+              sourceColumn: "text",
+              vectorColumn: "vector_b",
+              model: {},
+            },
+          ]),
+        ],
+      ]),
+    );
+
+    expect(
+      [...parsed.values()].map(({ vectorColumn }) => vectorColumn).sort(),
+    ).toEqual(["vector_a", "vector_b"]);
+  });
 });

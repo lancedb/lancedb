@@ -106,6 +106,77 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       'Embedding function with alias "mock-embedding" already exists',
     );
   });
+  test("parseFunctions keeps entries sharing a function name", async () => {
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType() {
+        return new arrow.Float32() as apiArrow.Float;
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map(() => [1, 2, 3]);
+      }
+    }
+    register("mock-embedding")(MockEmbeddingFunction);
+    const parsed = await getRegistry().parseFunctions(
+      new Map([
+        [
+          "embedding_functions",
+          JSON.stringify([
+            {
+              name: "mock-embedding",
+              sourceColumn: "text",
+              vectorColumn: "vector_a",
+              model: {},
+            },
+            {
+              name: "mock-embedding",
+              sourceColumn: "text",
+              vectorColumn: "vector_b",
+              model: {},
+            },
+          ]),
+        ],
+      ]),
+    );
+    expect([...parsed.values()].map((f) => f.vectorColumn)).toEqual([
+      "vector_a",
+      "vector_b",
+    ]);
+
+    // The Python bindings write snake_case keys.
+    const snake = await getRegistry().parseFunctions(
+      new Map([
+        [
+          "embedding_functions",
+          JSON.stringify([
+            {
+              name: "mock-embedding",
+              // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+              source_column: "text",
+              // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+              vector_column: "vector_a",
+              model: {},
+            },
+            {
+              name: "mock-embedding",
+              // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+              source_column: "text",
+              // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+              vector_column: "vector_b",
+              model: {},
+            },
+          ]),
+        ],
+      ]),
+    );
+    expect([...snake.keys()]).toEqual(["vector_a", "vector_b"]);
+    expect([...snake.values()].map((f) => f.sourceColumn)).toEqual([
+      "text",
+      "text",
+    ]);
+  });
   test("schema should contain correct metadata", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       constructor(args: FunctionOptions = {}) {

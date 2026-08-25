@@ -41,7 +41,7 @@ use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 
 mod create_table;
 
-fn merge_storage_options(
+pub(crate) fn merge_storage_options(
     store_params: &mut ObjectStoreParams,
     pairs: impl IntoIterator<Item = (String, String)>,
 ) {
@@ -494,6 +494,33 @@ impl Connection {
             target_table_name.into(),
             source_uri.into(),
         )
+    }
+
+    /// Register a Python callable as a new immutable Function version.
+    ///
+    /// Registration is remote-only and always asynchronous. Waiting on the
+    /// returned typed job yields the durable [`crate::function::FunctionVersion`].
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn create_function_async(
+        &self,
+        request: crate::function::FunctionRegistrationRequest,
+    ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
+        self.internal.create_function_async(request).await
+    }
+
+    /// Look up one exact immutable Function version in the remote catalog.
+    ///
+    /// Both the logical name and server-assigned version id are required;
+    /// mutable aliases and latest-version lookup are intentionally absent.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn get_function(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<crate::function::FunctionVersion> {
+        self.internal
+            .get_function(name.as_ref(), version.as_ref())
+            .await
     }
 
     /// Rename a table in the database.
@@ -1650,6 +1677,50 @@ mod tests {
         let tables = db.table_names().limit(7).execute().await.unwrap();
 
         assert_eq!(tables, names[..7]);
+    }
+
+    #[tokio::test]
+    async fn test_list_tables_walks_page_boundaries() {
+        let tc = new_test_connection().await.unwrap();
+        if tc.is_remote {
+            // What resumes a page is the server's to decide, and asserting it here would be
+            // asserting the server's contract rather than this one.
+            return;
+        }
+        let db = tc.connection;
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        let mut names = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let name = uuid::Uuid::new_v4().to_string();
+            names.push(name.clone());
+            db.create_empty_table(name, schema.clone())
+                .execute()
+                .await
+                .unwrap();
+        }
+        names.sort();
+
+        // Walking in pages has to reach every table exactly once, with nothing lost at a
+        // page boundary.
+        let mut seen = Vec::with_capacity(names.len());
+        let mut page_token = None;
+        loop {
+            let page = db
+                .list_tables(ListTablesRequest {
+                    id: Some(Vec::new()),
+                    limit: Some(2),
+                    page_token,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            seen.extend(page.tables);
+            page_token = page.page_token.filter(|token| !token.is_empty());
+            if page_token.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, names);
     }
 
     #[tokio::test]

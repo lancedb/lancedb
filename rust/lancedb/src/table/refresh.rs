@@ -12,7 +12,7 @@
 //! decides whether the fragment is staged at all -- a fragment where nothing
 //! would change stages nothing, which is what lets an expression yielding
 //! null settle instead of restaging forever. The second streams the
-//! fragment's physical rows into `write_column` a batch at a time, so peak
+//! fragment's physical rows into `write_columns` a batch at a time, so peak
 //! memory is bounded by a scan batch. The expression is evaluated by this
 //! module, never through a projection alias, and only over rows being
 //! filled: every other row -- deleted, or already holding a value -- has its
@@ -49,11 +49,25 @@ pub struct RefreshColumnResult {
     pub version: u64,
 }
 
+struct RefreshExecution {
+    result: RefreshColumnResult,
+    source_version: u64,
+}
+
 /// Internal implementation of the refresh logic.
 pub(crate) async fn execute_refresh_column(
     table: &NativeTable,
     column: &str,
 ) -> Result<RefreshColumnResult> {
+    Ok(execute_refresh_column_with_source(table, column)
+        .await?
+        .result)
+}
+
+async fn execute_refresh_column_with_source(
+    table: &NativeTable,
+    column: &str,
+) -> Result<RefreshExecution> {
     table.dataset.ensure_mutable()?;
     ensure_no_lsm_write_spec(table).await?;
     let dataset = table.dataset.get().await?;
@@ -67,7 +81,7 @@ pub(crate) async fn execute_refresh_column(
         .ok_or_else(|| Error::ColumnNotFound {
             name: column.to_string(),
         })?;
-    // The dataset's own field, so the identity write_column checks against the
+    // The dataset's own field, so the identity write_columns checks against the
     // manifest holds by construction.
     let column_schema = LanceSchema {
         fields: vec![field.clone()],
@@ -83,13 +97,17 @@ pub(crate) async fn execute_refresh_column(
         }
         rows_filled += gained;
         let values = fill_stream(&dataset, &fragment, bound.clone(), column).await?;
-        replacements.push(fragment.write_column(values, &column_schema).await?);
+        replacements.push(fragment.write_columns(values, &column_schema).await?);
     }
 
     if replacements.is_empty() {
-        return Ok(RefreshColumnResult {
-            rows_filled: 0,
-            version: dataset.version().version,
+        let source_version = dataset.version().version;
+        return Ok(RefreshExecution {
+            result: RefreshColumnResult {
+                rows_filled: 0,
+                version: source_version,
+            },
+            source_version,
         });
     }
 
@@ -110,14 +128,20 @@ pub(crate) async fn execute_refresh_column(
 
     let version = new_dataset.version().version;
     table.dataset.update(new_dataset);
-    Ok(RefreshColumnResult {
-        rows_filled,
-        version,
+    Ok(RefreshExecution {
+        result: RefreshColumnResult {
+            rows_filled,
+            version,
+        },
+        source_version: read_version,
     })
 }
 
 /// Run the refresh as a [`Job`] in this process.
-pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &str) -> Result<Job> {
+pub(crate) async fn execute_refresh_column_async(
+    table: &NativeTable,
+    column: &str,
+) -> Result<Job<crate::function::RefreshColumnResult>> {
     // Validate before spawning so bad input is reported by this call rather
     // than only by the job.
     table.dataset.ensure_mutable()?;
@@ -129,9 +153,16 @@ pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &s
     let table = table.clone();
     let column = column.to_string();
     Ok(Job::spawned(tokio::spawn(async move {
-        execute_refresh_column(&table, &column).await?;
+        let execution = execute_refresh_column_with_source(&table, &column).await?;
         table.bump_freshness();
-        Ok(())
+        Ok(crate::function::RefreshColumnResult {
+            rows_assigned: execution.result.rows_filled,
+            rows_failed: 0,
+            rows_remaining: 0,
+            source_version: execution.source_version,
+            published_version: (execution.result.rows_filled > 0)
+                .then_some(execution.result.version),
+        })
     })))
 }
 
@@ -141,11 +172,19 @@ pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &s
 /// un-compacted MemWAL tiers it cannot reach -- success would silently omit
 /// readable rows.
 async fn ensure_no_lsm_write_spec(table: &NativeTable) -> Result<()> {
-    // The catch-up flag outlives unset and marks retained SSTable rows.
-    let catchup = table.dataset.get().await?.manifest().reader_feature_flags
-        & lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP
-        != 0;
-    if catchup || table.get_lsm_write_spec().await?.is_some() {
+    use lance::dataset::mem_wal::DatasetMemWalExt;
+
+    // Unset drops the MemWAL index, so the spec alone stops describing a table
+    // whose SSTables still hold rows. The shard directories outlive it and are
+    // the durable evidence.
+    let retained_sstables = !table
+        .dataset
+        .get()
+        .await?
+        .list_mem_wal_latest_shard_ids()
+        .await?
+        .is_empty();
+    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "refresh_column is not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
@@ -169,6 +208,9 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
         })?;
     match declaration.kind {
         ComputedColumnKind::Sql { expression } => Ok(expression),
+        ComputedColumnKind::Function { .. } => Err(Error::NotSupported {
+            message: "registered Function columns are refreshed only by a remote server Job".into(),
+        }),
         ComputedColumnKind::Unrecognized { kind } => Err(Error::NotSupported {
             message: format!(
                 "computed column '{column}' is defined by '{kind}', which this version of \
@@ -182,7 +224,7 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
 ///
 /// Lance's dialect delimits with backticks, so a double-quoted name would
 /// parse as a string literal rather than a column.
-fn quote_identifier(name: &str) -> String {
+pub(crate) fn quote_identifier(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
@@ -385,6 +427,17 @@ mod tests {
             read(&table, "doubled").await,
             vec![Some(2), Some(4), Some(6)]
         );
+
+        let no_op = table
+            .refresh_column_async("doubled")
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(no_op.rows_assigned, 0);
+        assert_eq!(no_op.source_version, 3);
+        assert_eq!(no_op.published_version, None);
     }
 
     /// Values written after the last refresh must be reachable by another one.
@@ -586,7 +639,7 @@ mod tests {
 
     /// A fragment spanning several scan batches exercises the streamed fill:
     /// the probe buffers only until the first gained value and the rest flows
-    /// through write_column a batch at a time.
+    /// through write_columns a batch at a time.
     #[tokio::test]
     async fn test_refresh_streams_a_multi_batch_fragment() {
         let values: Vec<i32> = (0..20_000).collect();
@@ -635,7 +688,12 @@ mod tests {
 
         let job = table.refresh_column_async("doubled").await.unwrap();
         assert!(job.id().is_none(), "in-process jobs have no server id");
-        job.wait().await.unwrap();
+        let result = job.wait().await.unwrap();
+        assert_eq!(result.rows_assigned, 3);
+        assert_eq!(result.rows_failed, 0);
+        assert_eq!(result.rows_remaining, 0);
+        assert_eq!(result.source_version, 2);
+        assert_eq!(result.published_version, Some(3));
         assert_eq!(job.status().await.unwrap(), "finished");
         assert_eq!(
             read(&table, "doubled").await,
@@ -661,9 +719,9 @@ mod tests {
         declare_doubled(&table).await.unwrap();
 
         let job = table.refresh_column_async("doubled").await.unwrap();
-        job.wait().await.unwrap();
+        let first = job.wait().await.unwrap();
         // A second wait after completion observes the same outcome.
-        job.wait().await.unwrap();
+        assert_eq!(job.wait().await.unwrap(), first);
         assert_eq!(job.status().await.unwrap(), "finished");
     }
 
@@ -918,7 +976,6 @@ mod tests {
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
             .await
             .unwrap();
-        table.require_mem_wal_index_catchup().await.unwrap();
         let mut merge = table.merge_insert(&["x"]);
         merge
             .when_matched_update_all(None)
