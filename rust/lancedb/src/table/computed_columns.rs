@@ -586,6 +586,25 @@ fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
     }
 }
 
+/// `fixed_size_list<item, size>` -> (`item`, `size`); the comma must sit outside
+/// any nested `<...>`.
+fn split_fixed_size_list(raw: &str) -> Option<(&str, i32)> {
+    let inner = raw.strip_prefix("fixed_size_list<")?.strip_suffix('>')?;
+    let mut depth = 0_u32;
+    let mut separator = None;
+    for (index, byte) in inner.bytes().enumerate() {
+        match byte {
+            b'<' => depth += 1,
+            b'>' => depth = depth.checked_sub(1)?,
+            b',' if depth == 0 => separator = Some(index),
+            _ => {}
+        }
+    }
+    let (item, size) = inner.split_at(separator?);
+    let size: i32 = size[1..].trim().parse().ok()?;
+    (size > 0).then_some((item.trim(), size))
+}
+
 fn parse_output_arrow_type(raw: &str) -> Result<JsonArrowDataType> {
     fn parse(raw: &str) -> Result<JsonArrowDataType> {
         let raw = raw.trim();
@@ -616,6 +635,16 @@ fn parse_output_arrow_type(raw: &str) -> Result<JsonArrowDataType> {
                 false,
                 parse(inner)?,
             )]);
+            return Ok(data_type);
+        }
+        if let Some((inner, size)) = split_fixed_size_list(raw) {
+            let mut data_type = JsonArrowDataType::new("fixed_size_list".to_string());
+            data_type.fields = Some(vec![JsonArrowField::new(
+                "item".to_string(),
+                false,
+                parse(inner)?,
+            )]);
+            data_type.length = Some(i64::from(size));
             return Ok(data_type);
         }
         let normalized = match raw {
@@ -1322,6 +1351,32 @@ pub(super) async fn add_foreign_kind(table: &crate::Table, name: &str, kind: &st
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn output_arrow_type_grammar_matches_the_shared_golden() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/arrow_types.json"
+        ))
+        .unwrap();
+        let valid = golden["valid"].as_array().unwrap().iter();
+        for case in valid.chain(golden["server_only"].as_array().unwrap()) {
+            let raw = case["arrow_type"].as_str().unwrap();
+            let parsed = super::parse_output_arrow_type(raw)
+                .unwrap_or_else(|error| panic!("{raw}: {error}"));
+            assert_eq!(
+                serde_json::to_value(&parsed).unwrap(),
+                case["json"],
+                "{raw}"
+            );
+        }
+        for raw in golden["invalid"].as_array().unwrap() {
+            let raw = raw.as_str().unwrap();
+            assert!(
+                super::parse_output_arrow_type(raw).is_err(),
+                "{raw:?} should be rejected"
+            );
+        }
+    }
+
     use arrow_array::record_batch;
     use arrow_schema::DataType;
     use futures::TryStreamExt;
