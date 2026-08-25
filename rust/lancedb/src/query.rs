@@ -511,7 +511,9 @@ pub trait QueryBase {
 
     /// Rerank the results using the specified reranker.
     ///
-    /// This is currently only supported for Hybrid Search.
+    /// For vector-only searches, the reranker receives the vector results and an
+    /// empty full-text result set and must declare its output schema. Reranking
+    /// multiple query vectors in one query is not supported.
     fn rerank(self, reranker: Arc<dyn Reranker>) -> Self;
 
     /// The method to normalize the scores. Can be "rank" or "Score". If "Rank",
@@ -1138,6 +1140,44 @@ pub struct VectorQuery {
 }
 
 impl VectorQuery {
+    fn check_vector_rerank_supported(&self) -> Result<()> {
+        if self.request.query_vector.len() > 1 {
+            return Err(Error::NotSupported {
+                message: "reranking multiple query vectors is not supported; execute one query per vector"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn vector_rerank_output_schema(&self) -> Result<SchemaRef> {
+        self.check_vector_rerank_supported()?;
+
+        // Rerankers receive row IDs internally. Apply their schema transform to
+        // that exact input and then hide the row ID from the declared public
+        // schema unless it was explicitly requested.
+        let vector_query = self.clone().with_row_id();
+        let plan = vector_query
+            .create_plan(QueryExecutionOptions::default())
+            .await?;
+        let reranker = self
+            .request
+            .base
+            .reranker
+            .as_ref()
+            .expect("vector_rerank_output_schema requires a reranker");
+        let input_schema = plan.schema();
+        let output_schema = reranker.output_schema(&input_schema).await?;
+
+        if self.request.base.with_row_id {
+            Ok(output_schema)
+        } else {
+            Ok(RecordBatch::new_empty(output_schema)
+                .drop_column(ROW_ID)?
+                .schema())
+        }
+    }
+
     fn new(base: Query) -> Self {
         Self {
             parent: base.parent,
@@ -1443,6 +1483,61 @@ impl VectorQuery {
         Ok(single_batch_stream(results, max_batch_length))
     }
 
+    async fn execute_vector_rerank(
+        &self,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
+        self.check_vector_rerank_supported()?;
+
+        let max_batch_length = options.max_batch_length as usize;
+        let internal_options = options.without_output_batch_length_limit();
+
+        // RRF needs row IDs to assign and preserve scores. Keep them internal unless
+        // the caller explicitly requested them.
+        let vector_query = self.clone().with_row_id();
+        let vector_results = vector_query
+            .inner_execute_with_options(internal_options)
+            .await?;
+        let schema = vector_results.schema();
+        let vector_results = vector_results.try_collect::<Vec<_>>().await?;
+        let vector_results = concat_batches(&schema, vector_results.iter())?;
+        let vector_schema = vector_results.schema();
+        let fts_results = RecordBatch::new_empty(vector_schema.clone());
+
+        let reranker = self
+            .request
+            .base
+            .reranker
+            .as_ref()
+            .expect("execute_vector_rerank requires a reranker");
+        let expected_schema = reranker.output_schema(&vector_schema).await?;
+        let mut results = reranker
+            .rerank_hybrid("", vector_results, fts_results)
+            .await?;
+
+        check_reranker_result(&results)?;
+        if results.schema() != expected_schema {
+            return Err(Error::Schema {
+                message: format!(
+                    "reranker returned schema {:?}, but declared {:?}",
+                    results.schema(),
+                    expected_schema
+                ),
+            });
+        }
+
+        let limit = self.request.base.limit.unwrap_or(DEFAULT_TOP_K);
+        if results.num_rows() > limit {
+            results = results.slice(0, limit);
+        }
+
+        if !self.request.base.with_row_id {
+            results = results.drop_column(ROW_ID)?;
+        }
+
+        Ok(single_batch_stream(results, max_batch_length))
+    }
+
     async fn inner_execute_with_options(
         &self,
         options: QueryExecutionOptions,
@@ -1495,6 +1590,23 @@ impl ExecutableQuery for VectorQuery {
             return Ok(hybrid_result);
         }
 
+        if self.request.base.reranker.is_some() {
+            let timeout = options.timeout;
+            let mut rerank_options = options;
+            // A single outer deadline covers planning, candidate collection,
+            // schema declaration, and the complete reranker callback.
+            rerank_options.timeout = None;
+            let execution = self.execute_vector_rerank(rerank_options);
+            return match timeout {
+                Some(timeout) => tokio::time::timeout(timeout, execution)
+                    .await
+                    .map_err(|_| Error::Timeout {
+                        message: format!("Query timeout after {} ms", timeout.as_millis()),
+                    })?,
+                None => execution.await,
+            };
+        }
+
         self.inner_execute_with_options(options).await
     }
 
@@ -1506,6 +1618,15 @@ impl ExecutableQuery for VectorQuery {
     async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
         let query = AnyQuery::VectorQuery(self.request.clone());
         self.parent.analyze_plan(&query, options).await
+    }
+
+    async fn output_schema(&self) -> Result<SchemaRef> {
+        if self.request.base.full_text_search.is_none() && self.request.base.reranker.is_some() {
+            self.vector_rerank_output_schema().await
+        } else {
+            let plan = self.create_plan(QueryExecutionOptions::default()).await?;
+            Ok(plan.schema())
+        }
     }
 }
 
@@ -1643,7 +1764,13 @@ impl ExecutableQuery for TakeQuery {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, sync::Arc};
+    use std::{
+        collections::HashSet,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
 
     use super::*;
     use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
@@ -1658,6 +1785,31 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{Table, connect, database::CreateTableMode, index::Index};
+
+    #[derive(Debug)]
+    struct SlowReranker {
+        invoked: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Reranker for SlowReranker {
+        async fn output_schema(&self, input: &SchemaRef) -> Result<SchemaRef> {
+            RRFReranker::default().output_schema(input).await
+        }
+
+        async fn rerank_hybrid(
+            &self,
+            query: &str,
+            vector_results: RecordBatch,
+            fts_results: RecordBatch,
+        ) -> Result<RecordBatch> {
+            self.invoked.store(true, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            RRFReranker::default()
+                .rerank_hybrid(query, vector_results, fts_results)
+                .await
+        }
+    }
 
     #[tokio::test]
     async fn test_setters_getters() {
@@ -2349,6 +2501,71 @@ mod tests {
         // We don't guarantee order.
         assert!(query_index.values().contains(&0));
         assert!(query_index.values().contains(&1));
+
+        let reranked = query.rerank(Arc::new(RRFReranker::default()));
+        let Err(execute_error) = reranked.execute().await else {
+            panic!("multi-vector reranking should be rejected");
+        };
+        assert!(
+            execute_error
+                .to_string()
+                .contains("reranking multiple query vectors is not supported")
+        );
+        let schema_error = reranked.output_schema().await.unwrap_err();
+        assert!(
+            schema_error
+                .to_string()
+                .contains("reranking multiple query vectors is not supported")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_vector_rerank_timeout_covers_reranker() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let invoked = Arc::new(AtomicBool::new(false));
+        let reranker = SlowReranker {
+            invoked: invoked.clone(),
+        };
+
+        let result = table
+            .vector_search(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .limit(1)
+            .rerank(Arc::new(reranker))
+            .execute_with_options(QueryExecutionOptions {
+                timeout: Some(Duration::from_secs(1)),
+                ..Default::default()
+            })
+            .await;
+
+        assert!(invoked.load(Ordering::SeqCst));
+        assert!(matches!(result, Err(Error::Timeout { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_vector_rerank_output_schema_matches_execution() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let query = table
+            .vector_search(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .limit(1)
+            .rerank(Arc::new(RRFReranker::default()));
+
+        let promised = query.output_schema().await.unwrap();
+        let actual = query
+            .execute()
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .schema();
+
+        assert_eq!(promised, actual);
+        assert!(promised.column_with_name("_relevance_score").is_some());
     }
 
     #[tokio::test]

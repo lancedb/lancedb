@@ -10,6 +10,24 @@ Reranks the results using the Reciprocal Rank Fusion (RRF) algorithm.
 
 ## Methods
 
+### outputSchema()
+
+```ts
+outputSchema(inputSchema): Promise<Schema<any>>
+```
+
+Declare the RRF output schema for vector-only query execution.
+
+#### Parameters
+
+* **inputSchema**: `Schema`&lt;`any`&gt;
+
+#### Returns
+
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+
+***
+
 ### rerankHybrid()
 
 ```ts

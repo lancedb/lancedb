@@ -5,9 +5,11 @@ import {
   Table as ArrowTable,
   type IntoVector,
   RecordBatch,
+  createEmptyTable,
   extractVectorBuffer,
   fromBufferToRecordBatch,
   fromRecordBatchToBuffer,
+  fromTableToBuffer,
   tableFromIPC,
 } from "./arrow";
 import { type IvfPqOptions } from "./indices";
@@ -733,20 +735,30 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   }
 
   rerank(reranker: Reranker): VectorQuery {
-    super.doCall((inner) =>
-      inner.rerank(async (args) => {
-        const vecResults = await fromBufferToRecordBatch(args.vecResults);
-        const ftsResults = await fromBufferToRecordBatch(args.ftsResults);
-        const result = await reranker.rerankHybrid(
-          args.query,
-          vecResults as RecordBatch,
-          ftsResults as RecordBatch,
-        );
+    super.doCall((inner) => {
+      const outputSchema = reranker.outputSchema?.bind(reranker);
+      inner.rerank(
+        async (args) => {
+          const vecResults = await fromBufferToRecordBatch(args.vecResults);
+          const ftsResults = await fromBufferToRecordBatch(args.ftsResults);
+          const result = await reranker.rerankHybrid(
+            args.query,
+            vecResults as RecordBatch,
+            ftsResults as RecordBatch,
+          );
 
-        const buffer = fromRecordBatchToBuffer(result);
-        return buffer;
-      }),
-    );
+          const buffer = fromRecordBatchToBuffer(result);
+          return buffer;
+        },
+        outputSchema
+          ? async (args) => {
+              const inputSchema = tableFromIPC(args.inputSchema).schema;
+              const result = await outputSchema(inputSchema);
+              return fromTableToBuffer(createEmptyTable(result));
+            }
+          : undefined,
+      );
+    });
 
     return this;
   }
