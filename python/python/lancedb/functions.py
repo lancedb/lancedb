@@ -4,7 +4,7 @@
 """Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
-environment bake, secret resolution, and execution are owned by Sophon.
+environment bake, and execution are owned by Sophon.
 ``RefreshColumnResult`` is also the backend-neutral result of a local
 expression-backed refresh job.
 """
@@ -229,7 +229,7 @@ class PythonEnvironmentSpec(_RemoteValue):
 
 
 class PythonRuntimeSpec(_RemoteValue):
-    """Remote runtime definition with non-secret environment values.
+    """Remote runtime definition with environment values.
 
     V1 supports ``kind="python"``. Newer runtime kinds remain readable, while
     their unknown payload fields are intentionally not retained by the client.
@@ -268,7 +268,6 @@ class FunctionVersion(_RemoteValue):
     runtime: PythonRuntimeSpec
     runtime_digest: str
     environment_digest: str
-    required_secrets: tuple[str, ...] = ()
     created_at: str
 
     def __call__(self, **inputs: Any) -> FunctionApplication:
@@ -331,17 +330,12 @@ class FunctionVersion(_RemoteValue):
 
 
 class FunctionRegistrationRequest(_RemoteValue):
-    """Stable remote registration envelope produced by :func:`udf`.
-
-    Only secret names are represented. Secret values are resolved inside the
-    remote service and have no client request field.
-    """
+    """Stable remote registration envelope produced by :func:`udf`."""
 
     name: str
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
-    required_secrets: tuple[str, ...] = ()
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -489,7 +483,6 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
-_SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 _GRAMMAR_PRIMITIVES = (
@@ -920,7 +913,6 @@ class UdfDefinition:
         output_schema: Optional[pa.DataType | pa.Field | pa.Schema],
         pip: tuple[str, ...],
         env: Mapping[str, str],
-        secrets: tuple[str, ...],
         python_version: Optional[str],
     ):
         function_name = name or function.__name__
@@ -935,18 +927,6 @@ class UdfDefinition:
             for key, value in environment.items()
         ):
             raise TypeError("Function env keys and values must be strings")
-        required_secrets = tuple(sorted(set(secrets)))
-        invalid_secrets = [
-            secret for secret in required_secrets if not _SECRET_NAME.fullmatch(secret)
-        ]
-        if invalid_secrets:
-            raise ValueError(f"invalid Function secret names: {invalid_secrets!r}")
-        overlap = set(environment) & set(required_secrets)
-        if overlap:
-            raise ValueError(
-                f"Function env and secret names must be disjoint: {sorted(overlap)!r}"
-            )
-
         signature = _infer_signature(function, input_schema, output_schema)
         source = _package_source(function)
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
@@ -975,7 +955,6 @@ class UdfDefinition:
             ),
             signature=signature,
             runtime=runtime,
-            required_secrets=required_secrets,
         )
         functools.update_wrapper(self, function)
 
@@ -1001,7 +980,6 @@ def udf(
     output_schema: Optional[pa.DataType | pa.Field | pa.Schema] = None,
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
-    secrets: tuple[str, ...] | list[str] = (),
     python_version: Optional[str] = None,
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
 
@@ -1014,7 +992,6 @@ def udf(
     output_schema: Optional[pa.DataType | pa.Field | pa.Schema] = None,
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
-    secrets: tuple[str, ...] | list[str] = (),
     python_version: Optional[str] = None,
 ):
     """Prepare a scalar Python callable for remote Function registration.
@@ -1039,10 +1016,7 @@ def udf(
     pip : sequence of str, optional
         Pip requirements for the remote environment.
     env : mapping of str to str, optional
-        Non-secret environment variables. Use ``secrets`` for credentials.
-    secrets : sequence of str, optional
-        Names of secrets resolved by the remote service. Secret values are not
-        accepted by this API or included in the registration request.
+        Environment variables included in the Function definition.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
 
@@ -1064,7 +1038,7 @@ def udf(
     Examples
     --------
     >>> from lancedb import udf
-    >>> @udf(pip=["numpy==2.2.0"], secrets=["MODEL_TOKEN"])
+    >>> @udf(pip=["numpy==2.2.0"])
     ... def score(value: float) -> float:
     ...     return value * 2
     >>> score(1.5)
@@ -1079,7 +1053,6 @@ def udf(
             output_schema=output_schema,
             pip=tuple(pip),
             env={} if env is None else env,
-            secrets=tuple(secrets),
             python_version=python_version,
         )
 
