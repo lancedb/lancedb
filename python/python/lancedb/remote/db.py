@@ -703,6 +703,7 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def repair(self) -> List[str]:
+        """Repair is not supported for remote connections."""
         raise NotImplementedError("repair is not supported for remote connections")
 
     @override
