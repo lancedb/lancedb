@@ -101,9 +101,12 @@ azure = ["adlfs>=2024.2.0"]
 [tool.maturin]
 python-source = "python"
 module-name = "lancedb._lancedb"
+# uv installs the project as an editable package before `uv run`, so keep that
+# bootstrap build consistent with `maturin develop`.
+editable-profile = "dev"
 
 [build-system]
-requires = ["maturin>=1.9.4"]
+requires = ["maturin>=1.10"]
 build-backend = "maturin"
 
 [tool.ruff.lint]
