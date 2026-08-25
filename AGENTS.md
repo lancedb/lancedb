@@ -18,6 +18,9 @@ Common commands:
 * Run specific test: `cargo test --quiet --features remote -p <package_name> --test <test_name>`
 * Lint: `cargo clippy --quiet --features remote --tests --examples`
 * Format Rust: `cargo fmt --all`
+* Use repository-defined Cargo profiles instead of ad hoc LTO overrides.
+* Use `release-with-debug` for benchmarks and profiling so optimized builds keep debug symbols without a rebuild.
+* Use `release-no-lto` only for local debugging, IO-bound benchmarks, or compile-time-sensitive performance investigation where LTO would not affect the measured bottleneck.
 * Format Python: `ruff format .`
 * Lint Python: `ruff check .`
 * Bootstrap Python dev env: `cd python && uv run --extra tests --extra dev maturin develop --extras tests,dev`
