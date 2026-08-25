@@ -7293,12 +7293,11 @@ mod tests {
     }
 
     /// checkout_latest keeps the handle on latest, so a completed backfill
-    /// must still establish its post-fill baseline -- strictly later than the
-    /// checkout's own, or a pre-fill cache could still serve.
+    /// must retain the checkout timestamp and add its exact published version.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_checkout_latest_during_submission_keeps_the_fence() {
-        let seen_min_timestamp = Arc::new(std::sync::Mutex::new(None::<String>));
-        let saw = seen_min_timestamp.clone();
+        let seen_headers = Arc::new(std::sync::Mutex::new(None::<http::HeaderMap>));
+        let saw = seen_headers.clone();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
         let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
@@ -7322,10 +7321,7 @@ mod tests {
                     .body(refresh_done("j-11"))
                     .unwrap(),
                 "/v1/table/my_table/count_rows/" => {
-                    *saw.lock().unwrap() = request
-                        .headers()
-                        .get("x-lancedb-min-timestamp")
-                        .map(|v| v.to_str().unwrap().to_string());
+                    *saw.lock().unwrap() = Some(request.headers().clone());
                     http::Response::builder()
                         .status(200)
                         .body("1".to_string())
@@ -7346,25 +7342,18 @@ mod tests {
         .await
         .unwrap();
         table.checkout_latest().await.unwrap();
-        let after_checkout = SystemTime::now();
-        // Real separation between the checkout baseline and completion.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         release_tx.send(()).unwrap();
 
         let job = submit.await.unwrap().unwrap();
         job.wait().await.unwrap();
         table.count_rows(None).await.unwrap();
-        let header = seen_min_timestamp
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("no baseline");
-        let sent: SystemTime = chrono::DateTime::parse_from_rfc3339(&header)
-            .unwrap()
-            .into();
-        assert!(
-            sent > after_checkout,
-            "baseline {header} did not advance past the checkout"
+        let headers = seen_headers.lock().unwrap().clone().expect("no request");
+        assert!(headers.contains_key("x-lancedb-min-timestamp"));
+        assert_eq!(
+            headers
+                .get("x-lancedb-min-read-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("8")
         );
     }
 
