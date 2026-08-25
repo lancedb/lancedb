@@ -5,7 +5,7 @@
 //! backend-neutral terminal result of a computed-column refresh.
 //!
 //! This module contains client/wire values only. Catalog persistence,
-//! environment bake, secret resolution, and execution are owned by Sophon.
+//! environment bake, and execution are owned by Sophon.
 
 use std::collections::BTreeMap;
 
@@ -195,9 +195,6 @@ pub struct PythonEnvironmentSpec {
 }
 
 /// Reproducible Python runtime definition understood by Sophon.
-///
-/// `env` contains non-secret values. Secret values have no client model;
-/// [`FunctionVersion::required_secrets`] contains names only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PythonRuntimeSpec {
@@ -239,7 +236,7 @@ impl PythonRuntimeSpec {
         }
     }
 
-    /// Non-secret environment variables, or `None` for an unknown kind.
+    /// Environment variables, or `None` for an unknown kind.
     pub fn env(&self) -> Option<&BTreeMap<String, String>> {
         match self {
             Self::Python { env, .. } => Some(env),
@@ -324,8 +321,6 @@ pub struct FunctionVersion {
     runtime: PythonRuntimeSpec,
     runtime_digest: String,
     environment_digest: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    required_secrets: Vec<String>,
     created_at: String,
 }
 
@@ -356,11 +351,6 @@ impl FunctionVersion {
 
     pub fn environment_digest(&self) -> &str {
         &self.environment_digest
-    }
-
-    /// Required secret names. Resolved values exist only inside Sophon.
-    pub fn required_secrets(&self) -> &[String] {
-        &self.required_secrets
     }
 
     pub fn created_at(&self) -> &str {
@@ -404,18 +394,12 @@ pub struct FunctionArtifactRequest {
 }
 
 /// Stable request envelope for remote immutable Function registration.
-///
-/// Secret values deliberately have no field in this model. The only secret
-/// material the client may send is the ordered set of names Sophon resolves
-/// inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required_secrets: Vec<String>,
 }
 
 impl_json!(FunctionRegistrationRequest);

@@ -6,32 +6,12 @@ use std::path::PathBuf;
 
 use lancedb::Error;
 use lancedb::function::FunctionRegistrationRequest;
-use serde_json::Value;
 
 fn fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/first_class_functions/v1")
         .join(name);
     fs::read_to_string(path).expect("fixture must be readable")
-}
-
-fn assert_no_secret_values(value: &Value) {
-    match value {
-        Value::Object(values) => {
-            for (key, value) in values {
-                assert!(
-                    !matches!(
-                        key.as_str(),
-                        "secret_value" | "secret_values" | "resolved_secret" | "resolved_secrets"
-                    ),
-                    "registration requests must not model resolved secret material"
-                );
-                assert_no_secret_values(value);
-            }
-        }
-        Value::Array(values) => values.iter().for_each(assert_no_secret_values),
-        _ => {}
-    }
 }
 
 #[test]
@@ -42,16 +22,10 @@ fn registration_request_matches_shared_canonical_golden() {
     .expect("registration request");
     assert_eq!(request.name, "normalize_score");
     assert_eq!(request.artifact.adapter.kind, "scalar_to_arrow_batch");
-    assert_eq!(request.required_secrets, ["API_TOKEN"]);
     assert_eq!(
         request.to_canonical_json().expect("canonical request"),
         fixture("remote_function_registration_request.canonical.json").trim()
     );
-
-    let value: Value =
-        serde_json::from_str(&request.to_canonical_json().expect("canonical request"))
-            .expect("request JSON");
-    assert_no_secret_values(&value);
 }
 
 #[tokio::test]

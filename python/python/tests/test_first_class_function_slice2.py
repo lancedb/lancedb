@@ -39,26 +39,10 @@ FIXTURES = (
 @udf(
     pip=["numpy>=2"],
     env={"MODE": "test"},
-    secrets=["API_TOKEN"],
     python_version="3.12",
 )
 def normalize_score(value: float) -> float:
     return value / 100.0
-
-
-def _assert_no_secret_values(value):
-    if isinstance(value, dict):
-        for key, child in value.items():
-            assert key not in {
-                "secret_value",
-                "secret_values",
-                "resolved_secret",
-                "resolved_secrets",
-            }
-            _assert_no_secret_values(child)
-    elif isinstance(value, list):
-        for child in value:
-            _assert_no_secret_values(child)
 
 
 def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
@@ -75,8 +59,6 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
-    assert request["required_secrets"] == ["API_TOKEN"]
-    _assert_no_secret_values(request)
 
 
 def _run_packaged(definition, *args):
@@ -370,7 +352,6 @@ def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
         output_schema=None,
         pip=(),
         env={},
-        secrets=(),
         python_version=None,
     )
     with pytest.raises(ValueError, match="binds that name to another value"):
@@ -525,14 +506,6 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
             return value
 
 
-def test_environment_rejects_secret_value_overlap():
-    with pytest.raises(ValueError, match="must be disjoint"):
-
-        @udf(env={"TOKEN": "plaintext"}, secrets=["TOKEN"])
-        def overlapping(value: int) -> int:
-            return value
-
-
 def test_local_function_catalog_operations_are_not_supported(tmp_path):
     db = lancedb.connect(tmp_path)
     message = "Function catalog operations are not supported by this database"
@@ -569,7 +542,6 @@ def _mock_remote_function_catalog():
                     "runtime": body["runtime"],
                     "runtime_digest": "sha256:runtime",
                     "environment_digest": "sha256:environment",
-                    "required_secrets": body.get("required_secrets", []),
                     "created_at": "2026-08-21T00:00:00Z",
                 }
                 response = {"job_id": "job-register"}
@@ -628,7 +600,6 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
     assert create_request == json.loads(
         normalize_score.registration_request.to_canonical_json()
     )
-    _assert_no_secret_values(create_request)
 
 
 def test_blocking_remote_registration_returns_function_version():
