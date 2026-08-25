@@ -40,7 +40,7 @@ from ._blob import (
 from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
-from lancedb.job import AsyncJob, Job
+from lancedb.job import AsyncJob, Job, _typed_job
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -72,6 +72,10 @@ from .index import (
     FTS,
 )
 from .expr import Expr
+from .functions import (
+    FunctionApplication,
+    RefreshColumnResult as RefreshColumnJobResult,
+)
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -433,6 +437,20 @@ def _cast_to_target_schema(
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
 
 
+def _field_extension_name(field: pa.Field) -> Optional[str]:
+    extension_name = getattr(field.type, "extension_name", None)
+    if extension_name is not None:
+        return extension_name
+
+    metadata = field.metadata or {}
+    extension_name = metadata.get(b"ARROW:extension:name") or metadata.get(
+        "ARROW:extension:name"
+    )
+    if isinstance(extension_name, bytes):
+        return extension_name.decode()
+    return extension_name
+
+
 def _align_field_types(
     fields: List[pa.Field],
     target_fields: List[pa.Field],
@@ -445,6 +463,16 @@ def _align_field_types(
         target_field = next((f for f in target_fields if f.name == field.name), None)
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
+        # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
+        # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
+        # input to that storage type here merely relabels the raw JSON bytes as
+        # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
+        if (
+            _field_extension_name(field) == "arrow.json"
+            and _field_extension_name(target_field) == "lance.json"
+        ):
+            new_fields.append(field)
+            continue
         if pa.types.is_struct(target_field.type):
             if pa.types.is_struct(field.type):
                 new_type = pa.struct(
@@ -1923,7 +1951,8 @@ class Table(ABC):
     @abstractmethod
     def add_columns(
         self,
-        transforms: Dict[str, str]
+        transforms: Dict[str, str | FunctionApplication]
+        | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
@@ -1936,13 +1965,21 @@ class Table(ABC):
 
         Parameters
         ----------
-        transforms: Dict[str, str], pa.Field, List[pa.Field], pa.Schema
+        transforms: Dict[str, str | FunctionApplication], FunctionApplication,
+            pa.Field, List[pa.Field], pa.Schema
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
             Alternatively, a pyarrow Field or Schema can be provided to add
             new columns with the specified data types. The new columns will
             be initialized with null values.
+
+            A mapping with one ``FunctionApplication`` value keeps its scalar
+            or named-struct result in the named table column. A bare
+            named-struct application expands its ordered result fields as one
+            atomic binding; aliases come from ``rename(columns=...)``.
+            Function columns are supported only on LanceDB Cloud and
+            Enterprise.
         computed: Dict[str, str], optional
             A map of column name to a SQL expression defining the column. The
             column's type and inputs are derived from the expression, so no
@@ -2010,7 +2047,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column_async(self, column: str) -> Job:
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
@@ -2021,6 +2058,12 @@ class Table(ABC):
         than failing the job. On local tables the job runs in-process; on
         LanceDB Cloud and Enterprise it is the server's backfill job.
 
+        Returns
+        -------
+        Job[RefreshColumnResult]
+            A job whose successful ``wait`` returns row counts plus the source
+            and published table versions.
+
         Examples
         --------
         >>> import lancedb
@@ -2029,7 +2072,9 @@ class Table(ABC):
         >>> table.add_columns(computed={"doubled": "x * 2"})
         AddColumnsResult(version=2)
         >>> job = table.refresh_column_async("doubled")
-        >>> job.wait()
+        >>> result = job.wait()
+        >>> result.rows_assigned
+        2
         >>> job.status()
         'finished'
         """
@@ -4042,9 +4087,10 @@ class LanceTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str]
-        | pa.field
-        | List[pa.field]
+        transforms: Dict[str, str | FunctionApplication]
+        | FunctionApplication
+        | pa.Field
+        | List[pa.Field]
         | pa.Schema
         | None = None,
         *,
@@ -4057,7 +4103,7 @@ class LanceTable(Table):
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
         return LOOP.run(self._table.refresh_column(column))
 
-    def refresh_column_async(self, column: str) -> Job:
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows, returning a handle to the
         refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
@@ -4811,7 +4857,7 @@ class AsyncTable:
 
         Examples
         --------
-        >>> from lancedb._lancedb import LsmWriteSpec
+        >>> from lancedb import LsmWriteSpec
         >>> # table.set_unenforced_primary_key("id")
         >>> # table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 16))
         """
@@ -4856,7 +4902,7 @@ class AsyncTable:
         ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
         costs nothing.
         """
-        return await self._inner.checkpoint_lsm()
+        await self._inner.checkpoint_lsm()
 
     async def flush_lsm(self) -> None:
         """Seal every bucket's active memtable into L0.
@@ -4865,7 +4911,7 @@ class AsyncTable:
         `compact_lsm`. On a node that has not claimed this table, this claims
         it and replays its WAL log first.
         """
-        return await self._inner.flush_lsm()
+        await self._inner.flush_lsm()
 
     async def compact_lsm(self) -> None:
         """Trigger a background L0 to base compaction pass per bucket.
@@ -4874,7 +4920,7 @@ class AsyncTable:
         ``get_lsm_stats`` for progress, or use ``checkpoint_lsm`` to loop
         until the current L0 has reached base.
         """
-        return await self._inner.compact_lsm()
+        await self._inner.compact_lsm()
 
     async def get_lsm_stats(
         self, *, include_generation_rows: bool = False
@@ -5983,9 +6029,10 @@ class AsyncTable:
 
     async def add_columns(
         self,
-        transforms: dict[str, str]
-        | pa.field
-        | List[pa.field]
+        transforms: dict[str, str | FunctionApplication]
+        | FunctionApplication
+        | pa.Field
+        | List[pa.Field]
         | pa.Schema
         | None = None,
         *,
@@ -5996,12 +6043,19 @@ class AsyncTable:
 
         Parameters
         ----------
-        transforms: Dict[str, str]
+        transforms: Dict[str, str | FunctionApplication] or FunctionApplication
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
+
+            A mapping with one ``FunctionApplication`` value keeps its scalar
+            or named-struct result in the named table column. A bare
+            named-struct application expands its ordered result fields as one
+            atomic binding; aliases come from ``rename(columns=...)``.
+            Function columns are supported only on LanceDB Cloud and
+            Enterprise.
         computed: Dict[str, str], optional
             A map of column name to a SQL expression defining the column. The
             column's type and inputs are derived from the expression.
@@ -6025,6 +6079,32 @@ class AsyncTable:
             version: the new version number of the table after adding columns.
 
         """
+        function_application = None
+        function_output_name = None
+        if isinstance(transforms, FunctionApplication):
+            function_application = transforms
+        elif isinstance(transforms, dict) and any(
+            isinstance(value, FunctionApplication) for value in transforms.values()
+        ):
+            if len(transforms) != 1 or not all(
+                isinstance(value, FunctionApplication) for value in transforms.values()
+            ):
+                raise ValueError(
+                    "one add_columns call declares exactly one Function binding"
+                )
+            function_output_name, function_application = next(iter(transforms.items()))
+
+        if function_application is not None:
+            if computed:
+                raise ValueError(
+                    "add_columns cannot mix a Function application with SQL "
+                    "computed columns"
+                )
+            function_application._ensure_declarable()
+            return await self._inner.add_function_columns(
+                function_application.to_canonical_json(), function_output_name
+            )
+
         if isinstance(transforms, pa.Field):
             transforms = [transforms]
         if isinstance(transforms, list) and all(
@@ -6068,7 +6148,9 @@ class AsyncTable:
         """
         return await self._inner.refresh_column(column)
 
-    async def refresh_column_async(self, column: str) -> AsyncJob:
+    async def refresh_column_async(
+        self, column: str
+    ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
@@ -6080,6 +6162,12 @@ class AsyncTable:
         in-process; on LanceDB Cloud and Enterprise it is the server's
         backfill job.
 
+        Returns
+        -------
+        AsyncJob[RefreshColumnResult]
+            A job whose successful ``wait`` returns row counts plus the source
+            and published table versions.
+
         Examples
         --------
         >>> import asyncio
@@ -6089,12 +6177,16 @@ class AsyncTable:
         ...     table = await db.create_table("computed_job_async_demo", [{"x": 1}])
         ...     await table.add_columns(computed={"doubled": "x * 2"})
         ...     job = await table.refresh_column_async("doubled")
-        ...     await job.wait()
+        ...     result = await job.wait()
+        ...     assert result.rows_assigned == 1
         ...     return await job.status()
         >>> asyncio.run(refresh_in_background())
         'finished'
         """
-        return AsyncJob(await self._inner.refresh_column_async(column))
+        return _typed_job(
+            await self._inner.refresh_column_async(column),
+            RefreshColumnJobResult.from_json,
+        )
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]
@@ -6747,21 +6839,21 @@ class Branches:
         """Diff a branch against main."""
         return LOOP.run(self._table.branches.diff(from_branch))
 
-    def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
-        """Merge a branch into main, or dry-run.
+    def cherry_pick(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
+        """Cherry-pick a branch onto main, or dry-run.
 
         Parameters
         ----------
         from_branch: str
-            Branch to merge from.
+            Branch to cherry-pick from.
         dry_run: bool, default False
-            When True, only preview. When False, attempt the merge.
+            When True, only preview. When False, attempt the cherry-pick.
 
         Notes
         -----
-        A rejected merge returns ``status="rejected"`` instead of raising.
+        A failed cherry-pick returns ``status="failed"`` instead of raising.
         """
-        return LOOP.run(self._table.branches.merge(from_branch, dry_run))
+        return LOOP.run(self._table.branches.cherry_pick(from_branch, dry_run))
 
     def _wrap(
         self, async_table: "AsyncTable", version: Optional[int] = None
@@ -6897,9 +6989,11 @@ class AsyncBranches:
         """Diff a branch against main."""
         return await self._table.branches.diff(from_branch)
 
-    async def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
-        """Merge a branch into main, or dry-run.
+    async def cherry_pick(
+        self, from_branch: str, dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """Cherry-pick a branch onto main, or dry-run.
 
-        A rejected merge returns ``status="rejected"`` instead of raising.
+        A failed cherry-pick returns ``status="failed"`` instead of raising.
         """
-        return await self._table.branches.merge(from_branch, dry_run)
+        return await self._table.branches.cherry_pick(from_branch, dry_run)

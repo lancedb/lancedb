@@ -82,6 +82,10 @@ pub(crate) async fn execute_update(
 
     // 1. Snapshot the current dataset
     let dataset = table.dataset.get().await?;
+    super::computed_columns::ensure_no_function_bindings_for_mutation(
+        &arrow_schema::Schema::from(dataset.schema()),
+        "update",
+    )?;
     super::computed_columns::ensure_not_written(
         &arrow_schema::Schema::from(dataset.schema()),
         update.columns.iter().map(|(name, _)| name.as_str()),

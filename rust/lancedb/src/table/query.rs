@@ -70,6 +70,9 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
         .contains(&NamespaceClientPushdownOperation::QueryTable)
         && table.namespace_client.is_some()
         && table.dataset.current_branch().is_none()
+        // NsQueryTableRequest has no version field, so a pushed-down query would
+        // read latest and ignore the pin.
+        && table.dataset.time_travel_version().is_none()
         && !requires_local_namespace_execution(query))
     {
         return Ok(false);

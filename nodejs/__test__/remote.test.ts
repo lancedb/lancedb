@@ -75,6 +75,25 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it("refuses materialized views before issuing any request", async () => {
+    const paths: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        paths.push(req.url ?? "");
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        await expect(db.openMaterializedView("secret_table")).rejects.toThrow(
+          /only on local databases/,
+        );
+        await expect(db.listMaterializedViews()).rejects.toThrow(
+          /only on local databases/,
+        );
+        expect(paths).toEqual([]);
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",
@@ -311,7 +330,7 @@ describe("remote connection", () => {
     expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
   });
 
-  it("diffs and merges remote branches", async () => {
+  it("diffs and cherry-picks remote branches", async () => {
     const sampleDiff = {
       fromBranch: "exp",
       parentVersion: 1,
@@ -333,10 +352,9 @@ describe("remote connection", () => {
       changedColumns: [],
       addedIndexes: [],
       removedIndexes: [],
-      mergeable: true,
-      mergeBlockers: [],
+      errors: [],
     };
-    const mergeBodies: Record<string, unknown>[] = [];
+    const cherryPickBodies: Record<string, unknown>[] = [];
 
     await withMockDatabase(
       (req, res) => {
@@ -366,17 +384,16 @@ describe("remote connection", () => {
               .end(JSON.stringify(sampleDiff));
             return;
           }
-          if (path.endsWith("/branches/merge/")) {
-            mergeBodies.push(body);
+          if (path.endsWith("/branches/cherry_pick/")) {
+            cherryPickBodies.push(body);
             const dryRun = body["dry_run"] === true;
             const response = {
-              status: dryRun ? "ready" : "rejected",
+              status: dryRun ? "ready" : "failed",
               diff: dryRun
                 ? sampleDiff
                 : {
                     ...sampleDiff,
-                    mergeable: false,
-                    mergeBlockers: [
+                    errors: [
                       { code: "baseMoved", message: "main has advanced" },
                     ],
                   },
@@ -398,19 +415,19 @@ describe("remote connection", () => {
 
         await expect(branches.diff("exp")).resolves.toEqual(sampleDiff);
 
-        const rejected = await branches.merge("exp");
-        expect(rejected.status).toBe("rejected");
-        expect(rejected.diff.mergeBlockers).toEqual([
+        const failed = await branches.cherryPick("exp");
+        expect(failed.status).toBe("failed");
+        expect(failed.diff.errors).toEqual([
           { code: "baseMoved", message: "main has advanced" },
         ]);
 
-        const preview = await branches.merge("exp", true);
+        const preview = await branches.cherryPick("exp", true);
         expect(preview.status).toBe("ready");
         expect(preview.preview.promotedColumns).toEqual(["tag"]);
       },
     );
 
-    expect(mergeBodies).toEqual([
+    expect(cherryPickBodies).toEqual([
       // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
       { from_branch: "exp", dry_run: false },
       // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
