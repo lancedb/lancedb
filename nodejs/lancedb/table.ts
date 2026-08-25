@@ -628,6 +628,17 @@ export abstract class Table {
 
   /**
    * Update per-field (column) metadata.
+   *
+   * The following keys are treated specially, by convention, and should be
+   * used when appropriate:
+   *
+   * - `lancedb:description`: for a human-readable description of a field.
+   * - `lancedb:tag:(tag_name)`: for a user-defined key-value tag.
+   * - `lancedb:logical_column`: for a column grouping; e.g. `feature_v1` and
+   *   `feature_v2` might be in the same logical_column.
+   * - `lancedb:status`: for status options (`production`, `candidate`,
+   *   `deprecated`, `archived`) to designate the current life cycle state of
+   *   this column.
    * @param {FieldMetadataUpdate[]} updates One or more per-field updates. Each
    * update's metadata is merged into the field's existing metadata by default;
    * a value of `null` deletes that key, and `replace: true` swaps the whole map.
@@ -1538,7 +1549,8 @@ export interface FieldMetadataUpdate {
   path: string;
   /**
    * Metadata key/value pairs. Merged into the field's existing metadata by
-   * default; a value of `null` deletes that key.
+   * default; a value of `null` deletes that key. See
+   * {@link Table.updateFieldMetadata} for the conventional `lancedb:*` keys.
    */
   metadata: Record<string, string | null>;
   /** If true, replace the field's entire metadata map instead of merging. */
