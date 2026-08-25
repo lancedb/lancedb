@@ -1467,17 +1467,23 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
 
         let _guard = output.tracker.as_ref().map(|t| t.track_task());
 
-        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteWriteExec::new(
-            self.name.clone(),
-            self.identifier.clone(),
-            self.client.clone(),
-            output.plan,
-            WriteOp::Insert {
-                overwrite: output.overwrite,
-            },
-            output.tracker.clone(),
-            self.branch.clone(),
-        ));
+        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(
+            RemoteWriteExec::new(
+                self.name.clone(),
+                self.identifier.clone(),
+                self.client.clone(),
+                output.plan,
+                WriteOp::Insert {
+                    overwrite: output.overwrite,
+                },
+                output.tracker.clone(),
+                self.branch.clone(),
+            )
+            .with_freshness(
+                self.freshness.clone(),
+                self.client.read_consistency_interval,
+            ),
+        );
 
         let mut retry_counter =
             RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
@@ -1590,18 +1596,24 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             )?,
         ) as Arc<dyn ExecutionPlan>;
 
-        let insert = Arc::new(RemoteWriteExec::new_multipart(
-            self.name.clone(),
-            self.identifier.clone(),
-            self.client.clone(),
-            plan,
-            output.overwrite,
-            upload_id.to_string(),
-            output.tracker.clone(),
-            self.branch.clone(),
-            self.client.max_bytes_per_request(),
-            self.client.max_request_duration(),
-        ));
+        let insert = Arc::new(
+            RemoteWriteExec::new_multipart(
+                self.name.clone(),
+                self.identifier.clone(),
+                self.client.clone(),
+                plan,
+                output.overwrite,
+                upload_id.to_string(),
+                output.tracker.clone(),
+                self.branch.clone(),
+                self.client.max_bytes_per_request(),
+                self.client.max_request_duration(),
+            )
+            .with_freshness(
+                self.freshness.clone(),
+                self.client.read_consistency_interval,
+            ),
+        );
 
         let task_ctx = Arc::new(datafusion_execution::TaskContext::default());
         let tracker = output.tracker.clone();
@@ -2562,15 +2574,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(crate::table::datafusion::scannable_exec::ScannableExec::new(source, None));
 
-        let mut merge: Arc<dyn ExecutionPlan> = Arc::new(RemoteWriteExec::new(
-            self.name.clone(),
-            self.identifier.clone(),
-            self.client.clone(),
-            input,
-            WriteOp::MergeInsert { query, timeout },
-            None,
-            self.branch.clone(),
-        ));
+        let mut merge: Arc<dyn ExecutionPlan> = Arc::new(
+            RemoteWriteExec::new(
+                self.name.clone(),
+                self.identifier.clone(),
+                self.client.clone(),
+                input,
+                WriteOp::MergeInsert { query, timeout },
+                None,
+                self.branch.clone(),
+            )
+            .with_freshness(
+                self.freshness.clone(),
+                self.client.read_consistency_interval,
+            ),
+        );
 
         let mut retry_counter = crate::remote::retry::RetryCounter::new(
             &self.client.retry_config,
@@ -3259,15 +3277,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         write_params: lance::dataset::WriteParams,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let overwrite = matches!(write_params.mode, lance::dataset::WriteMode::Overwrite);
-        Ok(Arc::new(insert::RemoteWriteExec::new(
-            self.name.clone(),
-            self.identifier.clone(),
-            self.client.clone(),
-            input,
-            WriteOp::Insert { overwrite },
-            None,
-            self.branch.clone(),
-        )))
+        Ok(Arc::new(
+            insert::RemoteWriteExec::new(
+                self.name.clone(),
+                self.identifier.clone(),
+                self.client.clone(),
+                input,
+                WriteOp::Insert { overwrite },
+                None,
+                self.branch.clone(),
+            )
+            .with_freshness(
+                self.freshness.clone(),
+                self.client.read_consistency_interval,
+            ),
+        ))
     }
 }
 
@@ -10283,6 +10307,63 @@ mod tests {
                 .get("x-lancedb-min-read-version")
                 .and_then(|value| value.to_str().ok()),
             Some("100")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_write_uses_and_advances_read_watermark() {
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let describe_body = serde_json::to_string(&json!({
+            "version": 7,
+            "schema": JsonSchema::try_from(data.schema().as_ref()).unwrap(),
+        }))
+        .unwrap();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            captured
+                .lock()
+                .unwrap()
+                .push((request.url().path().to_string(), request.headers().clone()));
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => http::Response::builder()
+                    .status(200)
+                    .header("x-lancedb-version", "8")
+                    .body(r#"{"version":8}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/count_rows/" => http::Response::builder()
+                    .status(200)
+                    .body("3".to_string())
+                    .unwrap(),
+                path => panic!("unexpected path: {path}"),
+            }
+        });
+
+        assert_eq!(table.add(data).execute().await.unwrap().version, 8);
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let requests = requests.lock().unwrap();
+        let insert_headers = &requests[1].1;
+        assert_eq!(
+            insert_headers
+                .get("x-lancedb-min-read-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("7")
+        );
+        let count_headers = &requests[2].1;
+        assert_eq!(
+            count_headers
+                .get("x-lancedb-min-read-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("8")
         );
     }
 

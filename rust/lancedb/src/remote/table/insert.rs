@@ -24,7 +24,10 @@ use lance::io::exec::utils::InstrumentedRecordBatchStreamAdapter;
 use crate::Error;
 use crate::remote::ARROW_STREAM_CONTENT_TYPE;
 use crate::remote::client::{HttpSend, RestfulLanceDbClient, Sender};
-use crate::remote::table::{MergeInsertRequest, REQUEST_TIMEOUT_HEADER, RemoteTable};
+use crate::remote::table::{
+    FreshnessState, MergeInsertRequest, REQUEST_TIMEOUT_HEADER, RemoteTable,
+    freshness_headers_snapshot, track_read_version_from_headers,
+};
 use crate::table::datafusion::insert::COUNT_SCHEMA;
 use crate::table::write_progress::WriteProgressTracker;
 use crate::table::{AddResult, MergeResult};
@@ -54,6 +57,29 @@ pub enum WriteResult {
     Merge(MergeResult),
 }
 
+#[derive(Debug, Clone, Default)]
+struct WriteFreshness {
+    state: Option<Arc<Mutex<FreshnessState>>>,
+    read_consistency_interval: Option<Duration>,
+}
+
+impl WriteFreshness {
+    fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.state {
+            Some(state) => {
+                freshness_headers_snapshot(state, self.read_consistency_interval).apply(request)
+            }
+            None => request,
+        }
+    }
+
+    fn observe(&self, headers: &reqwest::header::HeaderMap) {
+        if let Some(state) = &self.state {
+            track_read_version_from_headers(state, headers);
+        }
+    }
+}
+
 /// ExecutionPlan for streaming a write (add or merge_insert) to a remote
 /// LanceDB table.
 ///
@@ -71,6 +97,7 @@ pub struct RemoteWriteExec<S: HttpSend = Sender> {
     table_name: String,
     identifier: String,
     client: RestfulLanceDbClient<S>,
+    freshness: WriteFreshness,
     input: Arc<dyn ExecutionPlan>,
     op: WriteOp,
     properties: Arc<PlanProperties>,
@@ -170,6 +197,7 @@ impl<S: HttpSend + 'static> RemoteWriteExec<S> {
             table_name,
             identifier,
             client,
+            freshness: WriteFreshness::default(),
             input,
             op,
             properties: Arc::new(properties),
@@ -181,6 +209,18 @@ impl<S: HttpSend + 'static> RemoteWriteExec<S> {
             max_bytes_per_request,
             max_request_duration,
         }
+    }
+
+    pub(super) fn with_freshness(
+        mut self,
+        state: Arc<Mutex<FreshnessState>>,
+        read_consistency_interval: Option<Duration>,
+    ) -> Self {
+        self.freshness = WriteFreshness {
+            state: Some(state),
+            read_consistency_interval,
+        };
+        self
     }
 
     /// Get the add result after execution, if this exec ran an insert.
@@ -285,6 +325,7 @@ impl<S: HttpSend + 'static> RemoteWriteExec<S> {
 /// each threading the same handful of arguments.
 struct PartRequestCtx<'a, S: HttpSend> {
     client: &'a RestfulLanceDbClient<S>,
+    freshness: &'a WriteFreshness,
     identifier: &'a str,
     table_name: &'a str,
     upload_id: &'a str,
@@ -368,7 +409,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         if let Some(b) = self.branch {
             request = request.query(&[("branch", b)]);
         }
-        request.body(body)
+        self.freshness.apply(request.body(body))
     }
 
     /// Send a single part's request and drain the response, mapping HTTP and
@@ -388,6 +429,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
             .check_response(&request_id, response)
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        self.freshness.observe(response.headers());
         response.bytes().await.map_err(|e| {
             DataFusionError::External(Box::new(Error::Http {
                 source: Box::new(e),
@@ -569,7 +611,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
         // Building a fresh exec (with a new, empty `result`) is what makes the
         // outer rescannable retry loop work: `reset_state()` clears the captured
         // result so a re-execution starts clean.
-        Ok(Arc::new(Self::new_inner(
+        let mut exec = Self::new_inner(
             self.table_name.clone(),
             self.identifier.clone(),
             self.client.clone(),
@@ -580,7 +622,9 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
             self.branch.clone(),
             self.max_bytes_per_request,
             self.max_request_duration,
-        )))
+        );
+        exec.freshness = self.freshness.clone();
+        Ok(Arc::new(exec))
     }
 
     fn execute(
@@ -613,6 +657,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
                 &self.metrics,
             ));
         let client = self.client.clone();
+        let freshness = self.freshness.clone();
         let identifier = self.identifier.clone();
         let op = self.op.clone();
         let result_slot = self.result.clone();
@@ -634,6 +679,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
                 let overwrite = matches!(op, WriteOp::Insert { overwrite: true });
                 let ctx = PartRequestCtx {
                     client: &client,
+                    freshness: &freshness,
                     identifier: &identifier,
                     table_name: &table_name,
                     upload_id,
@@ -688,7 +734,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
 
             let (error_tx, mut error_rx) = tokio::sync::oneshot::channel();
             let body = Self::stream_as_http_body(input_stream, error_tx, tracker)?;
-            let request = request.body(body);
+            let request = freshness.apply(request.body(body));
 
             let result: DataFusionResult<(String, _)> = async {
                 let (request_id, response) = client
@@ -708,6 +754,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
                     .check_response(&request_id, response)
                     .await
                     .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                freshness.observe(response.headers());
 
                 Ok((request_id, response))
             }
