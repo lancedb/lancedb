@@ -144,8 +144,6 @@ pub async fn create_plan(
     query.base.check_filter()?;
 
     let ds_ref = table.dataset.get().await?;
-    let schema = ds_ref.schema();
-    let arrow_schema = Schema::from(schema);
 
     // MemWAL read routing driven by `use_lsm`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
@@ -169,12 +167,14 @@ pub async fn create_plan(
         return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
+    let schema = ds_ref.schema();
     let mut column = query.column.clone();
 
     let mut query_vector = query.query_vector.first().cloned();
     if query.query_vector.len() > 1 {
         if column.is_none() {
             // Infer a vector column with the same dimension of the query vector.
+            let arrow_schema = Schema::from(schema);
             column = Some(default_vector_column(
                 &arrow_schema,
                 Some(query.query_vector[0].len() as i32),
@@ -226,6 +226,7 @@ pub async fn create_plan(
         let column = if let Some(col) = column {
             col
         } else {
+            let arrow_schema = Schema::from(schema);
             default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
         };
 
@@ -330,7 +331,7 @@ pub async fn create_plan(
     scanner
         .create_plan()
         .await
-        .map_err(|error| enrich_lance_field_not_found(error, &arrow_schema))
+        .map_err(|error| enrich_lance_field_not_found(error, schema))
 }
 
 /// Replace DataFusion's top-level field candidates with qualified leaf paths.
@@ -339,8 +340,14 @@ pub async fn create_plan(
 /// top-level Arrow fields. This makes a missing leaf look unavailable even when it
 /// exists below a struct. Keep every other Lance/DataFusion error unchanged and
 /// enrich only this one schema error at the LanceDB query boundary.
-fn enrich_lance_field_not_found(error: lance::Error, schema: &Schema) -> Error {
-    field_not_found_diagnostic(&error, schema).unwrap_or_else(|| error.into())
+fn enrich_lance_field_not_found(
+    error: lance::Error,
+    schema: &lance_core::datatypes::Schema,
+) -> Error {
+    let Some(field) = find_missing_field(&error) else {
+        return error.into();
+    };
+    field_not_found_error(field, &Schema::from(schema))
 }
 
 fn field_not_found_diagnostic(
@@ -348,6 +355,10 @@ fn field_not_found_diagnostic(
     schema: &Schema,
 ) -> Option<Error> {
     let field = find_missing_field(error)?;
+    Some(field_not_found_error(field, schema))
+}
+
+fn field_not_found_error(field: &Column, schema: &Schema) -> Error {
     let valid_fields = leaf_field_paths(schema);
     let mut message = format!("Schema error: No field named {}", field.quoted_flat_name());
     if !valid_fields.is_empty() {
@@ -356,7 +367,7 @@ fn field_not_found_diagnostic(
     }
     message.push('.');
 
-    Some(Error::InvalidInput { message })
+    Error::InvalidInput { message }
 }
 
 fn find_missing_field<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Column> {
