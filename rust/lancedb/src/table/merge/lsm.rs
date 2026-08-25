@@ -29,6 +29,7 @@ use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, ShardWriter, ShardWriterConfig, evaluate_sharding_spec,
+    validate_maintained_indexes,
 };
 use lance::index::DatasetIndexExt;
 use lance_core::datatypes::Schema as LanceSchema;
@@ -37,8 +38,9 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
+use crate::index::IndexConfig;
 use crate::table::merge::{MergeInsertBuilder, MergeResult};
-use crate::table::{LsmWriteSpec, NativeTable};
+use crate::table::{BaseTable, LsmWriteSpec, NativeTable};
 
 /// Spec id of the sole sharding spec installed by [`set_lsm_write_spec`].
 /// Must match Lance's `InitializeMemWalBuilder` (`SHARDING_SPEC_ID`).
@@ -80,32 +82,60 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         }
     }
 
+    // Before the builder borrows the dataset clone. `list_indices` merges an
+    // index's segments into one entry, so the result needs no dedup.
+    let maintained_indexes = {
+        let dataset = table.dataset.get().await?;
+        resolve_maintained_indexes(
+            &dataset,
+            &table.list_indices().await?,
+            spec.maintained_indexes(),
+        )
+        .await?
+    };
+
+    table.checkout_latest().await?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    let schema = arrow_schema::Schema::from(dataset.schema());
+    if !crate::table::computed_columns::computed_columns(&schema).is_empty() {
+        return Err(Error::NotSupported {
+            message: "an LSM write spec cannot be installed on a table with computed \
+                      columns: rows in un-compacted tiers are invisible to refresh"
+                .into(),
+        });
+    }
+    if crate::materialized_view::materialized_view_kind(&dataset.schema().metadata)?.is_some() {
+        return Err(Error::NotSupported {
+            message: "an LSM write spec cannot be installed on a materialized view: \
+                      rows in un-compacted tiers are invisible to refresh"
+                .into(),
+        });
+    }
     let mut builder = dataset.initialize_mem_wal();
-    let (maintained_indexes, writer_config_defaults) = match spec {
+    let writer_config_defaults = match spec {
         LsmWriteSpec::Bucket {
             column,
             num_buckets,
-            maintained_indexes,
             writer_config_defaults,
+            ..
         } => {
             builder = builder.bucket_sharding(column, num_buckets);
-            (maintained_indexes, writer_config_defaults)
+            writer_config_defaults
         }
         LsmWriteSpec::Identity {
             column,
-            maintained_indexes,
             writer_config_defaults,
+            ..
         } => {
             builder = builder.identity_sharding(column);
-            (maintained_indexes, writer_config_defaults)
+            writer_config_defaults
         }
         LsmWriteSpec::Unsharded {
-            maintained_indexes,
             writer_config_defaults,
+            ..
         } => {
             builder = builder.unsharded();
-            (maintained_indexes, writer_config_defaults)
+            writer_config_defaults
         }
     };
     builder = builder.maintained_indexes(maintained_indexes);
@@ -115,6 +145,58 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     builder.execute().await?;
     table.dataset.update(dataset);
     Ok(())
+}
+
+/// Resolve a spec's maintained-index selection against `indices`, as reported
+/// by [`Table::list_indices`](crate::Table::list_indices).
+///
+/// `None` means every index on the table, snapshotted now. Lance validates
+/// either selection against its shard-writer rules, so a spec that installs is
+/// one the MemWAL can open.
+///
+/// An unmaintainable index fails an inferred set rather than being dropped from
+/// it — dropping would leave the caller believing it is maintained.
+async fn resolve_maintained_indexes(
+    dataset: &Dataset,
+    indices: &[IndexConfig],
+    requested: Option<&[String]>,
+) -> Result<Vec<String>> {
+    let Some(requested) = requested else {
+        let all: Vec<String> = indices.iter().map(|index| index.name.clone()).collect();
+        validate_maintained_indexes(dataset, &all)
+            .await
+            .map_err(|source| Error::InvalidInput {
+                message: format!(
+                    "cannot maintain every index on this table: {source}. Set \
+                     maintained_indexes explicitly to choose from {}",
+                    index_name_list(indices),
+                ),
+            })?;
+        return Ok(all);
+    };
+    for name in requested {
+        if !indices.iter().any(|index| &index.name == name) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "maintained index '{}' does not exist on this table; it has {}",
+                    name,
+                    index_name_list(indices),
+                ),
+            });
+        }
+    }
+    validate_maintained_indexes(dataset, requested).await?;
+    Ok(requested.to_vec())
+}
+
+/// Index names for an error message.
+fn index_name_list(indices: &[IndexConfig]) -> String {
+    if indices.is_empty() {
+        return "no indexes".to_string();
+    }
+    let mut names: Vec<&str> = indices.iter().map(|index| index.name.as_str()).collect();
+    names.sort_unstable();
+    format!("[{}]", names.join(", "))
 }
 
 // =============================================================================

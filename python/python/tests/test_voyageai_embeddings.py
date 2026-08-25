@@ -75,6 +75,22 @@ class TestVoyageAIModelRegistration:
         with pytest.raises(ValueError, match="not supported"):
             func.ndims()
 
+    def test_voyage3_source_embeddings_use_text_api(self, mock_voyageai_client):
+        """Regression test for text table data being sent to the multimodal API."""
+        mock_voyageai_client.tokenize.return_value = [["hello", "world"]]
+        mock_voyageai_client.embed.return_value.embeddings = [[0.1] * 1024]
+
+        registry = get_registry()
+        func = registry.get("voyageai").create(name="voyage-3")
+
+        embeddings = func.compute_source_embeddings("hello world")
+
+        assert embeddings == [[0.1] * 1024]
+        mock_voyageai_client.embed.assert_called_once_with(
+            texts=["hello world"], model="voyage-3", input_type="document"
+        )
+        mock_voyageai_client.multimodal_embed.assert_not_called()
+
     @pytest.mark.parametrize(
         "model_name",
         [

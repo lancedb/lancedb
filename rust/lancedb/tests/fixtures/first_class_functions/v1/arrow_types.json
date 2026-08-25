@@ -1,0 +1,333 @@
+{
+  "valid": [
+    {
+      "arrow_type": "bool",
+      "json": {
+        "type": "bool"
+      }
+    },
+    {
+      "arrow_type": "int8",
+      "json": {
+        "type": "int8"
+      }
+    },
+    {
+      "arrow_type": "int16",
+      "json": {
+        "type": "int16"
+      }
+    },
+    {
+      "arrow_type": "int32",
+      "json": {
+        "type": "int32"
+      }
+    },
+    {
+      "arrow_type": "int64",
+      "json": {
+        "type": "int64"
+      }
+    },
+    {
+      "arrow_type": "uint8",
+      "json": {
+        "type": "uint8"
+      }
+    },
+    {
+      "arrow_type": "uint16",
+      "json": {
+        "type": "uint16"
+      }
+    },
+    {
+      "arrow_type": "uint32",
+      "json": {
+        "type": "uint32"
+      }
+    },
+    {
+      "arrow_type": "uint64",
+      "json": {
+        "type": "uint64"
+      }
+    },
+    {
+      "arrow_type": "float16",
+      "json": {
+        "type": "float16"
+      }
+    },
+    {
+      "arrow_type": "float32",
+      "json": {
+        "type": "float32"
+      }
+    },
+    {
+      "arrow_type": "float64",
+      "json": {
+        "type": "float64"
+      }
+    },
+    {
+      "arrow_type": "utf8",
+      "json": {
+        "type": "utf8"
+      }
+    },
+    {
+      "arrow_type": "binary",
+      "json": {
+        "type": "binary"
+      }
+    },
+    {
+      "arrow_type": "date32",
+      "json": {
+        "type": "date32"
+      }
+    },
+    {
+      "arrow_type": "date64",
+      "json": {
+        "type": "date64"
+      }
+    },
+    {
+      "arrow_type": "list<float32>",
+      "json": {
+        "type": "list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "float32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "large_list<float32>",
+      "json": {
+        "type": "large_list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "float32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "list<int64>",
+      "json": {
+        "type": "list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "int64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "large_list<int64>",
+      "json": {
+        "type": "large_list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "int64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "list<utf8>",
+      "json": {
+        "type": "list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "utf8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "large_list<utf8>",
+      "json": {
+        "type": "large_list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "utf8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "fixed_size_list<float32, 384>",
+      "json": {
+        "type": "fixed_size_list",
+        "length": 384,
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "float32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "fixed_size_list<float16, 8>",
+      "json": {
+        "type": "fixed_size_list",
+        "length": 8,
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "float16"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "fixed_size_list<uint8, 1>",
+      "json": {
+        "type": "fixed_size_list",
+        "length": 1,
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "uint8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "list<list<float32>>",
+      "json": {
+        "type": "list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "list",
+              "fields": [
+                {
+                  "name": "item",
+                  "nullable": false,
+                  "type": {
+                    "type": "float32"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "fixed_size_list<list<int32>, 2>",
+      "json": {
+        "type": "fixed_size_list",
+        "length": 2,
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "list",
+              "fields": [
+                {
+                  "name": "item",
+                  "nullable": false,
+                  "type": {
+                    "type": "int32"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "list<fixed_size_list<float32, 3>>",
+      "json": {
+        "type": "list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "fixed_size_list",
+              "length": 3,
+              "fields": [
+                {
+                  "name": "item",
+                  "nullable": false,
+                  "type": {
+                    "type": "float32"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "server_only": [
+    {
+      "arrow_type": "null",
+      "json": {
+        "type": "null"
+      }
+    }
+  ],
+  "invalid": [
+    "",
+    "list<>",
+    "list<float32",
+    "fixed_size_list<float32>[3]",
+    "fixed_size_list<float32>",
+    "fixed_size_list<float32, 0>",
+    "fixed_size_list<float32, x>",
+    "map<utf8, int32>",
+    "decimal128(10, 2)",
+    "timestamp[us]",
+    "struct<a: int32>"
+  ]
+}
