@@ -1972,7 +1972,7 @@ class Table(ABC):
             A mapping with one ``FunctionApplication`` value keeps its scalar
             or named-struct result in the named table column. A bare
             named-struct application expands its ordered result fields as one
-            atomic sibling group; aliases come from ``rename(columns=...)``.
+            atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
@@ -6038,7 +6038,7 @@ class AsyncTable:
             A mapping with one ``FunctionApplication`` value keeps its scalar
             or named-struct result in the named table column. A bare
             named-struct application expands its ordered result fields as one
-            atomic sibling group; aliases come from ``rename(columns=...)``.
+            atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
@@ -6075,7 +6075,7 @@ class AsyncTable:
                 isinstance(value, FunctionApplication) for value in transforms.values()
             ):
                 raise ValueError(
-                    "one add_columns call declares exactly one Function sibling group"
+                    "one add_columns call declares exactly one Function binding"
                 )
             function_output_name, function_application = next(iter(transforms.items()))
 

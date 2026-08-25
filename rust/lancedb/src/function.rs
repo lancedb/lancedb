@@ -446,7 +446,6 @@ pub struct FunctionApplication {
     function: FunctionVersionRef,
     inputs: Vec<ApplicationInput>,
     output: FunctionOutput,
-    group_id: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     columns: BTreeMap<String, String>,
     #[serde(default, flatten, skip_serializing)]
@@ -466,10 +465,6 @@ impl FunctionApplication {
 
     pub fn output(&self) -> &FunctionOutput {
         &self.output
-    }
-
-    pub fn group_id(&self) -> &str {
-        &self.group_id
     }
 
     pub fn columns(&self) -> &BTreeMap<String, String> {
@@ -513,7 +508,7 @@ pub struct InputBinding {
     pub nullable: bool,
 }
 
-/// Ordered result-field to table-field mapping for a grouped binding.
+/// Ordered result-field to table-field mapping for a Function binding.
 ///
 /// Assignment state is not part of the Slice 1 client contract. During the
 /// NULL transition there is no public Lance cell-flag identifier to persist.
@@ -527,20 +522,18 @@ pub struct OutputMapping {
     pub nullable: bool,
 }
 
-/// Immutable grouped binding persisted by the Enterprise table service.
+/// Immutable Function binding persisted by the Enterprise table service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionBinding {
     binding_id: String,
-    revision: u64,
     function: FunctionVersionRef,
-    group_id: String,
     inputs: Vec<InputBinding>,
     outputs: Vec<OutputMapping>,
     /// Exact Arrow schema presented to the Function, encoded with the Lance
     /// Namespace Arrow JSON representation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     input_schema: Option<Value>,
-    /// Exact physical Arrow schema of the grouped table outputs.
+    /// Exact physical Arrow schema of the binding's table outputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_schema: Option<Value>,
 }
@@ -550,16 +543,8 @@ impl FunctionBinding {
         &self.binding_id
     }
 
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
     pub fn function(&self) -> &FunctionVersionRef {
         &self.function
-    }
-
-    pub fn group_id(&self) -> &str {
-        &self.group_id
     }
 
     pub fn inputs(&self) -> &[InputBinding] {

@@ -751,7 +751,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are not supported on this table type".into(),
         })
     }
-    /// Declare one immutable registered-Function output group.
+    /// Declare one immutable registered-Function binding.
     async fn add_function_columns(
         &self,
         _application: &crate::function::FunctionApplication,

@@ -24,8 +24,7 @@
         "kind": "scalar",
         "arrow_type": "fixed_size_list<float32, 3>",
         "nullable": false
-      },
-      "group_id": "fg_fixed"
+      }
     },
     "binding_metadata_version": 1,
     "input_bindings": [
