@@ -14,6 +14,7 @@ use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitio
 use crate::expr::expr_to_sql_string;
 use crate::index::Index;
 use crate::index::IndexStatistics;
+use crate::index::scalar::FtsQuery;
 use crate::index::waiter::wait_for_index;
 use crate::job::Job;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
@@ -39,7 +40,8 @@ use crate::table::{
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
-    resolve_arrow_field_path, supported_btree_data_type, supported_vector_data_type,
+    resolve_arrow_field_path, resolve_arrow_fts_field_path, supported_btree_data_type,
+    supported_vector_data_type,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -86,6 +88,32 @@ const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
+
+fn fts_query_requires_document_granularity_support(query: &FtsQuery) -> bool {
+    match query {
+        FtsQuery::Match(query) => query
+            .document_granularity
+            .is_some_and(|granularity| granularity.is_list_element()),
+        FtsQuery::Phrase(query) => query
+            .document_granularity
+            .is_some_and(|granularity| granularity.is_list_element()),
+        FtsQuery::Boost(query) => {
+            fts_query_requires_document_granularity_support(&query.positive)
+                || fts_query_requires_document_granularity_support(&query.negative)
+        }
+        FtsQuery::MultiMatch(query) => query.match_queries.iter().any(|query| {
+            query
+                .document_granularity
+                .is_some_and(|granularity| granularity.is_list_element())
+        }),
+        FtsQuery::Boolean(query) => query
+            .must
+            .iter()
+            .chain(&query.should)
+            .chain(&query.must_not)
+            .any(fts_query_requires_document_granularity_support),
+    }
+}
 
 /// Per-table state driving the freshness headers (`x-lancedb-min-version`,
 /// `x-lancedb-min-timestamp`, and `x-lancedb-min-read-version`) sent on read
@@ -349,8 +377,21 @@ impl<S: HttpSend> RemoteTable<S> {
                 });
             }
         };
+        if matches!(
+            &index.index,
+            Index::FTS(params) if params.get_document_granularity().is_list_element()
+        ) && !self.server_version.support_fts_document_granularity()
+        {
+            return Err(Error::NotSupported {
+                message: "FTS document granularity requires remote server version 0.6.0 or later"
+                    .into(),
+            });
+        }
         let schema = self.schema().await?;
-        let (canonical_column, field) = resolve_arrow_field_path(&schema, &column)?;
+        let (canonical_column, field) = match &index.index {
+            Index::FTS(_) => resolve_arrow_fts_field_path(&schema, &column)?,
+            _ => resolve_arrow_field_path(&schema, &column)?,
+        };
         let mut body = serde_json::json!({
             "column": canonical_column
         });
@@ -386,7 +427,13 @@ impl<S: HttpSend> RemoteTable<S> {
             Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
             Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
             Index::Fm(p) => ("FM", Some(to_json(p)?)),
-            Index::FTS(p) => ("FTS", Some(to_json(p)?)),
+            Index::FTS(p) => {
+                let mut params = to_json(p)?;
+                if p.get_document_granularity().is_list_element() {
+                    params["document_granularity"] = "list_element".into();
+                }
+                ("FTS", Some(params))
+            }
             Index::Auto => {
                 if supported_vector_data_type(field.data_type()) {
                     body[METRIC_TYPE_KEY] =
@@ -797,6 +844,18 @@ impl<S: HttpSend> RemoteTable<S> {
             if full_text_search.wand_factor.is_some() {
                 return Err(Error::NotSupported {
                     message: "Wand factor is not yet supported in LanceDB Cloud".into(),
+                });
+            }
+
+            let requires_document_granularity_support =
+                fts_query_requires_document_granularity_support(&full_text_search.query);
+            if requires_document_granularity_support
+                && !self.server_version.support_fts_document_granularity()
+            {
+                return Err(Error::NotSupported {
+                    message:
+                        "FTS document granularity requires remote server version 0.6.0 or later"
+                            .into(),
                 });
             }
 
@@ -3273,7 +3332,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, future::BoxFuture};
-    use lance_index::scalar::inverted::query::MatchQuery;
+    use lance_index::scalar::inverted::{DocumentGranularity, query::MatchQuery};
     use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
     use reqwest::Body;
     use rstest::rstest;
@@ -3549,6 +3608,15 @@ mod tests {
                 "payload",
                 DataType::Struct(vec![Field::new("text", DataType::Utf8, false)].into()),
                 false,
+            ),
+            Field::new(
+                "docs",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(vec![Field::new("content", DataType::Utf8, true)].into()),
+                    true,
+                ))),
+                true,
             ),
             Field::new(
                 "meta-data",
@@ -5096,7 +5164,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_structured_fts() {
         let table =
-            Table::new_with_handler_version("my_table", semver::Version::new(0, 3, 0), |request| {
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 6, 0), |request| {
                 assert_eq!(request.method(), "POST");
                 assert_eq!(request.url().path(), "/v1/table/my_table/query/");
                 assert_eq!(
@@ -5117,6 +5185,7 @@ mod tests {
                                 "max_expansions": 50,
                                 "operator": "Or",
                                 "prefix_length": 0,
+                                "document_granularity": "list_element",
                             },
                         }
                     },
@@ -5146,6 +5215,7 @@ mod tests {
             .full_text_search(FullTextSearchQuery::new_query(
                 MatchQuery::new("hello world".to_owned())
                     .with_column(Some("payload.text".to_owned()))
+                    .with_document_granularity(DocumentGranularity::ListElement)
                     .into(),
             ))
             .with_row_id()
@@ -5153,6 +5223,76 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_row_document_granularity_uses_structured_fts() {
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 3, 0), |request| {
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(
+                    body["full_text_query"]["query"]["match"]["document_granularity"],
+                    "row"
+                );
+
+                let data = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                    vec![Arc::new(Int32Array::from(vec![1]))],
+                )
+                .unwrap();
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                    .body(write_ipc_file(&data))
+                    .unwrap()
+            });
+
+        table
+            .query()
+            .full_text_search(FullTextSearchQuery::new_query(
+                MatchQuery::new("hello world".to_owned())
+                    .with_column(Some("payload.text".to_owned()))
+                    .with_document_granularity(DocumentGranularity::Row)
+                    .into(),
+            ))
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[rstest]
+    #[case(DEFAULT_SERVER_VERSION.clone())]
+    #[case(semver::Version::new(0, 3, 0))]
+    #[case(semver::Version::new(0, 5, 0))]
+    #[tokio::test]
+    async fn test_query_document_granularity_requires_server_support(
+        #[case] version: semver::Version,
+    ) {
+        let table =
+            Table::new_with_handler_version("my_table", version, |_| -> http::Response<String> {
+                panic!("unsupported remote query must fail before sending a request")
+            });
+
+        let result = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new_query(
+                MatchQuery::new("hello world".to_owned())
+                    .with_column(Some("payload.text".to_owned()))
+                    .with_document_granularity(DocumentGranularity::ListElement)
+                    .into(),
+            ))
+            .execute()
+            .await;
+        let err = match result {
+            Ok(_) => panic!("legacy remote query unexpectedly succeeded"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("document granularity requires remote server version 0.6.0 or later")
+        );
     }
 
     #[rstest]
@@ -5433,40 +5573,56 @@ mod tests {
                     "CAT".to_string(),
                 ]))),
             ),
+            (
+                "FTS",
+                {
+                    let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                    body["document_granularity"] = "list_element".into();
+                    body
+                },
+                Index::FTS(
+                    InvertedIndexParams::default()
+                        .document_granularity(DocumentGranularity::ListElement),
+                ),
+            ),
         ];
 
         for (index_type, expected_body, index) in cases {
-            let table = Table::new_with_handler("my_table", move |request| {
-                assert_eq!(request.method(), "POST");
-                match request.url().path() {
-                    "/v1/table/my_table/describe/" => {
-                        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
-                        http::Response::builder()
-                            .status(200)
-                            .body(describe_response(&schema))
-                            .unwrap()
-                    }
-                    "/v1/table/my_table/create_index/" => {
-                        assert_eq!(
-                            request.headers().get("Content-Type").unwrap(),
-                            JSON_CONTENT_TYPE
-                        );
-                        let body = request.body().unwrap().as_bytes().unwrap();
-                        let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-                        let mut expected_body = expected_body.clone();
-                        expected_body["column"] = "a".into();
-                        expected_body[INDEX_TYPE_KEY] = index_type.into();
+            let table = Table::new_with_handler_version(
+                "my_table",
+                semver::Version::new(0, 6, 0),
+                move |request| {
+                    assert_eq!(request.method(), "POST");
+                    match request.url().path() {
+                        "/v1/table/my_table/describe/" => {
+                            let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                            http::Response::builder()
+                                .status(200)
+                                .body(describe_response(&schema))
+                                .unwrap()
+                        }
+                        "/v1/table/my_table/create_index/" => {
+                            assert_eq!(
+                                request.headers().get("Content-Type").unwrap(),
+                                JSON_CONTENT_TYPE
+                            );
+                            let body = request.body().unwrap().as_bytes().unwrap();
+                            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                            let mut expected_body = expected_body.clone();
+                            expected_body["column"] = "a".into();
+                            expected_body[INDEX_TYPE_KEY] = index_type.into();
 
-                        assert_eq!(body, expected_body);
+                            assert_eq!(body, expected_body);
 
-                        http::Response::builder()
-                            .status(200)
-                            .body("{}".to_string())
-                            .unwrap()
+                            http::Response::builder()
+                                .status(200)
+                                .body("{}".to_string())
+                                .unwrap()
+                        }
+                        path => panic!("Unexpected path: {}", path),
                     }
-                    path => panic!("Unexpected path: {}", path),
-                }
-            });
+                },
+            );
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
@@ -5725,6 +5881,19 @@ mod tests {
                 body["index_type"] = "FTS".into();
                 body
             },
+            {
+                let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                body["column"] = "docs.content".into();
+                body["index_type"] = "FTS".into();
+                body
+            },
+            {
+                let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                body["column"] = "docs.content".into();
+                body["index_type"] = "FTS".into();
+                body["document_granularity"] = "list_element".into();
+                body
+            },
             json!({
                 "column": "`meta-data`.`user-id`",
                 "index_type": "BTREE",
@@ -5735,7 +5904,7 @@ mod tests {
             }),
         ]);
         let request_idx = Arc::new(AtomicUsize::new(0));
-        let table = Table::new_with_handler("my_table", {
+        let table = Table::new_with_handler_version("my_table", semver::Version::new(0, 6, 0), {
             let schema = schema.clone();
             let expected_requests = expected_requests.clone();
             let request_idx = request_idx.clone();
@@ -5801,6 +5970,22 @@ mod tests {
             .await
             .unwrap();
         table
+            .create_index(&["Docs.Content"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["Docs.Content"],
+                Index::FTS(
+                    InvertedIndexParams::default()
+                        .document_granularity(DocumentGranularity::ListElement),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        table
             .create_index(&["`META-DATA`.`USER-ID`"], Index::BTree(Default::default()))
             .execute()
             .await
@@ -5812,6 +5997,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(request_idx.load(Ordering::SeqCst), expected_requests.len());
+    }
+
+    #[tokio::test]
+    async fn test_create_list_element_fts_requires_server_support() {
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            |_| -> http::Response<String> {
+                panic!("unsupported index creation must fail before sending a request")
+            },
+        );
+
+        let result = table
+            .create_index(
+                &["docs.content"],
+                Index::FTS(
+                    InvertedIndexParams::default()
+                        .document_granularity(DocumentGranularity::ListElement),
+                ),
+            )
+            .execute()
+            .await;
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("document granularity requires remote server version 0.6.0 or later")
+        );
     }
 
     #[tokio::test]

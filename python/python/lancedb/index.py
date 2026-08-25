@@ -7,6 +7,7 @@ from typing import List, Literal, Optional
 from ._lancedb import (
     IndexConfig,
 )
+from .query import DocumentGranularity
 from .types import BaseTokenizerType
 
 lang_mapping = {
@@ -121,6 +122,11 @@ class FTS:
 
     >>> config = FTS(block_size=256)
 
+    Create an index that treats each deepest-list element as one document:
+
+    >>> from lancedb.query import DocumentGranularity
+    >>> config = FTS(document_granularity=DocumentGranularity.LIST_ELEMENT)
+
     Attributes
     ----------
     with_position : bool, default False
@@ -172,6 +178,11 @@ class FTS:
         roughly half of the available CPU cores. The effective value is
         limited by the available compute capacity. This build-only setting is
         not persisted with the index and does not apply to remote tables.
+    document_granularity : DocumentGranularity, default ROW
+        ``ROW`` treats the selected text in one table row as one document.
+        ``LIST_ELEMENT`` treats each element of the deepest list on the indexed
+        field path as one document and returns its physical coordinates in
+        ``_doc_index`` for matching queries.
 
     Notes
     -----
@@ -196,6 +207,7 @@ class FTS:
     custom_stop_words: Optional[List[str]] = None
     memory_limit: Optional[int] = None
     num_workers: Optional[int] = None
+    document_granularity: DocumentGranularity = DocumentGranularity.ROW
 
 
 @dataclass

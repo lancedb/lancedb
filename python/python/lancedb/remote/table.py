@@ -61,6 +61,7 @@ from lancedb.table import _normalize_progress
 
 from ..query import (
     AnalyzePlanDistributedMetrics,
+    DocumentGranularity,
     LanceQueryBuilder,
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
@@ -349,6 +350,7 @@ class RemoteTable(Table):
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         block_size: int = 128,
+        document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -371,6 +373,7 @@ class RemoteTable(Table):
             ngram_max_length=ngram_max_length,
             prefix_only=prefix_only,
             block_size=block_size,
+            document_granularity=document_granularity,
         )
         LOOP.run(
             self._table.create_index(

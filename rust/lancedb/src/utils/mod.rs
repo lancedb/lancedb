@@ -225,6 +225,86 @@ pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<
     Ok((canonical_path, Field::from(*field)))
 }
 
+/// Canonicalize a public FTS field path while keeping Arrow list item names hidden.
+fn resolve_public_fts_field_path(
+    schema: &lance_core::datatypes::Schema,
+    column: &str,
+) -> Result<(String, Field)> {
+    let names =
+        lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
+            message: format!("Invalid field path `{}`: {}", column, e),
+        })?;
+    let (root_name, remaining_names) = names.split_first().ok_or_else(|| Error::InvalidInput {
+        message: "FTS field path cannot be empty".to_string(),
+    })?;
+    let mut field = schema
+        .fields
+        .iter()
+        .find(|field| field.name == *root_name)
+        .or_else(|| {
+            schema
+                .fields
+                .iter()
+                .find(|field| field.name.eq_ignore_ascii_case(root_name))
+        })
+        .ok_or_else(|| Error::Schema {
+            message: format!("FTS field path `{}` not found in schema", column),
+        })?;
+    let mut canonical_names = vec![field.name.clone()];
+
+    for name in remaining_names {
+        while matches!(
+            field.data_type(),
+            DataType::List(_) | DataType::LargeList(_)
+        ) {
+            field = field.children.first().ok_or_else(|| Error::Schema {
+                message: format!(
+                    "FTS field path `{}` has a list without an item field",
+                    column
+                ),
+            })?;
+        }
+        if !matches!(field.data_type(), DataType::Struct(_)) {
+            return Err(Error::Schema {
+                message: format!("FTS field path `{}` not found in schema", column),
+            });
+        }
+        field = field
+            .children
+            .iter()
+            .find(|field| field.name == *name)
+            .or_else(|| {
+                field
+                    .children
+                    .iter()
+                    .find(|field| field.name.eq_ignore_ascii_case(name))
+            })
+            .ok_or_else(|| Error::Schema {
+                message: format!("FTS field path `{}` not found in schema", column),
+            })?;
+        canonical_names.push(field.name.clone());
+    }
+
+    let canonical_path = lance_core::datatypes::format_field_path(
+        &canonical_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    Ok((canonical_path, Field::from(field)))
+}
+
+pub(crate) fn resolve_arrow_fts_field_path(
+    schema: &Schema,
+    column: &str,
+) -> Result<(String, Field)> {
+    let lance_schema =
+        lance_core::datatypes::Schema::try_from(schema).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+    resolve_public_fts_field_path(&lance_schema, column)
+}
+
 pub fn supported_btree_data_type(dtype: &DataType) -> bool {
     dtype.is_integer()
         || dtype.is_floating()
@@ -479,6 +559,24 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+
+    #[test]
+    fn test_public_fts_field_path_prefers_exact_case() {
+        let text_list = || {
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Struct(vec![Field::new("content", DataType::Utf8, true)].into()),
+                true,
+            )))
+        };
+        let schema = Schema::new(vec![
+            Field::new("Docs", text_list(), true),
+            Field::new("docs", text_list(), true),
+        ]);
+
+        let (path, _) = resolve_arrow_fts_field_path(&schema, "docs.content").unwrap();
+        assert_eq!(path, "docs.content");
+    }
 
     #[test]
     fn test_guess_default_column() {

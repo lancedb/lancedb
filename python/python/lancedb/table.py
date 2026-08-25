@@ -85,6 +85,7 @@ from .query import (
     AsyncQuery,
     AsyncTakeQuery,
     AsyncVectorQuery,
+    DocumentGranularity,
     FullTextQuery,
     LanceEmptyQueryBuilder,
     LanceFtsQueryBuilder,
@@ -1168,6 +1169,7 @@ class Table(ABC):
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         block_size: int = 128,
+        document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
@@ -1246,6 +1248,11 @@ class Table(ABC):
             The number of documents per compressed posting block. Must be 128
             or 256. A value of 256 uses the experimental FTS V3 format and
             may introduce breaking changes.
+        document_granularity: DocumentGranularity, default ROW
+            ``ROW`` treats the selected text in one table row as one document.
+            ``LIST_ELEMENT`` treats each element of the deepest list on the field
+            path as one document and returns its physical coordinates in
+            ``_doc_index`` for matching queries.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
         name: str, optional
@@ -3268,6 +3275,7 @@ class LanceTable(Table):
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         block_size: int = 128,
+        document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -3319,7 +3327,11 @@ class LanceTable(Table):
             tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
             tokenizer_configs["custom_stop_words"] = custom_stop_words
 
-        config = FTS(block_size=block_size, **tokenizer_configs)
+        config = FTS(
+            block_size=block_size,
+            document_granularity=document_granularity,
+            **tokenizer_configs,
+        )
 
         try:
             LOOP.run(

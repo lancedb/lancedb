@@ -121,6 +121,13 @@ impl NativeTable {
             });
         }
         self.dataset.ensure_mutable()?;
+        if let Index::FTS(params) = &opts.index {
+            return Ok((
+                opts.columns[0].clone(),
+                Box::new(params.clone()),
+                IndexType::Inverted,
+            ));
+        }
         let dataset = self.dataset.get().await?;
         let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
         let params = self.make_index_params(&field, opts.index.clone()).await?;
