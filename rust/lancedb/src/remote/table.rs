@@ -1725,6 +1725,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn version(&self) -> Result<u64> {
         self.describe().await.map(|desc| desc.version)
     }
+
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        let description = self.describe().await?;
+        let TableDescription {
+            version,
+            schema,
+            location,
+        } = description;
+        let schema = Arc::new(arrow_schema::Schema::try_from(schema)?);
+        let snapshot = self.with_branch(self.branch.clone());
+        *snapshot.version.write().await = Some(version);
+        *snapshot.location.write().await = location;
+        snapshot.schema_cache.seed(schema);
+        Ok(Arc::new(snapshot))
+    }
+
     async fn checkout(&self, version: u64) -> Result<()> {
         // Validate the version exists. The describe is sent without freshness
         // headers so a stale `min_version` from a previous write doesn't ride
@@ -8737,6 +8753,28 @@ mod tests {
             );
             assert_eq!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
         }
+    }
+
+    /// A pinned snapshot should reuse the version and schema returned by its
+    /// initial describe instead of issuing two more describe requests.
+    #[tokio::test]
+    async fn test_checkout_current_seeds_schema_from_single_describe() {
+        let describe_calls = Arc::new(AtomicUsize::new(0));
+        let calls = describe_calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            calls.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":42,"schema":{"fields":[{"name":"a","type":{"type":"int32"},"nullable":false}]}}"#,
+                )
+                .unwrap()
+        });
+
+        let snapshot = table.checkout_current().await.unwrap();
+        assert_eq!(snapshot.schema().await.unwrap().fields().len(), 1);
+        assert_eq!(describe_calls.load(Ordering::SeqCst), 1);
     }
 
     /// Test that schema cache is invalidated after checkout

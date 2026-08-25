@@ -43,6 +43,7 @@ import {
   Table as _NativeTable,
 } from "./native";
 import {
+  AutoQuery,
   FullTextQuery,
   Query,
   TakeQuery,
@@ -523,7 +524,7 @@ export abstract class Table {
     query: string | IntoVector | MultiVector | FullTextQuery,
     queryType?: string,
     ftsColumns?: string | string[],
-  ): VectorQuery | Query;
+  ): VectorQuery | Query | AutoQuery;
   /**
    * Search the table with a given query vector.
    *
@@ -975,10 +976,11 @@ export class LocalTable extends Table {
     return this.inner.display();
   }
 
-  private async getEmbeddingFunctions(): Promise<
-    Map<string, EmbeddingFunctionConfig>
-  > {
-    const schema = await this.schema();
+  private async getEmbeddingFunctions(
+    inner: _NativeTable = this.inner,
+  ): Promise<Map<string, EmbeddingFunctionConfig>> {
+    const schemaBuf = await inner.schema();
+    const schema = tableFromIPC(schemaBuf).schema;
     const registry = getRegistry();
     return registry.parseFunctions(schema.metadata);
   }
@@ -1160,7 +1162,7 @@ export class LocalTable extends Table {
     query: string | IntoVector | MultiVector | FullTextQuery,
     queryType: string = "auto",
     ftsColumns?: string | string[],
-  ): VectorQuery | Query {
+  ): VectorQuery | Query | AutoQuery {
     if (typeof query !== "string" && !instanceOfFullTextQuery(query)) {
       if (queryType === "fts") {
         throw new Error("Cannot perform full text search on a vector query");
@@ -1175,15 +1177,33 @@ export class LocalTable extends Table {
       });
     }
 
-    // The query type is auto or vector
-    // fall back to full text search if no embedding functions are defined and the query is a string
-    if (
-      queryType === "auto" &&
-      (getRegistry().length() === 0 || instanceOfFullTextQuery(query))
-    ) {
+    if (queryType === "auto" && typeof query !== "string") {
       return this.query().fullTextSearch(query, {
         columns: ftsColumns,
       });
+    }
+
+    if (queryType === "auto" && typeof query === "string") {
+      const vector = async (snapshot: _NativeTable) => {
+        const functions = await this.getEmbeddingFunctions(snapshot);
+        // TODO: Support multiple embedding functions
+        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+          .values()
+          .next().value;
+        if (embeddingFunc === undefined) {
+          return undefined;
+        }
+        return await embeddingFunc.function.computeQueryEmbeddings(query);
+      };
+
+      const columns =
+        typeof ftsColumns === "string" ? [ftsColumns] : ftsColumns;
+      return Query.autoSearch(
+        () => this.inner.checkoutCurrent(),
+        query,
+        vector,
+        columns,
+      );
     }
 
     const queryPromise = this.getEmbeddingFunctions().then(
