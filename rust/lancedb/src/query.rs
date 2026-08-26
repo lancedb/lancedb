@@ -1646,7 +1646,11 @@ mod tests {
     use std::{collections::HashSet, sync::Arc};
 
     use super::*;
-    use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
+    use arrow::{
+        array::downcast_array,
+        compute::concat_batches,
+        datatypes::{Int32Type, UInt8Type},
+    };
     use arrow_array::{
         FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
         types::Float32Type,
@@ -2382,6 +2386,68 @@ mod tests {
                 .sum::<usize>(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn test_multiple_binary_query_vectors() {
+        let vectors = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            vec![
+                Some(vec![Some(0), Some(0)]),
+                Some(vec![Some(255), Some(255)]),
+            ],
+            2,
+        );
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![0, 1])), Arc::new(vectors)],
+        )
+        .unwrap();
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("binary_batch", batch)
+            .execute()
+            .await
+            .unwrap();
+        let query = table
+            .query()
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+            .add_query_vector(&[255.0, 255.0])
+            .unwrap()
+            .distance_type(DistanceType::Hamming)
+            .limit(1);
+
+        // Binary queries retain the per-vector plan because Lance's binary
+        // nearest path requires primitive UInt8 query arrays.
+        assert!(
+            query
+                .explain_plan(true)
+                .await
+                .unwrap()
+                .contains("UnionExec")
+        );
+
+        let results = query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(results.num_rows(), 2);
+
+        let ids = results["id"].as_primitive::<Int32Type>();
+        assert!(ids.values().contains(&0));
+        assert!(ids.values().contains(&1));
+        let query_index = results["query_index"].as_primitive::<Int32Type>();
+        assert!(query_index.values().contains(&0));
+        assert!(query_index.values().contains(&1));
     }
 
     #[tokio::test]

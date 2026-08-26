@@ -180,8 +180,11 @@ pub async fn create_plan(
             )?);
         }
         let vector_field = schema.field(column.as_ref().unwrap()).unwrap();
+        let (_, element_type) =
+            lance::index::vector::utils::get_vector_type(schema, column.as_ref().unwrap())?;
+        let is_binary = matches!(element_type, DataType::UInt8);
         if matches!(vector_field.data_type(), DataType::List(_))
-            || query.base.offset.unwrap_or(0) == 0
+            || (query.base.offset.unwrap_or(0) == 0 && !is_binary)
         {
             // Lance distinguishes these cases from the vector column type: a
             // list-like query against a List column is one multivector query,
@@ -220,9 +223,10 @@ pub async fn create_plan(
             query_vector = Some(Arc::new(fsl_builder.finish()));
             is_batch_query = !matches!(vector_field.data_type(), DataType::List(_));
         } else {
-            // Lance's batch path has no per-query offset. Keep the prior plan
-            // shape for offset queries so the offset is applied to each query,
-            // rather than globally across the combined results.
+            // Lance's batch path has no per-query offset, and its binary path
+            // requires primitive UInt8 queries rather than a fixed-size list.
+            // Keep the prior plan shape for these cases so offsets are applied
+            // per query and binary query vectors retain their primitive shape.
             let query_vecs = query.query_vector.clone();
             let plan_futures = query_vecs
                 .into_iter()
