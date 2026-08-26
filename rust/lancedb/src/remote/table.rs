@@ -528,7 +528,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let (request_id, response) = self.send_unfenced(request, true).await?;
+        let (request_id, response) = self.send(request, true).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
         let job_id = response
