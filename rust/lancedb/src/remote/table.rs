@@ -86,6 +86,7 @@ const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
+const SCHEMA_SELECTOR_CHANGED: &str = "table selector changed while fetching schema";
 
 /// Per-table state driving the freshness headers (`x-lancedb-min-version`,
 /// `x-lancedb-min-timestamp`, and `x-lancedb-min-read-version`) sent on table
@@ -135,6 +136,12 @@ struct FreshnessHeaders {
     min_read_version: Option<u64>,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct ReadSnapshot {
+    version: Option<u64>,
+    freshness: FreshnessHeaders,
+}
+
 impl FreshnessHeaders {
     fn apply(self, mut request: RequestBuilder) -> RequestBuilder {
         if let Some(v) = self.min_version {
@@ -177,6 +184,10 @@ impl FreshnessHeaders {
         if state.generation == self.generation {
             update(&mut state);
         }
+    }
+
+    fn is_current(self, freshness: &Mutex<FreshnessState>) -> bool {
+        freshness.lock().unwrap().generation == self.generation
     }
 }
 
@@ -395,7 +406,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
             .post(&format!("/v1/table/{}/tags/delete/", self.inner.identifier))
             .json(&serde_json::json!({ "tag": tag }));
 
-        let (request_id, response) = self.inner.send(request, true).await?;
+        let (request_id, response) = self.inner.send_unfenced(request, true).await?;
         self.inner
             .check_table_response(&request_id, response)
             .await?;
@@ -1176,6 +1187,14 @@ impl<S: HttpSend> RemoteTable<S> {
         *read_guard
     }
 
+    async fn snapshot_read_state(&self) -> ReadSnapshot {
+        let version = self.version.read().await;
+        ReadSnapshot {
+            version: *version,
+            freshness: self.snapshot_freshness_headers(),
+        }
+    }
+
     /// Snapshot the freshness headers to attach to a single table request.
     /// Computed at call time so that retries reuse the same snapshot.
     fn snapshot_freshness_headers(&self) -> FreshnessHeaders {
@@ -1380,15 +1399,15 @@ async fn fetch_schema<S: HttpSend>(
     client: &RestfulLanceDbClient<S>,
     identifier: &str,
     table_name: &str,
-    version: Option<u64>,
+    read_snapshot: ReadSnapshot,
     branch: Option<String>,
-    freshness_headers: FreshnessHeaders,
     freshness: Arc<Mutex<FreshnessState>>,
 ) -> Result<SchemaRef> {
-    let mut body = serde_json::json!({ "version": version });
+    let mut body = serde_json::json!({ "version": read_snapshot.version });
     if let Some(branch) = &branch {
         body["branch"] = serde_json::Value::String(branch.clone());
     }
+    let freshness_headers = read_snapshot.freshness;
     let request = freshness_headers
         .apply(client.post(&format!("/v1/table/{}/describe/", identifier)))
         .json(&body);
@@ -1424,6 +1443,11 @@ async fn fetch_schema<S: HttpSend>(
         status_code: None,
     })?;
     freshness_headers.observe_version(&freshness, description.version);
+    if !freshness_headers.is_current(&freshness) {
+        return Err(Error::Runtime {
+            message: SCHEMA_SELECTOR_CHANGED.to_string(),
+        });
+    }
 
     let arrow_schema: arrow_schema::Schema = description.schema.try_into()?;
     Ok(Arc::new(arrow_schema))
@@ -1916,10 +1940,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // write lock, with no cancellation point between the two updates.
         self.reset_freshness(None, true);
         *write_guard = Some(version);
-        drop(write_guard);
-
-        // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
+        drop(write_guard);
 
         Ok(())
     }
@@ -1929,10 +1951,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // baseline timestamp captured now to guarantee freshness.
         self.reset_freshness(Some(SystemTime::now()), false);
         *write_guard = None;
-        drop(write_guard);
-
-        // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
+        drop(write_guard);
 
         Ok(())
     }
@@ -2031,33 +2051,42 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn schema(&self) -> Result<SchemaRef> {
-        if let Some(schema) = self.schema_cache.try_get() {
-            return Ok(schema);
-        }
+        loop {
+            let read_snapshot = self.snapshot_read_state().await;
+            if let Some(schema) = self.schema_cache.try_get() {
+                return Ok(schema);
+            }
 
-        let version = self.current_version().await;
-        let client = self.client.clone();
-        let identifier = self.identifier.clone();
-        let table_name = self.name.clone();
-        let branch = self.branch.clone();
-        let freshness_headers = self.snapshot_freshness_headers();
-        let freshness = self.freshness.clone();
+            let client = self.client.clone();
+            let identifier = self.identifier.clone();
+            let table_name = self.name.clone();
+            let branch = self.branch.clone();
+            let freshness = self.freshness.clone();
 
-        self.schema_cache
-            .get(move || async move {
-                fetch_schema(
-                    &client,
-                    &identifier,
-                    &table_name,
-                    version,
-                    branch,
-                    freshness_headers,
-                    freshness,
-                )
+            match self
+                .schema_cache
+                .get(move || async move {
+                    fetch_schema(
+                        &client,
+                        &identifier,
+                        &table_name,
+                        read_snapshot,
+                        branch,
+                        freshness,
+                    )
+                    .await
+                })
                 .await
-            })
-            .await
-            .map_err(unwrap_shared_error)
+            {
+                Ok(schema) => return Ok(schema),
+                Err(error)
+                    if matches!(
+                        &*error,
+                        Error::Runtime { message } if message == SCHEMA_SELECTOR_CHANGED
+                    ) => {}
+                Err(error) => return Err(unwrap_shared_error(error)),
+            }
+        }
     }
 
     async fn create_branch(
@@ -2901,10 +2930,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // write lock, with no cancellation point between the two updates.
         self.reset_freshness(None, true);
         *write_guard = Some(version);
-        drop(write_guard);
-
-        // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
+        drop(write_guard);
 
         Ok(())
     }
@@ -8937,6 +8964,50 @@ mod tests {
         assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_schema_fetch_does_not_cross_checkout_generation() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
+        let arrived_tx = Arc::new(std::sync::Mutex::new(arrived_tx));
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = request_body_json(&request);
+            let pinned = body["version"].as_u64() == Some(5);
+            if !pinned {
+                arrived_tx.lock().unwrap().send(()).unwrap();
+                release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+            }
+            let field = if pinned { "pinned" } else { "latest" };
+            http::Response::builder()
+                .status(200)
+                .body(format!(
+                    r#"{{"version":5,"schema":{{"fields":[{{"name":"{field}","type":{{"type":"int32"}},"nullable":false}}]}}}}"#
+                ))
+                .unwrap()
+        });
+
+        let schema_fetch = tokio::spawn({
+            let table = table.clone();
+            async move { table.schema().await }
+        });
+        tokio::task::spawn_blocking(move || {
+            arrived_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        })
+        .await
+        .unwrap();
+        table.checkout(5).await.unwrap();
+        release_tx.send(()).unwrap();
+
+        let schema = schema_fetch.await.unwrap().unwrap();
+        assert!(schema.field_with_name("pinned").is_ok());
+        let cached = table.schema().await.unwrap();
+        assert!(cached.field_with_name("pinned").is_ok());
+    }
+
     /// Test that schema cache is invalidated after checkout_latest
     #[tokio::test]
     async fn test_schema_cache_invalidation_on_checkout_latest() {
@@ -11094,6 +11165,8 @@ mod tests {
     async fn test_main_only_metadata_is_unfenced_from_branch_timeline() {
         let requests = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let captured = requests.clone();
+        let saw_delete_response_floor = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw_high_floor = saw_delete_response_floor.clone();
         let table = RemoteTable::new_mock(
             "my_table".to_string(),
             move |request| {
@@ -11103,11 +11176,21 @@ mod tests {
                     .unwrap()
                     .insert(path.clone(), request.headers().clone());
                 match path.as_str() {
-                    "/v1/table/my_table/count_rows/" => http::Response::builder()
-                        .status(200)
-                        .header("x-lancedb-version", "2")
-                        .body("1".to_string())
-                        .unwrap(),
+                    "/v1/table/my_table/count_rows/" => {
+                        saw_high_floor.store(
+                            request
+                                .headers()
+                                .get("x-lancedb-min-read-version")
+                                .and_then(|value| value.to_str().ok())
+                                == Some("100"),
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        http::Response::builder()
+                            .status(200)
+                            .header("x-lancedb-version", "2")
+                            .body("1".to_string())
+                            .unwrap()
+                    }
                     "/v1/table/my_table/tags/list/" => http::Response::builder()
                         .status(200)
                         .body("{}".to_string())
@@ -11115,6 +11198,11 @@ mod tests {
                     "/v1/table/my_table/tags/version/" => http::Response::builder()
                         .status(200)
                         .body(r#"{"version":1}"#.to_string())
+                        .unwrap(),
+                    "/v1/table/my_table/tags/delete/" => http::Response::builder()
+                        .status(200)
+                        .header("x-lancedb-version", "100")
+                        .body("{}".to_string())
                         .unwrap(),
                     "/v1/table/my_table/branches/list/" => http::Response::builder()
                         .status(200)
@@ -11128,15 +11216,18 @@ mod tests {
         let branch = table.with_branch(Some("exp".to_string()));
 
         branch.count_rows(None).await.unwrap();
-        let tags = branch.tags().await.unwrap();
+        let mut tags = branch.tags().await.unwrap();
         tags.list().await.unwrap();
         tags.get_version("v1").await.unwrap();
+        tags.delete("v1").await.unwrap();
         branch.list_branches().await.unwrap();
+        branch.count_rows(None).await.unwrap();
 
         let requests = requests.lock().unwrap();
         for path in [
             "/v1/table/my_table/tags/list/",
             "/v1/table/my_table/tags/version/",
+            "/v1/table/my_table/tags/delete/",
             "/v1/table/my_table/branches/list/",
         ] {
             assert!(
@@ -11144,6 +11235,10 @@ mod tests {
                 "{path} inherited the branch timeline"
             );
         }
+        assert!(
+            !saw_delete_response_floor.load(std::sync::atomic::Ordering::SeqCst),
+            "tag deletion contaminated the branch timeline"
+        );
     }
 
     #[tokio::test]
