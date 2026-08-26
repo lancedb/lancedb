@@ -1104,4 +1104,87 @@ mod tests {
             }
         }
     }
+
+    /// A batch whose json values are all null infers as `DataType::Null` (this is what
+    /// pyarrow produces for a one-row insert with no value). The column's lance.json
+    /// identity lives in the field metadata, so dropping it while casting used to make
+    /// lance-core reject the batch as a schema mismatch.
+    #[tokio::test]
+    async fn test_add_all_null_json_column() {
+        use arrow_array::{Array, cast::AsArray, new_null_array};
+
+        let table_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            lance_arrow::json::json_field("data", true),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_nulls", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let null_batch = |ids: Vec<i64>| {
+            let len = ids.len();
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("data", DataType::Null, true),
+                ])),
+                vec![
+                    Arc::new(arrow_array::Int64Array::from(ids)),
+                    new_null_array(&DataType::Null, len),
+                ],
+            )
+            .unwrap()
+        };
+
+        // A single all-null row as the very first write, then again after real JSON has
+        // been written - both scenarios from the bug report.
+        table.add(null_batch(vec![1])).execute().await.unwrap();
+
+        let arrow_json_field = Field::new("data", DataType::Utf8, true).with_metadata(
+            std::collections::HashMap::from([(
+                lance_arrow::ARROW_EXT_NAME_KEY.to_string(),
+                lance_arrow::json::ARROW_JSON_EXT_NAME.to_string(),
+            )]),
+        );
+        let populated = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                arrow_json_field,
+            ])),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![2])),
+                Arc::new(arrow_array::StringArray::from(vec![Some(r#"{"a": 1}"#)])),
+            ],
+        )
+        .unwrap();
+        table.add(populated).execute().await.unwrap();
+        table.add(null_batch(vec![3])).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        let ids = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<arrow::datatypes::Int64Type>();
+        let json_strs = batch.column_by_name("data").unwrap().as_string::<i32>();
+        for row in 0..batch.num_rows() {
+            match ids.value(row) {
+                2 => assert_eq!(json_strs.value(row), r#"{"a":1}"#),
+                _ => assert!(json_strs.is_null(row), "row {row} expected null"),
+            }
+        }
+    }
 }

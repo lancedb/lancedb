@@ -8,6 +8,7 @@ use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::ScalarValue;
 use datafusion_common::config::ConfigOptions;
+use datafusion_common::metadata::FieldMetadata;
 use datafusion_physical_expr::ScalarFunctionExpr;
 use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::expressions::Column;
@@ -90,6 +91,18 @@ fn build_field_exprs(
             continue;
         }
 
+        // A column whose values are all null infers as `Null` (pyarrow does this for a list of
+        // dicts), so there is no input type to cast from. Emit typed nulls carrying the table
+        // field verbatim: a plain cast would drop the field metadata, and extension columns
+        // such as lance.json are identified by that metadata alone, so lance-core would then
+        // reject the batch as a schema mismatch.
+        if matches!(input_field.data_type(), DataType::Null)
+            && !matches!(table_field.data_type(), DataType::Null)
+        {
+            result.push((null_literal(table_field)?, table_field.clone()));
+            continue;
+        }
+
         let expr = match (input_field.data_type(), table_field.data_type()) {
             // Both are structs: recurse into sub-fields to handle subschemas and casts.
             (DataType::Struct(in_children), DataType::Struct(tbl_children))
@@ -169,6 +182,23 @@ fn build_field_exprs(
     }
 
     Ok(result)
+}
+
+// The field's metadata is attached to the literal itself, because DataFusion derives the
+// projection's output schema from `PhysicalExpr::return_field` rather than from the field we
+// return alongside the expression.
+fn null_literal(field: &FieldRef) -> Result<Arc<dyn PhysicalExpr>> {
+    let scalar = ScalarValue::try_new_null(field.data_type()).map_err(|e| Error::InvalidInput {
+        message: format!(
+            "cannot build null literal for column '{}' of type {}: {e}",
+            field.name(),
+            field.data_type()
+        ),
+    })?;
+    Ok(Arc::new(Literal::new_with_metadata(
+        scalar,
+        Some(FieldMetadata::from(field.as_ref())),
+    )))
 }
 
 #[cfg(test)]
@@ -714,5 +744,142 @@ mod tests {
         assert_eq!(v0, r#"{"x": 1}"#);
         assert!(result.column(0).is_null(1));
         assert_eq!(v2, r#"{"y": 2}"#);
+    }
+
+    /// An all-null column comes through as `DataType::Null` (pyarrow infers that for a batch
+    /// of dicts whose values are all `None`). The lance.json extension metadata lives on the
+    /// field alone, so it has to be carried into the output schema or lance-core rejects the
+    /// batch with a "json vs large_binary" schema mismatch.
+    #[tokio::test]
+    async fn test_null_column_into_lance_json_keeps_extension_metadata() {
+        use lance_arrow::ARROW_EXT_NAME_KEY;
+        use lance_arrow::json::{JSON_EXT_NAME, json_field};
+
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            json_field("data", true),
+        ]);
+
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("data", DataType::Null, true),
+        ]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(Int64Array::from(vec![0, 1, 2])),
+                arrow_array::new_null_array(&DataType::Null, 3),
+            ],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("data").unwrap().clone();
+        assert_eq!(out_field.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            out_field
+                .metadata()
+                .get(ARROW_EXT_NAME_KEY)
+                .map(|s| s.as_str()),
+            Some(JSON_EXT_NAME),
+            "output field must still identify itself as lance.json"
+        );
+
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 3);
+        assert_eq!(result.column_by_name("data").unwrap().null_count(), 3);
+    }
+
+    /// The same, for a lance.json column nested inside a struct: the struct is rebuilt from
+    /// its children, so each child field must keep its own metadata.
+    #[tokio::test]
+    async fn test_null_struct_child_into_lance_json_keeps_extension_metadata() {
+        use lance_arrow::ARROW_EXT_NAME_KEY;
+        use lance_arrow::json::{JSON_EXT_NAME, json_field};
+
+        let table_schema = Schema::new(vec![Field::new(
+            "meta",
+            DataType::Struct(
+                vec![
+                    Field::new("id", DataType::Int64, true),
+                    json_field("doc", true),
+                ]
+                .into(),
+            ),
+            true,
+        )]);
+
+        let input_children: Fields = vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("doc", DataType::Null, true),
+        ]
+        .into();
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "meta",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StructArray::new(
+                input_children,
+                vec![
+                    Arc::new(Int64Array::from(vec![7, 8])),
+                    arrow_array::new_null_array(&DataType::Null, 2),
+                ],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("meta").unwrap().clone();
+        let DataType::Struct(out_children) = out_field.data_type() else {
+            panic!("expected a struct, got {}", out_field.data_type());
+        };
+        let doc = out_children.iter().find(|f| f.name() == "doc").unwrap();
+        assert_eq!(doc.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            doc.metadata().get(ARROW_EXT_NAME_KEY).map(|s| s.as_str()),
+            Some(JSON_EXT_NAME)
+        );
+
+        let result = collect(projected).await;
+        let meta: &StructArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(meta.column_by_name("doc").unwrap().null_count(), 2);
+    }
+
+    /// A `Null` input column against a plain table column writes nulls too, including for
+    /// target types that a DataFusion cast would not reach.
+    #[tokio::test]
+    async fn test_null_column_into_struct_column() {
+        let children: Fields = vec![Field::new("x", DataType::Int32, true)].into();
+        let table_schema = Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(children.clone()),
+            true,
+        )]);
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Null, true)]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![arrow_array::new_null_array(&DataType::Null, 2)],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+        assert_eq!(
+            projected.schema().field_with_name("s").unwrap().data_type(),
+            &DataType::Struct(children)
+        );
+
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 2);
+        assert_eq!(result.column(0).null_count(), 2);
     }
 }

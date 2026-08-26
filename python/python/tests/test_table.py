@@ -2930,28 +2930,29 @@ async def test_merge_insert_async(mem_db_async: AsyncConnection):
     assert (await table.to_arrow()).sort_by("a") == expected
 
 
+def _json_arrow_table(schema, rows):
+    json_type = schema.field("j").type
+    json_values = pa.ExtensionArray.from_storage(
+        json_type,
+        pa.array([value for _, value in rows], type=json_type.storage_type),
+    )
+    return pa.Table.from_arrays(
+        [pa.array([row_id for row_id, _ in rows]), json_values], schema=schema
+    )
+
+
 @pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
 @pytest.mark.asyncio
 async def test_merge_insert_encodes_json(mem_db_async: AsyncConnection):
-    json_type = pa.json_()
-    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
-
-    def json_table(rows):
-        json_values = pa.ExtensionArray.from_storage(
-            json_type,
-            pa.array([value for _, value in rows], type=json_type.storage_type),
-        )
-        return pa.Table.from_arrays(
-            [pa.array([row_id for row_id, _ in rows]), json_values], schema=schema
-        )
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
 
     table = await mem_db_async.create_table("json_merge", schema=schema)
-    await table.add(json_table([("a", '{"k": 1}'), ("b", '{"k": 9}')]))
+    await table.add(_json_arrow_table(schema, [("a", '{"k": 1}'), ("b", '{"k": 9}')]))
 
     await (
         table.merge_insert("id")
         .when_matched_update_all()
-        .execute(json_table([("a", '{"k": 2}')]))
+        .execute(_json_arrow_table(schema, [("a", '{"k": 2}')]))
     )
 
     rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
@@ -2966,18 +2967,55 @@ async def test_merge_insert_encodes_json(mem_db_async: AsyncConnection):
 @pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
 @pytest.mark.asyncio
 async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
-    json_type = pa.json_()
-    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
-    json_values = pa.ExtensionArray.from_storage(
-        json_type, pa.array(['{"k": 3}'], type=json_type.storage_type)
-    )
-    data = pa.Table.from_arrays([pa.array(["c"]), json_values], schema=schema)
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
 
     table = await mem_db_async.create_table("json_add", schema=schema)
-    await table.add(data, on_bad_vectors="fill")
+    await table.add(
+        _json_arrow_table(schema, [("c", '{"k": 3}')]), on_bad_vectors="fill"
+    )
 
     rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
     assert rows == [{"id": "c", "j": '{"k":3}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_all_null_json_batch(mem_db_async: AsyncConnection):
+    """A batch of dicts whose json values are all None infers as pa.null(), which used
+    to fail with a `json` vs `large_binary` schema mismatch. A row-at-a-time insert of
+    an optional json column always looks like this."""
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+    table = await mem_db_async.create_table("json_nulls", schema=schema)
+
+    await table.add([{"id": "a", "j": None}])
+    assert await table.count_rows() == 1
+
+    # ... and again once real JSON has been written.
+    await table.add(_json_arrow_table(schema, [("b", '{"k": 9}')]))
+    await table.add([{"id": "c", "j": None}])
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": None},
+        {"id": "b", "j": '{"k":9}'},
+        {"id": "c", "j": None},
+    ]
+
+    # The nulls must not disturb reads of the column.
+    filtered = await table.query().where("json_extract(j, '$.k') = '9'").to_list()
+    assert filtered == [{"id": "b", "j": '{"k":9}'}]
+    assert len(await table.query().where("j IS NULL").to_list()) == 2
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_all_null_json_batch_sync(mem_db: DBConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+    table = mem_db.create_table("json_nulls_sync", schema=schema)
+
+    table.add([{"id": "a", "j": None}])
+
+    assert table.count_rows() == 1
+    assert table.to_arrow()["j"].to_pylist() == [None]
 
 
 def test_create_with_embedding_function(mem_db: DBConnection):

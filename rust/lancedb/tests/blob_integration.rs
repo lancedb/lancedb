@@ -46,6 +46,21 @@ fn binary_input_batch(ids: &[i64], payloads: &[Option<&[u8]>]) -> RecordBatch {
     .unwrap()
 }
 
+/// What pyarrow infers for a batch of dicts whose blob values are all `None`.
+fn null_typed_input_batch(ids: &[i64]) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::Null, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(ids.to_vec())),
+            new_null_array(&DataType::Null, ids.len()),
+        ],
+    )
+    .unwrap()
+}
+
 async fn create_inline_blob_table(
     db: &Connection,
     name: &str,
@@ -248,6 +263,38 @@ async fn add_accepts_null_blob_rows() -> Result<()> {
     assert_eq!(table.count_rows(None).await?, 3);
     let image = query_image_struct(&table).await;
     assert_eq!(image.len(), 3);
+    Ok(())
+}
+
+/// A batch whose blob values are all null carries no type information — pyarrow infers
+/// `DataType::Null` for it, which is what a row-at-a-time insert of an optional blob column
+/// looks like. Such a batch must be accepted, both as the first write and after bytes have
+/// already been written.
+#[tokio::test]
+async fn add_accepts_all_null_typed_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    table.add(null_typed_input_batch(&[1])).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 1);
+    assert!(query_image_struct(&table).await.is_null(0));
+
+    table
+        .add(binary_input_batch(&[2], &[Some(b"bytes".as_slice())]))
+        .execute()
+        .await?;
+    table.add(null_typed_input_batch(&[3])).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 3);
+
+    let row_ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    assert!(bytes.is_null(0));
+    assert_eq!(bytes.value(1), b"bytes");
+    assert!(bytes.is_null(2));
     Ok(())
 }
 
