@@ -96,6 +96,9 @@ struct FreshnessState {
     /// checkout operations advance the generation so responses from older
     /// in-flight requests cannot repopulate the new timeline's constraints.
     generation: u64,
+    /// Exact-version, tag, and snapshot handles must not carry latest-timeline
+    /// constraints. Their request body already selects the precise version.
+    pinned: bool,
     /// Provides read-your-write within a single handle: writes that return a
     /// version update this, and reads send it as `x-lancedb-min-version`.
     min_version: Option<u64>,
@@ -288,6 +291,15 @@ fn freshness_state_snapshot(
     interval: Option<Duration>,
 ) -> (FreshnessState, FreshnessHeaders) {
     let state = *freshness.lock().unwrap();
+    if state.pinned {
+        return (
+            state,
+            FreshnessHeaders {
+                generation: state.generation,
+                ..FreshnessHeaders::default()
+            },
+        );
+    }
     (
         state,
         FreshnessHeaders {
@@ -1170,11 +1182,12 @@ impl<S: HttpSend> RemoteTable<S> {
         freshness_headers_snapshot(&self.freshness, self.client.read_consistency_interval)
     }
 
-    fn reset_freshness(&self, checkout_baseline: Option<SystemTime>) {
+    fn reset_freshness(&self, checkout_baseline: Option<SystemTime>, pinned: bool) {
         let mut state = self.freshness.lock().unwrap();
         let generation = state.generation.wrapping_add(1);
         *state = FreshnessState {
             generation,
+            pinned,
             checkout_baseline,
             ..FreshnessState::default()
         };
@@ -1898,13 +1911,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 e => e,
             })?;
 
+        // Explicit time-travel: drop any read-your-write / freshness
+        // constraints so the user sees exactly the requested version.
+        self.reset_freshness(None, true);
+
         let mut write_guard = self.version.write().await;
         *write_guard = Some(version);
         drop(write_guard);
-
-        // Explicit time-travel: drop any read-your-write / freshness
-        // constraints so the user sees exactly the requested version.
-        self.reset_freshness(None);
 
         // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
@@ -1918,7 +1931,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         // Drop any per-handle read/write tracking; subsequent reads use the
         // baseline timestamp captured now to guarantee freshness.
-        self.reset_freshness(Some(SystemTime::now()));
+        self.reset_freshness(Some(SystemTime::now()), false);
 
         // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
@@ -1935,6 +1948,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let snapshot = self.with_branch(self.branch.clone());
         *snapshot.version.write().await = Some(version);
+        snapshot.reset_freshness(None, true);
         Ok(Some(Arc::new(snapshot)))
     }
     async fn restore(&self) -> Result<()> {
@@ -2884,13 +2898,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .resolve_tag_version_with_request(tag, request, false)
             .await?;
 
+        // Explicit time-travel: drop any read-your-write / freshness
+        // constraints so the user sees exactly the tagged version.
+        self.reset_freshness(None, true);
+
         let mut write_guard = self.version.write().await;
         *write_guard = Some(version);
         drop(write_guard);
-
-        // Explicit time-travel: drop any read-your-write / freshness
-        // constraints so the user sees exactly the tagged version.
-        self.reset_freshness(None);
 
         // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
@@ -10274,6 +10288,25 @@ mod tests {
             "expected timestamp roughly equal to wall clock"
         );
         assert!(!headers.contains_key("x-lancedb-min-version"));
+    }
+
+    #[tokio::test]
+    async fn test_checkout_disables_read_consistency_interval() {
+        let (handler, captured) = capturing_handler(|path| match path {
+            "/v1/table/my_table/describe/" => r#"{"version":5,"schema":{"fields":[]}}"#.to_string(),
+            "/v1/table/my_table/count_rows/" => "42".to_string(),
+            _ => panic!("unexpected path: {}", path),
+        });
+        let table =
+            Table::new_with_handler_and_interval("my_table", handler, Some(Duration::from_secs(0)));
+
+        table.checkout(5).await.unwrap();
+        table.count_rows(None).await.unwrap();
+
+        let headers = captured.lock().unwrap().clone().unwrap();
+        assert!(!headers.contains_key("x-lancedb-min-timestamp"));
+        assert!(!headers.contains_key("x-lancedb-min-version"));
+        assert!(!headers.contains_key("x-lancedb-min-read-version"));
     }
 
     #[tokio::test]
