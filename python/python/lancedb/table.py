@@ -2127,11 +2127,24 @@ class Table(ABC):
         ----------
         updates : dict
             One or more dicts, each with:
+
             - "path": str — dot-path to the field (e.g. "embedding" or "a.b.c").
             - "metadata": dict[str, str | None] — keys to set; a value of ``None``
               deletes that key.
             - "replace": bool, optional — replace the field's whole metadata map
               instead of merging (default False).
+
+            The following keys are treated specially, by convention, and should
+            be used when appropriate:
+
+            - "lancedb:description": for a human-readable description of a field.
+            - ``"lancedb:tag:<name>"`` for a user-defined key-value tag, where the
+                suffix names the tag category; e.g. "lancedb:tag:model": "clip".
+            - "lancedb:logical-column" for a column grouping; e.g. "feature_v1"
+                and "feature_v2" might be in the same logical column.
+            - "lancedb:status" for status options ("production", "candidate",
+                "deprecated", "archived") to designate the current life cycle
+                state of this column.
 
         Returns
         -------
