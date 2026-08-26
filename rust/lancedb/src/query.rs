@@ -1174,12 +1174,12 @@ impl VectorQuery {
 
     /// Add another query vector to the search.
     ///
-    /// Multiple searches will be dispatched as part of the query.
-    /// This is a convenience method for adding multiple query vectors
-    /// to the search. It is not expected to be faster than issuing
-    /// multiple queries concurrently.
+    /// Multiple searches will be dispatched as a batch. Flat searches share
+    /// one table scan across the query vectors, avoiding the scan and memory
+    /// amplification of issuing the searches concurrently. Indexed searches
+    /// may still perform per-vector index work.
     ///
-    /// The output data will contain an additional columns `query_index` which
+    /// The output data will contain an additional column `query_index` which
     /// will contain the index of the query vector that was used to generate the
     /// result.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
@@ -1646,7 +1646,11 @@ mod tests {
     use std::{collections::HashSet, sync::Arc};
 
     use super::*;
-    use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
+    use arrow::{
+        array::downcast_array,
+        compute::concat_batches,
+        datatypes::{Int32Type, UInt8Type},
+    };
     use arrow_array::{
         FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
         types::Float32Type,
@@ -2334,7 +2338,8 @@ mod tests {
             .limit(1);
 
         let plan = query.explain_plan(true).await.unwrap();
-        assert!(plan.contains("UnionExec"));
+        assert!(plan.contains("KNNVectorDistance: queries=2"));
+        assert!(!plan.contains("UnionExec"));
 
         let results = query
             .execute()
@@ -2347,6 +2352,100 @@ mod tests {
         assert_eq!(results.num_rows(), 2); // One result for each query vector.
         let query_index = results["query_index"].as_primitive::<Int32Type>();
         // We don't guarantee order.
+        assert!(query_index.values().contains(&0));
+        assert!(query_index.values().contains(&1));
+
+        // Batch KNN does not support a per-query offset, so offset queries keep
+        // the legacy per-vector plan to preserve their result semantics.
+        let offset_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .add_query_vector(&[0.5, 0.6, 0.7, 0.8])
+            .unwrap()
+            .limit(1)
+            .offset(1);
+        assert!(
+            offset_query
+                .explain_plan(true)
+                .await
+                .unwrap()
+                .contains("UnionExec")
+        );
+        let offset_results = offset_query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            offset_results
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multiple_binary_query_vectors() {
+        let vectors = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            vec![
+                Some(vec![Some(0), Some(0)]),
+                Some(vec![Some(255), Some(255)]),
+            ],
+            2,
+        );
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![0, 1])), Arc::new(vectors)],
+        )
+        .unwrap();
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("binary_batch", batch)
+            .execute()
+            .await
+            .unwrap();
+        let query = table
+            .query()
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+            .add_query_vector(&[255.0, 255.0])
+            .unwrap()
+            .distance_type(DistanceType::Hamming)
+            .limit(1);
+
+        // Binary queries retain the per-vector plan because Lance's binary
+        // nearest path requires primitive UInt8 query arrays.
+        assert!(
+            query
+                .explain_plan(true)
+                .await
+                .unwrap()
+                .contains("UnionExec")
+        );
+
+        let results = query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(results.num_rows(), 2);
+
+        let ids = results["id"].as_primitive::<Int32Type>();
+        assert!(ids.values().contains(&0));
+        assert!(ids.values().contains(&1));
+        let query_index = results["query_index"].as_primitive::<Int32Type>();
         assert!(query_index.values().contains(&0));
         assert!(query_index.values().contains(&1));
     }
