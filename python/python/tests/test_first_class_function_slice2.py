@@ -69,6 +69,26 @@ def _run_packaged(definition, *args):
     return namespace[definition.registration_request.artifact.entrypoint](*args)
 
 
+def test_udf_conda_environment():
+    @udf(conda=["scipy", "numpy"], conda_channels=["conda-forge", "defaults"])
+    def halve(value: float) -> float:
+        return value / 2
+
+    request = json.loads(halve.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"] == {
+        "kind": "conda",
+        "packages": ["numpy", "scipy"],
+        "channels": ["conda-forge", "defaults"],
+    }
+    pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "channels" not in pip_request["runtime"]["environment"]
+
+    with pytest.raises(ValueError, match="not both"):
+        udf(name="both", pip=["numpy"], conda=["numpy"])(lambda value: value)
+    with pytest.raises(ValueError, match="requires conda"):
+        udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
+
+
 def test_udf_packages_attribute_access_and_body_imports():
     @udf
     def word_norm(body: str) -> float:
