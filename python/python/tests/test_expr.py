@@ -632,3 +632,101 @@ class TestExprBytesIntegration:
             .to_arrow()
         )
         assert result.num_rows == 2
+
+
+# ── datetime / timezone integration for lit() (issue #3262) ──────────────────
+
+
+class TestExprDatetimeTimezoneIntegration:
+    """Integration coverage for lit(datetime) against table timestamp columns.
+
+    PyArrow stores naive timestamps as UTC wall-clock microseconds. Python's
+    datetime.timestamp() treats naive values as *local* time, which used to
+    shift lit(naive) by the host UTC offset and break equality filters on
+    non-UTC machines. These cases lock the expected semantics.
+    """
+
+    def test_both_naive_match(self, tmp_path):
+        """Table naive + lit naive with the same wall clock must match."""
+        db = lancedb.connect(str(tmp_path / "naive"))
+        ts = datetime(2024, 7, 1, 10, 0, 0)
+        table = db.create_table(
+            "t", [{"id": 1, "ts": ts}, {"id": 2, "ts": datetime(2024, 7, 2, 10, 0, 0)}]
+        )
+        result = table.search().where(col("ts") == lit(ts)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_both_same_timezone_match(self, tmp_path):
+        """Table UTC + lit UTC for the same instant must match."""
+        db = lancedb.connect(str(tmp_path / "utc"))
+        ts = datetime(2024, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+        table = db.create_table(
+            "t",
+            pa.table(
+                {
+                    "id": [1, 2],
+                    "ts": pa.array(
+                        [ts, datetime(2024, 7, 2, 10, 0, 0, tzinfo=timezone.utc)],
+                        type=pa.timestamp("us", tz="UTC"),
+                    ),
+                }
+            ),
+        )
+        result = table.search().where(col("ts") == lit(ts)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_different_timezones_same_instant(self, tmp_path):
+        """UTC table row equals lit of the same instant in a different zone."""
+        db = lancedb.connect(str(tmp_path / "diff_tz"))
+        ts_utc = datetime(2024, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+        # Same instant as 06:00 in UTC-4
+        ts_est = datetime(2024, 7, 1, 6, 0, 0, tzinfo=timezone(timedelta(hours=-4)))
+        table = db.create_table(
+            "t",
+            pa.table(
+                {
+                    "id": [1],
+                    "ts": pa.array([ts_utc], type=pa.timestamp("us", tz="UTC")),
+                }
+            ),
+        )
+        result = table.search().where(col("ts") == lit(ts_est)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_table_tz_literal_naive(self, tmp_path):
+        """UTC table + naive lit uses wall-clock equality (10:00 == 10:00 UTC)."""
+        db = lancedb.connect(str(tmp_path / "tz_naive"))
+        ts_utc = datetime(2024, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+        ts_naive = datetime(2024, 7, 1, 10, 0, 0)
+        table = db.create_table(
+            "t",
+            pa.table(
+                {
+                    "id": [1],
+                    "ts": pa.array([ts_utc], type=pa.timestamp("us", tz="UTC")),
+                }
+            ),
+        )
+        result = table.search().where(col("ts") == lit(ts_naive)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_table_naive_literal_aware(self, tmp_path):
+        """Naive table + UTC lit with the same wall clock must match."""
+        db = lancedb.connect(str(tmp_path / "naive_aware"))
+        ts_naive = datetime(2024, 7, 1, 10, 0, 0)
+        ts_utc = datetime(2024, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+        table = db.create_table("t", [{"id": 1, "ts": ts_naive}])
+        result = table.search().where(col("ts") == lit(ts_utc)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_naive_lit_sql_is_wall_clock_not_local_shifted(self):
+        """Regression: naive lit must not apply the host local UTC offset."""
+        ts = datetime(2024, 7, 1, 10, 0, 0)
+        sql = lit(ts).to_sql()
+        # Must encode 10:00 wall clock, not 10:00+local_offset.
+        assert "2024-07-01 10:00:00" in sql

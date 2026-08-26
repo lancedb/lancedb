@@ -21,7 +21,6 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
-use futures::future::try_join_all;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
@@ -45,6 +44,22 @@ impl AnyQuery {
             Self::VectorQuery(query) => &query.base,
         }
     }
+
+    fn base_mut(&mut self) -> &mut QueryRequest {
+        match self {
+            Self::Query(query) => query,
+            Self::VectorQuery(query) => &mut query.base,
+        }
+    }
+
+    /// Canonicalize any raw SQL filter immediately before backend dispatch.
+    pub(crate) fn canonicalized(&self) -> Result<Self> {
+        let mut query = self.clone();
+        if let Some(QueryFilter::Sql(predicate)) = &mut query.base_mut().filter {
+            *predicate = crate::expr::canonicalize_sql_predicate(predicate)?;
+        }
+        Ok(query)
+    }
 }
 
 //Decide between namespace or local
@@ -53,15 +68,16 @@ pub async fn execute_query(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<DatasetRecordBatchStream> {
+    let query = query.canonicalized()?;
     // QueryTable pushdown runs the query server-side, but only on the main
     // branch: the namespace request carries no branch yet, so a branch handle
     // must fall through to local execution.
-    if can_execute_namespace_query(table, query).await?
+    if can_execute_namespace_query(table, &query).await?
         && let Some(ref namespace_client) = table.namespace_client
     {
-        return execute_namespace_query(table, namespace_client.clone(), query, options).await;
+        return execute_namespace_query(table, namespace_client.clone(), &query, options).await;
     }
-    execute_generic_query(table, query, options).await
+    execute_generic_query(table, &query, options).await
 }
 
 async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> Result<bool> {
@@ -70,6 +86,9 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
         .contains(&NamespaceClientPushdownOperation::QueryTable)
         && table.namespace_client.is_some()
         && table.dataset.current_branch().is_none()
+        // NsQueryTableRequest has no version field, so a pushed-down query would
+        // read latest and ignore the pin.
+        && table.dataset.time_travel_version().is_none()
         && !requires_local_namespace_execution(query))
     {
         return Ok(false);
@@ -133,9 +152,10 @@ pub async fn create_plan(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    let query = query.canonicalized()?;
     let query = match query {
-        AnyQuery::VectorQuery(query) => query.clone(),
-        AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
+        AnyQuery::VectorQuery(query) => query,
+        AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query),
     };
     query.base.check_filter()?;
 
@@ -167,6 +187,7 @@ pub async fn create_plan(
     let mut column = query.column.clone();
 
     let mut query_vector = query.query_vector.first().cloned();
+    let mut is_batch_query = false;
     if query.query_vector.len() > 1 {
         if column.is_none() {
             // Infer a vector column with the same dimension of the query vector.
@@ -177,16 +198,37 @@ pub async fn create_plan(
             )?);
         }
         let vector_field = schema.field(column.as_ref().unwrap()).unwrap();
-        if let DataType::List(_) = vector_field.data_type() {
-            // Multivector handling: concatenate into FixedSizeList<FixedSizeList<_>>
+        let (_, element_type) =
+            lance::index::vector::utils::get_vector_type(schema, column.as_ref().unwrap())?;
+        let is_binary = matches!(element_type, DataType::UInt8);
+        if matches!(vector_field.data_type(), DataType::List(_))
+            || (query.base.offset.unwrap_or(0) == 0 && !is_binary)
+        {
+            // Lance distinguishes these cases from the vector column type: a
+            // list-like query against a List column is one multivector query,
+            // while the same query against a FixedSizeList column is a batch of
+            // independent queries. The batch path shares a single flat scan and
+            // bounds retained candidate data instead of running one scan per
+            // query vector.
             let vectors = query
                 .query_vector
                 .iter()
                 .map(|arr| arr.as_ref())
                 .collect::<Vec<_>>();
             let dim = vectors[0].len();
+            if let Some((query_index, actual_dim)) = vectors
+                .iter()
+                .enumerate()
+                .find_map(|(index, vector)| (vector.len() != dim).then_some((index, vector.len())))
+            {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "query vector at index {query_index} has dimension {actual_dim}, expected {dim}"
+                    ),
+                });
+            }
             let mut fsl_builder = FixedSizeListBuilder::with_capacity(
-                Float32Builder::with_capacity(dim),
+                Float32Builder::with_capacity(dim * vectors.len()),
                 dim as i32,
                 vectors.len(),
             );
@@ -197,8 +239,12 @@ pub async fn create_plan(
                 fsl_builder.append(true);
             }
             query_vector = Some(Arc::new(fsl_builder.finish()));
+            is_batch_query = !matches!(vector_field.data_type(), DataType::List(_));
         } else {
-            // Multiple query vectors: create a plan for each and union them
+            // Lance's batch path has no per-query offset, and its binary path
+            // requires primitive UInt8 queries rather than a fixed-size list.
+            // Keep the prior plan shape for these cases so offsets are applied
+            // per query and binary query vectors retain their primitive shape.
             let query_vecs = query.query_vector.clone();
             let plan_futures = query_vecs
                 .into_iter()
@@ -211,7 +257,7 @@ pub async fn create_plan(
                     }
                 })
                 .collect::<Vec<_>>();
-            let plans = try_join_all(plan_futures).await?;
+            let plans = futures::future::try_join_all(plan_futures).await?;
             return create_multi_vector_plan(plans);
         }
     }
@@ -248,10 +294,14 @@ pub async fn create_plan(
         }
     }
 
-    scanner.limit(
-        query.base.limit.map(|limit| limit as i64),
-        query.base.offset.map(|offset| offset as i64),
-    )?;
+    // For a batch query, `nearest` already applies k to each query vector.
+    // Adding Scanner's global limit would truncate the combined result to k rows.
+    if !is_batch_query {
+        scanner.limit(
+            query.base.limit.map(|limit| limit as i64),
+            query.base.offset.map(|offset| offset as i64),
+        )?;
+    }
 
     if let Some(ef) = query.ef {
         scanner.ef(ef);
@@ -694,6 +744,7 @@ mod tests {
 
     use super::*;
     use crate::query::{QueryExecutionOptions, QueryRequest};
+    use crate::table::BaseTable;
 
     fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
         FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
@@ -886,8 +937,54 @@ mod tests {
 
         async fn query_table(&self, _request: NsQueryTableRequest) -> lance::Result<bytes::Bytes> {
             self.query_table_calls.fetch_add(1, Ordering::SeqCst);
-            panic!("approx_mode queries must not be pushed down to namespace query_table");
+            panic!("query must not be pushed down to namespace query_table");
         }
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_pinned_snapshot_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]))],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_pinned_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let snapshot = native_table.checkout_current().await.unwrap();
+        let snapshot = snapshot.as_any().downcast_ref::<NativeTable>().unwrap();
+        assert!(snapshot.dataset.time_travel_version().is_some());
+
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql("id > 3".to_string())),
+            ..Default::default()
+        });
+        let stream = execute_query(snapshot, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+
+        assert_eq!(
+            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            2
+        );
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -1007,7 +1104,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_plan_multivector_structure() {
+    async fn test_query_snapshot_disables_namespace_pushdown() {
+        use crate::connect;
+        use crate::table::BaseTable;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        let table = conn
+            .create_table("test_snapshot_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(Arc::new(CountingNamespaceClient::default()));
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let snapshot = BaseTable::query_snapshot(&native_table).await.unwrap();
+        let snapshot = snapshot.as_any().downcast_ref::<NativeTable>().unwrap();
+        assert!(
+            !can_execute_namespace_query(snapshot, &AnyQuery::Query(QueryRequest::default()),)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_plan_batch_vector_uses_shared_scan() {
         use arrow_array::{Float32Array, RecordBatch};
         use arrow_schema::{DataType, Field, Schema};
         use datafusion_physical_plan::display::DisplayableExecutionPlan;
@@ -1034,11 +1162,18 @@ mod tests {
             .unwrap();
         let native_table = table.as_native().unwrap();
 
-        // This triggers the "create_multi_vector_plan" logic branch
+        // A batch of vectors against a fixed-size vector column should use
+        // Lance's native batch KNN path instead of independent scan plans.
         let q1 = Arc::new(Float32Array::from(vec![1.0, 2.0]));
         let q2 = Arc::new(Float32Array::from(vec![3.0, 4.0]));
 
         let req = VectorQueryRequest {
+            base: QueryRequest {
+                filter: Some(QueryFilter::Sql("id >= 0".to_string())),
+                limit: Some(1),
+                select: Select::Columns(vec!["id".to_string()]),
+                ..Default::default()
+            },
             column: Some("vector".to_string()),
             query_vector: vec![q1, q2],
             ..Default::default()
@@ -1055,19 +1190,17 @@ mod tests {
             .indent(true)
             .to_string();
 
-        // We expect a RepartitionExec wrapping a UnionExec
         assert!(
-            display.contains("RepartitionExec"),
-            "Plan should include Repartitioning"
+            display.contains("KNNVectorDistance: queries=2"),
+            "plan should use native batch KNN, got:\n{display}"
         );
         assert!(
-            display.contains("UnionExec"),
-            "Plan should include a Union of multiple searches"
+            !display.contains("UnionExec"),
+            "flat batch KNN should share one scan, got:\n{display}"
         );
-        // We expect the projection to add the 'query_index' column (logic inside multi_vector_plan)
         assert!(
             display.contains("query_index"),
-            "Plan should add query_index column"
+            "plan should add query_index column, got:\n{display}"
         );
     }
 

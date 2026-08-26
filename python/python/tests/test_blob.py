@@ -688,3 +688,71 @@ def test_fetch_blobs_nested_path_survives_sort_after_query():
 def _identifiable_payload(size: int) -> bytes:
     block = 256
     return b"".join(bytes([i % 256]) * block for i in range(size // block))
+
+
+def _external_uri_blob_array(uris):
+    blob_type = lancedb.blob("image").type
+    storage_type = blob_type.storage_type
+    child_names = [field.name for field in storage_type]
+    assert "uri" in child_names, "blob layout no longer has a uri child"
+    children = [
+        pa.array(uris if field.name == "uri" else [None] * len(uris), type=field.type)
+        for field in storage_type
+    ]
+    storage = pa.StructArray.from_arrays(children, fields=list(storage_type))
+    return pa.ExtensionArray.from_storage(blob_type, storage)
+
+
+def _external_uri_table_and_rows(name, uris):
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table(name, schema=schema)
+    rows = pa.Table.from_arrays(
+        [
+            pa.array(range(len(uris)), type=pa.int64()),
+            _external_uri_blob_array(uris),
+        ],
+        schema=schema,
+    )
+    return table, rows
+
+
+def test_add_external_uri_struct_round_trips_with_flag(tmp_path):
+    payload = b"external-uri-bytes"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+
+    table, rows = _external_uri_table_and_rows("external_struct", [blob_path.as_uri()])
+    table.add(rows, allow_external_blob_outside_bases=True)
+
+    hits = table.search().to_arrow()
+    blobs = table.fetch_blobs("image", hits)
+    assert blobs[0].as_py() == payload
+
+
+def test_add_external_uri_without_flag_raises(tmp_path):
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(b"unreachable")
+
+    table, rows = _external_uri_table_and_rows("external_no_flag", [blob_path.as_uri()])
+    with pytest.raises(ValueError, match="allow_external_blob_outside_bases"):
+        table.add(rows)
+    assert table.count_rows() == 0
+
+
+def test_add_external_uri_string_round_trips_with_flag(tmp_path):
+    payload = b"external-uri-bytes"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("external_string", schema=schema)
+    table.add(
+        [{"id": 1, "image": blob_path.as_uri()}],
+        allow_external_blob_outside_bases=True,
+    )
+
+    hits = table.search().to_arrow()
+    blobs = table.fetch_blobs("image", hits)
+    assert blobs[0].as_py() == payload

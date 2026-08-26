@@ -85,8 +85,9 @@ class Expr:
     # for dict keys / set membership.
     __hash__ = None  # type: ignore[assignment]
 
-    def __init__(self, inner: PyExpr) -> None:
+    def __init__(self, inner: PyExpr, *, column_path: str | None = None) -> None:
         self._inner = inner
+        self._column_path = column_path
 
     # ── comparisons ──────────────────────────────────────────────────────────
 
@@ -277,7 +278,7 @@ def col(name: str) -> Expr:
     >>> col("age") > lit(18)
     Expr((age > 18))
     """
-    return Expr(expr_col(name))
+    return Expr(expr_col(name), column_path=name)
 
 
 def lit(value: Union[bool, int, float, str, bytes, date, datetime, Decimal]) -> Expr:

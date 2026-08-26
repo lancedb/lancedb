@@ -570,6 +570,15 @@ def test_query_builder(table):
     assert all(np.array(rs[0]["vector"]) == [1, 2])
 
 
+def test_query_multiple_vectors(table):
+    results = table.search([np.array([1, 2]), np.array([4, 5])]).limit(1).to_list()
+
+    assert len(results) == 2
+    results_by_query = {result["query_index"]: result for result in results}
+    assert results_by_query[0]["id"] == 1
+    assert results_by_query[1]["id"] == 2
+
+
 def test_with_row_id(table: lancedb.table.Table):
     rs = table.search().with_row_id(True).to_arrow()
     assert "_rowid" in rs.column_names
@@ -886,6 +895,23 @@ def test_query_builder_batches(table):
     rs_list = rs_list[0].to_pandas()
     assert rs_list["id"][0] == 1
     assert rs_list["id"][1] == 2
+
+
+def test_batch_vector_query_shares_filtered_flat_scan(table):
+    query = (
+        table.search([[1.0, 2.0], [3.0, 4.0]])
+        .where("id > 0", prefilter=True)
+        .limit(1)
+        .select(["id"])
+    )
+
+    plan = query.explain_plan(verbose=True)
+    assert "KNNVectorDistance: queries=2" in plan
+    assert "UnionExec" not in plan
+
+    results = query.to_arrow()
+    assert len(results) == 2
+    assert results["query_index"].to_pylist() == [0, 1]
 
 
 def test_dynamic_projection(table):

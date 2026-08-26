@@ -220,9 +220,32 @@ impl MergeInsertBuilder {
     ///
     /// Returns version and statistics about the merge operation including the number of rows
     /// inserted, updated, and deleted.
-    pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeResult> {
+    pub async fn execute(
+        mut self,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<MergeResult> {
+        self.canonicalize_filters()?;
         self.table.clone().merge_insert(self, new_data).await
     }
+
+    pub(crate) fn canonicalize_filters(&mut self) -> Result<()> {
+        self.when_matched_update_all_filt =
+            canonicalize_merge_filter(self.when_matched_update_all_filt.take())?;
+        self.when_not_matched_by_source_delete_filt =
+            canonicalize_merge_filter(self.when_not_matched_by_source_delete_filt.take())?;
+        Ok(())
+    }
+}
+
+fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<MergeFilter>> {
+    filter
+        .map(|filter| match filter {
+            MergeFilter::Sql(predicate) => {
+                crate::expr::canonicalize_sql_predicate(&predicate).map(MergeFilter::Sql)
+            }
+            filter @ MergeFilter::Expr(_) => Ok(filter),
+        })
+        .transpose()
 }
 
 /// Internal implementation of the merge insert logic
@@ -230,9 +253,14 @@ impl MergeInsertBuilder {
 /// This logic was moved from NativeTable::merge_insert to keep table.rs clean.
 pub(crate) async fn execute_merge_insert(
     table: &NativeTable,
-    params: MergeInsertBuilder,
+    mut params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
+    params.canonicalize_filters()?;
+    super::computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "merge_insert",
+    )?;
     match lsm::lsm_dispatch_decision(table, &params).await? {
         lsm::LsmDispatch::Lsm(plan) => {
             let future =
@@ -317,7 +345,8 @@ pub(crate) async fn execute_merge_insert(
 mod tests {
     use arrow_array::builder::FixedSizeBinaryBuilder;
     use arrow_array::{
-        Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray, UInt64Array,
+        FixedSizeListArray, Int32Array, NullArray, RecordBatch, RecordBatchIterator,
+        RecordBatchReader, StringArray, UInt32Array, UInt64Array,
     };
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
@@ -524,6 +553,74 @@ mod tests {
         let result = merge_insert_builder.execute(new_batches).await.unwrap();
         assert_eq!(result.num_deleted_rows, 5);
         assert_eq!(table.count_rows(None).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_fixed_size_list_above_u32_child_count() {
+        // Arrow's FixedSizeList take kernel uses u32 child indices. Previously,
+        // delete-by-source materialized the target payload in a full outer join,
+        // causing the final list below to overflow those indices and panic.
+        // A Null child keeps this boundary test small in memory.
+        const LIST_SIZE: i32 = 65_536;
+        const ROW_COUNT: usize = (u32::MAX as usize / LIST_SIZE as usize) + 1;
+        const BATCH_SIZE: usize = 8_192;
+
+        let item = Arc::new(Field::new("item", DataType::Null, true));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(item.clone(), LIST_SIZE),
+                false,
+            ),
+        ]));
+        let batch = |start: usize, len: usize| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(UInt32Array::from_iter_values(
+                        start as u32..(start + len) as u32,
+                    )),
+                    Arc::new(FixedSizeListArray::new(
+                        item.clone(),
+                        LIST_SIZE,
+                        Arc::new(NullArray::new(len * LIST_SIZE as usize)),
+                        None,
+                    )),
+                ],
+            )
+            .unwrap()
+        };
+
+        let target_batches = (0..ROW_COUNT)
+            .step_by(BATCH_SIZE)
+            .map(|start| {
+                let len = (ROW_COUNT - start).min(BATCH_SIZE);
+                Ok(batch(start, len))
+            })
+            .collect::<Vec<_>>();
+        let target_data: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(target_batches, schema.clone()));
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("fixed_size_list_overflow", target_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let source = batch(ROW_COUNT - 1, 1);
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_by_source_delete(None);
+        let result = merge
+            .execute(Box::new(RecordBatchIterator::new([Ok(source)], schema)))
+            .await
+            .unwrap();
+
+        assert_eq!(result.num_updated_rows, 1);
+        assert_eq!(result.num_deleted_rows, (ROW_COUNT - 1) as u64);
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
 }
 
@@ -984,6 +1081,44 @@ mod lsm_tests {
     }
 
     #[tokio::test]
+    async fn query_snapshot_preserves_lsm_read_semantics() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let snapshot = table.query_snapshot().await.unwrap();
+        let rows = collect_id_value(snapshot.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_snapshot_preserves_time_travel_lsm_guard() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4]).await;
+
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        let direct_error = table.query().execute().await.err().unwrap();
+        assert!(matches!(direct_error, Error::NotSupported { .. }));
+
+        let snapshot = table.query_snapshot().await.unwrap();
+        let snapshot_error = snapshot.query().execute().await.err().unwrap();
+        assert!(matches!(snapshot_error, Error::NotSupported { .. }));
+    }
+
+    #[tokio::test]
     async fn lsm_read_dedup_newest_wins() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // base: id 2 -> value 1
@@ -1161,7 +1296,7 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([fts_index]))
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
@@ -1254,7 +1389,7 @@ mod lsm_tests {
             .unwrap();
         let vec_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([vec_index]))
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
             .await
             .unwrap();
 

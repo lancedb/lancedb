@@ -6,7 +6,9 @@ import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
 import {
+  Vector as CurrentVector,
   convertToTable,
+  tableFromIPC as currentTableFromIPC,
   fromBufferToRecordBatch,
   fromDataToBuffer,
   fromRecordBatchToBuffer,
@@ -19,6 +21,7 @@ import {
   FunctionOptions,
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
+import { sanitizeTable } from "../lancedb/sanitize";
 
 // biome-ignore lint/suspicious/noExplicitAny: skip
 function sampleRecords(): Array<Record<string, any>> {
@@ -64,7 +67,11 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       tableFromIPC,
       DataType,
       Dictionary,
+      RecordBatch: ArrowRecordBatch,
+      Table: ArrowTable,
       Uint8: ArrowUint8,
+      makeData: arrowMakeData,
+      vectorFromArray,
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
     } = <any>arrow;
     type Schema = ApacheArrow["Schema"];
@@ -166,6 +173,36 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     }
 
     describe("The function makeArrowTable", function () {
+      it("accepts snake_case embedding metadata like camelCase", function () {
+        const spellings = [
+          // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+          { source_column: "text", vector_column: "vector" },
+          { sourceColumn: "text", vectorColumn: "vector" },
+        ];
+        for (const columns of spellings) {
+          const schema = new Schema(
+            [
+              new Field("text", new Utf8(), false),
+              new Field(
+                "vector",
+                new FixedSizeList(3, new Field("item", new Float32(), true)),
+                false,
+              ),
+            ],
+            new Map([
+              [
+                "embedding_functions",
+                JSON.stringify([{ name: "mock", model: {}, ...columns }]),
+              ],
+            ]),
+          );
+          // The vector field is non-nullable and absent from the data; only a
+          // recognized embedding config makes that acceptable.
+          const table = makeArrowTable([{ text: "hello" }], { schema });
+          expect(table.numRows).toBe(1);
+        }
+      });
+
       it("will use data types from a provided schema instead of inference", async function () {
         const schema = new Schema([
           new Field("a", new Int32(), false),
@@ -476,6 +513,137 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (records) => (<any>makeArrowTable)(records),
           true,
         );
+      });
+
+      it("will allow matching inferred types across records", function () {
+        expect(() =>
+          makeArrowTable([{ value: 1 }, { value: 2 }]),
+        ).not.toThrow();
+      });
+
+      it("will reject mismatched inferred types across records", function () {
+        expect(() => makeArrowTable([{ value: 1 }, { value: "two" }])).toThrow(
+          "Failed to infer schema for data. Previously inferred type Float64 but found Utf8 for field value at row 1. Consider providing an explicit schema.",
+        );
+      });
+
+      it("will ignore generated dictionary IDs when comparing inferred types", function () {
+        const table = makeArrowTable([{ str: "a" }, { str: "b" }], {
+          dictionaryEncodeStrings: true,
+        });
+
+        expect(table.getChild("str")?.toJSON()).toEqual(["a", "b"]);
+      });
+
+      it("will preserve null values without treating them as type mismatches", function () {
+        for (const records of [
+          [{ vector: [1, 2, 3] }, { vector: null }],
+          [{ vector: null }, { vector: [1, 2, 3] }],
+        ]) {
+          const table = makeArrowTable(records);
+
+          expect(table.numRows).toBe(2);
+          expect(table.getChild("vector")?.nullCount).toBe(1);
+        }
+      });
+
+      it("will preserve empty variable-size lists", function () {
+        for (const records of [
+          [{ items: [1] }, { items: [] }],
+          [{ items: [] }, { items: [1] }],
+        ]) {
+          const table = makeArrowTable(records);
+          expect(
+            table
+              .getChild("items")
+              ?.toJSON()
+              .map((value) => value.toJSON()),
+          ).toEqual(records.map((record) => record.items));
+        }
+      });
+
+      it("will propagate deferred evidence through nested lists", function () {
+        for (const records of [
+          [{ items: [1] }, { items: [null] }],
+          [{ items: [null] }, { items: [1] }],
+          [{ items: [null, 1] }, { items: [2, null] }],
+        ]) {
+          const table = makeArrowTable(records);
+          expect(
+            table
+              .getChild("items")
+              ?.toJSON()
+              .map((value) => value.toJSON()),
+          ).toEqual(records.map((record) => record.items));
+        }
+
+        const nestedRecords = [{ items: [[1]] }, { items: [[null]] }];
+        const nestedTable = makeArrowTable(nestedRecords);
+        expect(
+          nestedTable
+            .getChild("items")
+            ?.toJSON()
+            .map((value) =>
+              value
+                .toJSON()
+                .map((nestedValue: { toJSON: () => unknown[] }) =>
+                  nestedValue.toJSON(),
+                ),
+            ),
+        ).toEqual(nestedRecords.map((record) => record.items));
+      });
+
+      it("will reject incompatible deferred evidence within a list", function () {
+        for (const items of [
+          [[], 1],
+          [1, []],
+          [[null], 1],
+          [1, [null]],
+        ]) {
+          expect(() => makeArrowTable([{ items }])).toThrow(
+            "Failed to infer data type for field items at row 0.",
+          );
+        }
+      });
+
+      it("will reject empty fixed-size lists", function () {
+        expect(() =>
+          makeArrowTable([{ vector: [1, 2, 3] }, { vector: [] }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type FixedSizeList[3]<Float32> but found List[0] for field vector at row 1.",
+        );
+      });
+
+      it("will reject inferred leaf and branch shape changes", function () {
+        expect(() =>
+          makeArrowTable([{ value: 1 }, { value: { nested: 2 } }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type Float64 but found Struct for field value at row 1.",
+        );
+        expect(() =>
+          makeArrowTable([{ value: { nested: 1 } }, { value: 2 }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type Struct but found Float64 for field value at row 1.",
+        );
+      });
+
+      it("will allow null values around inferred struct values", function () {
+        for (const { records, nullIndex } of [
+          {
+            records: [{ value: null }, { value: { nested: 2 } }],
+            nullIndex: 0,
+          },
+          {
+            records: [{ value: { nested: 1 } }, { value: null }],
+            nullIndex: 1,
+          },
+        ]) {
+          const table = makeArrowTable(records);
+          const values = table.getChild("value");
+
+          expect(values?.nullCount).toBe(1);
+          expect(values?.get(nullIndex)).toBeNull();
+        }
       });
 
       it("will allow a schema to be provided", async function () {
@@ -1054,6 +1222,114 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
 
     describe("when using two versions of arrow", function () {
+      it("preserves a dictionary shared by multiple fields", async function () {
+        const values = ["alpha", "beta", "alpha"];
+        const dictionaryVector = vectorFromArray(values);
+        const batch = new ArrowRecordBatch({
+          first: dictionaryVector.data[0],
+          second: dictionaryVector.data[0],
+        });
+        const table = new ArrowTable([batch]);
+
+        const sanitized = sanitizeTable(table);
+        expect([...sanitized.getChild("first")!]).toEqual(values);
+        expect([...sanitized.getChild("second")!]).toEqual(values);
+        const firstType = sanitized.schema.fields[0].type as {
+          dictionary: unknown;
+        };
+        const secondType = sanitized.schema.fields[1].type as {
+          dictionary: unknown;
+        };
+        expect(secondType.dictionary).toBe(firstType.dictionary);
+        expect(sanitized.batches[0].data.children[1].dictionary).toBe(
+          sanitized.batches[0].data.children[0].dictionary,
+        );
+
+        const buf = await fromDataToBuffer(table);
+        const actual = currentTableFromIPC(buf);
+        expect([...actual.getChild("first")!]).toEqual(values);
+        expect([...actual.getChild("second")!]).toEqual(values);
+      });
+
+      it("preserves shared dictionary data from another Arrow version", async function () {
+        const values = ["alpha", "beta", "alpha"];
+        const dictionaryVector = vectorFromArray(values);
+        const firstBatch = new ArrowRecordBatch({
+          label: dictionaryVector.slice(0, 2).data[0],
+        });
+        const secondBatch = new ArrowRecordBatch({
+          label: dictionaryVector.slice(2).data[0],
+        });
+        const table = new ArrowTable([firstBatch, secondBatch]);
+
+        const sanitized = sanitizeTable(table);
+        expect([...sanitized.getChild("label")!]).toEqual(values);
+
+        const dictionaries = sanitized.batches.map(
+          (batch) => batch.data.children[0].dictionary,
+        );
+        expect(dictionaries[0]).toBeInstanceOf(CurrentVector);
+        expect(dictionaries[1]).toBe(dictionaries[0]);
+
+        const buf = await fromDataToBuffer(table);
+        const actual = currentTableFromIPC(buf);
+        expect([...actual.getChild("label")!]).toEqual(values);
+      });
+
+      it("preserves shared chunks in growing dictionaries", async function () {
+        const type = new Dictionary(new Utf8(), new Int32(), 42, false);
+        const firstDictionary = vectorFromArray(["alpha", "beta"], new Utf8());
+        const secondDictionary = firstDictionary.concat(
+          vectorFromArray(["gamma"], new Utf8()),
+        );
+        const firstData = arrowMakeData({
+          type,
+          data: Int32Array.from([0, 1]),
+          dictionary: firstDictionary,
+        });
+        const secondData = arrowMakeData({
+          type,
+          data: Int32Array.from([2]),
+          dictionary: secondDictionary,
+        });
+        const table = new ArrowTable([
+          new ArrowRecordBatch({ label: firstData }),
+          new ArrowRecordBatch({ label: secondData }),
+        ]);
+
+        const sanitized = sanitizeTable(table);
+        const expected = ["alpha", "beta", "gamma"];
+        expect([...sanitized.getChild("label")!]).toEqual(expected);
+        const firstLocalDictionary =
+          sanitized.batches[0].data.children[0].dictionary!;
+        const secondLocalDictionary =
+          sanitized.batches[1].data.children[0].dictionary!;
+        expect(secondLocalDictionary.data[0]).toBe(
+          firstLocalDictionary.data[0],
+        );
+
+        const buf = await fromTableToBuffer(sanitized);
+        const actual = currentTableFromIPC(buf);
+        expect([...actual.getChild("label")!]).toEqual(expected);
+      });
+
+      it("can serialize list data from another Arrow version", async function () {
+        const values = [["anime", "action"], [], null];
+        const vector = vectorFromArray(
+          values,
+          new List(new Field("item", new Utf8(), true)),
+        );
+        const table = new ArrowTable({ tags: vector });
+
+        const buf = await fromDataToBuffer(table);
+        const actual = currentTableFromIPC(buf);
+        const actualTags = actual.getChild("tags");
+
+        expect(actualTags?.get(0)?.toJSON()).toEqual(values[0]);
+        expect(actualTags?.get(1)?.toJSON()).toEqual(values[1]);
+        expect(actualTags?.get(2)).toBeNull();
+      });
+
       it("can still import data", async function () {
         const schema = new arrow15.Schema([
           new arrow15.Field("id", new arrow15.Int32()),

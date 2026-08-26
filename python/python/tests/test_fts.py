@@ -25,6 +25,7 @@ from lancedb.db import DBConnection
 from lancedb.index import FTS
 from lancedb.query import (
     BoostQuery,
+    DocumentGranularity,
     MatchQuery,
     MultiMatchQuery,
     PhraseQuery,
@@ -243,6 +244,63 @@ def test_create_inverted_index_block_size(table, block_size):
 def test_create_inverted_index_rejects_invalid_block_size(table):
     with pytest.raises(ValueError, match="128 or 256"):
         table.create_index("text", config=FTS(block_size=129))
+
+
+def test_list_element_document_granularity(tmp_path):
+    docs_type = pa.list_(pa.struct([pa.field("content", pa.string())]))
+    docs = pa.array(
+        [
+            [
+                {"content": "alpha beta"},
+                None,
+                {"content": ""},
+                {"content": "the and"},
+                {"content": "alpha beta"},
+            ]
+        ],
+        type=docs_type,
+    )
+    table = ldb.connect(tmp_path).create_table(
+        "list_element_docs", pa.table({"id": [0], "docs": docs})
+    )
+    row_table = ldb.connect(tmp_path).create_table(
+        "row_docs", pa.table({"id": [0], "docs": docs})
+    )
+    row_table.create_index("docs.content", config=FTS())
+    row_result = row_table.search(MatchQuery("alpha", "docs.content")).to_arrow()
+    assert row_result.num_rows == 1
+    assert "_doc_index" not in row_result.column_names
+
+    granularity = DocumentGranularity.LIST_ELEMENT
+    table.create_index(
+        "docs.content",
+        config=FTS(with_position=True, document_granularity=granularity),
+    )
+    assert table.list_indices()[0].columns == ["docs.content"]
+
+    def coordinates(query):
+        result = table.search(query).limit(10).to_arrow()
+        doc_index_type = result.schema.field("_doc_index").type
+        assert pa.types.is_list(doc_index_type)
+        assert doc_index_type.value_type == pa.uint32()
+        return sorted(result["_doc_index"].to_pylist())
+
+    assert coordinates(
+        MatchQuery("alpha", "docs.content", document_granularity=granularity)
+    ) == [[0], [4]]
+    assert coordinates(
+        PhraseQuery("alpha beta", "docs.content", document_granularity=granularity)
+    ) == [[0], [4]]
+    assert coordinates(MatchQuery("alpha", "docs.content")) == [[0], [4]]
+    assert FTS().document_granularity is DocumentGranularity.ROW
+
+
+def test_create_inverted_index_respects_build_memory_limit(table):
+    with pytest.raises(ValueError, match="exceeds worker memory limit"):
+        table.create_index(
+            "text",
+            config=FTS(memory_limit=0, num_workers=1),
+        )
 
 
 def test_custom_stop_words_list(table):
@@ -1081,12 +1139,39 @@ def test_fts_query_to_json():
     )
     assert json_str == expected
 
+    # Test MatchQuery with list-element document granularity
+    match_query = MatchQuery(
+        "hello world",
+        "text",
+        document_granularity=DocumentGranularity.LIST_ELEMENT,
+    )
+    json_str = match_query.to_json()
+    expected = (
+        '{"match":{"column":"text","terms":"hello world","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0,'
+        '"document_granularity":"list_element"}}'
+    )
+    assert json_str == expected
+
     # Test MatchQuery with options
     match_query = MatchQuery("puppy", "text", fuzziness=2, boost=1.5, prefix_length=3)
     json_str = match_query.to_json()
     expected = (
         '{"match":{"column":"text","terms":"puppy","boost":1.5,"fuzziness":2,'
         '"max_expansions":50,"operator":"Or","prefix_length":3}}'
+    )
+    assert json_str == expected
+
+    # Test PhraseQuery with list-element document granularity
+    phrase_query = PhraseQuery(
+        "quick brown fox",
+        "title",
+        document_granularity=DocumentGranularity.LIST_ELEMENT,
+    )
+    json_str = phrase_query.to_json()
+    expected = (
+        '{"phrase":{"column":"title","terms":"quick brown fox","slop":0,'
+        '"document_granularity":"list_element"}}'
     )
     assert json_str == expected
 

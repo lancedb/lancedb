@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    any::TypeId,
+    collections::{HashMap, HashSet},
+};
 
 use arrow_array::types::{
     Decimal32Type, Decimal64Type, Decimal128Type, Decimal256Type, DecimalType,
@@ -13,8 +16,12 @@ use datafusion_expr::Expr;
 use datafusion_functions::core::expr_fn::{
     arrow_cast as datafusion_arrow_cast, arrow_try_cast as datafusion_arrow_try_cast,
 };
-use datafusion_sql::sqlparser::keywords::ALL_KEYWORDS;
-use datafusion_sql::unparser::{self, dialect::Dialect};
+use datafusion_sql::sqlparser::{
+    dialect::{Dialect as SqlParserDialect, GenericDialect},
+    keywords::ALL_KEYWORDS,
+    tokenizer::{Token, Tokenizer},
+};
+use datafusion_sql::unparser::{self, dialect::Dialect as UnparserDialect};
 
 /// Unparser dialect that matches the quoting style expected by the Lance SQL
 /// parser.  Lance uses backtick (`` ` ``) as the only delimited-identifier
@@ -29,7 +36,7 @@ use datafusion_sql::unparser::{self, dialect::Dialect};
 ///   lower-case by the SQL parser, which would break case-sensitive schemas).
 struct LanceSqlDialect;
 
-impl Dialect for LanceSqlDialect {
+impl UnparserDialect for LanceSqlDialect {
     fn identifier_quote_style(&self, identifier: &str) -> Option<char> {
         let identifier_upper = identifier.to_ascii_uppercase();
         let needs_quote =
@@ -40,6 +47,61 @@ impl Dialect for LanceSqlDialect {
                 });
         if needs_quote { Some('`') } else { None }
     }
+}
+
+/// Lance's tokenizer dialect with SQL-standard double-quoted identifiers added.
+///
+/// Keep this deliberately small: Lance's parser wraps `GenericDialect` and
+/// delegates only identifier recognition, leaving every other dialect option at
+/// its default. In particular, `/*! ... */` remains an ordinary block comment.
+#[derive(Debug, Default)]
+struct PredicateDialect(GenericDialect);
+
+impl SqlParserDialect for PredicateDialect {
+    fn dialect(&self) -> TypeId {
+        self.0.dialect()
+    }
+
+    fn is_identifier_start(&self, ch: char) -> bool {
+        self.0.is_identifier_start(ch)
+    }
+
+    fn is_identifier_part(&self, ch: char) -> bool {
+        self.0.is_identifier_part(ch)
+    }
+
+    fn is_delimited_identifier_start(&self, ch: char) -> bool {
+        ch == '"' || ch == '`'
+    }
+}
+
+/// Canonicalize a raw SQL predicate for Lance's parser.
+///
+/// Lance wraps [`GenericDialect`] for identifier recognition while retaining the
+/// default dialect behavior for every other lexical option. [`PredicateDialect`]
+/// mirrors that contract and additionally recognizes `"` as an identifier
+/// delimiter, allowing this function to rewrite only those identifier tokens.
+pub fn canonicalize_sql_predicate(predicate: &str) -> crate::Result<String> {
+    let dialect = PredicateDialect::default();
+    let tokens = Tokenizer::new(&dialect, predicate)
+        .with_unescape(false)
+        .tokenize()
+        .map_err(|err| crate::Error::InvalidInput {
+            message: format!("invalid SQL predicate: {err}"),
+        })?;
+
+    Ok(tokens
+        .into_iter()
+        .map(|token| match token {
+            Token::Word(word) if word.quote_style == Some('"') => {
+                // with_unescape(false) retains doubled double quotes. Decode
+                // those before escaping any backticks for Lance's delimiter.
+                let identifier = word.value.replace("\"\"", "\"").replace('`', "``");
+                format!("`{identifier}`")
+            }
+            other => other.to_string(),
+        })
+        .collect())
 }
 
 /// Prefix for placeholder strings inserted in place of binary literals.  Chosen
@@ -288,5 +350,53 @@ pub fn expr_to_sql_string(expr: &Expr) -> crate::Result<String> {
         Ok(sql)
     } else {
         bind_binary_literals(&sql, binary_bindings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonicalize_sql_predicate;
+
+    #[test]
+    fn normalizes_double_quoted_identifiers() {
+        assert_eq!(
+            canonicalize_sql_predicate(r#""PartyAbbrev" = 'D'"#).unwrap(),
+            "`PartyAbbrev` = 'D'"
+        );
+        assert_eq!(
+            canonicalize_sql_predicate(r#""MetaData"."userId" = 5"#).unwrap(),
+            "`MetaData`.`userId` = 5"
+        );
+        assert_eq!(
+            canonicalize_sql_predicate(r#""a""b" = 1"#).unwrap(),
+            "`a\"b` = 1"
+        );
+    }
+
+    #[test]
+    fn preserves_quotes_inside_literals_and_backticks() {
+        let filter = r#"name = 'Alice "Ace"' AND `quoted"field` = 1"#;
+        assert_eq!(canonicalize_sql_predicate(filter).unwrap(), filter);
+    }
+
+    #[test]
+    fn preserves_literals_and_comments_using_lance_dialect_rules() {
+        let predicate = r#"path = '\' AND "PartyAbbrev" = 'D' -- unmatched " in comment"#;
+        assert_eq!(
+            canonicalize_sql_predicate(predicate).unwrap(),
+            r#"path = '\' AND `PartyAbbrev` = 'D' -- unmatched " in comment"#
+        );
+
+        let predicate = r#"id = 1 /* unmatched " in block comment */"#;
+        assert_eq!(canonicalize_sql_predicate(predicate).unwrap(), predicate);
+
+        let predicate = r#"id = 1 /*! OR "PartyAbbrev" = 'D' */"#;
+        assert_eq!(canonicalize_sql_predicate(predicate).unwrap(), predicate);
+    }
+
+    #[test]
+    fn rejects_unterminated_double_quoted_identifier() {
+        let error = canonicalize_sql_predicate(r#""PartyAbbrev = 'D'"#).unwrap_err();
+        assert!(matches!(error, crate::Error::InvalidInput { .. }));
     }
 }
