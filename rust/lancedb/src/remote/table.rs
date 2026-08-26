@@ -1911,11 +1911,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 e => e,
             })?;
 
-        // Explicit time-travel: drop any read-your-write / freshness
-        // constraints so the user sees exactly the requested version.
-        self.reset_freshness(None, true);
-
         let mut write_guard = self.version.write().await;
+        // Commit the selector and its freshness mode while holding the selector
+        // write lock, with no cancellation point between the two updates.
+        self.reset_freshness(None, true);
         *write_guard = Some(version);
         drop(write_guard);
 
@@ -1926,12 +1925,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     async fn checkout_latest(&self) -> Result<()> {
         let mut write_guard = self.version.write().await;
-        *write_guard = None;
-        drop(write_guard);
-
         // Drop any per-handle read/write tracking; subsequent reads use the
         // baseline timestamp captured now to guarantee freshness.
         self.reset_freshness(Some(SystemTime::now()), false);
+        *write_guard = None;
+        drop(write_guard);
 
         // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
@@ -2898,11 +2896,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .resolve_tag_version_with_request(tag, request, false)
             .await?;
 
-        // Explicit time-travel: drop any read-your-write / freshness
-        // constraints so the user sees exactly the tagged version.
-        self.reset_freshness(None, true);
-
         let mut write_guard = self.version.write().await;
+        // Commit the selector and its freshness mode while holding the selector
+        // write lock, with no cancellation point between the two updates.
+        self.reset_freshness(None, true);
         *write_guard = Some(version);
         drop(write_guard);
 
@@ -10307,6 +10304,46 @@ mod tests {
         assert!(!headers.contains_key("x-lancedb-min-timestamp"));
         assert!(!headers.contains_key("x-lancedb-min-version"));
         assert!(!headers.contains_key("x-lancedb-min-read-version"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_cancelled_checkout_keeps_latest_freshness_enabled() {
+        let (described_tx, described_rx) = std::sync::mpsc::channel::<()>();
+        let table = Arc::new(RemoteTable::new_mock_with_consistency_interval(
+            "my_table".to_string(),
+            move |_| {
+                described_tx.send(()).unwrap();
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":5,"schema":{"fields":[]}}"#.to_string())
+                    .unwrap()
+            },
+            Some(Duration::from_secs(0)),
+        ));
+
+        let version_guard = table.version.write().await;
+        let checkout = tokio::spawn({
+            let table = table.clone();
+            async move { table.checkout(5).await }
+        });
+        tokio::task::spawn_blocking(move || {
+            described_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        })
+        .await
+        .unwrap();
+        for _ in 0..100 {
+            if table.freshness.lock().unwrap().pinned {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        checkout.abort();
+        assert!(checkout.await.unwrap_err().is_cancelled());
+        drop(version_guard);
+
+        assert_eq!(table.current_version().await, None);
+        assert!(table.snapshot_freshness_headers().min_timestamp.is_some());
     }
 
     #[tokio::test]
