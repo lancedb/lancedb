@@ -87,6 +87,10 @@ impl ServerVersion {
     pub fn support_blobs(&self) -> bool {
         self.0 >= semver::Version::new(0, 5, 0)
     }
+
+    pub fn support_fts_document_granularity(&self) -> bool {
+        self.0 >= semver::Version::new(0, 6, 0)
+    }
 }
 
 pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
