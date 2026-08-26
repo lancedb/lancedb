@@ -40,7 +40,7 @@ from ._blob import (
 from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
-from lancedb.job import AsyncJob, Job
+from lancedb.job import AsyncJob, Job, _typed_job
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -72,7 +72,10 @@ from .index import (
     FTS,
 )
 from .expr import Expr
-from .functions import FunctionApplication
+from .functions import (
+    FunctionApplication,
+    RefreshColumnResult as RefreshColumnJobResult,
+)
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -1266,6 +1269,7 @@ class Table(ABC):
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -1317,6 +1321,10 @@ class Table(ABC):
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that sit outside registered blob bases. The row
+            keeps a reference, so the object has to stay readable. Local
+            tables only.
 
         Returns
         -------
@@ -1969,7 +1977,7 @@ class Table(ABC):
             A mapping with one ``FunctionApplication`` value keeps its scalar
             or named-struct result in the named table column. A bare
             named-struct application expands its ordered result fields as one
-            atomic sibling group; aliases come from ``rename(columns=...)``.
+            atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
@@ -2039,7 +2047,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column_async(self, column: str) -> Job:
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
@@ -2050,6 +2058,12 @@ class Table(ABC):
         than failing the job. On local tables the job runs in-process; on
         LanceDB Cloud and Enterprise it is the server's backfill job.
 
+        Returns
+        -------
+        Job[RefreshColumnResult]
+            A job whose successful ``wait`` returns row counts plus the source
+            and published table versions.
+
         Examples
         --------
         >>> import lancedb
@@ -2058,7 +2072,9 @@ class Table(ABC):
         >>> table.add_columns(computed={"doubled": "x * 2"})
         AddColumnsResult(version=2)
         >>> job = table.refresh_column_async("doubled")
-        >>> job.wait()
+        >>> result = job.wait()
+        >>> result.rows_assigned
+        2
         >>> job.status()
         'finished'
         """
@@ -3398,6 +3414,7 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -3425,6 +3442,9 @@ class LanceTable(Table):
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Allow blob URIs outside registered bases. See :meth:`Table.add`.
+            Local tables only.
 
         Returns
         -------
@@ -3441,6 +3461,7 @@ class LanceTable(Table):
                     fill_value=fill_value,
                     progress=progress,
                     write_parallelism=write_parallelism,
+                    allow_external_blob_outside_bases=allow_external_blob_outside_bases,
                 )
             )
         finally:
@@ -4082,7 +4103,7 @@ class LanceTable(Table):
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
         return LOOP.run(self._table.refresh_column(column))
 
-    def refresh_column_async(self, column: str) -> Job:
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows, returning a handle to the
         refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
@@ -5354,6 +5375,7 @@ class AsyncTable:
         fill_value: Optional[float] = None,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
@@ -5384,6 +5406,9 @@ class AsyncTable:
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Allow blob URIs outside registered bases. See :meth:`Table.add`.
+            Local tables only.
 
         """
         schema = await self.schema()
@@ -5420,6 +5445,7 @@ class AsyncTable:
                 mode or "append",
                 progress=progress,
                 write_parallelism=write_parallelism,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
         except RuntimeError as e:
             if "Cast error" in str(e):
@@ -6027,7 +6053,7 @@ class AsyncTable:
             A mapping with one ``FunctionApplication`` value keeps its scalar
             or named-struct result in the named table column. A bare
             named-struct application expands its ordered result fields as one
-            atomic sibling group; aliases come from ``rename(columns=...)``.
+            atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
@@ -6064,7 +6090,7 @@ class AsyncTable:
                 isinstance(value, FunctionApplication) for value in transforms.values()
             ):
                 raise ValueError(
-                    "one add_columns call declares exactly one Function sibling group"
+                    "one add_columns call declares exactly one Function binding"
                 )
             function_output_name, function_application = next(iter(transforms.items()))
 
@@ -6122,7 +6148,9 @@ class AsyncTable:
         """
         return await self._inner.refresh_column(column)
 
-    async def refresh_column_async(self, column: str) -> AsyncJob:
+    async def refresh_column_async(
+        self, column: str
+    ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
@@ -6134,6 +6162,12 @@ class AsyncTable:
         in-process; on LanceDB Cloud and Enterprise it is the server's
         backfill job.
 
+        Returns
+        -------
+        AsyncJob[RefreshColumnResult]
+            A job whose successful ``wait`` returns row counts plus the source
+            and published table versions.
+
         Examples
         --------
         >>> import asyncio
@@ -6143,12 +6177,16 @@ class AsyncTable:
         ...     table = await db.create_table("computed_job_async_demo", [{"x": 1}])
         ...     await table.add_columns(computed={"doubled": "x * 2"})
         ...     job = await table.refresh_column_async("doubled")
-        ...     await job.wait()
+        ...     result = await job.wait()
+        ...     assert result.rows_assigned == 1
         ...     return await job.status()
         >>> asyncio.run(refresh_in_background())
         'finished'
         """
-        return AsyncJob(await self._inner.refresh_column_async(column))
+        return _typed_job(
+            await self._inner.refresh_column_async(column),
+            RefreshColumnJobResult.from_json,
+        )
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]
@@ -6801,21 +6839,21 @@ class Branches:
         """Diff a branch against main."""
         return LOOP.run(self._table.branches.diff(from_branch))
 
-    def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
-        """Merge a branch into main, or dry-run.
+    def cherry_pick(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
+        """Cherry-pick a branch onto main, or dry-run.
 
         Parameters
         ----------
         from_branch: str
-            Branch to merge from.
+            Branch to cherry-pick from.
         dry_run: bool, default False
-            When True, only preview. When False, attempt the merge.
+            When True, only preview. When False, attempt the cherry-pick.
 
         Notes
         -----
-        A rejected merge returns ``status="rejected"`` instead of raising.
+        A failed cherry-pick returns ``status="failed"`` instead of raising.
         """
-        return LOOP.run(self._table.branches.merge(from_branch, dry_run))
+        return LOOP.run(self._table.branches.cherry_pick(from_branch, dry_run))
 
     def _wrap(
         self, async_table: "AsyncTable", version: Optional[int] = None
@@ -6951,9 +6989,11 @@ class AsyncBranches:
         """Diff a branch against main."""
         return await self._table.branches.diff(from_branch)
 
-    async def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
-        """Merge a branch into main, or dry-run.
+    async def cherry_pick(
+        self, from_branch: str, dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """Cherry-pick a branch onto main, or dry-run.
 
-        A rejected merge returns ``status="rejected"`` instead of raising.
+        A failed cherry-pick returns ``status="failed"`` instead of raising.
         """
-        return await self._table.branches.merge(from_branch, dry_run)
+        return await self._table.branches.cherry_pick(from_branch, dry_run)

@@ -124,18 +124,26 @@ pub(crate) async fn execute_declare(
     table: &NativeTable,
     columns: &[(String, String)],
 ) -> Result<AddColumnsResult> {
+    use lance::dataset::mem_wal::DatasetMemWalExt;
+
     // An LSM write spec keeps visible rows in tiers refresh cannot reach;
     // checked against latest committed state, not this handle's snapshot.
-    // The catch-up flag outlives unset and marks retained SSTable rows.
     table.checkout_latest().await?;
     computed_columns::ensure_no_function_bindings_for_mutation(
         table.schema().await?.as_ref(),
         "schema evolution",
     )?;
-    let catchup = table.dataset.get().await?.manifest().reader_feature_flags
-        & lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP
-        != 0;
-    if catchup || table.get_lsm_write_spec().await?.is_some() {
+    // Unset drops the MemWAL index, so the spec alone stops describing a table
+    // whose SSTables still hold rows. The shard directories outlive it and are
+    // the durable evidence.
+    let retained_sstables = !table
+        .dataset
+        .get()
+        .await?
+        .list_mem_wal_latest_shard_ids()
+        .await?
+        .is_empty();
+    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "computed columns are not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"

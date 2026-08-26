@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Types for remote branch diff / merge against main.
+//! Types for remote branch diff / cherry-pick onto main.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,13 +44,13 @@ pub struct RowCountSummary {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum MergeBlockerCode {
+pub enum CherryPickErrorCode {
     BaseMoved,
     RowCountMismatch,
     RowsChanged,
     ColumnRemoved,
     ColumnChanged,
-    NoMergeableChanges,
+    NothingToApply,
     NoColumnChanges,
     InputColumnDependency,
     ParentNotMain,
@@ -60,8 +60,8 @@ pub enum MergeBlockerCode {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MergeBlocker {
-    pub code: MergeBlockerCode,
+pub struct CherryPickError {
+    pub code: CherryPickErrorCode,
     pub message: String,
 }
 
@@ -81,34 +81,33 @@ pub struct BranchDiff {
     pub changed_columns: Vec<ColumnChange>,
     pub added_indexes: Vec<IndexSummary>,
     pub removed_indexes: Vec<IndexSummary>,
-    pub mergeable: bool,
-    pub merge_blockers: Vec<MergeBlocker>,
+    pub errors: Vec<CherryPickError>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MergePreview {
+pub struct CherryPickPreview {
     #[serde(default)]
     pub promoted_columns: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum MergeBranchStatus {
+pub enum CherryPickStatus {
     Ready,
-    Rejected,
+    Failed,
     NotImplemented,
-    Merged,
+    CherryPicked,
     #[serde(other)]
     Unknown,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MergeBranchResult {
-    pub status: MergeBranchStatus,
+pub struct CherryPickResult {
+    pub status: CherryPickStatus,
     pub diff: BranchDiff,
-    pub preview: MergePreview,
+    pub preview: CherryPickPreview,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_version_after: Option<u64>,
 }

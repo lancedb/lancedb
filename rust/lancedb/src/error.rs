@@ -77,6 +77,8 @@ pub enum Error {
     ColumnAlreadyExists { name: String },
     #[snafu(display("Column '{name}' is not a computed column"))]
     NotAComputedColumn { name: String },
+    #[snafu(display("Table '{name}' is not a materialized view"))]
+    NotAMaterializedView { name: String },
     #[snafu(display("Invalid expression for column '{column}': {message}"))]
     InvalidExpression { column: String, message: String },
 

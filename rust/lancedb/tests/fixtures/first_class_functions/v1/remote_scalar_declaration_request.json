@@ -8,8 +8,7 @@
       "inputs": [
         {"parameter": "text", "kind": "column", "value": {"path": "description"}}
       ],
-      "output": {"kind": "scalar", "arrow_type": "list<float32>", "nullable": false},
-      "group_id": "fg_scalar"
+      "output": {"kind": "scalar", "arrow_type": "list<float32>", "nullable": false}
     },
     "binding_metadata_version": 1,
     "input_bindings": [

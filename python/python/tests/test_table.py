@@ -1467,7 +1467,7 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     table = mem_db.create_table("job_test", [{"id": i} for i in range(10)])
     job = table.create_index_async("id", config=BTree())
     assert job.id is None
-    job.wait()
+    assert job.wait() is None
     assert len(table.list_indices()) == 1
     job.cancel()
 
@@ -3947,9 +3947,20 @@ def test_refresh_column_async_returns_job(tmp_path):
 
     job = table.refresh_column_async("doubled")
     assert job.id is None  # in-process jobs have no server id
-    job.wait()
+    result = job.wait()
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.rows_assigned == 2
+    assert result.rows_failed == 0
+    assert result.rows_remaining == 0
+    assert result.source_version == 2
+    assert result.published_version == 3
     assert job.status() == "finished"
     assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    no_op = table.refresh_column_async("doubled").wait()
+    assert no_op.rows_assigned == 0
+    assert no_op.source_version == 3
+    assert no_op.published_version is None
 
     # Bad input raises at the call, not through the job.
     with pytest.raises(Exception, match="not a computed column"):
@@ -3963,6 +3974,10 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     await table.add_columns(computed={"tripled": "x * 3"})
 
     job = await table.refresh_column_async("tripled")
-    await job.wait()
+    result = await job.wait()
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.rows_assigned == 1
+    assert result.source_version == 2
+    assert result.published_version == 3
     assert await job.status() == "finished"
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
