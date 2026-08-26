@@ -21,10 +21,7 @@ use crate::error::Result;
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 use crate::table::BaseTable;
 
-use super::{
-    FreshnessHeaders, FreshnessState, RemoteTable, freshness_headers_snapshot,
-    freshness_state_snapshot,
-};
+use super::{FreshnessHeaders, FreshnessState, RemoteTable, freshness_headers_snapshot};
 
 #[derive(Debug, Clone, Copy)]
 enum RangeRequestMode {
@@ -372,9 +369,9 @@ impl<S: HttpSend> RemoteTable<S> {
                 message: "fetch_blobs is not supported on this LanceDB Cloud server".into(),
             });
         }
-        let version = self.current_version().await;
+        let read_snapshot = self.snapshot_read_state().await;
         let mut body = serde_json::json!({
-            "version": version,
+            "version": read_snapshot.version,
             "column": column,
             "row_ids": row_ids,
         });
@@ -384,7 +381,9 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/fetch_blobs/", self.identifier))
             .json(&body);
-        let (request_id, response) = self.send(request, true).await?;
+        let (request_id, response) = self
+            .send_with_freshness(request, true, read_snapshot.freshness)
+            .await?;
         let mut stream = self.read_arrow_response(&request_id, response).await?;
 
         let mut blob_chunks: Vec<Arc<dyn Array>> = Vec::new();
@@ -460,9 +459,7 @@ impl<S: HttpSend> RemoteTable<S> {
             });
         }
 
-        let version = self.current_version().await;
-        let (freshness_state, parent_freshness_request) =
-            freshness_state_snapshot(&self.freshness, self.client.read_consistency_interval);
+        let read_snapshot = self.snapshot_read_state().await;
         let encoded_column = urlencoding::encode(column);
         let requesters = row_ids
             .iter()
@@ -474,11 +471,11 @@ impl<S: HttpSend> RemoteTable<S> {
                 let requester: Arc<dyn BlobRangeRequester> = Arc::new(TableBlobRangeRequester {
                     client: self.client.clone(),
                     path,
-                    version,
+                    version: read_snapshot.version,
                     branch: self.branch.clone(),
-                    freshness: Arc::new(std::sync::Mutex::new(freshness_state)),
+                    freshness: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
                     parent_freshness: self.freshness.clone(),
-                    parent_freshness_request,
+                    parent_freshness_request: read_snapshot.freshness,
                     read_consistency_interval: self.client.read_consistency_interval,
                 });
                 requester
