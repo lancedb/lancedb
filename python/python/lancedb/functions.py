@@ -222,6 +222,7 @@ class PythonEnvironmentSpec(_RemoteValue):
 
     kind: str
     packages: tuple[str, ...] = ()
+    channels: tuple[str, ...] = ()
     path: Optional[str] = None
     modules: tuple[str, ...] = ()
     image: Optional[str] = None
@@ -909,13 +910,25 @@ class UdfDefinition:
         pip: tuple[str, ...],
         env: Mapping[str, str],
         python_version: Optional[str],
+        conda: tuple[str, ...] = (),
+        conda_channels: tuple[str, ...] = (),
     ):
         function_name = name or function.__name__
         if not _FUNCTION_NAME.fullmatch(function_name):
             raise ValueError(f"invalid Function name: {function_name!r}")
-        packages = tuple(sorted(set(pip)))
+        if pip and conda:
+            raise ValueError("a Function environment is pip or conda, not both")
+        if conda_channels and not conda:
+            raise ValueError("conda_channels requires conda packages")
+        packages = tuple(sorted(set(conda if conda else pip)))
         if any(not package or package != package.strip() for package in packages):
-            raise ValueError("pip requirements must be non-empty and trimmed")
+            raise ValueError("package requirements must be non-empty and trimmed")
+        if conda:
+            environment_spec = PythonEnvironmentSpec(
+                kind="conda", packages=packages, channels=tuple(conda_channels)
+            )
+        else:
+            environment_spec = PythonEnvironmentSpec(kind="pip", packages=packages)
         environment = dict(env)
         if any(
             not isinstance(key, str) or not isinstance(value, str)
@@ -929,7 +942,7 @@ class UdfDefinition:
             kind="python",
             python_version=python_version
             or f"{sys.version_info.major}.{sys.version_info.minor}",
-            environment=PythonEnvironmentSpec(kind="pip", packages=packages),
+            environment=environment_spec,
             env=environment,
         )
         self._function = function
@@ -976,6 +989,8 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    conda: tuple[str, ...] | list[str] = (),
+    conda_channels: tuple[str, ...] | list[str] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
 
 
@@ -988,6 +1003,8 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    conda: tuple[str, ...] | list[str] = (),
+    conda_channels: tuple[str, ...] | list[str] = (),
 ):
     """Prepare a scalar Python callable for remote Function registration.
 
@@ -1010,6 +1027,10 @@ def udf(
         provided together with ``input_schema``.
     pip : sequence of str, optional
         Pip requirements for the remote environment.
+    conda : sequence of str, optional
+        Conda packages for the remote environment, instead of ``pip``.
+    conda_channels : sequence of str, optional
+        Conda channels in priority order; requires ``conda``.
     env : mapping of str to str, optional
         Environment variables included in the Function definition.
     python_version : str, optional
@@ -1049,6 +1070,8 @@ def udf(
             pip=tuple(pip),
             env={} if env is None else env,
             python_version=python_version,
+            conda=tuple(conda),
+            conda_channels=tuple(conda_channels),
         )
 
     if function is None:
