@@ -44,6 +44,22 @@ impl AnyQuery {
             Self::VectorQuery(query) => &query.base,
         }
     }
+
+    fn base_mut(&mut self) -> &mut QueryRequest {
+        match self {
+            Self::Query(query) => query,
+            Self::VectorQuery(query) => &mut query.base,
+        }
+    }
+
+    /// Canonicalize any raw SQL filter immediately before backend dispatch.
+    pub(crate) fn canonicalized(&self) -> Result<Self> {
+        let mut query = self.clone();
+        if let Some(QueryFilter::Sql(predicate)) = &mut query.base_mut().filter {
+            *predicate = crate::expr::canonicalize_sql_predicate(predicate)?;
+        }
+        Ok(query)
+    }
 }
 
 //Decide between namespace or local
@@ -52,15 +68,16 @@ pub async fn execute_query(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<DatasetRecordBatchStream> {
+    let query = query.canonicalized()?;
     // QueryTable pushdown runs the query server-side, but only on the main
     // branch: the namespace request carries no branch yet, so a branch handle
     // must fall through to local execution.
-    if can_execute_namespace_query(table, query).await?
+    if can_execute_namespace_query(table, &query).await?
         && let Some(ref namespace_client) = table.namespace_client
     {
-        return execute_namespace_query(table, namespace_client.clone(), query, options).await;
+        return execute_namespace_query(table, namespace_client.clone(), &query, options).await;
     }
-    execute_generic_query(table, query, options).await
+    execute_generic_query(table, &query, options).await
 }
 
 async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> Result<bool> {
@@ -135,9 +152,10 @@ pub async fn create_plan(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    let query = query.canonicalized()?;
     let query = match query {
-        AnyQuery::VectorQuery(query) => query.clone(),
-        AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
+        AnyQuery::VectorQuery(query) => query,
+        AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query),
     };
     query.base.check_filter()?;
 

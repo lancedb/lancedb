@@ -170,6 +170,15 @@ pub(crate) fn plan(
     filter: Option<&str>,
     limit: Option<u64>,
 ) -> Result<(MaterializedViewDefinition, Vec<ArrowField>, Lineage)> {
+    let filter = filter
+        .map(crate::expr::canonicalize_sql_predicate)
+        .transpose()
+        .map_err(|err| match err {
+            Error::InvalidInput { message } => Error::InvalidInput {
+                message: format!("invalid view filter: {message}"),
+            },
+            err => err,
+        })?;
     let projections: Vec<(String, String)> = if projections.is_empty() {
         source_schema
             .fields()
@@ -274,7 +283,7 @@ pub(crate) fn plan(
         declared.push(output);
     }
 
-    if let Some(filter) = filter {
+    if let Some(filter) = filter.as_deref() {
         let expr = planner
             .parse_filter(filter)
             .map_err(|e| Error::InvalidInput {
@@ -314,7 +323,7 @@ pub(crate) fn plan(
             .into_iter()
             .map(|(output, expression)| ViewProjection { output, expression })
             .collect(),
-        filter: filter.map(String::from),
+        filter,
         limit,
         inputs,
     };
