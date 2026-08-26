@@ -1722,6 +1722,20 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn id(&self) -> &str {
         &self.identifier
     }
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
+        let description = self.describe().await?;
+        let TableDescription {
+            version,
+            schema,
+            location,
+        } = description;
+        let schema = Arc::new(arrow_schema::Schema::try_from(schema)?);
+        let snapshot = self.with_branch(self.branch.clone());
+        *snapshot.version.write().await = Some(version);
+        *snapshot.location.write().await = location;
+        snapshot.schema_cache.seed(schema);
+        Ok(Arc::new(snapshot))
+    }
     async fn version(&self) -> Result<u64> {
         self.describe().await.map(|desc| desc.version)
     }

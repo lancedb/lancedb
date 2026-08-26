@@ -48,6 +48,7 @@ import {
   Query,
   TakeQuery,
   VectorQuery,
+  createAutoQuery,
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
@@ -1177,33 +1178,29 @@ export class LocalTable extends Table {
       });
     }
 
-    if (queryType === "auto" && typeof query !== "string") {
-      return this.query().fullTextSearch(query, {
-        columns: ftsColumns,
-      });
-    }
+    if (queryType === "auto") {
+      if (instanceOfFullTextQuery(query)) {
+        return this.query().fullTextSearch(query, {
+          columns: ftsColumns,
+        });
+      }
 
-    if (queryType === "auto" && typeof query === "string") {
-      const vector = async (snapshot: _NativeTable) => {
-        const functions = await this.getEmbeddingFunctions(snapshot);
+      const columns =
+        typeof ftsColumns === "string" ? [ftsColumns] : (ftsColumns ?? null);
+      return createAutoQuery(this.inner, query, columns, async (metadata) => {
+        const functions = await getRegistry().parseFunctions(
+          new Map([["embedding_functions", metadata]]),
+        );
         // TODO: Support multiple embedding functions
         const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
           .values()
           .next().value;
-        if (embeddingFunc === undefined) {
-          return undefined;
-        }
+        // The route only calls this callback when embedding metadata exists.
+        // parseFunctions either yields a provider or reports malformed metadata.
+        if (!embeddingFunc)
+          throw new Error("Invalid embedding function metadata");
         return await embeddingFunc.function.computeQueryEmbeddings(query);
-      };
-
-      const columns =
-        typeof ftsColumns === "string" ? [ftsColumns] : ftsColumns;
-      return Query.autoSearch(
-        () => this.inner.checkoutCurrent(),
-        query,
-        vector,
-        columns,
-      );
+      });
     }
 
     const queryPromise = this.getEmbeddingFunctions().then(

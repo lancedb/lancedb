@@ -1057,6 +1057,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_query_snapshot_disables_namespace_pushdown() {
+        use crate::connect;
+        use crate::table::BaseTable;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        let table = conn
+            .create_table("test_snapshot_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(Arc::new(CountingNamespaceClient::default()));
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let snapshot = BaseTable::query_snapshot(&native_table).await.unwrap();
+        let snapshot = snapshot.as_any().downcast_ref::<NativeTable>().unwrap();
+        assert!(
+            !can_execute_namespace_query(snapshot, &AnyQuery::Query(QueryRequest::default()),)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn test_create_plan_multivector_structure() {
         use arrow_array::{Float32Array, RecordBatch};
         use arrow_schema::{DataType, Field, Schema};
