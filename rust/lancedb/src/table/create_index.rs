@@ -28,8 +28,9 @@ pub(super) type PreparedIndex = (String, Box<dyn lance::index::IndexParams>, Ind
 use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
-    supported_bitmap_data_type, supported_btree_data_type, supported_fm_data_type,
-    supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
+    resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
+    supported_fm_data_type, supported_fts_data_type, supported_label_list_data_type,
+    supported_vector_data_type,
 };
 
 use super::NativeTable;
@@ -122,7 +123,20 @@ impl NativeTable {
         }
         self.dataset.ensure_mutable()?;
         let dataset = self.dataset.get().await?;
-        let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
+        let (column, field) = if let Index::FTS(params) = &opts.index {
+            let resolved = resolve_lance_fts_field_path(dataset.schema(), &opts.columns[0])?;
+            if params.get_document_granularity().is_list_element() && resolved.list_depth == 0 {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "FTS field path '{}' has no List layer and cannot use ListElement document granularity",
+                        resolved.canonical_path
+                    ),
+                });
+            }
+            (resolved.canonical_path, resolved.field)
+        } else {
+            Self::resolve_index_field(dataset.schema(), &opts.columns[0])?
+        };
         let params = self.make_index_params(&field, opts.index.clone()).await?;
         let index_type = self.get_index_type_for_field(&field, &opts.index);
         Ok((column, params, index_type))
@@ -436,7 +450,7 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::index::Index;
     use crate::index::scalar::{
-        BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, FtsIndexBuilder,
+        BTreeIndexBuilder, BitmapIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder,
     };
     use crate::index::vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
@@ -551,6 +565,38 @@ mod tests {
         assert_eq!(table.list_indices().await.unwrap().len(), 1);
         // Cancelling a finished job is a no-op.
         job.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_validates_fts_input_before_starting_job() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch =
+            record_batch!(("id", Int32, [1, 2]), ("text", Utf8, ["alpha", "beta"])).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let missing = table
+            .create_index(&["missing"], Index::FTS(FtsIndexBuilder::default()))
+            .execute_async()
+            .await;
+        assert!(missing.is_err());
+
+        let invalid_type = table
+            .create_index(&["id"], Index::FTS(FtsIndexBuilder::default()))
+            .execute_async()
+            .await;
+        assert!(invalid_type.is_err());
+
+        let invalid_granularity = table
+            .create_index(
+                &["text"],
+                Index::FTS(
+                    FtsIndexBuilder::default()
+                        .document_granularity(DocumentGranularity::ListElement),
+                ),
+            )
+            .execute_async()
+            .await;
+        assert!(invalid_granularity.is_err());
     }
 
     /// Concurrent waiters, and a wait issued after the job settled, all

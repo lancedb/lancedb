@@ -159,6 +159,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 
 ::: lancedb.query.FullTextOperator
 
+::: lancedb.query.DocumentGranularity
+
 ::: lancedb.query.Occur
 
 ## Embeddings
