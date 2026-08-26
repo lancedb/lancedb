@@ -103,6 +103,7 @@ export {
 } from "./native.js";
 
 export {
+  AutoQuery,
   ExecutableQuery,
   Query,
   QueryBase,

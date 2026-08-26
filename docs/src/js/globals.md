@@ -18,6 +18,7 @@
 
 ## Classes
 
+- [AutoQuery](classes/AutoQuery.md)
 - [BooleanQuery](classes/BooleanQuery.md)
 - [BoostQuery](classes/BoostQuery.md)
 - [BranchContents](classes/BranchContents.md)

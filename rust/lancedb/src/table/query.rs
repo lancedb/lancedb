@@ -697,6 +697,7 @@ mod tests {
 
     use super::*;
     use crate::query::{QueryExecutionOptions, QueryRequest};
+    use crate::table::BaseTable;
 
     fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
         FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
@@ -889,8 +890,54 @@ mod tests {
 
         async fn query_table(&self, _request: NsQueryTableRequest) -> lance::Result<bytes::Bytes> {
             self.query_table_calls.fetch_add(1, Ordering::SeqCst);
-            panic!("approx_mode queries must not be pushed down to namespace query_table");
+            panic!("query must not be pushed down to namespace query_table");
         }
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_pinned_snapshot_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]))],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_pinned_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let snapshot = native_table.checkout_current().await.unwrap();
+        let snapshot = snapshot.as_any().downcast_ref::<NativeTable>().unwrap();
+        assert!(snapshot.dataset.time_travel_version().is_some());
+
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql("id > 3".to_string())),
+            ..Default::default()
+        });
+        let stream = execute_query(snapshot, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+
+        assert_eq!(
+            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            2
+        );
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -1007,6 +1054,37 @@ mod tests {
 
         assert_eq!(count, 1);
         assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_query_snapshot_disables_namespace_pushdown() {
+        use crate::connect;
+        use crate::table::BaseTable;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        let table = conn
+            .create_table("test_snapshot_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(Arc::new(CountingNamespaceClient::default()));
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let snapshot = BaseTable::query_snapshot(&native_table).await.unwrap();
+        let snapshot = snapshot.as_any().downcast_ref::<NativeTable>().unwrap();
+        assert!(
+            !can_execute_namespace_query(snapshot, &AnyQuery::Query(QueryRequest::default()),)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
