@@ -1195,12 +1195,13 @@ impl<S: HttpSend> RemoteTable<S> {
     /// Record a version returned by a write so subsequent reads can request at
     /// least that version via `x-lancedb-min-version`. A returned `0` from a
     /// backward-compatible old server is ignored.
-    fn track_write_version(&self, version: u64) {
+    fn track_write_version(&self, freshness_request: FreshnessHeaders, version: u64) {
         if version == 0 {
             return;
         }
-        let mut state = self.freshness.lock().unwrap();
-        state.min_version = Some(state.min_version.map_or(version, |v| v.max(version)));
+        freshness_request.update_if_current(&self.freshness, |state| {
+            state.min_version = Some(state.min_version.map_or(version, |v| v.max(version)));
+        });
     }
 
     /// Record a committed dataset version observed in a table response so
@@ -1540,6 +1541,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         use crate::remote::retry::RetryCounter;
 
         let _guard = output.tracker.as_ref().map(|t| t.track_task());
+        let freshness_request = self.snapshot_freshness_headers();
 
         let mut insert: Arc<dyn ExecutionPlan> = Arc::new(
             RemoteWriteExec::new(
@@ -1576,7 +1578,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
                     if output.overwrite {
                         self.invalidate_schema_cache();
                     }
-                    self.track_write_version(add_result.version);
+                    self.track_write_version(freshness_request, add_result.version);
 
                     return Ok(add_result);
                 }
@@ -1602,6 +1604,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
 
         loop {
+            let freshness_request = self.snapshot_freshness_headers();
             let upload_id = self.create_multipart_write().await?;
 
             let result = self
@@ -1614,7 +1617,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
                         if output.overwrite {
                             self.invalidate_schema_cache();
                         }
-                        self.track_write_version(result.version);
+                        self.track_write_version(freshness_request, result.version);
                         return Ok(result);
                     }
                     Err(e) => {
@@ -2550,7 +2553,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.apply_branch_body(&mut body);
         let request = request.json(&body);
 
-        let (request_id, response) = self.send(request, true).await?;
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -2569,7 +2575,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 status_code: None,
             })?;
 
-        self.track_write_version(update_response.version);
+        self.track_write_version(freshness_request, update_response.version);
         Ok(update_response)
     }
 
@@ -2585,7 +2591,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/delete/", self.identifier))
             .json(&body);
-        let (request_id, response) = self.send(request, true).await?;
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
         if body.trim().is_empty() {
@@ -2601,7 +2610,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 request_id,
                 status_code: None,
             })?;
-        self.track_write_version(delete_response.version);
+        self.track_write_version(freshness_request, delete_response.version);
         Ok(delete_response)
     }
 
@@ -2657,6 +2666,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let rescannable = source.rescannable();
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(crate::table::datafusion::scannable_exec::ScannableExec::new(source, None));
+        let freshness_request = self.snapshot_freshness_headers();
 
         let mut merge: Arc<dyn ExecutionPlan> = Arc::new(
             RemoteWriteExec::new(
@@ -2690,7 +2700,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         .and_then(|m| m.merge_result())
                         .unwrap_or_default();
 
-                    self.track_write_version(merge_result.version);
+                    self.track_write_version(freshness_request, merge_result.version);
                     return Ok(merge_result);
                 }
                 Err(err) if rescannable && self.is_retryable_write_error(&err) => {
@@ -2920,7 +2930,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .client
                     .post(&format!("/v1/table/{}/add_columns/", self.identifier))
                     .json(&body);
-                let (request_id, response) = self.send(request, true).await?;
+                let freshness_request = self.snapshot_freshness_headers();
+                let (request_id, response) = self
+                    .send_with_freshness(request, true, freshness_request)
+                    .await?;
                 let response = self.check_table_response(&request_id, response).await?;
                 let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -2937,7 +2950,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     })?;
 
                 self.invalidate_schema_cache();
-                self.track_write_version(result.version);
+                self.track_write_version(freshness_request, result.version);
 
                 Ok(result)
             }
@@ -2973,7 +2986,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/add_columns/", self.identifier))
             .json(&body);
-        let (request_id, response) = self.send(request, true).await?;
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -2989,7 +3005,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
 
         self.invalidate_schema_cache();
-        self.track_write_version(result.version);
+        self.track_write_version(freshness_request, result.version);
 
         Ok(result)
     }
@@ -3032,7 +3048,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/add_columns/", self.identifier))
             .json(&body);
-        let (request_id, response) = self.send(request, true).await?;
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -3047,7 +3066,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
 
         self.invalidate_schema_cache();
-        self.track_write_version(result.version);
+        self.track_write_version(freshness_request, result.version);
         Ok(result)
     }
 
@@ -3123,7 +3142,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/alter_columns/", self.identifier))
             .json(&body);
-        let (request_id, response) = self.send(request, true).await?;
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -3139,7 +3161,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
 
         self.invalidate_schema_cache();
-        self.track_write_version(result.version);
+        self.track_write_version(freshness_request, result.version);
 
         Ok(result)
     }
@@ -3158,7 +3180,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 self.identifier
             ))
             .json(&body);
-        let (request_id, response) = self.send(request, true).await?;
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -3170,7 +3195,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             })?;
 
         self.invalidate_schema_cache();
-        self.track_write_version(result.version);
+        self.track_write_version(freshness_request, result.version);
         Ok(result)
     }
 
@@ -3182,7 +3207,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/drop_columns/", self.identifier))
             .json(&body);
-        let (request_id, response) = self.send(request, true).await?;
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -3198,7 +3226,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
 
         self.invalidate_schema_cache();
-        self.track_write_version(result.version);
+        self.track_write_version(freshness_request, result.version);
 
         Ok(result)
     }
@@ -10314,6 +10342,62 @@ mod tests {
                 .unwrap(),
             "7"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_inflight_write_result_cannot_cross_checkout_generation() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
+        let arrived_tx = Arc::new(std::sync::Mutex::new(arrived_tx));
+        let count_headers = Arc::new(std::sync::Mutex::new(None));
+        let captured = count_headers.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/update/" => {
+                    arrived_tx.lock().unwrap().send(()).unwrap();
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(10))
+                        .unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"rows_updated":1,"version":100}"#.to_string())
+                        .unwrap()
+                }
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":5,"schema":{"fields":[]}}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/count_rows/" => {
+                    *captured.lock().unwrap() = Some(request.headers().clone());
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            });
+
+        let update = tokio::spawn({
+            let table = table.clone();
+            async move { table.update().column("a", "a + 1").execute().await }
+        });
+        tokio::task::spawn_blocking(move || {
+            arrived_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        })
+        .await
+        .unwrap();
+        table.checkout(5).await.unwrap();
+        release_tx.send(()).unwrap();
+        update.await.unwrap().unwrap();
+        table.count_rows(None).await.unwrap();
+
+        let headers = count_headers.lock().unwrap();
+        let headers = headers.as_ref().unwrap();
+        assert!(!headers.contains_key("x-lancedb-min-version"));
+        assert!(!headers.contains_key("x-lancedb-min-read-version"));
     }
 
     /// A handler that records every request's headers and answers each read with
