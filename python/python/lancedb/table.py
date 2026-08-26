@@ -535,16 +535,12 @@ def _coerce_blob_list_values(
     mask = column.is_null() if column.null_count else None
     if pa.types.is_fixed_size_list(column.type):
         list_size = column.type.list_size
-        values = column.values.slice(
-            column.offset * list_size, len(column) * list_size
-        )
+        values = column.values.slice(column.offset * list_size, len(column) * list_size)
         coerced = _coerce_blob_value(values, target_value_field)
         if coerced is values:
             return column
         physical_values, _ = _physical_array_and_type(coerced)
-        return pa.FixedSizeListArray.from_arrays(
-            physical_values, list_size, mask=mask
-        )
+        return pa.FixedSizeListArray.from_arrays(physical_values, list_size, mask=mask)
     offsets = column.offsets
     first_offset = offsets[0].as_py()
     values = column.values.slice(

@@ -8,6 +8,7 @@ import importlib
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
+import pyarrow.ipc
 
 if TYPE_CHECKING:
     from lance.blob import BlobType as BlobType
@@ -137,10 +138,18 @@ def schema_has_blob_field(schema: pa.Schema) -> bool:
     return bool(blob_column_paths(schema))
 
 
+def _deserialize_registered_type(extension_type: pa.ExtensionType) -> pa.DataType:
+    """Return the type Arrow reconstructs for this extension name."""
+    schema = pa.schema([pa.field("value", extension_type)])
+    restored = pa.ipc.read_schema(pa.BufferReader(schema.serialize()))
+    return restored.field("value").type
+
+
 def _resolve_blob_type():
     """Return the BlobType class this process should use.
 
-    pylance's class when ``lance.blob`` imports, otherwise LanceDB's fallback.
+    pylance's class when it owns the lance.blob.v2 registry entry,
+    otherwise LanceDB's fallback. A different registered class is an error.
     """
     global _resolved_blob_type
     if _resolved_blob_type is not None:
@@ -153,6 +162,13 @@ def _resolve_blob_type():
     else:
         blob_type = getattr(blob_module, "BlobType", None)
         if blob_type is not None:
+            registered_type = _deserialize_registered_type(blob_type())
+            if type(registered_type) is not blob_type:
+                registered_cls = type(registered_type)
+                raise ValueError(
+                    "lance.blob.v2 is already registered by "
+                    f"{registered_cls.__module__}.{registered_cls.__qualname__}"
+                )
             _resolved_blob_type = blob_type
             return blob_type
     try:

@@ -32,7 +32,6 @@ sys.meta_path.insert(0, _MissingLanceBlob())
 """
 
 
-
 def _blob_table(name, rows):
     db = lancedb.connect("memory:///")
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
@@ -171,6 +170,64 @@ def test_blob_fallback_fails_if_name_already_registered():
             lancedb.blob("image")
         except ValueError as err:
             if "already registered" not in str(err):
+                raise SystemExit(err)
+        else:
+            raise SystemExit("expected ValueError")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_blob_type_rejects_competing_registration_with_pylance():
+    script = textwrap.dedent(
+        """\
+        import pyarrow as pa
+        import pyarrow.ipc
+
+        class OtherBlobType(pa.ExtensionType):
+            def __init__(self):
+                super().__init__(
+                    pa.struct(
+                        [
+                            pa.field("data", pa.large_binary()),
+                            pa.field("uri", pa.utf8()),
+                            pa.field("position", pa.uint64()),
+                            pa.field("size", pa.uint64()),
+                        ]
+                    ),
+                    "lance.blob.v2",
+                )
+
+            def __arrow_ext_serialize__(self):
+                return b""
+
+            @classmethod
+            def __arrow_ext_deserialize__(cls, storage_type, serialized):
+                return cls()
+
+        pa.register_extension_type(OtherBlobType())
+
+        from lance.blob import BlobType
+
+        if BlobType is OtherBlobType:
+            raise SystemExit("pylance BlobType was replaced")
+        schema = pa.schema([pa.field("value", BlobType())])
+        restored = pa.ipc.read_schema(pa.BufferReader(schema.serialize()))
+        if type(restored.field("value").type) is not OtherBlobType:
+            raise SystemExit(type(restored.field("value").type))
+
+        import lancedb
+
+        try:
+            lancedb.blob("image")
+        except ValueError as err:
+            if "__main__.OtherBlobType" not in str(err):
                 raise SystemExit(err)
         else:
             raise SystemExit("expected ValueError")
