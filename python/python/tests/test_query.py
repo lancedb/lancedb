@@ -570,6 +570,15 @@ def test_query_builder(table):
     assert all(np.array(rs[0]["vector"]) == [1, 2])
 
 
+def test_query_multiple_vectors(table):
+    results = table.search([np.array([1, 2]), np.array([4, 5])]).limit(1).to_list()
+
+    assert len(results) == 2
+    results_by_query = {result["query_index"]: result for result in results}
+    assert results_by_query[0]["id"] == 1
+    assert results_by_query[1]["id"] == 2
+
+
 def test_with_row_id(table: lancedb.table.Table):
     rs = table.search().with_row_id(True).to_arrow()
     assert "_rowid" in rs.column_names

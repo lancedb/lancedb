@@ -32,8 +32,6 @@ from typing_extensions import Annotated
 
 from lancedb._lancedb import fts_query_to_json
 from lancedb.background_loop import LOOP
-from lancedb.pydantic import PYDANTIC_VERSION
-
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
@@ -827,12 +825,7 @@ class Query(pydantic.BaseModel):
 
     # This tells pydantic to allow custom types (needed for the `vector` query since
     # pa.Array wouln't be allowed otherwise)
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            arbitrary_types_allowed = True
-    else:
-        model_config = {"arbitrary_types_allowed": True}
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
 
 class LanceQueryBuilder(ABC):
@@ -2235,6 +2228,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             reranker=self._reranker,
             limit=self._limit,
             with_row_ids=True,
+            offset=self._offset,
         )
         return self._finish_hybrid_results(results)
 
@@ -2256,6 +2250,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         reranker,
         limit: int,
         with_row_ids: bool,
+        offset: Optional[int] = None,
     ) -> pa.Table:
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
@@ -2332,7 +2327,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = results.column_names.index("_score")
             results = results.set_column(score_i, "_score", original_scores)
 
-        results = results.slice(length=limit)
+        results = results.slice(offset=offset or 0, length=limit)
 
         if not with_row_ids:
             results = results.drop(["_rowid"])
@@ -2679,8 +2674,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         # Apply common configurations
         if self._limit:
-            self._vector_query.limit(self._limit)
-            self._fts_query.limit(self._limit)
+            # The final offset/limit window is sliced out of the combined,
+            # reranked results, so each sub-query must fetch enough rows to
+            # cover the skipped prefix as well as the window itself.
+            sub_query_limit = self._limit + (self._offset or 0)
+            self._vector_query.limit(sub_query_limit)
+            self._fts_query.limit(sub_query_limit)
         if self._columns:
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
@@ -3245,12 +3244,7 @@ class AsyncStandardQuery(AsyncQueryBase):
         if ordering is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by(
-                [
-                    o.model_dump() if hasattr(o, "model_dump") else o.dict()
-                    for o in ordering
-                ]
-            )
+            self._inner.order_by([o.model_dump() for o in ordering])
         return self
 
     def fast_search(self) -> Self:

@@ -5,12 +5,14 @@ use std::sync::Arc;
 
 use arrow_array::{
     Array, ArrayRef, BinaryArray, Int64Array, LargeBinaryArray, RecordBatch, StringArray,
-    StructArray, UInt64Array,
+    StructArray, UInt64Array, new_null_array,
 };
 use arrow_schema::{DataType, Field, Fields, Schema};
 use futures::TryStreamExt;
 use lance::Dataset;
-use lance_encoding::version::LanceFileVersion;
+use lance::dataset::WriteParams;
+use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
+use lance_table::format::BasePath;
 use lancedb::{
     Connection, Error, Result, Table,
     blob::{BlobRangeRequest, blob},
@@ -19,7 +21,7 @@ use lancedb::{
         ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
     },
     query::{ExecutableQuery, QueryBase},
-    table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats},
+    table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions},
 };
 use tempfile::tempdir;
 
@@ -61,7 +63,7 @@ async fn create_inline_blob_table(
     Ok(table)
 }
 
-async fn storage_format_version(table: &Table) -> LanceFileVersion {
+async fn storage_format_version(table: &Table) -> ConcreteFileVersion {
     table
         .as_native()
         .unwrap()
@@ -69,9 +71,14 @@ async fn storage_format_version(table: &Table) -> LanceFileVersion {
         .await
         .unwrap()
         .data_storage_format
-        .lance_file_version()
-        .unwrap()
-        .resolve()
+        .lance_file_format()
+}
+
+fn supports_blob_v2(version: ConcreteFileVersion) -> bool {
+    matches!(
+        version,
+        ConcreteFileVersion::V2_2 | ConcreteFileVersion::V2_3
+    )
 }
 
 async fn uses_stable_row_ids(table: &Table) -> bool {
@@ -112,7 +119,7 @@ async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Resu
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -127,7 +134,7 @@ async fn explicit_stable_row_id_setting_wins_over_blob_default() -> Result<()> {
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -139,7 +146,7 @@ async fn non_blob_table_keeps_default_format_and_row_id_setting() -> Result<()> 
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let table = db.create_empty_table("t", schema).execute().await?;
 
-    assert!(storage_format_version(&table).await < LanceFileVersion::V2_2);
+    assert!(!supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -171,7 +178,7 @@ async fn creating_with_blob_data_bumps_format() -> Result<()> {
     .unwrap();
     let table = db.create_table("t", batch).execute().await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     assert_eq!(table.count_rows(None).await?, 1);
     Ok(())
@@ -256,11 +263,11 @@ async fn add_rejects_uncoercible_blob_input() -> Result<()> {
     let batch = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
-            Field::new("image", DataType::Utf8, true),
+            Field::new("image", DataType::Int64, true),
         ])),
         vec![
             Arc::new(Int64Array::from(vec![1])),
-            Arc::new(StringArray::from(vec!["not bytes"])),
+            Arc::new(Int64Array::from(vec![42])),
         ],
     )
     .unwrap();
@@ -281,7 +288,7 @@ async fn connection_level_stable_row_id_setting_wins_over_blob_default() -> Resu
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -297,7 +304,7 @@ async fn namespace_create_applies_blob_defaults() -> Result<()> {
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -474,7 +481,7 @@ async fn fetch_blobs_round_trips_nested_blob_column() -> Result<()> {
     let batch = RecordBatch::try_new(schema, vec![Arc::new(info_array) as ArrayRef]).unwrap();
     let table = db.create_table("t", batch).execute().await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
 
     let ids = collect_row_ids(&table).await?;
@@ -1305,7 +1312,7 @@ async fn optimize_preserves_blob_v2_null_and_empty_distinction() -> Result<()> {
         .await?;
     table.add(null_empty_input_batch()).execute().await?;
     assert!(
-        storage_format_version(&table).await >= LanceFileVersion::V2_2,
+        supports_blob_v2(storage_format_version(&table).await),
         "blob v2 columns require storage >= 2.2"
     );
 
@@ -1325,5 +1332,225 @@ async fn optimize_preserves_blob_v2_null_and_empty_distinction() -> Result<()> {
         before,
         "optimize() changed blob v2 values"
     );
+    Ok(())
+}
+
+fn uri_struct_batch(id: i64, uri: &str) -> RecordBatch {
+    let image_field = blob("image", true);
+    let DataType::Struct(child_fields) = image_field.data_type().clone() else {
+        unreachable!("blob field is a struct");
+    };
+    let children: Vec<ArrayRef> = child_fields
+        .iter()
+        .map(|field| match field.name().as_str() {
+            "uri" => Arc::new(StringArray::from(vec![Some(uri)])) as ArrayRef,
+            _ => new_null_array(field.data_type(), 1),
+        })
+        .collect();
+    let image = StructArray::new(child_fields, children, None);
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            image_field,
+        ])),
+        vec![Arc::new(Int64Array::from(vec![id])), Arc::new(image)],
+    )
+    .unwrap()
+}
+
+fn uri_string_batch(id: i64, uri: &str) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::Utf8, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![id])),
+            Arc::new(StringArray::from(vec![Some(uri)])),
+        ],
+    )
+    .unwrap()
+}
+
+fn write_payload_file_uri(dir: &std::path::Path, name: &str, payload: &[u8]) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, payload).unwrap();
+    url::Url::from_file_path(&path).unwrap().to_string()
+}
+
+#[tokio::test]
+async fn external_uri_struct_round_trips_with_flag() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let payload: &[u8] = b"external-struct-payload";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", payload);
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    table
+        .add(uri_struct_batch(1, &uri))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_uri_add_requires_opt_in() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", b"unreachable");
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    let err = table
+        .add(uri_struct_batch(1, &uri))
+        .execute()
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("allow_external_blob_outside_bases"),
+        "got: {err}"
+    );
+    assert_eq!(table.count_rows(None).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn string_uri_input_round_trips_as_external_reference() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let payload: &[u8] = b"external-string-payload";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", payload);
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    table
+        .add(uri_string_batch(1, &uri))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), payload);
+
+    let files = table.fetch_blob_files("image", &ids).await?;
+    let file = files[0].as_ref().expect("missing blob file");
+    assert_eq!(file.uri(), Some(uri.as_str()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn string_uri_inside_registered_base_does_not_need_the_flag() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("db");
+    let external_base = tmp.path().join("external_base");
+    let object_dir = external_base.join("objects");
+    std::fs::create_dir_all(&object_dir).unwrap();
+    let payload: &[u8] = b"mapped-in-base";
+    let object_path = object_dir.join("mapped.bin");
+    std::fs::write(&object_path, payload).unwrap();
+    let object_uri = url::Url::from_file_path(&object_path).unwrap().to_string();
+    let base_uri = url::Url::from_file_path(&external_base)
+        .unwrap()
+        .to_string();
+
+    let db = connect(db_path.to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .write_options(WriteOptions {
+            lance_write_params: Some(WriteParams {
+                initial_bases: Some(vec![BasePath {
+                    id: 1,
+                    name: Some("external".to_string()),
+                    path: base_uri,
+                    is_dataset_root: false,
+                }]),
+                ..Default::default()
+            }),
+        })
+        .execute()
+        .await?;
+
+    table
+        .add(uri_string_batch(1, &object_uri))
+        .execute()
+        .await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_uri_rows_mix_with_inline_rows() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let external_payload: &[u8] = b"external-bytes";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", external_payload);
+    let table =
+        create_inline_blob_table(&db, "t", &[1], &[Some(b"inline-bytes".as_slice())]).await?;
+
+    table
+        .add(uri_string_batch(2, &uri))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let row_ids: Vec<u64> = pairs.iter().map(|(_, r)| *r).collect();
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    for (i, (id, _)) in pairs.iter().enumerate() {
+        match id {
+            1 => assert_eq!(bytes.value(i), b"inline-bytes"),
+            2 => assert_eq!(bytes.value(i), external_payload),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_string_uri_is_rejected_at_write() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    let err = table
+        .add(uri_string_batch(1, "not a uri"))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("not a uri"), "got: {err}");
+    assert_eq!(table.count_rows(None).await?, 0);
     Ok(())
 }

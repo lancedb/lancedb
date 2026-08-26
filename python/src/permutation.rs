@@ -268,7 +268,9 @@ impl PyPermutationReader {
                     .await
                     .infer_error()?
             } else {
-                PermutationReader::identity(base_table).await
+                PermutationReader::identity(base_table)
+                    .await
+                    .infer_error()?
             };
             Ok(Self::from_reader(reader))
         })

@@ -17,6 +17,7 @@ use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, conne
 
 use lance_namespace::models::{
     CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
+    ListTablesRequest,
 };
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
@@ -33,6 +34,12 @@ pub struct DescribeNamespaceResponse {
 #[napi(object)]
 pub struct ListNamespacesResponse {
     pub namespaces: Vec<String>,
+    pub page_token: Option<String>,
+}
+
+#[napi(object)]
+pub struct ListTablesResponse {
+    pub tables: Vec<String>,
     pub page_token: Option<String>,
 }
 
@@ -206,6 +213,33 @@ impl Connection {
         op.execute().await.default_error()
     }
 
+    /// List a page of tables in the database.
+    #[napi(catch_unwind)]
+    pub async fn list_tables(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> napi::Result<ListTablesResponse> {
+        let request = ListTablesRequest {
+            // The root namespace is an empty path, not an absent one: a namespace-backed
+            // database rejects a request that names no namespace.
+            id: Some(namespace_path.unwrap_or_default()),
+            page_token,
+            limit: limit.map(|limit| i32::try_from(limit).unwrap_or(i32::MAX)),
+            ..Default::default()
+        };
+        let response = self
+            .get_inner()?
+            .list_tables(request)
+            .await
+            .default_error()?;
+        Ok(ListTablesResponse {
+            tables: response.tables,
+            page_token: response.page_token,
+        })
+    }
+
     /// Create table from a Apache Arrow IPC (file) buffer.
     ///
     /// Parameters:
@@ -264,6 +298,58 @@ impl Connection {
         }
         let tbl = builder.execute().await.default_error()?;
         Ok(Table::new(tbl))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn create_materialized_view(
+        &self,
+        name: String,
+        source: String,
+        projections: Option<Vec<Vec<String>>>,
+        filter: Option<String>,
+        limit: Option<i64>,
+    ) -> napi::Result<Table> {
+        let mut builder = self.get_inner()?.create_materialized_view(name, source);
+        if let Some(projections) = projections {
+            let mut pairs = Vec::with_capacity(projections.len());
+            for pair in projections {
+                let [output, expression]: [String; 2] = pair.try_into().map_err(|_| {
+                    napi::Error::from_reason("each projection must be an [output, expression] pair")
+                })?;
+                pairs.push((output, expression));
+            }
+            builder = builder.select(pairs);
+        }
+        if let Some(filter) = filter {
+            builder = builder.only_if(filter);
+        }
+        if let Some(limit) = limit {
+            let limit = u64::try_from(limit)
+                .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))?;
+            builder = builder.limit(limit);
+        }
+        let view = builder.execute().await.default_error()?;
+        Ok(Table::new(view.table().clone()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn open_materialized_view(&self, name: String) -> napi::Result<Table> {
+        let view = self
+            .get_inner()?
+            .open_materialized_view(&name)
+            .await
+            .default_error()?;
+        Ok(Table::new(view.table().clone()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_materialized_views(&self) -> napi::Result<Vec<String>> {
+        let views = self
+            .get_inner()?
+            .list_materialized_views()
+            .await
+            .default_error()?;
+        Ok(views.into_iter().map(|v| v.name).collect())
     }
 
     #[napi(catch_unwind)]
@@ -332,6 +418,22 @@ impl Connection {
             .drop_table(&name, &ns)
             .await
             .default_error()
+    }
+
+    /// Start dropping a table and return its cleanup job.
+    #[napi(catch_unwind)]
+    pub async fn drop_table_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_table_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
     }
 
     #[napi(catch_unwind)]

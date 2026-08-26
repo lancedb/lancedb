@@ -26,10 +26,7 @@ use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use crate::blob::{ensure_blob_storage_version, has_blob_columns};
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
-use crate::database::listing::{
-    NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, OPT_NEW_TABLE_STORAGE_VERSION,
-    OPT_NEW_TABLE_V2_MANIFEST_PATHS,
-};
+use crate::database::listing::{NewTableConfig, take_request_creation_overrides};
 use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
@@ -197,69 +194,28 @@ impl LanceNamespaceDatabase {
         TableFreshness::new(self.freshness_baselines.clone(), key)
     }
 
-    fn extract_storage_overrides(
-        &self,
-        request: &DbCreateTableRequest,
-    ) -> Result<(
-        Option<lance_encoding::version::LanceFileVersion>,
-        Option<bool>,
-        Option<bool>,
-    )> {
-        let storage_options = request
-            .write_options
-            .lance_write_params
-            .as_ref()
-            .and_then(|p| p.store_params.as_ref())
-            .and_then(|sp| sp.storage_options());
-
-        let storage_version_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
-            .map(|s| s.parse::<lance_encoding::version::LanceFileVersion>())
-            .transpose()?;
-
-        let v2_manifest_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_v2_manifest_paths must be a boolean".to_string(),
-            })?;
-
-        let stable_row_ids_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_stable_row_ids must be a boolean".to_string(),
-            })?;
-
-        Ok((
-            storage_version_override,
-            v2_manifest_override,
-            stable_row_ids_override,
-        ))
-    }
-
     fn apply_new_table_config(
         &self,
         params: &mut lance::dataset::WriteParams,
         request: &DbCreateTableRequest,
     ) -> Result<()> {
-        let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
-            self.extract_storage_overrides(request)?;
+        let overrides = take_request_creation_overrides(params)?;
 
-        params.data_storage_version = storage_version_override
+        params.data_storage_version = overrides
+            .data_storage_version
             .or(params.data_storage_version)
             .or(self.new_table_config.data_storage_version);
 
-        if let Some(enable_v2_manifest_paths) =
-            v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
+        if let Some(enable_v2_manifest_paths) = overrides
+            .enable_v2_manifest_paths
+            .or(self.new_table_config.enable_v2_manifest_paths)
         {
             params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
         let data_schema = request.data.schema();
-        if let Some(enable_stable_row_ids) = stable_row_ids_override
+        if let Some(enable_stable_row_ids) = overrides
+            .enable_stable_row_ids
             .or(self.new_table_config.enable_stable_row_ids)
             .or(has_blob_columns(data_schema.as_ref()).then_some(true))
         {
@@ -642,6 +598,146 @@ mod tests {
         let name_array = StringArray::from(vec!["Alice", "Bob", "Charlie", "David", "Eve"]);
 
         RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)]).unwrap()
+    }
+
+    /// The shared parse-and-sanitize boundary is wired into this path: the
+    /// request-level creation key must act as an override (the strip itself
+    /// is covered by the listing tests).
+    #[tokio::test]
+    async fn request_level_creation_keys_are_taken_as_overrides() {
+        use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+        let db = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+
+        let store_params = ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([(
+                    OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                    "true".to_string(),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        let table = db
+            .create_table("t", create_test_data())
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(store_params),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+        let native = table.as_native().unwrap();
+        assert!(
+            native
+                .dataset
+                .get()
+                .await
+                .unwrap()
+                .manifest
+                .uses_stable_row_ids(),
+            "the creation key must be honored as an override"
+        );
+
+        let table = db.open_table("t").execute().await.unwrap();
+        let rows: usize = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 5);
+    }
+
+    /// Sanitation on this path: apply must strip the creation keys from the
+    /// store options while genuine options and the provider survive.
+    #[tokio::test]
+    async fn apply_new_table_config_sanitizes_request_store_options() {
+        use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+        use lance_io::object_store::StorageOptionsProvider;
+
+        #[derive(Debug)]
+        struct EmptyProvider;
+
+        #[async_trait::async_trait]
+        impl StorageOptionsProvider for EmptyProvider {
+            async fn fetch_storage_options(
+                &self,
+            ) -> lance_core::Result<Option<HashMap<String, String>>> {
+                Ok(Some(HashMap::new()))
+            }
+
+            fn provider_id(&self) -> String {
+                "empty-test-provider".into()
+            }
+        }
+
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+        let db = LanceNamespaceDatabase::connect_with_new_table_config(
+            "dir",
+            properties,
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+            NewTableConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        let request = DbCreateTableRequest::new("t".to_string(), Box::new(create_test_data()));
+        let mut params = lance::dataset::WriteParams {
+            store_params: Some(ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([
+                            ("region".to_string(), "us-west-2".to_string()),
+                            (
+                                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                                "true".to_string(),
+                            ),
+                        ]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        db.apply_new_table_config(&mut params, &request).unwrap();
+
+        assert!(params.enable_stable_row_ids);
+        let store_params = params.store_params.unwrap();
+        let options = store_params.storage_options().cloned().unwrap();
+        assert!(!options.contains_key(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS));
+        assert_eq!(options.get("region").map(String::as_str), Some("us-west-2"));
+        assert!(
+            store_params
+                .storage_options_accessor
+                .unwrap()
+                .has_provider()
+        );
     }
 
     #[tokio::test]
