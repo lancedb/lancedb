@@ -452,6 +452,50 @@ def _field_extension_name(field: pa.Field) -> Optional[str]:
     return extension_name
 
 
+def _prepare_extension_list(data: DATA, target_schema: pa.Schema) -> DATA:
+    """Give inferred list columns the logical type required by extensions."""
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return data
+
+    target_fields = {field.name: field for field in target_schema}
+    extension_names = {
+        name: _field_extension_name(field) for name, field in target_fields.items()
+    }
+    if not any(
+        name in {"arrow.json", "lance.json", "lance.blob.v2"}
+        for name in extension_names.values()
+    ):
+        return data
+
+    inferred = pa.Table.from_pylist(data)
+    fields = []
+    changed = False
+    for field in inferred.schema:
+        extension_name = extension_names.get(field.name)
+        if extension_name in {"arrow.json", "lance.json"}:
+            json_factory = getattr(pa, "json_", None)
+            if json_factory is not None:
+                field = pa.field(field.name, json_factory(), nullable=field.nullable)
+            else:
+                field = pa.field(
+                    field.name,
+                    pa.string(),
+                    nullable=field.nullable,
+                    metadata={b"ARROW:extension:name": b"arrow.json"},
+                )
+            changed = True
+        elif extension_name == "lance.blob.v2" and pa.types.is_null(field.type):
+            field = pa.field(field.name, pa.large_binary(), nullable=field.nullable)
+            changed = True
+        fields.append(field)
+
+    if not changed:
+        return inferred
+
+    insert_schema = pa.schema(fields, metadata=inferred.schema.metadata)
+    return pa.Table.from_pylist(data, schema=insert_schema)
+
+
 def _align_field_types(
     fields: List[pa.Field],
     target_fields: List[pa.Field],
@@ -5441,6 +5485,9 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
+
+        if mode != "overwrite":
+            data = _prepare_extension_list(data, schema)
 
         # _santitize_data is an old code path, but we will use it until the
         # new code path is ready.

@@ -203,6 +203,15 @@ def test_fetch_blobs_preserves_null_and_empty_values():
     assert blobs[3].as_py() == b"present"
 
 
+def test_add_all_null_list_to_blob_column():
+    table = _blob_table("all_null_add", [{"id": 1, "image": None}])
+
+    hits = table.search().to_arrow()
+    blobs = table.fetch_blobs("image", hits)
+    assert len(blobs) == 1
+    assert blobs[0].as_py() is None
+
+
 def test_fetch_blob_ranges_aligns_repeated_ranges_and_nulls():
     table = _blob_table(
         "range_alignment",
