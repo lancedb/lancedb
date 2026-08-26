@@ -486,6 +486,7 @@ mod tests {
     block_size = 128
     memory_limit = 2048
     num_workers = 7
+    document_granularity = 'row'
 
 config = FTS()",
                 None,

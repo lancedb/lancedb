@@ -225,11 +225,17 @@ pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<
     Ok((canonical_path, Field::from(*field)))
 }
 
+pub(crate) struct ResolvedFtsField {
+    pub canonical_path: String,
+    pub field: Field,
+    pub list_depth: usize,
+}
+
 /// Canonicalize a public FTS field path while keeping Arrow list item names hidden.
-fn resolve_public_fts_field_path(
+pub(crate) fn resolve_lance_fts_field_path(
     schema: &lance_core::datatypes::Schema,
     column: &str,
-) -> Result<(String, Field)> {
+) -> Result<ResolvedFtsField> {
     let names =
         lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
             message: format!("Invalid field path `{}`: {}", column, e),
@@ -247,16 +253,16 @@ fn resolve_public_fts_field_path(
                 .iter()
                 .find(|field| field.name.eq_ignore_ascii_case(root_name))
         })
-        .ok_or_else(|| Error::Schema {
-            message: format!("FTS field path `{}` not found in schema", column),
-        })?;
+        .ok_or_else(|| fts_field_not_found(schema, column))?;
     let mut canonical_names = vec![field.name.clone()];
+    let mut list_depth = 0;
 
     for name in remaining_names {
         while matches!(
             field.data_type(),
             DataType::List(_) | DataType::LargeList(_)
         ) {
+            list_depth += 1;
             field = field.children.first().ok_or_else(|| Error::Schema {
                 message: format!(
                     "FTS field path `{}` has a list without an item field",
@@ -265,9 +271,7 @@ fn resolve_public_fts_field_path(
             })?;
         }
         if !matches!(field.data_type(), DataType::Struct(_)) {
-            return Err(Error::Schema {
-                message: format!("FTS field path `{}` not found in schema", column),
-            });
+            return Err(fts_field_not_found(schema, column));
         }
         field = field
             .children
@@ -279,10 +283,22 @@ fn resolve_public_fts_field_path(
                     .iter()
                     .find(|field| field.name.eq_ignore_ascii_case(name))
             })
-            .ok_or_else(|| Error::Schema {
-                message: format!("FTS field path `{}` not found in schema", column),
-            })?;
+            .ok_or_else(|| fts_field_not_found(schema, column))?;
         canonical_names.push(field.name.clone());
+    }
+
+    let mut terminal = field;
+    while matches!(
+        terminal.data_type(),
+        DataType::List(_) | DataType::LargeList(_)
+    ) {
+        list_depth += 1;
+        terminal = terminal.children.first().ok_or_else(|| Error::Schema {
+            message: format!(
+                "FTS field path `{}` has a list without an item field",
+                column
+            ),
+        })?;
     }
 
     let canonical_path = lance_core::datatypes::format_field_path(
@@ -291,7 +307,63 @@ fn resolve_public_fts_field_path(
             .map(String::as_str)
             .collect::<Vec<_>>(),
     );
-    Ok((canonical_path, Field::from(field)))
+    Ok(ResolvedFtsField {
+        canonical_path,
+        field: Field::from(field),
+        list_depth,
+    })
+}
+
+fn fts_field_not_found(schema: &lance_core::datatypes::Schema, column: &str) -> Error {
+    Error::Schema {
+        message: format!(
+            "Field path `{}` not found in schema. Available field paths: {}",
+            column,
+            schema.field_paths().join(", ")
+        ),
+    }
+}
+
+fn find_public_fts_field_path_by_id(
+    field: &lance_core::datatypes::Field,
+    field_id: i32,
+    path: &mut Vec<String>,
+) -> bool {
+    if field.id == field_id {
+        return true;
+    }
+    match field.data_type() {
+        DataType::List(_) | DataType::LargeList(_) => field
+            .children
+            .first()
+            .is_some_and(|child| find_public_fts_field_path_by_id(child, field_id, path)),
+        DataType::Struct(_) => field.children.iter().any(|child| {
+            path.push(child.name.clone());
+            let found = find_public_fts_field_path_by_id(child, field_id, path);
+            if !found {
+                path.pop();
+            }
+            found
+        }),
+        _ => false,
+    }
+}
+
+pub(crate) fn public_fts_field_path_by_id(
+    schema: &lance_core::datatypes::Schema,
+    field_id: i32,
+) -> Result<String> {
+    for root in &schema.fields {
+        let mut path = vec![root.name.clone()];
+        if find_public_fts_field_path_by_id(root, field_id, &mut path) {
+            return Ok(lance_core::datatypes::format_field_path(
+                &path.iter().map(String::as_str).collect::<Vec<_>>(),
+            ));
+        }
+    }
+    Err(Error::Schema {
+        message: format!("Field id `{}` not found in schema", field_id),
+    })
 }
 
 pub(crate) fn resolve_arrow_fts_field_path(
@@ -302,7 +374,8 @@ pub(crate) fn resolve_arrow_fts_field_path(
         lance_core::datatypes::Schema::try_from(schema).map_err(|e| Error::Schema {
             message: format!("Invalid schema: {}", e),
         })?;
-    resolve_public_fts_field_path(&lance_schema, column)
+    let resolved = resolve_lance_fts_field_path(&lance_schema, column)?;
+    Ok((resolved.canonical_path, resolved.field))
 }
 
 pub fn supported_btree_data_type(dtype: &DataType) -> bool {
@@ -576,6 +649,18 @@ mod tests {
 
         let (path, _) = resolve_arrow_fts_field_path(&schema, "docs.content").unwrap();
         assert_eq!(path, "docs.content");
+
+        let lance_schema = lance_core::datatypes::Schema::try_from(&schema).unwrap();
+        let field_id = lance_schema
+            .resolve_case_insensitive("docs.item.content")
+            .unwrap()
+            .last()
+            .unwrap()
+            .id;
+        assert_eq!(
+            public_fts_field_path_by_id(&lance_schema, field_id).unwrap(),
+            "docs.content"
+        );
     }
 
     #[test]

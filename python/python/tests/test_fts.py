@@ -276,6 +276,7 @@ def test_list_element_document_granularity(tmp_path):
         "docs.content",
         config=FTS(with_position=True, document_granularity=granularity),
     )
+    assert table.list_indices()[0].columns == ["docs.content"]
 
     def coordinates(query):
         result = table.search(query).limit(10).to_arrow()
