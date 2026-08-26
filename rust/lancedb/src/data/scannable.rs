@@ -18,12 +18,15 @@ use crate::embeddings::{
 };
 use crate::table::{ColumnDefinition, ColumnKind, TableDefinition};
 use crate::{Error, Result};
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator, RecordBatchReader, cast::AsArray};
+use arrow_cast::{CastOptions, cast_with_options};
+use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::once;
 use lance_datafusion::utils::StreamingWriteSource;
+
+use super::inspect::infer_dimension;
 
 pub trait Scannable: Send {
     /// Returns the schema of the data.
@@ -494,6 +497,146 @@ impl Scannable for PeekedScannable {
                 self.inner.scan_as_stream()
             }
         }
+    }
+}
+
+fn name_suggests_vector_column(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == "vec" || name.contains("vector") || name.contains("embedding")
+}
+
+/// Infer fixed dimensions for vector-like floating-point list columns.
+///
+/// Lance vector search requires `FixedSizeList` columns, but Arrow data assembled
+/// from runtime embedding models is often represented as `List`. For vector-like
+/// column names, inspect the first batch and convert uniform, non-empty lists to a
+/// fixed-size schema. Every subsequent batch is cast with strict length checking.
+pub(crate) async fn maybe_infer_vector_schema(
+    data: Box<dyn Scannable>,
+) -> Result<Box<dyn Scannable>> {
+    let input_schema = data.schema();
+    let candidates = input_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| {
+            name_suggests_vector_column(field.name())
+                && matches!(
+                    field.data_type(),
+                    DataType::List(item) | DataType::LargeList(item)
+                        if item.data_type().is_floating()
+                )
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Ok(data);
+    }
+
+    let mut peeked = PeekedScannable::new(data);
+    let Some(first_batch) = peeked.peek().await else {
+        return Ok(Box::new(peeked));
+    };
+
+    let mut fields = input_schema.fields().iter().cloned().collect::<Vec<_>>();
+    let mut changed = false;
+    for index in candidates {
+        let array = first_batch.column(index);
+        let dimension = match array.data_type() {
+            DataType::List(_) => {
+                infer_dimension::<arrow_array::types::Int32Type>(array.as_list::<i32>())?
+                    .map(i64::from)
+            }
+            DataType::LargeList(_) => {
+                infer_dimension::<arrow_array::types::Int64Type>(array.as_list::<i64>())?
+            }
+            _ => unreachable!(),
+        };
+        let Some(dimension) = dimension.filter(|dimension| *dimension > 0) else {
+            continue;
+        };
+        let dimension = i32::try_from(dimension).map_err(|_| Error::InvalidInput {
+            message: format!(
+                "Vector column '{}' has a dimension larger than i32::MAX",
+                fields[index].name()
+            ),
+        })?;
+        let item = match fields[index].data_type() {
+            DataType::List(item) | DataType::LargeList(item) => item.clone(),
+            _ => unreachable!(),
+        };
+        fields[index] = Arc::new(
+            fields[index]
+                .as_ref()
+                .clone()
+                .with_data_type(DataType::FixedSizeList(item, dimension)),
+        );
+        changed = true;
+    }
+
+    if !changed {
+        return Ok(Box::new(peeked));
+    }
+
+    let output_schema = Arc::new(Schema::new_with_metadata(
+        fields,
+        input_schema.metadata().clone(),
+    ));
+    Ok(Box::new(InferredVectorScannable {
+        inner: peeked,
+        output_schema,
+    }))
+}
+
+struct InferredVectorScannable {
+    inner: PeekedScannable,
+    output_schema: SchemaRef,
+}
+
+impl Scannable for InferredVectorScannable {
+    fn schema(&self) -> SchemaRef {
+        self.output_schema.clone()
+    }
+
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let output_schema = self.output_schema.clone();
+        let stream_schema = output_schema.clone();
+        let stream = self.inner.scan_as_stream().map(move |batch| {
+            let batch = batch?;
+            let columns = batch
+                .columns()
+                .iter()
+                .zip(output_schema.fields())
+                .map(|(array, field)| {
+                    if array.data_type() == field.data_type() {
+                        Ok(array.clone())
+                    } else {
+                        cast_with_options(
+                            array,
+                            field.data_type(),
+                            &CastOptions {
+                                safe: false,
+                                ..Default::default()
+                            },
+                        )
+                        .map_err(Error::from)
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(RecordBatch::try_new(output_schema.clone(), columns)?)
+        });
+        Box::pin(SimpleRecordBatchStream {
+            schema: stream_schema,
+            stream,
+        })
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        self.inner.num_rows()
+    }
+
+    fn rescannable(&self) -> bool {
+        self.inner.rescannable()
     }
 }
 

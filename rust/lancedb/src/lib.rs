@@ -72,7 +72,9 @@
 //!
 //! LanceDB uses [arrow-rs](https://github.com/apache/arrow-rs) to define schema, data types and array itself.
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
-//! columns as vector columns.
+//! columns as vector columns. When creating a table with a floating-point `List`
+//! column named `vec`, or with `vector` or `embedding` in its name, LanceDB infers
+//! a uniform dimension from the first batch and stores it as a `FixedSizeList`.
 //!
 //! For more details, please refer to the [LanceDB documentation](https://docs.lancedb.com).
 //!
@@ -82,6 +84,8 @@
 //! schema of the `RecordBatch` determines the schema of the table.
 //!
 //! Vector columns should be represented as `FixedSizeList<Float16/Float32>` data type.
+//! A vector-like `List<Float16/Float32>` input is also accepted when every vector
+//! has the same runtime dimension.
 //!
 //! ```rust
 //! # use std::sync::Arc;
