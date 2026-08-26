@@ -10337,6 +10337,7 @@ mod tests {
             }
             tokio::task::yield_now().await;
         }
+        assert!(!checkout.is_finished());
 
         checkout.abort();
         assert!(checkout.await.unwrap_err().is_cancelled());
