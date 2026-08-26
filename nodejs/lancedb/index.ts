@@ -81,11 +81,13 @@ export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
+  ListTablesOptions,
   OpenTableOptions,
   ListNamespacesOptions,
   CreateNamespaceOptions,
   DropNamespaceOptions,
   ListNamespacesResponse,
+  ListTablesResponse,
   CreateNamespaceResponse,
   DropNamespaceResponse,
   DescribeNamespaceResponse,
@@ -101,6 +103,7 @@ export {
 } from "./native.js";
 
 export {
+  AutoQuery,
   ExecutableQuery,
   Query,
   QueryBase,
