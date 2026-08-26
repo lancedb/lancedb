@@ -55,7 +55,9 @@ pub struct DropColumnsResult {
 pub struct FieldMetadataUpdate {
     /// Dot-separated path to the field (e.g. `"embedding"` or `"address.zip"`).
     pub path: String,
-    /// Keys to set (`Some`) or delete (`None`).
+    /// Keys to set (`Some`) or delete (`None`). See
+    /// [`Table::update_field_metadata`](crate::Table::update_field_metadata) for
+    /// the conventional `lancedb:*` keys.
     pub metadata: HashMap<String, Option<String>>,
     /// If `true`, replace the field's entire metadata map instead of merging.
     pub replace: bool,
