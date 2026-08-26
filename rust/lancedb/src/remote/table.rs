@@ -92,6 +92,10 @@ const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
 /// requests.
 #[derive(Debug, Default, Clone, Copy)]
 struct FreshnessState {
+    /// Identifies the handle timeline that produced this state. Explicit
+    /// checkout operations advance the generation so responses from older
+    /// in-flight requests cannot repopulate the new timeline's constraints.
+    generation: u64,
     /// Provides read-your-write within a single handle: writes that return a
     /// version update this, and reads send it as `x-lancedb-min-version`.
     min_version: Option<u64>,
@@ -122,6 +126,7 @@ struct FreshnessState {
 /// Snapshot of the headers that should be attached to a single table request.
 #[derive(Debug, Default, Clone, Copy)]
 struct FreshnessHeaders {
+    generation: u64,
     min_version: Option<u64>,
     min_timestamp: Option<SystemTime>,
     min_read_version: Option<u64>,
@@ -141,6 +146,35 @@ impl FreshnessHeaders {
         }
         request
     }
+
+    fn observe_version(self, freshness: &Mutex<FreshnessState>, version: u64) {
+        track_read_version_for_generation(freshness, self.generation, version);
+    }
+
+    fn observe_headers(
+        self,
+        freshness: &Mutex<FreshnessState>,
+        headers: &reqwest::header::HeaderMap,
+    ) {
+        if let Some(version) = headers
+            .get(&VERSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            self.observe_version(freshness, version);
+        }
+    }
+
+    fn update_if_current(
+        self,
+        freshness: &Mutex<FreshnessState>,
+        update: impl FnOnce(&mut FreshnessState),
+    ) {
+        let mut state = freshness.lock().unwrap();
+        if state.generation == self.generation {
+            update(&mut state);
+        }
+    }
 }
 
 fn track_read_version(freshness: &Mutex<FreshnessState>, version: u64) {
@@ -151,16 +185,17 @@ fn track_read_version(freshness: &Mutex<FreshnessState>, version: u64) {
     state.min_read_version = Some(state.min_read_version.map_or(version, |v| v.max(version)));
 }
 
-fn track_read_version_from_headers(
+fn track_read_version_for_generation(
     freshness: &Mutex<FreshnessState>,
-    headers: &reqwest::header::HeaderMap,
+    generation: u64,
+    version: u64,
 ) {
-    if let Some(version) = headers
-        .get(&VERSION_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-    {
-        track_read_version(freshness, version);
+    if version == 0 {
+        return;
+    }
+    let mut state = freshness.lock().unwrap();
+    if state.generation == generation {
+        state.min_read_version = Some(state.min_read_version.map_or(version, |v| v.max(version)));
     }
 }
 
@@ -173,6 +208,7 @@ struct FreshnessJob<S: HttpSend> {
     freshness: Arc<Mutex<FreshnessState>>,
     version: Arc<RwLock<Option<u64>>>,
     track_refresh_result: bool,
+    freshness_request: FreshnessHeaders,
 }
 
 #[async_trait]
@@ -206,9 +242,13 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
                 })
                 .filter(|version| *version != 0);
             if let Some(version) = result_version {
-                track_read_version(&self.freshness, version);
+                self.freshness_request
+                    .observe_version(&self.freshness, version);
             } else {
-                self.freshness.lock().unwrap().checkout_baseline = Some(SystemTime::now());
+                self.freshness_request
+                    .update_if_current(&self.freshness, |state| {
+                        state.checkout_baseline = Some(SystemTime::now());
+                    });
             }
         }
         Ok(result)
@@ -240,12 +280,23 @@ fn freshness_headers_snapshot(
     freshness: &Mutex<FreshnessState>,
     interval: Option<Duration>,
 ) -> FreshnessHeaders {
+    freshness_state_snapshot(freshness, interval).1
+}
+
+fn freshness_state_snapshot(
+    freshness: &Mutex<FreshnessState>,
+    interval: Option<Duration>,
+) -> (FreshnessState, FreshnessHeaders) {
     let state = *freshness.lock().unwrap();
-    FreshnessHeaders {
-        min_version: state.min_version,
-        min_timestamp: compute_min_timestamp(&state, interval, SystemTime::now()),
-        min_read_version: state.min_read_version,
-    }
+    (
+        state,
+        FreshnessHeaders {
+            generation: state.generation,
+            min_version: state.min_version,
+            min_timestamp: compute_min_timestamp(&state, interval, SystemTime::now()),
+            min_read_version: state.min_read_version,
+        },
+    )
 }
 
 /// Normalize a branch selector: trim whitespace and treat `""` or `"main"` as
@@ -267,7 +318,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
             .inner
             .client
             .post(&format!("/v1/table/{}/tags/list/", self.inner.identifier));
-        let (request_id, response) = self.inner.send(request, true).await?;
+        let (request_id, response) = self.inner.send_unfenced(request, true).await?;
         let response = self
             .inner
             .check_table_response(&request_id, response)
@@ -302,7 +353,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
             self.inner.identifier
         ));
         self.inner
-            .resolve_tag_version_with_request(tag, request, true)
+            .resolve_tag_version_with_request(tag, request, false)
             .await
     }
 
@@ -477,7 +528,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let (request_id, response) = self.send(request, true).await?;
+        let (request_id, response) = self.send_unfenced(request, true).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
         let job_id = response
@@ -662,8 +713,10 @@ impl<S: HttpSend> RemoteTable<S> {
         self.apply_branch_body(&mut body);
         let request = request.json(&body);
 
-        let (request_id, response) = if fenced {
-            self.send(request, true).await?
+        let freshness_request = fenced.then(|| self.snapshot_freshness_headers());
+        let (request_id, response) = if let Some(freshness_request) = freshness_request {
+            self.send_with_freshness(request, true, freshness_request)
+                .await?
         } else {
             self.send_unfenced(request, true).await?
         };
@@ -678,8 +731,8 @@ impl<S: HttpSend> RemoteTable<S> {
                         request_id,
                         status_code: None,
                     })?;
-                if fenced {
-                    self.track_read_version(description.version);
+                if let Some(freshness_request) = freshness_request {
+                    freshness_request.observe_version(&self.freshness, description.version);
                 }
                 Ok(description)
             }
@@ -695,14 +748,25 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
-        let req = self.snapshot_freshness_headers().apply(req);
+        let freshness_request = self.snapshot_freshness_headers();
+        self.send_with_freshness(req, with_retry, freshness_request)
+            .await
+    }
+
+    async fn send_with_freshness(
+        &self,
+        req: RequestBuilder,
+        with_retry: bool,
+        freshness_request: FreshnessHeaders,
+    ) -> Result<(String, Response)> {
+        let req = freshness_request.apply(req);
         let res = if with_retry {
             self.client.send_with_retry(req, None, true).await?
         } else {
             self.client.send(req).await?
         };
         if res.1.status().is_success() {
-            track_read_version_from_headers(&self.freshness, res.1.headers());
+            freshness_request.observe_headers(&self.freshness, res.1.headers());
         }
         Ok(res)
     }
@@ -1106,6 +1170,16 @@ impl<S: HttpSend> RemoteTable<S> {
         freshness_headers_snapshot(&self.freshness, self.client.read_consistency_interval)
     }
 
+    fn reset_freshness(&self, checkout_baseline: Option<SystemTime>) {
+        let mut state = self.freshness.lock().unwrap();
+        let generation = state.generation.wrapping_add(1);
+        *state = FreshnessState {
+            generation,
+            checkout_baseline,
+            ..FreshnessState::default()
+        };
+    }
+
     /// Send an LSM operator request with the transport retry layer **off**.
     ///
     /// Retry policy on these routes belongs to the checkpoint loop, which
@@ -1320,7 +1394,7 @@ async fn fetch_schema<S: HttpSend>(
     }
 
     let response = client.check_response(&request_id, response).await?;
-    track_read_version_from_headers(&freshness, response.headers());
+    freshness_headers.observe_headers(&freshness, response.headers());
     let body = response.text().await.map_err(|e| {
         let status_code = e.status();
         Error::Http {
@@ -1335,7 +1409,7 @@ async fn fetch_schema<S: HttpSend>(
         request_id,
         status_code: None,
     })?;
-    track_read_version(&freshness, description.version);
+    freshness_headers.observe_version(&freshness, description.version);
 
     let arrow_schema: arrow_schema::Schema = description.schema.try_into()?;
     Ok(Arc::new(arrow_schema))
@@ -1827,7 +1901,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         // Explicit time-travel: drop any read-your-write / freshness
         // constraints so the user sees exactly the requested version.
-        *self.freshness.lock().unwrap() = FreshnessState::default();
+        self.reset_freshness(None);
 
         // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
@@ -1841,11 +1915,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         // Drop any per-handle read/write tracking; subsequent reads use the
         // baseline timestamp captured now to guarantee freshness.
-        *self.freshness.lock().unwrap() = FreshnessState {
-            min_version: None,
-            checkout_baseline: Some(SystemTime::now()),
-            min_read_version: None,
-        };
+        self.reset_freshness(Some(SystemTime::now()));
 
         // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
@@ -2078,7 +2148,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/branches/list/", self.identifier));
-        let (request_id, response) = self.send(request, true).await?;
+        let (request_id, response) = self.send_unfenced(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -2158,6 +2228,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 message: "Branch name cannot be empty.".into(),
             });
         }
+        let target_freshness = if self.branch.is_none() && self.current_version().await.is_none() {
+            Some(self.snapshot_freshness_headers())
+        } else {
+            None
+        };
         let request = self
             .client
             .post(&format!(
@@ -2187,7 +2262,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             });
         }
         let body = response.text().await.err_to_http(request_id.clone())?;
-        serde_json::from_str(&body).map_err(|err| Error::Http {
+        let result: CherryPickResult = serde_json::from_str(&body).map_err(|err| Error::Http {
             source: format!(
                 "Failed to parse cherry_pick response: {}, body: {}",
                 err, body
@@ -2195,7 +2270,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .into(),
             request_id,
             status_code: Some(status),
-        })
+        })?;
+        if !dry_run
+            && status == StatusCode::OK
+            && result.status == crate::table::CherryPickStatus::CherryPicked
+            && let (Some(freshness), Some(version)) = (target_freshness, result.main_version_after)
+        {
+            freshness.observe_version(&self.freshness, version);
+        }
+        Ok(result)
     }
 
     fn current_branch(&self) -> Option<String> {
@@ -2533,6 +2616,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 freshness: self.freshness.clone(),
                 version: self.version.clone(),
                 track_refresh_result: false,
+                freshness_request: self.snapshot_freshness_headers(),
             })),
             None => Job::new_done(),
         })
@@ -2796,7 +2880,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         // Explicit time-travel: drop any read-your-write / freshness
         // constraints so the user sees exactly the tagged version.
-        *self.freshness.lock().unwrap() = FreshnessState::default();
+        self.reset_freshness(None);
 
         // Invalidate schema cache since we're switching versions
         self.invalidate_schema_cache();
@@ -3007,6 +3091,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             freshness: self.freshness.clone(),
             version: self.version.clone(),
             track_refresh_result: true,
+            freshness_request: self.snapshot_freshness_headers(),
         })))
     }
 
@@ -10047,6 +10132,7 @@ mod tests {
             min_version: None,
             checkout_baseline: Some(baseline),
             min_read_version: None,
+            ..FreshnessState::default()
         };
         assert_eq!(compute_min_timestamp(&state, None, now), Some(baseline));
 
@@ -10072,6 +10158,7 @@ mod tests {
             min_version: None,
             checkout_baseline: Some(baseline),
             min_read_version: None,
+            ..FreshnessState::default()
         };
         assert_eq!(
             compute_min_timestamp(&state, Some(Duration::from_secs(10)), now),
@@ -10084,6 +10171,7 @@ mod tests {
             min_version: None,
             checkout_baseline: Some(recent_baseline),
             min_read_version: None,
+            ..FreshnessState::default()
         };
         assert_eq!(
             compute_min_timestamp(&state, Some(Duration::from_secs(60)), now),
@@ -10307,6 +10395,71 @@ mod tests {
                 .get("x-lancedb-min-read-version")
                 .and_then(|value| value.to_str().ok()),
             Some("100")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_inflight_schema_response_cannot_cross_checkout_generation() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
+        let arrived_tx = Arc::new(std::sync::Mutex::new(arrived_tx));
+        let count_headers = Arc::new(std::sync::Mutex::new(None));
+        let captured = count_headers.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let body = request_body_json(&request);
+                    if body["version"].is_null() {
+                        arrived_tx.lock().unwrap().send(()).unwrap();
+                        release_rx
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(10))
+                            .unwrap();
+                        http::Response::builder()
+                            .status(200)
+                            .header("x-lancedb-version", "100")
+                            .body(r#"{"version":100,"schema":{"fields":[]}}"#.to_string())
+                            .unwrap()
+                    } else {
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version":5,"schema":{"fields":[]}}"#.to_string())
+                            .unwrap()
+                    }
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    *captured.lock().unwrap() = Some(request.headers().clone());
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            });
+
+        let schema = tokio::spawn({
+            let table = table.clone();
+            async move { table.schema().await }
+        });
+        tokio::task::spawn_blocking(move || {
+            arrived_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        })
+        .await
+        .unwrap();
+        table.checkout(5).await.unwrap();
+        release_tx.send(()).unwrap();
+        schema.await.unwrap().unwrap();
+        table.count_rows(None).await.unwrap();
+
+        assert!(
+            !count_headers
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains_key("x-lancedb-min-read-version")
         );
     }
 
@@ -10783,6 +10936,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_main_only_metadata_is_unfenced_from_branch_timeline() {
+        let requests = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let captured = requests.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                let path = request.url().path().to_string();
+                captured
+                    .lock()
+                    .unwrap()
+                    .insert(path.clone(), request.headers().clone());
+                match path.as_str() {
+                    "/v1/table/my_table/count_rows/" => http::Response::builder()
+                        .status(200)
+                        .header("x-lancedb-version", "2")
+                        .body("1".to_string())
+                        .unwrap(),
+                    "/v1/table/my_table/tags/list/" => http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap(),
+                    "/v1/table/my_table/tags/version/" => http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":1}"#.to_string())
+                        .unwrap(),
+                    "/v1/table/my_table/branches/list/" => http::Response::builder()
+                        .status(200)
+                        .body(r#"{"branches":{}}"#.to_string())
+                        .unwrap(),
+                    path => panic!("unexpected path: {path}"),
+                }
+            },
+            None,
+        );
+        let branch = table.with_branch(Some("exp".to_string()));
+
+        branch.count_rows(None).await.unwrap();
+        let tags = branch.tags().await.unwrap();
+        tags.list().await.unwrap();
+        tags.get_version("v1").await.unwrap();
+        branch.list_branches().await.unwrap();
+
+        let requests = requests.lock().unwrap();
+        for path in [
+            "/v1/table/my_table/tags/list/",
+            "/v1/table/my_table/tags/version/",
+            "/v1/table/my_table/branches/list/",
+        ] {
+            assert!(
+                !requests[path].contains_key("x-lancedb-min-read-version"),
+                "{path} inherited the branch timeline"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_delete_branch() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
@@ -10871,6 +11080,50 @@ mod tests {
         assert_eq!(result.status, crate::table::CherryPickStatus::Ready);
         assert_eq!(result.preview.promoted_columns, vec!["tag".to_string()]);
         assert!(result.main_version_after.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_successful_cherry_pick_advances_main_read_watermark() {
+        let count_headers = Arc::new(std::sync::Mutex::new(None));
+        let captured = count_headers.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/branches/cherry_pick/" => {
+                    let response = serde_json::json!({
+                        "status": "cherryPicked",
+                        "diff": serde_json::from_str::<serde_json::Value>(sample_branch_diff_json())
+                            .unwrap(),
+                        "preview": { "promotedColumns": ["tag"] },
+                        "mainVersionAfter": 2
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(response.to_string())
+                        .unwrap()
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    *captured.lock().unwrap() = Some(request.headers().clone());
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            });
+
+        let result = table.cherry_pick("exp", false).await.unwrap();
+        assert_eq!(result.status, crate::table::CherryPickStatus::CherryPicked);
+        table.count_rows(None).await.unwrap();
+        assert_eq!(
+            count_headers
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .get("x-lancedb-min-read-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("2")
+        );
     }
 
     #[tokio::test]

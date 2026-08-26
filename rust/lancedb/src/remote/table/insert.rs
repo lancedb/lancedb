@@ -25,8 +25,8 @@ use crate::Error;
 use crate::remote::ARROW_STREAM_CONTENT_TYPE;
 use crate::remote::client::{HttpSend, RestfulLanceDbClient, Sender};
 use crate::remote::table::{
-    FreshnessState, MergeInsertRequest, REQUEST_TIMEOUT_HEADER, RemoteTable,
-    freshness_headers_snapshot, track_read_version_from_headers,
+    FreshnessHeaders, FreshnessState, MergeInsertRequest, REQUEST_TIMEOUT_HEADER, RemoteTable,
+    freshness_headers_snapshot,
 };
 use crate::table::datafusion::insert::COUNT_SCHEMA;
 use crate::table::write_progress::WriteProgressTracker;
@@ -64,18 +64,27 @@ struct WriteFreshness {
 }
 
 impl WriteFreshness {
-    fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    fn prepare(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> (reqwest::RequestBuilder, Option<FreshnessHeaders>) {
         match &self.state {
             Some(state) => {
-                freshness_headers_snapshot(state, self.read_consistency_interval).apply(request)
+                let freshness_request =
+                    freshness_headers_snapshot(state, self.read_consistency_interval);
+                (freshness_request.apply(request), Some(freshness_request))
             }
-            None => request,
+            None => (request, None),
         }
     }
 
-    fn observe(&self, headers: &reqwest::header::HeaderMap) {
-        if let Some(state) = &self.state {
-            track_read_version_from_headers(state, headers);
+    fn observe(
+        &self,
+        freshness_request: Option<FreshnessHeaders>,
+        headers: &reqwest::header::HeaderMap,
+    ) {
+        if let (Some(state), Some(freshness_request)) = (&self.state, freshness_request) {
+            freshness_request.observe_headers(state, headers);
         }
     }
 }
@@ -393,7 +402,11 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
     }
 
     /// Build the `/insert` request for a single multipart part.
-    fn build_part_request(&self, part_id: &str, body: reqwest::Body) -> reqwest::RequestBuilder {
+    fn build_part_request(
+        &self,
+        part_id: &str,
+        body: reqwest::Body,
+    ) -> (reqwest::RequestBuilder, Option<FreshnessHeaders>) {
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/insert/", self.identifier))
@@ -409,12 +422,16 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         if let Some(b) = self.branch {
             request = request.query(&[("branch", b)]);
         }
-        self.freshness.apply(request.body(body))
+        self.freshness.prepare(request.body(body))
     }
 
     /// Send a single part's request and drain the response, mapping HTTP and
     /// table-not-found errors into `DataFusionError`.
-    async fn send_part_request(&self, request: reqwest::RequestBuilder) -> DataFusionResult<()> {
+    async fn send_part_request(
+        &self,
+        request: reqwest::RequestBuilder,
+        freshness_request: Option<FreshnessHeaders>,
+    ) -> DataFusionResult<()> {
         let (request_id, response) = self
             .client
             .send(request)
@@ -429,7 +446,8 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
             .check_response(&request_id, response)
             .await
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
-        self.freshness.observe(response.headers());
+        self.freshness
+            .observe(freshness_request, response.headers());
         response.bytes().await.map_err(|e| {
             DataFusionError::External(Box::new(Error::Http {
                 source: Box::new(e),
@@ -461,7 +479,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         let body = reqwest::Body::wrap_stream(chunk_rx);
 
         let part_id = uuid::Uuid::new_v4().to_string();
-        let request = self.build_part_request(&part_id, body);
+        let (request, freshness_request) = self.build_part_request(&part_id, body);
 
         // Measured from just before the request is sent, matching the window the
         // client read timeout applies to the upload.
@@ -537,7 +555,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
             Ok::<bool, DataFusionError>(input_ended)
         };
 
-        let send = self.send_part_request(request);
+        let send = self.send_part_request(request, freshness_request);
 
         // `join!` rather than `tokio::spawn`: the producer borrows `input` (and
         // `schema`), so it cannot satisfy the `'static` bound a spawned task
@@ -734,7 +752,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
 
             let (error_tx, mut error_rx) = tokio::sync::oneshot::channel();
             let body = Self::stream_as_http_body(input_stream, error_tx, tracker)?;
-            let request = freshness.apply(request.body(body));
+            let (request, freshness_request) = freshness.prepare(request.body(body));
 
             let result: DataFusionResult<(String, _)> = async {
                 let (request_id, response) = client
@@ -754,7 +772,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
                     .check_response(&request_id, response)
                     .await
                     .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                freshness.observe(response.headers());
+                freshness.observe(freshness_request, response.headers());
 
                 Ok((request_id, response))
             }
