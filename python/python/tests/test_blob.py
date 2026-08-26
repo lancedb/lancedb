@@ -218,7 +218,7 @@ def test_blob_type_rejects_competing_registration_with_pylance():
         if BlobType is OtherBlobType:
             raise SystemExit("pylance BlobType was replaced")
         schema = pa.schema([pa.field("value", BlobType())])
-        restored = pa.ipc.read_schema(pa.BufferReader(schema.serialize()))
+        restored = pa.ipc.read_schema(schema.serialize())
         if type(restored.field("value").type) is not OtherBlobType:
             raise SystemExit(type(restored.field("value").type))
 

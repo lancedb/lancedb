@@ -141,7 +141,7 @@ def schema_has_blob_field(schema: pa.Schema) -> bool:
 def _deserialize_registered_type(extension_type: pa.ExtensionType) -> pa.DataType:
     """Return the type Arrow reconstructs for this extension name."""
     schema = pa.schema([pa.field("value", extension_type)])
-    restored = pa.ipc.read_schema(pa.BufferReader(schema.serialize()))
+    restored = pa.ipc.read_schema(schema.serialize())
     return restored.field("value").type
 
 
