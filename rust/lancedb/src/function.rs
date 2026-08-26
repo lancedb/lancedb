@@ -186,6 +186,9 @@ pub struct PythonEnvironmentSpec {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
+    /// Conda channels in priority order; conda environments only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -583,3 +586,26 @@ impl RefreshColumnResult {
 }
 
 impl_json!(RefreshColumnResult);
+
+#[cfg(test)]
+mod conda_environment_tests {
+    use super::PythonEnvironmentSpec;
+
+    #[test]
+    fn conda_channels_round_trip_and_pip_stays_bare() {
+        let conda: PythonEnvironmentSpec = serde_json::from_str(
+            r#"{"kind":"conda","packages":["numpy"],"channels":["conda-forge"]}"#,
+        )
+        .unwrap();
+        assert_eq!(conda.channels, ["conda-forge"]);
+        assert!(
+            serde_json::to_string(&conda)
+                .unwrap()
+                .contains(r#""channels":["conda-forge"]"#)
+        );
+
+        let pip: PythonEnvironmentSpec =
+            serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
+        assert!(!serde_json::to_string(&pip).unwrap().contains("channels"));
+    }
+}
