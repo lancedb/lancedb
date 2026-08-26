@@ -247,6 +247,36 @@ def test_add_all_null_list_to_nested_blob_column():
     assert all(blob.as_py() is None for blob in blobs)
 
 
+@pytest.mark.parametrize("large_list", [False, True], ids=["list", "large_list"])
+def test_add_list_of_dicts_to_blob_list_column(large_list):
+    db = lancedb.connect("memory:///")
+    blob_field = lancedb.blob("image")
+    blob_values = _blob_array("image", [b"seed"])
+    if large_list:
+        items_field = pa.field("items", pa.large_list(blob_field))
+        items = pa.LargeListArray.from_arrays(
+            pa.array([0, 1], type=pa.int64()), blob_values
+        )
+    else:
+        items_field = pa.field("items", pa.list_(blob_field))
+        items = pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), blob_values)
+    seed = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), items],
+        schema=pa.schema([pa.field("id", pa.int64()), items_field]),
+    )
+    table = db.create_table(f"blob_{large_list}_list_add", data=seed)
+
+    table.add([{"id": 1, "items": [None]}])
+    table.add(
+        [{"id": 2, "items": [b"a", None]}],
+        on_bad_vectors="fill",
+    )
+
+    ids = table.search().select(["id"]).to_arrow()["id"].to_pylist()
+    assert sorted(ids) == [0, 1, 2]
+    assert pa.types.is_large_list(table.schema.field("items").type) is large_list
+
+
 def test_fetch_blob_ranges_aligns_repeated_ranges_and_nulls():
     table = _blob_table(
         "range_alignment",
