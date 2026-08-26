@@ -48,6 +48,7 @@ import {
   Query,
   TakeQuery,
   VectorQuery,
+  createAutoQuery,
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
@@ -629,6 +630,18 @@ export abstract class Table {
 
   /**
    * Update per-field (column) metadata.
+   *
+   * The following keys are treated specially, by convention, and should be
+   * used when appropriate:
+   *
+   * - `lancedb:description`: for a human-readable description of a field.
+   * - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+   *   names the tag category; e.g. `lancedb:tag:model: "clip"`.
+   * - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+   *   `feature_v2` might be in the same logical column.
+   * - `lancedb:status`: for status options (`production`, `candidate`,
+   *   `deprecated`, `archived`) to designate the current life cycle state of
+   *   this column.
    * @param {FieldMetadataUpdate[]} updates One or more per-field updates. Each
    * update's metadata is merged into the field's existing metadata by default;
    * a value of `null` deletes that key, and `replace: true` swaps the whole map.
@@ -1177,33 +1190,29 @@ export class LocalTable extends Table {
       });
     }
 
-    if (queryType === "auto" && typeof query !== "string") {
-      return this.query().fullTextSearch(query, {
-        columns: ftsColumns,
-      });
-    }
+    if (queryType === "auto") {
+      if (instanceOfFullTextQuery(query)) {
+        return this.query().fullTextSearch(query, {
+          columns: ftsColumns,
+        });
+      }
 
-    if (queryType === "auto" && typeof query === "string") {
-      const vector = async (snapshot: _NativeTable) => {
-        const functions = await this.getEmbeddingFunctions(snapshot);
+      const columns =
+        typeof ftsColumns === "string" ? [ftsColumns] : (ftsColumns ?? null);
+      return createAutoQuery(this.inner, query, columns, async (metadata) => {
+        const functions = await getRegistry().parseFunctions(
+          new Map([["embedding_functions", metadata]]),
+        );
         // TODO: Support multiple embedding functions
         const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
           .values()
           .next().value;
-        if (embeddingFunc === undefined) {
-          return undefined;
-        }
+        // The route only calls this callback when embedding metadata exists.
+        // parseFunctions either yields a provider or reports malformed metadata.
+        if (!embeddingFunc)
+          throw new Error("Invalid embedding function metadata");
         return await embeddingFunc.function.computeQueryEmbeddings(query);
-      };
-
-      const columns =
-        typeof ftsColumns === "string" ? [ftsColumns] : ftsColumns;
-      return Query.autoSearch(
-        () => this.inner.checkoutCurrent(),
-        query,
-        vector,
-        columns,
-      );
+      });
     }
 
     const queryPromise = this.getEmbeddingFunctions().then(
@@ -1558,7 +1567,8 @@ export interface FieldMetadataUpdate {
   path: string;
   /**
    * Metadata key/value pairs. Merged into the field's existing metadata by
-   * default; a value of `null` deletes that key.
+   * default; a value of `null` deletes that key. See
+   * {@link Table.updateFieldMetadata} for the conventional `lancedb:*` keys.
    */
   metadata: Record<string, string | null>;
   /** If true, replace the field's entire metadata map instead of merging. */

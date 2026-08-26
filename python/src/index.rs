@@ -8,7 +8,7 @@ use lancedb::index::vector::{
 };
 use lancedb::index::{
     Index as LanceDbIndex,
-    scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder},
+    scalar::{BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder},
 };
 use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
@@ -60,7 +60,11 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .ngram_min_length(params.ngram_min_length)
                     .ngram_max_length(params.ngram_max_length)
                     .ngram_prefix_only(params.prefix_only)
-                    .custom_stop_words(params.custom_stop_words);
+                    .custom_stop_words(params.custom_stop_words)
+                    .document_granularity(
+                        DocumentGranularity::try_from(params.document_granularity.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                    );
                 if let Some(memory_limit) = params.memory_limit {
                     inner_opts = inner_opts.memory_limit_mb(memory_limit);
                 }
@@ -221,6 +225,7 @@ struct FtsParams {
     block_size: usize,
     memory_limit: Option<u64>,
     num_workers: Option<usize>,
+    document_granularity: String,
 }
 
 #[derive(FromPyObject)]
@@ -481,6 +486,7 @@ mod tests {
     block_size = 128
     memory_limit = 2048
     num_workers = 7
+    document_granularity = 'row'
 
 config = FTS()",
                 None,

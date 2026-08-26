@@ -685,6 +685,56 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
   },
 );
 
+// https://github.com/lancedb/lancedb/issues/1963
+it("should query documents with LangChain PDF metadata", async () => {
+  const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  try {
+    const db = await connect(tmpDir.name);
+    const documents = [
+      {
+        text: "first page",
+        vector: [1, 0],
+        source: "first.pdf",
+        loc: { pageNumber: 1, lines: { from: 1, to: 12 } },
+        pdf: {
+          version: "1.10.100",
+          info: {
+            format: "PDF 1.7",
+            producer: "pdf.js",
+            creator: "Writer",
+          },
+          totalPages: 2,
+        },
+      },
+      {
+        text: "second page",
+        vector: [0, 1],
+        source: "second.pdf",
+        loc: { pageNumber: 2, lines: { from: 13, to: 24 } },
+        pdf: {
+          version: "1.10.100",
+          info: {
+            format: "PDF 1.7",
+            producer: "pdf.js",
+            creator: "Writer",
+          },
+          totalPages: 2,
+        },
+      },
+    ];
+    const documentsTable = await db.createTable("documents", documents);
+
+    const results = await documentsTable.query().toArray();
+
+    expect(results).toHaveLength(2);
+    expect(results[0].source).toBe("first.pdf");
+    expect(results[0].pdf.info.producer).toBe("pdf.js");
+    expect(results[1].loc.pageNumber).toBe(2);
+  } finally {
+    tmpDir.removeCallback();
+  }
+});
+
 describe("merge insert", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
@@ -2535,7 +2585,24 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       );
     });
 
-    test("full text search if no embedding function provided", async () => {
+    test("full text search if only an unrelated embedding function is registered", async () => {
+      register("unused")(
+        class extends EmbeddingFunction<string> {
+          ndims() {
+            return 3;
+          }
+          embeddingDataType() {
+            return new Float32();
+          }
+          async computeQueryEmbeddings(_data: string) {
+            return [1, 2, 3];
+          }
+          async computeSourceEmbeddings(data: string[]) {
+            return data.map(() => [1, 2, 3]);
+          }
+        },
+      );
+
       const db = await connect(tmpDir.name);
       const data = [
         { text: "hello world", vector: [0.1, 0.2, 0.3] },
@@ -2555,6 +2622,306 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         .search(new MatchQuery("goodbye", "text"))
         .toArray();
       expect(results2[0].text).toBe(data[1].text);
+    });
+
+    test("auto search stays consistent with the active revision", async () => {
+      let initCalls = 0;
+      let queryCalls = 0;
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      let releaseEmbedding!: () => void;
+      const embeddingReleased = new Promise<void>((resolve) => {
+        releaseEmbedding = resolve;
+      });
+
+      @register("refresh-test")
+      class TestEmbedding extends EmbeddingFunction<string> {
+        async init() {
+          initCalls += 1;
+        }
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings(value: string) {
+          queryCalls += 1;
+          if (value === "blocked") {
+            markStarted();
+            await embeddingReleased;
+          }
+          return value === "greetings" ? [0.1] : [0.2];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map((value) =>
+            value === "hello world" ? [0.1] : [0.2],
+          );
+        }
+      }
+
+      const writer = await connect(tmpDir.name);
+      await writer.createTable("test", [{ text: "plain", vector: [0.0] }]);
+      const reader = await connect(tmpDir.name, {
+        readConsistencyInterval: 0,
+      });
+      const tracked = await reader.openTable("test");
+      type SnapshotCountingNative = {
+        querySnapshot: () => Promise<unknown>;
+      };
+      const native = (tracked as unknown as { inner: SnapshotCountingNative })
+        .inner;
+      const querySnapshot = native.querySnapshot.bind(native);
+      let snapshotCalls = 0;
+      native.querySnapshot = async () => {
+        snapshotCalls += 1;
+        return await querySnapshot();
+      };
+      const autoQuery = tracked.search("greetings").select(["text"]).limit(1);
+
+      const func = new TestEmbedding();
+      const schema = LanceSchema({
+        text: func.sourceField(new arrow.Utf8()),
+        vector: func.vectorField(),
+      });
+      const data = [{ text: "hello world" }, { text: "goodbye world" }];
+      await writer.createTable("test", data, { mode: "overwrite", schema });
+      const baselineInitCalls = initCalls;
+
+      expect(
+        (await tracked.schema()).metadata.get("embedding_functions"),
+      ).toBeDefined();
+      const results = await autoQuery.toArray();
+      expect(results[0].text).toBe(data[0].text);
+      expect(initCalls).toBe(baselineInitCalls + 1);
+      expect(queryCalls).toBe(1);
+      expect(snapshotCalls).toBe(1);
+
+      const repeatedResults = await autoQuery.toArray();
+      expect(repeatedResults[0].text).toBe(data[0].text);
+      expect(initCalls).toBe(baselineInitCalls + 1);
+      expect(queryCalls).toBe(1);
+      expect(snapshotCalls).toBe(2);
+
+      const pending = tracked
+        .search("blocked")
+        .select(["text"])
+        .limit(1)
+        .toArray();
+      await started;
+
+      const ftsData = [
+        { text: "greetings from full text", vector: [0.0] },
+        { text: "blocked from full text", vector: [0.0] },
+      ];
+      const ftsTable = await writer.createTable("test", ftsData, {
+        mode: "overwrite",
+      });
+      await ftsTable.createIndex("text", { config: Index.fts() });
+      releaseEmbedding();
+
+      const pendingResults = await pending;
+      expect(pendingResults[0].text).toBe(data[1].text);
+
+      expect(
+        (await tracked.schema()).metadata.get("embedding_functions"),
+      ).toBeUndefined();
+      const ftsResults = await autoQuery.toArray();
+      expect(ftsResults[0].text).toBe(ftsData[0].text);
+    });
+
+    test("auto search keeps newer preparation during a revision race", async () => {
+      let aCalls = 0;
+      let bCalls = 0;
+      let markAStarted!: () => void;
+      const aStarted = new Promise<void>((resolve) => {
+        markAStarted = resolve;
+      });
+      let releaseA!: () => void;
+      const aReleased = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      let markBStarted!: () => void;
+      const bStarted = new Promise<void>((resolve) => {
+        markBStarted = resolve;
+      });
+      let releaseB!: () => void;
+      const bReleased = new Promise<void>((resolve) => {
+        releaseB = resolve;
+      });
+
+      @register("race-a")
+      class EmbeddingA extends EmbeddingFunction<string> {
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings() {
+          aCalls += 1;
+          markAStarted();
+          await aReleased;
+          return [0.1];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map(() => [0.1]);
+        }
+      }
+
+      @register("race-b")
+      class EmbeddingB extends EmbeddingFunction<string> {
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings() {
+          bCalls += 1;
+          markBStarted();
+          await bReleased;
+          return [0.2];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map(() => [0.2]);
+        }
+      }
+
+      const writer = await connect(tmpDir.name);
+      const embeddingA = new EmbeddingA();
+      const schemaA = LanceSchema({
+        text: embeddingA.sourceField(new arrow.Utf8()),
+        vector: embeddingA.vectorField(),
+      });
+      await writer.createTable("race", [{ text: "revision a" }], {
+        schema: schemaA,
+      });
+      const reader = await connect(tmpDir.name, {
+        readConsistencyInterval: 0,
+      });
+      const tracked = await reader.openTable("race");
+      const query = tracked.search("query");
+
+      const first = query.toArray();
+      await aStarted;
+
+      const embeddingB = new EmbeddingB();
+      const schemaB = LanceSchema({
+        text: embeddingB.sourceField(new arrow.Utf8()),
+        vector: embeddingB.vectorField(),
+      });
+      await writer.createTable("race", [{ text: "revision b" }], {
+        mode: "overwrite",
+        schema: schemaB,
+      });
+      const second = query.toArray();
+      await bStarted;
+
+      releaseA();
+      releaseB();
+      await Promise.all([first, second]);
+      expect(aCalls).toBe(1);
+      expect(bCalls).toBe(1);
+    });
+
+    test("stale FTS routing keeps newer vector preparation", async () => {
+      let vectorCalls = 0;
+      let markVectorStarted!: () => void;
+      const vectorStarted = new Promise<void>((resolve) => {
+        markVectorStarted = resolve;
+      });
+      let releaseVector!: () => void;
+      const vectorReleased = new Promise<void>((resolve) => {
+        releaseVector = resolve;
+      });
+
+      @register("stale-fts-race")
+      class RaceEmbedding extends EmbeddingFunction<string> {
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings() {
+          vectorCalls += 1;
+          markVectorStarted();
+          await vectorReleased;
+          return [0.1];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map(() => [0.1]);
+        }
+      }
+
+      const writer = await connect(tmpDir.name);
+      const ftsTable = await writer.createTable("stale_fts", [
+        { text: "hello", vector: [0.0] },
+      ]);
+      await ftsTable.createIndex("text", { config: Index.fts() });
+
+      const reader = await connect(tmpDir.name, {
+        readConsistencyInterval: 0,
+      });
+      const tracked = await reader.openTable("stale_fts");
+      type Snapshot = {
+        schema: () => Promise<Buffer>;
+      };
+      type NativeWithSnapshot = {
+        querySnapshot: () => Promise<Snapshot>;
+      };
+      const native = (tracked as unknown as { inner: NativeWithSnapshot })
+        .inner;
+      const querySnapshot = native.querySnapshot.bind(native);
+      let snapshotCalls = 0;
+      let markStaleSchemaStarted!: () => void;
+      const staleSchemaStarted = new Promise<void>((resolve) => {
+        markStaleSchemaStarted = resolve;
+      });
+      let releaseStaleSchema!: () => void;
+      const staleSchemaReleased = new Promise<void>((resolve) => {
+        releaseStaleSchema = resolve;
+      });
+      native.querySnapshot = async () => {
+        const snapshot = await querySnapshot();
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          const schema = snapshot.schema.bind(snapshot);
+          snapshot.schema = async () => {
+            markStaleSchemaStarted();
+            await staleSchemaReleased;
+            return await schema();
+          };
+        }
+        return snapshot;
+      };
+
+      const query = tracked.search("hello");
+      const staleFtsExecution = query.toArray();
+      await staleSchemaStarted;
+
+      const embedding = new RaceEmbedding();
+      const vectorSchema = LanceSchema({
+        text: embedding.sourceField(new arrow.Utf8()),
+        vector: embedding.vectorField(),
+      });
+      await writer.createTable("stale_fts", [{ text: "hello" }], {
+        mode: "overwrite",
+        schema: vectorSchema,
+      });
+
+      const vectorExecution = query.toArray();
+      await vectorStarted;
+      releaseStaleSchema();
+      await staleFtsExecution;
+      releaseVector();
+      await vectorExecution;
+
+      await query.toArray();
+      expect(vectorCalls).toBe(1);
     });
 
     test("tokenizes FTS queries by column or index name", async () => {
@@ -3105,6 +3472,30 @@ describe("column name options", () => {
     results.sort((a, b) => a.query_index - b.query_index);
     expect(results[0].query_index).toBe(0);
     expect(results[1].query_index).toBe(1);
+  });
+
+  test("observes promised additional vectors while the query is pending", async () => {
+    const initialVector = new Promise<number[]>(() => undefined);
+    const query = table.query().nearestTo(initialVector);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      query.addQueryVector(Promise.reject(new Error("extra vector failed")));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+
+      const rejectedQuery = table
+        .query()
+        .nearestTo([0.1, 0.2])
+        .addQueryVector(Promise.reject(new Error("consumed vector failed")));
+      await expect(rejectedQuery.toArray()).rejects.toThrow(
+        "consumed vector failed",
+      );
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   test("index and search multivectors", async () => {
