@@ -452,18 +452,96 @@ def _field_extension_name(field: pa.Field) -> Optional[str]:
     return extension_name
 
 
+_JSON_EXTENSION_NAMES = {"arrow.json", "lance.json"}
+_BLOB_EXTENSION_NAME = "lance.blob.v2"
+
+
+def _field_contains_write_extension(field: pa.Field) -> bool:
+    extension_name = _field_extension_name(field)
+    if (
+        extension_name in _JSON_EXTENSION_NAMES
+        or extension_name == _BLOB_EXTENSION_NAME
+    ):
+        return True
+    if pa.types.is_struct(field.type):
+        return any(_field_contains_write_extension(child) for child in field.type)
+    if (
+        pa.types.is_list(field.type)
+        or pa.types.is_large_list(field.type)
+        or pa.types.is_fixed_size_list(field.type)
+    ):
+        return _field_contains_write_extension(field.type.value_field)
+    return False
+
+
+def _with_field_type(
+    field: pa.Field,
+    data_type: pa.DataType,
+    *,
+    name: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> pa.Field:
+    return pa.field(
+        name or field.name,
+        data_type,
+        nullable=field.nullable,
+        metadata=field.metadata if metadata is None else metadata,
+    )
+
+
+def _prepare_extension_field(
+    field: pa.Field, target_field: pa.Field
+) -> Tuple[pa.Field, bool]:
+    extension_name = _field_extension_name(target_field)
+    if extension_name in _JSON_EXTENSION_NAMES:
+        metadata = dict(field.metadata or {})
+        metadata[b"ARROW:extension:name"] = b"arrow.json"
+        return _with_field_type(field, pa.string(), metadata=metadata), True
+    if extension_name == _BLOB_EXTENSION_NAME and pa.types.is_null(field.type):
+        return _with_field_type(field, pa.large_binary()), True
+
+    if pa.types.is_struct(field.type) and pa.types.is_struct(target_field.type):
+        target_children = {child.name: child for child in target_field.type}
+        children = []
+        changed = False
+        for child in field.type:
+            target_child = target_children.get(child.name)
+            if target_child is None:
+                children.append(child)
+                continue
+            prepared, child_changed = _prepare_extension_field(child, target_child)
+            children.append(prepared)
+            changed = changed or child_changed
+        if changed:
+            return _with_field_type(field, pa.struct(children)), True
+
+    if _is_list_like(field.type) and _is_list_like(target_field.type):
+        prepared, changed = _prepare_extension_field(
+            field.type.value_field, target_field.type.value_field
+        )
+        if changed:
+            prepared = _with_field_type(
+                prepared, prepared.type, name=target_field.type.value_field.name
+            )
+            if pa.types.is_list(field.type):
+                data_type = pa.list_(prepared)
+            elif pa.types.is_large_list(field.type):
+                data_type = pa.large_list(prepared)
+            else:
+                data_type = pa.list_(prepared, field.type.list_size)
+            return _with_field_type(field, data_type), True
+
+    return field, False
+
+
 def _prepare_extension_list(data: DATA, target_schema: pa.Schema) -> DATA:
     """Give inferred list columns the logical type required by extensions."""
     if not isinstance(data, list) or not data or not isinstance(data[0], dict):
         return data
 
     target_fields = {field.name: field for field in target_schema}
-    extension_names = {
-        name: _field_extension_name(field) for name, field in target_fields.items()
-    }
     if not any(
-        name in {"arrow.json", "lance.json", "lance.blob.v2"}
-        for name in extension_names.values()
+        _field_contains_write_extension(field) for field in target_fields.values()
     ):
         return data
 
@@ -471,29 +549,42 @@ def _prepare_extension_list(data: DATA, target_schema: pa.Schema) -> DATA:
     fields = []
     changed = False
     for field in inferred.schema:
-        extension_name = extension_names.get(field.name)
-        if extension_name in {"arrow.json", "lance.json"}:
-            json_factory = getattr(pa, "json_", None)
-            if json_factory is not None:
-                field = pa.field(field.name, json_factory(), nullable=field.nullable)
-            else:
-                field = pa.field(
-                    field.name,
-                    pa.string(),
-                    nullable=field.nullable,
-                    metadata={b"ARROW:extension:name": b"arrow.json"},
-                )
-            changed = True
-        elif extension_name == "lance.blob.v2" and pa.types.is_null(field.type):
-            field = pa.field(field.name, pa.large_binary(), nullable=field.nullable)
-            changed = True
-        fields.append(field)
+        target_field = target_fields.get(field.name)
+        if target_field is None:
+            fields.append(field)
+            continue
+        prepared, field_changed = _prepare_extension_field(field, target_field)
+        fields.append(prepared)
+        changed = changed or field_changed
 
     if not changed:
         return inferred
 
     insert_schema = pa.schema(fields, metadata=inferred.schema.metadata)
     return pa.Table.from_pylist(data, schema=insert_schema)
+
+
+def _is_blob_source_field(field: pa.Field) -> bool:
+    if _field_extension_name(field) == _BLOB_EXTENSION_NAME:
+        return True
+
+    predicates = (
+        "is_binary",
+        "is_large_binary",
+        "is_binary_view",
+        "is_string",
+        "is_large_string",
+        "is_string_view",
+    )
+    if any(
+        predicate(field.type)
+        for name in predicates
+        if (predicate := getattr(pa.types, name, None)) is not None
+    ):
+        return True
+    return pa.types.is_struct(field.type) and any(
+        child.name in {"data", "uri"} for child in field.type
+    )
 
 
 def _align_field_types(
@@ -508,13 +599,21 @@ def _align_field_types(
         target_field = next((f for f in target_fields if f.name == field.name), None)
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
+        target_extension_name = _field_extension_name(target_field)
+        # Preserve accepted blob carriers so Lance can construct the declared
+        # blob struct after optional Python preprocessing.
+        if target_extension_name == _BLOB_EXTENSION_NAME and _is_blob_source_field(
+            field
+        ):
+            new_fields.append(field)
+            continue
         # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
         # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
         # input to that storage type here merely relabels the raw JSON bytes as
         # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
         if (
             _field_extension_name(field) == "arrow.json"
-            and _field_extension_name(target_field) == "lance.json"
+            and target_extension_name in _JSON_EXTENSION_NAMES
         ):
             new_fields.append(field)
             continue
