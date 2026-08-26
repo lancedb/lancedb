@@ -50,7 +50,6 @@ use crate::DistanceType;
 use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
-use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -60,15 +59,18 @@ use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
 use crate::job::Job;
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
+use crate::utils::{
+    PatchReadParam, PatchWriteParam, public_fts_field_path_by_id, resolve_arrow_field_path,
+};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
 pub mod add_columns;
 mod add_data;
-pub mod branch_merge;
 pub mod checkpoint;
+pub mod cherry_pick;
+pub mod computed_columns;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
@@ -78,6 +80,7 @@ pub mod merge;
 pub mod optimize;
 mod primary_key;
 pub mod query;
+pub mod refresh;
 pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
@@ -86,11 +89,14 @@ pub use add_columns::AddColumnsBuilder;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
-pub use branch_merge::{
-    BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
-    MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
+pub use cherry_pick::{
+    BranchDiff, CherryPickError, CherryPickErrorCode, CherryPickPreview, CherryPickResult,
+    CherryPickStatus, ColumnChange, ColumnSummary, IndexSummary, RowCountSummary,
 };
 pub use chrono::Duration;
+pub use computed_columns::{
+    ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
+};
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
@@ -98,6 +104,7 @@ pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 pub use lsm_stats::{BucketStats, GenerationStats, LsmStats, MemtableStats};
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use refresh::RefreshColumnResult;
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
     UpdateFieldMetadataResult,
@@ -150,55 +157,6 @@ pub(crate) fn map_namespace_lance_error(err: lance::Error, table_name: &str) -> 
         },
         other => other.into(),
     }
-}
-
-/// Map a `lance::Error::DatasetNotFound` for the table at `uri` into a `lancedb::Error`.
-///
-/// Lance reports "there is nothing at this location" and "there is a table directory
-/// here but nothing loadable inside it" with the same error. Only the first is a
-/// `TableNotFound`: a `<name>.lance` directory left behind by an interrupted drop and
-/// re-create is still reported by `Connection::table_names`, so callers need to be able
-/// to tell "never existed" from "exists but is broken".
-///
-/// See <https://github.com/lancedb/lancedb/issues/3127>.
-async fn map_dataset_not_found(
-    uri: &str,
-    name: &str,
-    params: ReadParams,
-    err: lance::Error,
-) -> Error {
-    let name = name.to_string();
-    let source = Box::new(err);
-    if table_dir_exists(uri, params).await.unwrap_or(false) {
-        Error::TableCorrupted { name, source }
-    } else {
-        Error::TableNotFound { name, source }
-    }
-}
-
-/// Whether a table directory is present at `uri`, even though no dataset could be
-/// loaded from it.
-///
-/// This looks for a `<name>.lance` entry in the parent directory, which is exactly what
-/// `ListingDatabase::table_names` lists, so the two APIs agree on whether a table is
-/// present. Probing `uri` itself would not work: object stores have no empty
-/// directories to probe, and on a local filesystem the interesting case is precisely an
-/// empty directory.
-async fn table_dir_exists(uri: &str, params: ReadParams) -> Result<bool> {
-    let (object_store, path, _) = DatasetBuilder::from_uri(uri)
-        .with_read_params(params)
-        .build_object_store()
-        .await?;
-    // Only `*.lance` entries are ever reported as tables, so nothing else can produce
-    // the list-then-open mismatch this guards against.
-    if path.extension() != Some(LANCE_FILE_EXTENSION) {
-        return Ok(false);
-    }
-    let (Some(parent), Some(dir_name)) = (path.parent(), path.filename()) else {
-        return Ok(false);
-    };
-    let entries = object_store.read_dir(parent).await?;
-    Ok(entries.iter().any(|entry| entry.as_str() == dir_name))
 }
 
 /// Defines the type of column
@@ -604,6 +562,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Create a read-only handle pinned to the table's current active revision.
+    ///
+    /// The returned handle is independent from later refreshes or checkouts on
+    /// this handle.  This is used by bindings that must prepare client-side
+    /// query state from the same revision that the query will execute against.
+    #[doc(hidden)]
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -782,12 +747,59 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
+    /// Declare computed columns, each defined by a SQL expression.
+    ///
+    /// Where the declaration is planned depends on the backend: a local table
+    /// validates and types the expression itself, a remote one sends the text
+    /// for the server to plan.
+    async fn add_computed_columns(
+        &self,
+        _columns: &[(String, String)],
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are not supported on this table type".into(),
+        })
+    }
+    /// Declare one immutable registered-Function binding.
+    async fn add_function_columns(
+        &self,
+        _application: &crate::function::FunctionApplication,
+        _output_name: Option<&str>,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
+        })
+    }
+    /// Fill a computed column's unfilled rows.
+    ///
+    /// The default returns `NotSupported`; Lance-backed tables override it.
+    async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
+        })
+    }
+    /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
+    /// the operation.
+    async fn refresh_column_async(
+        &self,
+        _column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
     /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
+    /// Return a new table handle pinned to the exact revision currently visible.
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "checkout_current is not supported on this table type".into(),
+        })
+    }
     /// Checkout a specific version of the table.
     async fn checkout(&self, version: u64) -> Result<()>;
     /// Checkout a table version referenced by a tag.
@@ -795,6 +807,21 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Return an independent handle pinned to the version currently selected.
+    ///
+    /// Backends that can advance between requests should override this for
+    /// multi-request operations that need snapshot consistency. Backends whose
+    /// existing handles already provide the desired behavior return `None`.
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        Ok(None)
+    }
+    /// Whether repeated identical scans return rows in the same order.
+    ///
+    /// Callers that assign meaning to a row's position must order the results
+    /// themselves when this is false.  Defaults to false so a table type opts in.
+    fn scan_order_is_deterministic(&self) -> bool {
+        false
+    }
     /// Restore the table to the currently checked out version.
     async fn restore(&self) -> Result<()>;
     /// List the versions of the table.
@@ -831,14 +858,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Diff a branch against main. Remote only.
     async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
         Err(Error::NotSupported {
-            message: "diff_branch is only supported on remote tables".into(),
+            message: "Branch diffs are only supported on Enterprise tables.".into(),
         })
     }
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    async fn merge_branch(&self, _from_branch: &str, _dry_run: bool) -> Result<MergeBranchResult> {
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
         Err(Error::NotSupported {
-            message: "merge_branch is only supported on remote tables".into(),
+            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
         })
     }
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -1065,6 +1092,11 @@ impl Table {
         self.database.as_ref().unwrap()
     }
 
+    /// The database this handle was opened through, when it was.
+    pub fn database_opt(&self) -> Option<&Arc<dyn Database>> {
+        self.database.as_ref()
+    }
+
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
         &self.embedding_registry
     }
@@ -1116,13 +1148,26 @@ impl Table {
         self.inner.schema().await
     }
 
+    /// Create a read-only handle pinned to the current active revision.
+    #[doc(hidden)]
+    pub async fn query_snapshot(&self) -> Result<Self> {
+        Ok(Self {
+            inner: self.inner.query_snapshot().await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
+    }
+
     /// Count the number of rows in this dataset.
     ///
     /// # Arguments
     ///
     /// * `filter` if present, only count rows matching the filter
     pub async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        self.inner.count_rows(filter.map(Filter::Sql)).await
+        let filter = filter
+            .map(|predicate| crate::expr::canonicalize_sql_predicate(&predicate).map(Filter::Sql))
+            .transpose()?;
+        self.inner.count_rows(filter).await
     }
 
     /// Names of the blob v2 columns in this table, in declaration order.
@@ -1322,7 +1367,13 @@ impl Table {
     /// # });
     /// ```
     pub async fn delete(&self, predicate: impl Into<Predicate<'_>>) -> Result<DeleteResult> {
-        self.inner.delete(predicate.into()).await
+        match predicate.into() {
+            Predicate::String(predicate) => {
+                let predicate = crate::expr::canonicalize_sql_predicate(predicate)?;
+                self.inner.delete(Predicate::String(&predicate)).await
+            }
+            predicate @ Predicate::Expr(_) => self.inner.delete(predicate).await,
+        }
     }
 
     /// Create an index on the provided column(s).
@@ -1674,6 +1725,59 @@ impl Table {
         AddColumnsBuilder::new(self.inner.clone())
     }
 
+    /// Fill the fragments of a computed column that hold no values yet.
+    ///
+    /// Declared with
+    /// [`AddColumnsBuilder::computed`](add_columns::AddColumnsBuilder::computed),
+    /// a column starts empty and gets its values here. Fragments appended
+    /// since the last refresh are filled by the next one; fragments already
+    /// filled are left as they are, so the call is idempotent and does not
+    /// observe a mutated input.
+    ///
+    /// Local tables only: a remote refresh runs as a server job, through
+    /// [`Table::refresh_column_async`].
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = table.refresh_column("doubled").await?;
+    /// println!("filled {} rows at version {}", result.rows_filled, result.version);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column(&self, column: impl AsRef<str>) -> Result<RefreshColumnResult> {
+        self.inner.refresh_column(column.as_ref()).await
+    }
+
+    /// Like [`Table::refresh_column`], but returns a [`Job`] tracking the
+    /// operation instead of blocking until it completes.
+    ///
+    /// The job may already be complete when returned, and callers must not
+    /// assume the column is filled until [`Job::wait`] returns. A successful
+    /// wait returns the durable [`crate::function::RefreshColumnResult`] for
+    /// both expression-backed and Function-backed columns. Invalid input
+    /// -- an unknown column, or one that is not computed -- is reported by
+    /// this call rather than by the job. On local tables the job runs as an
+    /// in-process task; on LanceDB Cloud and Enterprise it is the server's
+    /// backfill job.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = table.refresh_column_async("doubled").await?;
+    /// println!("refresh running: {:?}", job.status().await?);
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_async(
+        &self,
+        column: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner.refresh_column_async(column.as_ref()).await
+    }
+
     /// Change a column's name or nullability.
     pub async fn alter_columns(
         &self,
@@ -1682,7 +1786,23 @@ impl Table {
         self.inner.alter_columns(alterations).await
     }
 
-    /// Update per-field metadata (merges by default).
+    /// Update per-field (column) metadata.
+    ///
+    /// Each [`FieldMetadataUpdate`] is merged into the field's existing metadata
+    /// by default; use [`FieldMetadataUpdate::remove`] to delete a key, or
+    /// [`FieldMetadataUpdate::replace`] to swap the field's entire metadata map.
+    ///
+    /// The following keys are treated specially, by convention, and should be
+    /// used when appropriate:
+    ///
+    /// - `lancedb:description`: for a human-readable description of a field.
+    /// - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+    ///   names the tag category; e.g. `lancedb:tag:model: "clip"`.
+    /// - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+    ///   `feature_v2` might be in the same logical column.
+    /// - `lancedb:status`: for status options (`production`, `candidate`,
+    ///   `deprecated`, `archived`) to designate the current life cycle state of
+    ///   this column.
     pub async fn update_field_metadata(
         &self,
         updates: &[FieldMetadataUpdate],
@@ -1872,6 +1992,20 @@ impl Table {
     /// version to replace the current table with a previous version.
     pub async fn version(&self) -> Result<u64> {
         self.inner.version().await
+    }
+
+    /// Return a new table handle pinned to the exact revision currently visible.
+    ///
+    /// This is used when asynchronous preparation must remain consistent with
+    /// the revision used for a later read.
+    #[doc(hidden)]
+    pub async fn checkout_current(&self) -> Result<Self> {
+        let inner = self.inner.checkout_current().await?;
+        Ok(Self {
+            inner,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
     }
 
     /// Checks out a specific version of the Table
@@ -2210,14 +2344,10 @@ impl Table {
         self.inner.diff_branch(from_branch).await
     }
 
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    pub async fn merge_branch(
-        &self,
-        from_branch: &str,
-        dry_run: bool,
-    ) -> Result<MergeBranchResult> {
-        self.inner.merge_branch(from_branch, dry_run).await
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    pub async fn cherry_pick(&self, from_branch: &str, dry_run: bool) -> Result<CherryPickResult> {
+        self.inner.cherry_pick(from_branch, dry_run).await
     }
 
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -2420,8 +2550,6 @@ impl NativeTable {
             None => false,
         };
 
-        // Kept so that a `DatasetNotFound` can be re-checked against storage below.
-        let recovery_params = params.clone();
         let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
 
         // Set up commit handler when managed_versioning is enabled
@@ -2440,7 +2568,12 @@ impl NativeTable {
         let dataset = match builder.load().await {
             Ok(dataset) => dataset,
             Err(e @ lance::Error::DatasetNotFound { .. }) => {
-                return Err(map_dataset_not_found(uri, name, recovery_params, e).await);
+                // The manifest load is the existence check. A physical prefix may be
+                // from a concurrent or abandoned create, so it cannot refine this error.
+                return Err(Error::TableNotFound {
+                    name: name.to_string(),
+                    source: Box::new(e),
+                });
             }
             Err(e) => return Err(e.into()),
         };
@@ -2652,6 +2785,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
+        computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2951,6 +3085,12 @@ impl BaseTable for NativeTable {
         self
     }
 
+    /// Lance scans fragments in order (`Scanner::ordered` defaults to true, and we
+    /// never clear it), so repeated identical scans agree.
+    fn scan_order_is_deterministic(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         self.name.as_str()
     }
@@ -2963,8 +3103,31 @@ impl BaseTable for NativeTable {
         &self.id
     }
 
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
+        let snapshot = self.dataset.new_query_snapshot().await?;
+        let mut table = self.with_dataset(snapshot);
+        // QueryTable requests do not carry a revision. A pinned snapshot must
+        // execute locally until the namespace API can accept that revision.
+        table
+            .pushdown_operations
+            .remove(&NamespaceClientPushdownOperation::QueryTable);
+        Ok(Arc::new(table))
+    }
+
     async fn version(&self) -> Result<u64> {
         Ok(self.dataset.get().await?.version().version)
+    }
+
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        let current = self.dataset.get().await?;
+        let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
+            current.as_ref().clone(),
+            self.read_consistency_interval,
+        );
+        Ok(Arc::new(Self {
+            dataset,
+            ..self.clone()
+        }))
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
@@ -3085,7 +3248,10 @@ impl BaseTable for NativeTable {
         let dataset = self.dataset.get().await?;
         match filter {
             None => Ok(dataset.count_rows(None).await?),
-            Some(Filter::Sql(sql)) => Ok(dataset.count_rows(Some(sql)).await?),
+            Some(Filter::Sql(sql)) => {
+                let sql = crate::expr::canonicalize_sql_predicate(&sql)?;
+                Ok(dataset.count_rows(Some(sql)).await?)
+            }
             Some(Filter::Datafusion(_)) => Err(Error::NotSupported {
                 message: "Datafusion filters are not yet supported".to_string(),
             }),
@@ -3100,6 +3266,14 @@ impl BaseTable for NativeTable {
         let ds = self.dataset.get().await?;
 
         let table_schema = Schema::from(&ds.schema().clone());
+        computed_columns::ensure_supported_function_metadata(&table_schema)?;
+        computed_columns::ensure_not_written(
+            &table_schema,
+            add.data.schema().fields().iter().map(|f| f.name().as_str()),
+        )?;
+        if matches!(add.mode, AddDataMode::Overwrite) {
+            computed_columns::ensure_no_foreign_declarations(add.data.schema().fields())?;
+        }
 
         let num_partitions = if let Some(parallelism) = add.write_parallelism {
             parallelism
@@ -3124,7 +3298,7 @@ impl BaseTable for NativeTable {
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        let lance_params = output
+        let mut lance_params = output
             .write_options
             .lance_write_params
             .unwrap_or(WriteParams {
@@ -3134,6 +3308,9 @@ impl BaseTable for NativeTable {
                 },
                 ..Default::default()
             });
+        if output.allow_external_blob_outside_bases {
+            lance_params.allow_external_blob_outside_bases = true;
+        }
 
         // Repartition for write parallelism if beneficial.
         let plan = if num_partitions > 1 {
@@ -3260,6 +3437,11 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
+        let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
+        computed_columns::ensure_not_written(
+            &Schema::from(self.dataset.get().await?.schema()),
+            source_schema.fields().iter().map(|f| f.name().as_str()),
+        )?;
         let result = merge::execute_merge_insert(self, params, new_data).await?;
         self.bump_freshness();
         Ok(result)
@@ -3341,6 +3523,25 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
+    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
+        let result = schema_evolution::execute_declare(self, columns).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn refresh_column(&self, column: &str) -> Result<RefreshColumnResult> {
+        let result = refresh::execute_refresh_column(self, column).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn refresh_column_async(
+        &self,
+        column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        refresh::execute_refresh_column_async(self, column).await
+    }
+
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
         let result = schema_evolution::execute_alter_columns(self, alterations).await?;
         self.bump_freshness();
@@ -3388,7 +3589,14 @@ impl BaseTable for NativeTable {
                 let field_ids = idx_desc.field_ids();
                 let mut columns = Vec::with_capacity(field_ids.len());
                 for field_id in field_ids {
-                    let field_path = match dataset.schema().field_path(*field_id as i32) {
+                    let field_path = match if index_type == crate::index::IndexType::FTS {
+                        public_fts_field_path_by_id(dataset.schema(), *field_id as i32)
+                    } else {
+                        dataset
+                            .schema()
+                            .field_path(*field_id as i32)
+                            .map_err(Into::into)
+                    } {
                         Ok(field_path) => field_path,
                         Err(e) => {
                             log::warn!(
@@ -3708,7 +3916,7 @@ pub struct FragmentSummaryStats {
 #[allow(deprecated)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use arrow_array::{
@@ -3790,73 +3998,50 @@ mod tests {
         );
     }
 
-    /// Write a table and then break it, leaving the `<name>.lance` directory in place.
-    ///
-    /// `remove_all` reproduces an interrupted drop + re-create (the directory is left
-    /// empty); otherwise only the manifests are removed, leaving the data files behind.
-    async fn write_then_corrupt_table(dir: &std::path::Path, remove_all: bool) -> String {
-        let dataset_path = dir.join("test.lance");
-        let uri = dataset_path.to_str().unwrap().to_string();
-
-        let batch = make_test_batches();
-        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
-        Dataset::write(reader, &uri, None).await.unwrap();
-
-        if remove_all {
-            for entry in std::fs::read_dir(&dataset_path).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    std::fs::remove_dir_all(entry.path()).unwrap();
-                } else {
-                    std::fs::remove_file(entry.path()).unwrap();
-                }
-            }
-            assert_eq!(std::fs::read_dir(&dataset_path).unwrap().count(), 0);
-        } else {
-            let versions = dataset_path.join("_versions");
-            assert!(versions.is_dir(), "expected manifests under {versions:?}");
-            std::fs::remove_dir_all(&versions).unwrap();
-            assert!(std::fs::read_dir(&dataset_path).unwrap().count() > 0);
-        }
-
-        uri
-    }
-
     #[tokio::test]
-    async fn test_open_corrupt_empty_dir() {
+    async fn test_open_not_found_when_empty_directory_exists() {
         let tmp_dir = tempdir().unwrap();
-        let uri = write_then_corrupt_table(tmp_dir.path(), true).await;
+        let dataset_path = tmp_dir.path().join("test.lance");
+        std::fs::create_dir(&dataset_path).unwrap();
 
-        let err = NativeTable::open(&uri).await.unwrap_err();
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
         );
     }
 
     #[tokio::test]
-    async fn test_open_corrupt_missing_manifest() {
+    async fn test_open_not_found_when_only_uncommitted_storage_exists() {
         let tmp_dir = tempdir().unwrap();
-        let uri = write_then_corrupt_table(tmp_dir.path(), false).await;
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let data_dir = dataset_path.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("orphan.lance"), b"uncommitted").unwrap();
 
-        let err = NativeTable::open(&uri).await.unwrap_err();
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
         );
     }
 
-    /// A table listed by `table_names()` must not be reported as missing by
-    /// `open_table()`. See <https://github.com/lancedb/lancedb/issues/3127>.
+    /// Listing databases discover physical `*.lance` entries. That snapshot is not an
+    /// authoritative table-existence check: only a committed manifest makes a table
+    /// openable, and the entry could also be concurrently created or dropped.
     #[tokio::test]
-    async fn test_open_table_corrupt_is_still_listed() {
+    async fn test_table_names_may_include_uncommitted_storage() {
         let tmp_dir = tempdir().unwrap();
         let db = connect(tmp_dir.path().to_str().unwrap())
             .execute()
             .await
             .unwrap();
 
-        write_then_corrupt_table(tmp_dir.path(), true).await;
+        std::fs::create_dir(tmp_dir.path().join("test.lance")).unwrap();
 
         assert_eq!(
             db.table_names().execute().await.unwrap(),
@@ -3864,12 +4049,185 @@ mod tests {
         );
         let err = db.open_table("test").execute().await.unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "physical storage without a committed manifest is not a table: {err:?}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct ParentListGuardStore {
+        inner: Arc<dyn object_store::ObjectStore>,
+        parent: object_store::path::Path,
+        parent_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Display for ParentListGuardStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ParentListGuardStore")
+        }
+    }
+
+    #[async_trait::async_trait]
+    #[deny(clippy::missing_trait_methods)]
+    impl object_store::ObjectStore for ParentListGuardStore {
+        async fn put_opts(
+            &self,
+            location: &object_store::path::Path,
+            payload: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &object_store::path::Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &object_store::path::Path,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        async fn get_ranges(
+            &self,
+            location: &object_store::path::Path,
+            ranges: &[std::ops::Range<u64>],
+        ) -> object_store::Result<Vec<bytes::Bytes>> {
+            self.inner.get_ranges(location, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<
+                'static,
+                object_store::Result<object_store::path::Path>,
+            >,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+        {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list(prefix)
+        }
+
+        fn list_with_offset(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+            offset: &object_store::path::Path,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list_with_offset(prefix, offset)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::RenameOptions,
+        ) -> object_store::Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    #[derive(Debug)]
+    struct ParentListGuardWrapper {
+        parent_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl WrappingObjectStore for ParentListGuardWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            inner: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            Arc::new(ParentListGuardStore {
+                inner,
+                parent: object_store::path::Path::from("database"),
+                parent_list_calls: self.parent_list_calls.clone(),
+            })
+        }
+
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            _original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn test_open_missing_never_lists_database_parent() {
+        let parent_list_calls = Arc::new(AtomicUsize::new(0));
+        let params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store_wrapper: Some(Arc::new(ParentListGuardWrapper {
+                    parent_list_calls: parent_list_calls.clone(),
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            "memory:///database/missing.lance",
+            "missing",
+            Vec::new(),
+            None,
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "missing"),
             "got {err:?}"
         );
-        assert!(
-            err.to_string().contains("exists but could not be loaded"),
-            "got {err}"
+        assert_eq!(
+            parent_list_calls.load(Ordering::Relaxed),
+            0,
+            "opening one missing table must not enumerate sibling tables"
         );
     }
 
@@ -3935,6 +4293,14 @@ mod tests {
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
             original
+        }
+
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            Some(original)
         }
     }
 
@@ -5339,7 +5705,7 @@ mod tests {
     pub async fn test_stats_includes_index_and_overlay_files() {
         use lance::dataset::WriteDestination;
         use lance::dataset::transaction::{DataOverlayGroup, Operation};
-        use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
+        use lance_file::version::stable_file_version;
         use lance_file::writer::FileWriterOptions;
         use lance_io::utils::CachedFileSize;
         use lance_table::format::DataFile;
@@ -5405,7 +5771,7 @@ mod tests {
         let fragment_id = dataset.get_fragments()[0].id() as u64;
         let foo_field_id = dataset.schema().field("foo").unwrap().id;
         let overlay_schema = dataset.schema().project_by_ids(&[foo_field_id], true);
-        let file_version = ConcreteFileVersion::from(LanceFileVersion::Stable);
+        let file_version = stable_file_version();
 
         let filename = "overlay.lance".to_string();
         let store = dataset.object_store(None).await.unwrap();

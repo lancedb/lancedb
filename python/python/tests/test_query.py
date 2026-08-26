@@ -897,6 +897,23 @@ def test_query_builder_batches(table):
     assert rs_list["id"][1] == 2
 
 
+def test_batch_vector_query_shares_filtered_flat_scan(table):
+    query = (
+        table.search([[1.0, 2.0], [3.0, 4.0]])
+        .where("id > 0", prefilter=True)
+        .limit(1)
+        .select(["id"])
+    )
+
+    plan = query.explain_plan(verbose=True)
+    assert "KNNVectorDistance: queries=2" in plan
+    assert "UnionExec" not in plan
+
+    results = query.to_arrow()
+    assert len(results) == 2
+    assert results["query_index"].to_pylist() == [0, 1]
+
+
 def test_dynamic_projection(table):
     rs = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")

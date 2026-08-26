@@ -262,7 +262,7 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
 /// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
 /// MemWAL supports, resolved on install.
-#[pyclass(from_py_object)]
+#[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
     inner: lancedb::table::LsmWriteSpec,
@@ -413,6 +413,67 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
 #[derive(Clone, Debug)]
 pub struct AddColumnsResult {
     pub version: u64,
+}
+
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct RefreshColumnResult {
+    pub rows_filled: u64,
+    pub version: u64,
+}
+
+#[pymethods]
+impl RefreshColumnResult {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "RefreshColumnResult(rows_filled={}, version={})",
+            self.rows_filled, self.version
+        )
+    }
+}
+
+impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
+    fn from(result: lancedb::table::RefreshColumnResult) -> Self {
+        Self {
+            rows_filled: result.rows_filled,
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct RefreshMaterializedViewResult {
+    pub mode: String,
+    pub rows_written: u64,
+    pub source_version: u64,
+    pub version: u64,
+}
+
+#[pymethods]
+impl RefreshMaterializedViewResult {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "RefreshMaterializedViewResult(mode={}, rows_written={}, source_version={}, version={})",
+            self.mode, self.rows_written, self.source_version, self.version
+        )
+    }
+}
+
+impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
+    fn from(result: lancedb::RefreshMaterializedViewResult) -> Self {
+        let mode = match result.mode {
+            lancedb::RefreshMode::Rebuild => "rebuild",
+            lancedb::RefreshMode::Incremental => "incremental",
+            lancedb::RefreshMode::NoOp => "no_op",
+        };
+        Self {
+            mode: mode.to_string(),
+            rows_written: result.rows_written,
+            source_version: result.source_version,
+            version: result.version,
+        }
+    }
 }
 
 #[pymethods]
@@ -579,7 +640,7 @@ impl PyBlobFile {
     }
 }
 
-#[pyclass(get_all, from_py_object)]
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct FtsToken {
     pub text: String,
@@ -719,15 +780,19 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None))]
+    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
         mode: String,
         progress: Option<Py<PyAny>>,
         write_parallelism: Option<usize>,
+        allow_external_blob_outside_bases: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let mut op = self_.inner_ref()?.add(data);
+        let mut op = self_
+            .inner_ref()?
+            .add(data)
+            .allow_external_blob_outside_bases(allow_external_blob_outside_bases);
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
         } else if mode == "overwrite" {
@@ -1510,6 +1575,78 @@ impl Table {
         })
     }
 
+    pub fn add_computed_columns(
+        self_: PyRef<'_, Self>,
+        columns: Vec<(String, String)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.add_columns();
+            for (name, expression) in columns {
+                builder = builder.computed(name, expression);
+            }
+            let result = builder.execute().await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn add_function_columns(
+        self_: PyRef<'_, Self>,
+        application_json: String,
+        output_name: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let application =
+            lancedb::function::FunctionApplication::from_json(&application_json).infer_error()?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let builder = match output_name {
+                Some(name) => inner.add_columns().function_as(name, application),
+                None => inner.add_columns().function(application),
+            };
+            let result = builder.execute().await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn refresh_column(self_: PyRef<'_, Self>, column: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner.refresh_column(column).await.infer_error()?;
+            Ok(RefreshColumnResult::from(result))
+        })
+    }
+
+    pub fn refresh_column_async(
+        self_: PyRef<'_, Self>,
+        column: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let job = inner.refresh_column_async(column).await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
+        })
+    }
+
+    #[pyo3(signature = (full=false, source_version=None))]
+    pub fn refresh_materialized_view(
+        self_: PyRef<'_, Self>,
+        full: bool,
+        source_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            let mut builder = view.refresh().full(full);
+            if let Some(version) = source_version {
+                builder = builder.source_version(version);
+            }
+            let result = builder.execute().await.infer_error()?;
+            Ok(RefreshMaterializedViewResult::from(result))
+        })
+    }
+
     pub fn add_columns_with_schema(
         self_: PyRef<'_, Self>,
         schema: PyArrowType<Schema>,
@@ -1807,7 +1944,7 @@ impl Branches {
     }
 
     #[pyo3(signature = (from_branch, dry_run=false))]
-    pub fn merge(
+    pub fn cherry_pick(
         self_: PyRef<'_, Self>,
         from_branch: String,
         dry_run: bool,
@@ -1815,7 +1952,7 @@ impl Branches {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let result = inner
-                .merge_branch(&from_branch, dry_run)
+                .cherry_pick(&from_branch, dry_run)
                 .await
                 .infer_error()?;
             Python::attach(|py| struct_to_wire_py(py, &result))

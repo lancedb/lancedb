@@ -8,6 +8,9 @@ import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
 import {
+  Field as CurrentField,
+  LargeBinary as CurrentLargeBinary,
+  Schema as CurrentSchema,
   Vector as CurrentVector,
   convertToTable,
   tableFromIPC as currentTableFromIPC,
@@ -72,6 +75,23 @@ it("serializes an Arrow Table created in another JavaScript realm", async () => 
   expect(actual.numRows).toBe(3);
   expect(actual.getChild("id")?.toJSON()).toEqual([1, 2, 3]);
   expect(actual.getChild("text")?.toJSON()).toEqual(["foo", "bar", "baz"]);
+});
+
+it("preserves field metadata from a provided schema", async function () {
+  const jsonMetadata = new Map([["ARROW:extension:name", "lance.json"]]);
+  const schema = new CurrentSchema([
+    new CurrentField("meta", new CurrentLargeBinary(), true, jsonMetadata),
+  ]);
+
+  const table = makeArrowTable(
+    [{ meta: Buffer.from(JSON.stringify({ source: "test" })) }],
+    { schema },
+  );
+
+  expect(table.schema.fields[0].metadata).toEqual(jsonMetadata);
+
+  const roundTripped = currentTableFromIPC(await fromTableToBuffer(table));
+  expect(roundTripped.schema.fields[0].metadata).toEqual(jsonMetadata);
 });
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
@@ -211,6 +231,36 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     }
 
     describe("The function makeArrowTable", function () {
+      it("accepts snake_case embedding metadata like camelCase", function () {
+        const spellings = [
+          // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+          { source_column: "text", vector_column: "vector" },
+          { sourceColumn: "text", vectorColumn: "vector" },
+        ];
+        for (const columns of spellings) {
+          const schema = new Schema(
+            [
+              new Field("text", new Utf8(), false),
+              new Field(
+                "vector",
+                new FixedSizeList(3, new Field("item", new Float32(), true)),
+                false,
+              ),
+            ],
+            new Map([
+              [
+                "embedding_functions",
+                JSON.stringify([{ name: "mock", model: {}, ...columns }]),
+              ],
+            ]),
+          );
+          // The vector field is non-nullable and absent from the data; only a
+          // recognized embedding config makes that acceptable.
+          const table = makeArrowTable([{ text: "hello" }], { schema });
+          expect(table.numRows).toBe(1);
+        }
+      });
+
       it("will use data types from a provided schema instead of inference", async function () {
         const schema = new Schema([
           new Field("a", new Int32(), false),
@@ -521,6 +571,137 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (records) => (<any>makeArrowTable)(records),
           true,
         );
+      });
+
+      it("will allow matching inferred types across records", function () {
+        expect(() =>
+          makeArrowTable([{ value: 1 }, { value: 2 }]),
+        ).not.toThrow();
+      });
+
+      it("will reject mismatched inferred types across records", function () {
+        expect(() => makeArrowTable([{ value: 1 }, { value: "two" }])).toThrow(
+          "Failed to infer schema for data. Previously inferred type Float64 but found Utf8 for field value at row 1. Consider providing an explicit schema.",
+        );
+      });
+
+      it("will ignore generated dictionary IDs when comparing inferred types", function () {
+        const table = makeArrowTable([{ str: "a" }, { str: "b" }], {
+          dictionaryEncodeStrings: true,
+        });
+
+        expect(table.getChild("str")?.toJSON()).toEqual(["a", "b"]);
+      });
+
+      it("will preserve null values without treating them as type mismatches", function () {
+        for (const records of [
+          [{ vector: [1, 2, 3] }, { vector: null }],
+          [{ vector: null }, { vector: [1, 2, 3] }],
+        ]) {
+          const table = makeArrowTable(records);
+
+          expect(table.numRows).toBe(2);
+          expect(table.getChild("vector")?.nullCount).toBe(1);
+        }
+      });
+
+      it("will preserve empty variable-size lists", function () {
+        for (const records of [
+          [{ items: [1] }, { items: [] }],
+          [{ items: [] }, { items: [1] }],
+        ]) {
+          const table = makeArrowTable(records);
+          expect(
+            table
+              .getChild("items")
+              ?.toJSON()
+              .map((value) => value.toJSON()),
+          ).toEqual(records.map((record) => record.items));
+        }
+      });
+
+      it("will propagate deferred evidence through nested lists", function () {
+        for (const records of [
+          [{ items: [1] }, { items: [null] }],
+          [{ items: [null] }, { items: [1] }],
+          [{ items: [null, 1] }, { items: [2, null] }],
+        ]) {
+          const table = makeArrowTable(records);
+          expect(
+            table
+              .getChild("items")
+              ?.toJSON()
+              .map((value) => value.toJSON()),
+          ).toEqual(records.map((record) => record.items));
+        }
+
+        const nestedRecords = [{ items: [[1]] }, { items: [[null]] }];
+        const nestedTable = makeArrowTable(nestedRecords);
+        expect(
+          nestedTable
+            .getChild("items")
+            ?.toJSON()
+            .map((value) =>
+              value
+                .toJSON()
+                .map((nestedValue: { toJSON: () => unknown[] }) =>
+                  nestedValue.toJSON(),
+                ),
+            ),
+        ).toEqual(nestedRecords.map((record) => record.items));
+      });
+
+      it("will reject incompatible deferred evidence within a list", function () {
+        for (const items of [
+          [[], 1],
+          [1, []],
+          [[null], 1],
+          [1, [null]],
+        ]) {
+          expect(() => makeArrowTable([{ items }])).toThrow(
+            "Failed to infer data type for field items at row 0.",
+          );
+        }
+      });
+
+      it("will reject empty fixed-size lists", function () {
+        expect(() =>
+          makeArrowTable([{ vector: [1, 2, 3] }, { vector: [] }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type FixedSizeList[3]<Float32> but found List[0] for field vector at row 1.",
+        );
+      });
+
+      it("will reject inferred leaf and branch shape changes", function () {
+        expect(() =>
+          makeArrowTable([{ value: 1 }, { value: { nested: 2 } }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type Float64 but found Struct for field value at row 1.",
+        );
+        expect(() =>
+          makeArrowTable([{ value: { nested: 1 } }, { value: 2 }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type Struct but found Float64 for field value at row 1.",
+        );
+      });
+
+      it("will allow null values around inferred struct values", function () {
+        for (const { records, nullIndex } of [
+          {
+            records: [{ value: null }, { value: { nested: 2 } }],
+            nullIndex: 0,
+          },
+          {
+            records: [{ value: { nested: 1 } }, { value: null }],
+            nullIndex: 1,
+          },
+        ]) {
+          const table = makeArrowTable(records);
+          const values = table.getChild("value");
+
+          expect(values?.nullCount).toBe(1);
+          expect(values?.get(nullIndex)).toBeNull();
+        }
       });
 
       it("will allow a schema to be provided", async function () {
