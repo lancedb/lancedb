@@ -1586,6 +1586,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_mixed_case_filter_is_canonicalized_for_lineage_and_refresh() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("PartyAbbrev", Utf8, ["D", "R", "D"])
+        )
+        .unwrap();
+        conn.create_table("src", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        conn.create_materialized_view("democrats", "src")
+            .select([("id", "id")])
+            .only_if(r#""PartyAbbrev" = 'D'"#)
+            .execute()
+            .await
+            .unwrap();
+
+        // Reopen from schema metadata so these assertions cover the stored
+        // predicate and lineage, not only the declaration-time handle.
+        let view = conn.open_materialized_view("democrats").await.unwrap();
+        assert_eq!(
+            view.definition().filter.as_deref(),
+            Some("`PartyAbbrev` = 'D'")
+        );
+        assert_eq!(view.definition().inputs, ["PartyAbbrev", "id"]);
+
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.rows_written, 2);
+        assert_eq!(read(view.table(), "id").await, vec![1, 3]);
+    }
+
+    #[tokio::test]
     async fn test_append_refreshes_incrementally() {
         let (_conn, source, view) = refreshed_doubled(vec![1, 2]).await;
 
