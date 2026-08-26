@@ -10,11 +10,10 @@ import pyarrow as pa
 import pydantic
 import pytest
 from lancedb.pydantic import (
-    PYDANTIC_VERSION,
     LanceModel,
+    MultiVector,
     Vector,
     pydantic_to_schema,
-    MultiVector,
 )
 from pydantic import BaseModel
 from pydantic import Field
@@ -432,16 +431,10 @@ def test_fixed_size_list_field():
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
-    if PYDANTIC_VERSION.major >= 2:
-        assert json.loads(data.model_dump_json()) == {
-            "vec": list(range(16)),
-            "li": [1, 2, 3],
-        }
-    else:
-        assert data.dict() == {
-            "vec": list(range(16)),
-            "li": [1, 2, 3],
-        }
+    assert json.loads(data.model_dump_json()) == {
+        "vec": list(range(16)),
+        "li": [1, 2, 3],
+    }
 
     schema = pydantic_to_schema(TestModel)
     assert schema == pa.schema(
@@ -451,10 +444,7 @@ def test_fixed_size_list_field():
         ]
     )
 
-    if PYDANTIC_VERSION.major >= 2:
-        json_schema = TestModel.model_json_schema()
-    else:
-        json_schema = TestModel.schema()
+    json_schema = TestModel.model_json_schema()
 
     assert json_schema == {
         "properties": {
