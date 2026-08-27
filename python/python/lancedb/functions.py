@@ -486,6 +486,8 @@ class RefreshColumnResult(_RemoteValue):
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Keep this byte limit aligned with Sophon's MAX_FUNCTION_SECRET_VALUE_BYTES.
+_MAX_FUNCTION_SECRET_VALUE_BYTES = 64 * 1024
 
 
 def _validate_secret_value(name: str, value: Any) -> str:
@@ -496,6 +498,12 @@ def _validate_secret_value(name: str, value: Any) -> str:
         raise ValueError(f"Function secret {name!r} value must be non-empty")
     if "\0" in value:
         raise ValueError(f"Function secret {name!r} value must not contain NUL")
+    value_bytes = len(value.encode("utf-8"))
+    if value_bytes > _MAX_FUNCTION_SECRET_VALUE_BYTES:
+        raise ValueError(
+            f"Function secret {name!r} value exceeds the "
+            f"{_MAX_FUNCTION_SECRET_VALUE_BYTES}-byte limit"
+        )
     return value
 
 

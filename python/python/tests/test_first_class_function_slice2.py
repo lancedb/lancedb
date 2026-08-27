@@ -19,7 +19,12 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.functions import FunctionRegistrationRequest, UdfDefinition, udf
+from lancedb.functions import (
+    _MAX_FUNCTION_SECRET_VALUE_BYTES,
+    FunctionRegistrationRequest,
+    UdfDefinition,
+    udf,
+)
 
 THRESHOLD = 20
 _CACHE = None
@@ -740,6 +745,39 @@ def test_secret_values_are_validated_before_remote_request(
         with pytest.raises(error_type, match=message):
             db.create_function_async(normalize_score, secrets=secret_values)
         assert state["requests"] == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "x" * _MAX_FUNCTION_SECRET_VALUE_BYTES,
+        "é" * (_MAX_FUNCTION_SECRET_VALUE_BYTES // len("é".encode("utf-8"))),
+    ],
+)
+def test_secret_value_accepts_exact_utf8_byte_limit(value):
+    submission = json.loads(normalize_score._submission_json({"API_TOKEN": value}))
+    assert submission["secret_values"]["API_TOKEN"] == value
+    assert len(value.encode("utf-8")) == _MAX_FUNCTION_SECRET_VALUE_BYTES
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "x" * (_MAX_FUNCTION_SECRET_VALUE_BYTES + 1),
+        "é" * (_MAX_FUNCTION_SECRET_VALUE_BYTES // len("é".encode("utf-8")) + 1),
+    ],
+)
+def test_secret_value_rejects_over_utf8_byte_limit_before_json_construction(
+    monkeypatch, value
+):
+    def fail_if_json_construction_starts(self):
+        pytest.fail("oversized secret reached JSON construction")
+
+    monkeypatch.setattr(
+        FunctionRegistrationRequest, "_known_dict", fail_if_json_construction_starts
+    )
+    with pytest.raises(ValueError, match=r"exceeds the 65536-byte limit"):
+        normalize_score._submission_json({"API_TOKEN": value})
 
 
 @pytest.mark.asyncio
