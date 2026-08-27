@@ -161,7 +161,11 @@ def _flight_module() -> Any:
 
 
 def _flight_call_options(
-    connection: RemoteDBConnection, flight: Any, request_id: str
+    connection: RemoteDBConnection,
+    flight: Any,
+    request_id: str,
+    *,
+    streaming: bool = False,
 ) -> Any:
     headers: Dict[bytes, tuple[bytes, bytes]] = {}
 
@@ -174,16 +178,20 @@ def _flight_call_options(
                 raise ValueError(f"Flight SQL metadata must be ASCII: {key!r}") from err
             headers[encoded_key] = (encoded_key, encoded_value)
 
-    if connection.client_config.extra_headers is not None:
-        add_headers(connection.client_config.extra_headers)
-    add_headers(
-        {
-            "authorization": f"Bearer {connection.api_key}",
-        }
-    )
+    extra_headers = connection.client_config.extra_headers or {}
     header_provider = connection.client_config.header_provider
-    if header_provider is not None:
-        add_headers(header_provider.get_headers())
+    provider_headers = header_provider.get_headers() if header_provider else {}
+    credential_names = {
+        str(key).lower() for key in [*extra_headers.keys(), *provider_headers.keys()]
+    }
+    if "authorization" in credential_names and "x-api-key" in credential_names:
+        raise ValueError(
+            "Flight SQL accepts either authorization or x-api-key, not both"
+        )
+    if not credential_names.intersection({"authorization", "x-api-key"}):
+        add_headers({"authorization": f"Bearer {connection.api_key}"})
+    add_headers(extra_headers)
+    add_headers(provider_headers)
     add_headers(
         {
             "database": connection.db_name,
@@ -191,14 +199,16 @@ def _flight_call_options(
         }
     )
 
-    timeout = _DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS
+    timeout = None
     timeout_config = connection.client_config.timeout_config
     if timeout_config is not None:
         duration = timeout_config.timeout
-        if duration is None:
+        if duration is None and not streaming:
             duration = timeout_config.read_timeout
         if duration is not None:
             timeout = duration.total_seconds()
+    if timeout is None and not streaming:
+        timeout = _DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS
 
     return flight.FlightCallOptions(
         timeout=timeout,
@@ -223,11 +233,10 @@ def _read_endpoint(
 ) -> pa.Table:
     locations = list(endpoint.locations)
     location_uri = _location_uri(locations[0]) if locations else None
-    reuse_primary = location_uri is None or location_uri.startswith(
-        "arrow-flight-reuse-connection:"
-    )
     client = primary_client
-    if not reuse_primary:
+    if location_uri is not None and not location_uri.startswith(
+        "arrow-flight-reuse-connection:"
+    ):
         location_uri = _normalize_flight_sql_uri(location_uri)
         if primary_uri.startswith("grpc+tls://") and not location_uri.startswith(
             "grpc+tls://"
@@ -239,7 +248,7 @@ def _read_endpoint(
         )
 
     try:
-        options = _flight_call_options(connection, flight, request_id)
+        options = _flight_call_options(connection, flight, request_id, streaming=True)
         return client.do_get(endpoint.ticket, options).read_all()
     finally:
         if client is not primary_client:
@@ -335,7 +344,8 @@ def sql(
     client_config: ClientConfig or dict, optional
         Remote client configuration. Static and dynamic headers, timeouts, and
         TLS files are also applied to Flight SQL where supported. Flight SQL
-        uses a 300-second timeout when neither an overall nor read timeout is set.
+        uses a 300-second planning timeout when neither an overall nor read
+        timeout is set. Only an overall timeout caps result streaming.
     storage_options: dict, optional
         Storage options forwarded to :func:`lancedb.connect`.
 
@@ -358,7 +368,7 @@ def sql(
 
     database_uri = str(database)
     parsed_database = urlparse(database_uri)
-    if parsed_database.scheme != "db":
+    if not database_uri.startswith("db://") or parsed_database.netloc == "":
         raise ValueError("lancedb.sql requires a remote db:// database")
     if (
         parsed_database.path not in ("", "/")

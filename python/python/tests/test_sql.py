@@ -92,6 +92,16 @@ def test_sql_rejects_database_prefix(monkeypatch):
         lancedb.sql("SELECT 1", database="db://analytics/tenant1")
 
 
+@pytest.mark.parametrize("database", ["DB://analytics", "db://"])
+def test_sql_rejects_invalid_remote_database(monkeypatch, database):
+    def connect(*args, **kwargs):
+        pytest.fail("invalid remote database must be rejected before connecting")
+
+    monkeypatch.setattr(lancedb, "connect", connect)
+    with pytest.raises(ValueError, match="remote db://"):
+        lancedb.sql("SELECT 1", database=database)
+
+
 @pytest.mark.parametrize(
     ("uri", "expected"),
     [
@@ -235,7 +245,8 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
         assert headers[b"x-extra"] == b"value"
         request_ids.add(headers[b"x-request-id"])
         assert uuid.UUID(headers[b"x-request-id"].decode()).version == 4
-        assert options.timeout == 7
+    assert observed["get_options"].timeout == 7
+    assert all(options.timeout == -1 for _, _, options in observed["get_calls"])
     assert len(request_ids) == 1
 
 
@@ -270,11 +281,32 @@ def test_flight_error_preserves_type_and_includes_statement_request_id(monkeypat
 
 
 def test_flight_options_use_default_timeout():
-    options = sql_module._flight_call_options(
+    planning_options = sql_module._flight_call_options(
         FakeRemoteConnection(), sql_module._flight_module(), "request-id"
     )
+    streaming_options = sql_module._flight_call_options(
+        FakeRemoteConnection(),
+        sql_module._flight_module(),
+        "request-id",
+        streaming=True,
+    )
 
-    assert options.timeout == 300
+    assert planning_options.timeout == 300
+    assert streaming_options.timeout == -1
+
+
+def test_explicit_api_key_header_suppresses_derived_bearer():
+    connection = FakeRemoteConnection(
+        client_config=ClientConfig(extra_headers={"X-Api-Key": "other-key"})
+    )
+
+    options = sql_module._flight_call_options(
+        connection, sql_module._flight_module(), "request-id"
+    )
+
+    headers = dict(options.headers)
+    assert headers[b"x-api-key"] == b"other-key"
+    assert b"authorization" not in headers
 
 
 def test_tls_coordinator_rejects_plaintext_endpoint():
