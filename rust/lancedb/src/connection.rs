@@ -41,7 +41,7 @@ use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 
 mod create_table;
 
-fn merge_storage_options(
+pub(crate) fn merge_storage_options(
     store_params: &mut ObjectStoreParams,
     pairs: impl IntoIterator<Item = (String, String)>,
 ) {
@@ -409,6 +409,11 @@ impl Connection {
     ///
     /// The names will be returned in lexicographical order (ascending)
     ///
+    /// Listing databases discover physical `*.lance` entries without opening every
+    /// dataset. The result is a point-in-time discovery snapshot: an entry may still be
+    /// under creation, may contain only uncommitted storage, or may be concurrently
+    /// dropped before it is opened.
+    ///
     /// The parameters `page_token` and `limit` can be used to paginate the results
     pub fn table_names(&self) -> TableNamesBuilder {
         TableNamesBuilder::new(self.internal.clone())
@@ -456,10 +461,9 @@ impl Connection {
     ///
     /// # Returns
     /// Created [`TableRef`], or [`Error::TableNotFound`] if the table does not exist.
-    /// If the table's storage is present but holds no readable dataset (for example a
-    /// `<name>.lance` directory left behind by an interrupted drop and re-create, which
-    /// [`Self::table_names`] still lists) this returns [`Error::TableCorrupted`]
-    /// instead.
+    /// On listing databases, a committed Lance manifest is authoritative for table
+    /// existence. Uncommitted files or a physical `<name>.lance` directory alone do not
+    /// make a table openable.
     pub fn open_table(&self, name: impl Into<String>) -> OpenTableBuilder {
         OpenTableBuilder::new(
             self.internal.clone(),
@@ -490,6 +494,33 @@ impl Connection {
             target_table_name.into(),
             source_uri.into(),
         )
+    }
+
+    /// Register a Python callable as a new immutable Function version.
+    ///
+    /// Registration is remote-only and always asynchronous. Waiting on the
+    /// returned typed job yields the durable [`crate::function::FunctionVersion`].
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn create_function_async(
+        &self,
+        request: crate::function::FunctionRegistrationRequest,
+    ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
+        self.internal.create_function_async(request).await
+    }
+
+    /// Look up one exact immutable Function version in the remote catalog.
+    ///
+    /// Both the logical name and server-assigned version id are required;
+    /// mutable aliases and latest-version lookup are intentionally absent.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn get_function(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<crate::function::FunctionVersion> {
+        self.internal
+            .get_function(name.as_ref(), version.as_ref())
+            .await
     }
 
     /// Rename a table in the database.
@@ -558,6 +589,21 @@ impl Connection {
     pub async fn drop_table(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
         self.internal
             .drop_table(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Start dropping a table and return a handle to the cleanup job.
+    ///
+    /// The table may become unavailable before its physical data is removed.
+    /// Call [`crate::job::Job::wait`] to wait for cleanup to finish. Local
+    /// backends may complete the drop before returning the handle.
+    pub async fn drop_table_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        self.internal
+            .drop_table_async(name.as_ref(), namespace_path)
             .await
     }
 
@@ -1631,6 +1677,50 @@ mod tests {
         let tables = db.table_names().limit(7).execute().await.unwrap();
 
         assert_eq!(tables, names[..7]);
+    }
+
+    #[tokio::test]
+    async fn test_list_tables_walks_page_boundaries() {
+        let tc = new_test_connection().await.unwrap();
+        if tc.is_remote {
+            // What resumes a page is the server's to decide, and asserting it here would be
+            // asserting the server's contract rather than this one.
+            return;
+        }
+        let db = tc.connection;
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        let mut names = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let name = uuid::Uuid::new_v4().to_string();
+            names.push(name.clone());
+            db.create_empty_table(name, schema.clone())
+                .execute()
+                .await
+                .unwrap();
+        }
+        names.sort();
+
+        // Walking in pages has to reach every table exactly once, with nothing lost at a
+        // page boundary.
+        let mut seen = Vec::with_capacity(names.len());
+        let mut page_token = None;
+        loop {
+            let page = db
+                .list_tables(ListTablesRequest {
+                    id: Some(Vec::new()),
+                    limit: Some(2),
+                    page_token,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            seen.extend(page.tables);
+            page_token = page.page_token.filter(|token| !token.is_empty());
+            if page_token.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, names);
     }
 
     #[tokio::test]

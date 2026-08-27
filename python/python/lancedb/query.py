@@ -32,8 +32,6 @@ from typing_extensions import Annotated
 
 from lancedb._lancedb import fts_query_to_json
 from lancedb.background_loop import LOOP
-from lancedb.pydantic import PYDANTIC_VERSION
-
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
@@ -377,6 +375,13 @@ class FullTextOperator(str, Enum):
     OR = "OR"
 
 
+class DocumentGranularity(str, Enum):
+    """The unit treated as one full-text-search document."""
+
+    ROW = "row"
+    LIST_ELEMENT = "list_element"
+
+
 class Occur(str, Enum):
     SHOULD = "SHOULD"
     MUST = "MUST"
@@ -480,6 +485,10 @@ class MatchQuery(FullTextQuery):
     prefix_length : int, optional
         The number of beginning characters being unchanged for fuzzy matching.
         This is useful to achieve prefix matching.
+    document_granularity : DocumentGranularity, optional
+        Explicitly select row or deepest-list-element documents. If omitted,
+        the indexed granularity is inferred. When both granularities are indexed
+        for the field, this must be specified. With no index, row granularity is used.
     """
 
     query: str
@@ -489,6 +498,9 @@ class MatchQuery(FullTextQuery):
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
+    document_granularity: Optional[DocumentGranularity] = pydantic.Field(
+        None, kw_only=True
+    )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
@@ -505,11 +517,20 @@ class PhraseQuery(FullTextQuery):
         The query string to match against.
     column : str
         The name of the column to match against.
+    slop : int, default 0
+        The maximum number of intervening positions permitted in the phrase.
+    document_granularity : DocumentGranularity, optional
+        Explicitly select row or deepest-list-element documents. If omitted,
+        the indexed granularity is inferred. When both granularities are indexed
+        for the field, this must be specified. With no index, row granularity is used.
     """
 
     query: str
     column: str
     slop: int = pydantic.Field(0, kw_only=True)
+    document_granularity: Optional[DocumentGranularity] = pydantic.Field(
+        None, kw_only=True
+    )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
@@ -827,12 +848,7 @@ class Query(pydantic.BaseModel):
 
     # This tells pydantic to allow custom types (needed for the `vector` query since
     # pa.Array wouln't be allowed otherwise)
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            arbitrary_types_allowed = True
-    else:
-        model_config = {"arbitrary_types_allowed": True}
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
 
 class LanceQueryBuilder(ABC):
@@ -2235,6 +2251,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             reranker=self._reranker,
             limit=self._limit,
             with_row_ids=True,
+            offset=self._offset,
         )
         return self._finish_hybrid_results(results)
 
@@ -2256,6 +2273,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         reranker,
         limit: int,
         with_row_ids: bool,
+        offset: Optional[int] = None,
     ) -> pa.Table:
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
@@ -2332,7 +2350,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = results.column_names.index("_score")
             results = results.set_column(score_i, "_score", original_scores)
 
-        results = results.slice(length=limit)
+        results = results.slice(offset=offset or 0, length=limit)
 
         if not with_row_ids:
             results = results.drop(["_rowid"])
@@ -2679,8 +2697,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         # Apply common configurations
         if self._limit:
-            self._vector_query.limit(self._limit)
-            self._fts_query.limit(self._limit)
+            # The final offset/limit window is sliced out of the combined,
+            # reranked results, so each sub-query must fetch enough rows to
+            # cover the skipped prefix as well as the window itself.
+            sub_query_limit = self._limit + (self._offset or 0)
+            self._vector_query.limit(sub_query_limit)
+            self._fts_query.limit(sub_query_limit)
         if self._columns:
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
@@ -3245,12 +3267,7 @@ class AsyncStandardQuery(AsyncQueryBase):
         if ordering is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by(
-                [
-                    o.model_dump() if hasattr(o, "model_dump") else o.dict()
-                    for o in ordering
-                ]
-            )
+            self._inner.order_by([o.model_dump() for o in ordering])
         return self
 
     def fast_search(self) -> Self:
@@ -3384,9 +3401,10 @@ class AsyncQuery(AsyncStandardQuery):
         pass in multiple vectors. When multiple vectors are passed in, if the vector
         column is with multivector type, then the vectors will be treated as a single
         query. Or the vectors will be treated as multiple queries, this can be useful
-        if you want to find the nearest vectors to multiple query vectors.
-        This is not expected to be faster than making multiple queries concurrently;
-        it is just a convenience method. If multiple vectors are passed in then
+        if you want to find the nearest vectors to multiple query vectors. Flat
+        searches share one table scan across the query vectors, avoiding the scan
+        and memory amplification of making multiple queries concurrently. If
+        multiple vectors are passed in then
         an additional column `query_index` will be added to the results. This column
         will contain the index of the query vector that the result is nearest to.
         """
@@ -3515,8 +3533,8 @@ class AsyncFTSQuery(AsyncStandardQuery):
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest
-        vectors to multiple query vectors. This is not expected to be faster than
-        making multiple queries concurrently; it is just a convenience method.
+        vectors to multiple query vectors. Flat searches share one table scan across
+        the query vectors instead of issuing concurrent full scans.
         If multiple vectors are passed in then an additional column `query_index`
         will be added to the results.  This column will contain the index of the
         query vector that the result is nearest to.

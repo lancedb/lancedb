@@ -94,7 +94,23 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         .await?
     };
 
+    table.checkout_latest().await?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    let schema = arrow_schema::Schema::from(dataset.schema());
+    if !crate::table::computed_columns::computed_columns(&schema).is_empty() {
+        return Err(Error::NotSupported {
+            message: "an LSM write spec cannot be installed on a table with computed \
+                      columns: rows in un-compacted tiers are invisible to refresh"
+                .into(),
+        });
+    }
+    if crate::materialized_view::materialized_view_kind(&dataset.schema().metadata)?.is_some() {
+        return Err(Error::NotSupported {
+            message: "an LSM write spec cannot be installed on a materialized view: \
+                      rows in un-compacted tiers are invisible to refresh"
+                .into(),
+        });
+    }
     let mut builder = dataset.initialize_mem_wal();
     let writer_config_defaults = match spec {
         LsmWriteSpec::Bucket {
