@@ -35,6 +35,12 @@ class FakeRemoteConnection:
         self.closed = True
 
 
+class RecordingFlightCallOptions:
+    def __init__(self, *, timeout=None, headers=None):
+        self.timeout_argument = timeout
+        self.headers = headers
+
+
 def test_sql_resolves_database_with_connect(monkeypatch):
     connection = FakeRemoteConnection()
     connect_args = {}
@@ -201,23 +207,19 @@ def test_rejects_unsupported_hostname_verification_setting():
         sql_module._flight_client_kwargs(connection, "grpc+tls://localhost:10026")
 
 
-def test_tls_custom_ca_is_added_to_platform_roots(monkeypatch, tmp_path):
+def test_tls_custom_ca_is_added_to_public_roots(monkeypatch, tmp_path):
+    public_ca_file = tmp_path / "public-ca.pem"
+    public_ca_file.write_bytes(b"PUBLIC-CA\n")
     ca_file = tmp_path / "ca.pem"
     ca_file.write_bytes(b"CUSTOM-CA")
-    context = SimpleNamespace(get_ca_certs=lambda binary_form: [b"platform-der"])
-    monkeypatch.setattr(sql_module.ssl, "create_default_context", lambda: context)
-    monkeypatch.setattr(
-        sql_module.ssl,
-        "DER_cert_to_PEM_cert",
-        lambda cert: "PLATFORM-CA\n",
-    )
+    monkeypatch.setattr(sql_module.certifi, "where", lambda: str(public_ca_file))
     connection = FakeRemoteConnection(
         client_config=ClientConfig(tls_config=TlsConfig(ssl_ca_cert=str(ca_file)))
     )
 
     kwargs = sql_module._flight_client_kwargs(connection, "grpc+tls://localhost:10026")
 
-    assert kwargs["tls_root_certs"] == b"PLATFORM-CA\nCUSTOM-CA"
+    assert kwargs["tls_root_certs"] == b"PUBLIC-CA\nCUSTOM-CA"
 
 
 def test_mtls_requires_certificate_and_key():
@@ -269,7 +271,7 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
 
     real_flight = sql_module._flight_module()
     fake_flight = SimpleNamespace(
-        FlightCallOptions=real_flight.FlightCallOptions,
+        FlightCallOptions=RecordingFlightCallOptions,
         FlightClient=FakeFlightClient,
         FlightDescriptor=real_flight.FlightDescriptor,
     )
@@ -311,8 +313,10 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
         assert headers[b"x-extra"] == b"value"
         request_ids.add(headers[b"x-request-id"])
         assert uuid.UUID(headers[b"x-request-id"].decode()).version == 4
-    assert observed["get_options"].timeout == 7
-    assert all(options.timeout == -1 for _, _, options in observed["get_calls"])
+    assert observed["get_options"].timeout_argument == 7
+    assert all(
+        options.timeout_argument is None for _, _, options in observed["get_calls"]
+    )
     assert len(request_ids) == 1
 
 
@@ -347,32 +351,34 @@ def test_flight_error_preserves_type_and_includes_statement_request_id(monkeypat
 
 
 def test_flight_options_use_default_timeout():
+    flight = SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions)
     planning_options = sql_module._flight_call_options(
-        FakeRemoteConnection(), sql_module._flight_module(), "request-id"
+        FakeRemoteConnection(), flight, "request-id"
     )
     streaming_options = sql_module._flight_call_options(
         FakeRemoteConnection(),
-        sql_module._flight_module(),
+        flight,
         "request-id",
         streaming=True,
     )
 
-    assert planning_options.timeout == 300
-    assert streaming_options.timeout == -1
+    assert planning_options.timeout_argument == 300
+    assert streaming_options.timeout_argument is None
 
 
 def test_flight_options_use_remaining_overall_deadline(monkeypatch):
     monkeypatch.setattr(sql_module.time, "monotonic", lambda: 100.0)
+    flight = SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions)
 
     options = sql_module._flight_call_options(
         FakeRemoteConnection(),
-        sql_module._flight_module(),
+        flight,
         "request-id",
         streaming=True,
         deadline=112.5,
     )
 
-    assert options.timeout == 12.5
+    assert options.timeout_argument == 12.5
 
 
 def test_explicit_api_key_header_suppresses_derived_bearer():

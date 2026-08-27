@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from pathlib import Path
-import ssl
 import time
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlparse
 import uuid
 
+import certifi
 import pyarrow as pa
 
 from .background_loop import LOOP
@@ -143,13 +143,9 @@ def _flight_client_kwargs(
 
     kwargs: Dict[str, Any] = {}
     if tls_config.ssl_ca_cert is not None:
-        context = ssl.create_default_context()
-        platform_roots = b"".join(
-            ssl.DER_cert_to_PEM_cert(cert).encode("ascii")
-            for cert in context.get_ca_certs(binary_form=True)
-        )
+        public_roots = Path(certifi.where()).read_bytes()
         configured_roots = Path(tls_config.ssl_ca_cert).read_bytes()
-        kwargs["tls_root_certs"] = platform_roots + configured_roots
+        kwargs["tls_root_certs"] = public_roots + configured_roots
     if (tls_config.cert_file is None) != (tls_config.key_file is None):
         raise ValueError("Flight SQL mTLS requires both cert_file and key_file")
     if tls_config.cert_file is not None and tls_config.key_file is not None:
