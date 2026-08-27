@@ -381,6 +381,33 @@ def test_flight_options_use_remaining_overall_deadline(monkeypatch):
     assert options.timeout_argument == 12.5
 
 
+def test_flight_options_use_read_timeout_environment(monkeypatch):
+    monkeypatch.setenv("LANCE_CLIENT_READ_TIMEOUT", "17")
+    flight = SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions)
+
+    options = sql_module._flight_call_options(
+        FakeRemoteConnection(), flight, "request-id"
+    )
+
+    assert options.timeout_argument == 17
+
+
+def test_timeout_environment_fallback_and_precedence(monkeypatch):
+    monkeypatch.setenv("LANCE_CLIENT_TIMEOUT", "29")
+
+    assert sql_module._timeout_seconds(None, "LANCE_CLIENT_TIMEOUT") == 29
+    assert (
+        sql_module._timeout_seconds(timedelta(seconds=7), "LANCE_CLIENT_TIMEOUT") == 7
+    )
+
+
+def test_timeout_environment_rejects_invalid_values(monkeypatch):
+    monkeypatch.setenv("LANCE_CLIENT_TIMEOUT", "-1")
+
+    with pytest.raises(ValueError, match="LANCE_CLIENT_TIMEOUT"):
+        sql_module._timeout_seconds(None, "LANCE_CLIENT_TIMEOUT")
+
+
 def test_explicit_api_key_header_suppresses_derived_bearer():
     connection = FakeRemoteConnection(
         client_config=ClientConfig(extra_headers={"X-Api-Key": "other-key"})

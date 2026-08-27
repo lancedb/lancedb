@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import os
 from pathlib import Path
 import time
 from typing import Any, Dict, Optional, Union
@@ -21,6 +22,26 @@ _COMMAND_STATEMENT_QUERY_TYPE_URL = (
 _DEFAULT_FLIGHT_SQL_PORT = 10025
 _DEFAULT_FLIGHT_SQL_TLS_PORT = 10026
 _DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS = 300.0
+
+
+def _timeout_seconds(value: Any, env_var: str) -> Optional[float]:
+    if value is not None:
+        return value.total_seconds()
+
+    env_value = os.environ.get(env_var)
+    if env_value is None:
+        return None
+    try:
+        seconds = int(env_value)
+    except ValueError as err:
+        raise ValueError(
+            f"Invalid value for {env_var} environment variable: {env_value!r}"
+        ) from err
+    if seconds < 0:
+        raise ValueError(
+            f"Invalid value for {env_var} environment variable: {env_value!r}"
+        )
+    return float(seconds)
 
 
 def _encode_varint(value: int) -> bytes:
@@ -211,8 +232,10 @@ def _flight_call_options(
         timeout = max(0.0, deadline - time.monotonic())
     elif not streaming:
         timeout_config = connection.client_config.timeout_config
-        if timeout_config is not None and timeout_config.read_timeout is not None:
-            timeout = timeout_config.read_timeout.total_seconds()
+        configured_timeout = (
+            timeout_config.read_timeout if timeout_config is not None else None
+        )
+        timeout = _timeout_seconds(configured_timeout, "LANCE_CLIENT_READ_TIMEOUT")
     if timeout is None and not streaming:
         timeout = _DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS
 
@@ -279,11 +302,10 @@ def _execute_flight_sql(
     flight = _flight_module()
     request_id = str(uuid.uuid4())
     timeout_config = connection.client_config.timeout_config
-    overall_timeout = timeout_config.timeout if timeout_config is not None else None
+    configured_timeout = timeout_config.timeout if timeout_config is not None else None
+    overall_timeout = _timeout_seconds(configured_timeout, "LANCE_CLIENT_TIMEOUT")
     deadline = (
-        time.monotonic() + overall_timeout.total_seconds()
-        if overall_timeout is not None
-        else None
+        time.monotonic() + overall_timeout if overall_timeout is not None else None
     )
     resolved_uri = _resolve_flight_sql_uri(connection, flight_sql_uri)
     client = flight.FlightClient(
@@ -421,7 +443,9 @@ def sql(
         Remote client configuration. Static and dynamic headers, timeouts, and
         TLS files are also applied to Flight SQL where supported. Flight SQL
         uses a 300-second planning timeout when neither an overall nor read
-        timeout is set. Only an overall timeout caps result streaming.
+        timeout is set. ``LANCE_CLIENT_TIMEOUT`` and
+        ``LANCE_CLIENT_READ_TIMEOUT`` provide the same environment fallbacks as
+        the REST client. Only an overall timeout caps result streaming.
     storage_options: dict, optional
         Storage options forwarded to :func:`lancedb.connect`.
 
