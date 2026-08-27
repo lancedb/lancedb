@@ -106,6 +106,14 @@ jobs:
             # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
             features: "fp16kernels"
+            # See the ThinLTO note on aarch64-apple-darwin above. Needed here
+            # for headroom rather than speed: with lld in place and fat LTO,
+            # this leg still peaked at 31391 MiB against the runner's 32 GiB
+            # and was OOM-killed 27 minutes into the cdylib. The dependency
+            # build alone peaks at ~18 GiB, so the fat-LTO codegen accounts for
+            # roughly 13 GiB on top of it.
+            lto: thin
+            codegen_units: 16
             # This leg OOM-killed rustc during the fat-LTO codegen of the
             # cdylib (`signal: 9` with no diagnostic, ~27 minutes in) on every
             # nightly. On arm64 Linux rustc links through GNU `ld`, which is
@@ -113,6 +121,8 @@ jobs:
             # which is why only the arm64 legs hit this. Measured in-house on a
             # comparable arm64 build (lancedb/sophon#7313): the largest single
             # linker process dropped 7.0 -> 4.0 GiB, and wall time fell 35%.
+            # That was not enough on its own here, but it is a real saving and
+            # lld is the better linker to be on regardless.
             #
             # `clang` is named as the driver because rustc links through `cc`,
             # and GCC honours `-fuse-ld=lld` only if it was built with lld
@@ -175,6 +185,14 @@ jobs:
           - target: aarch64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             features: ","
+            # See the ThinLTO note on aarch64-apple-darwin above. As on
+            # aarch64-gnu, this is for headroom: the runner was killed after
+            # 28.5 minutes of silence on the fat-LTO codegen of the cdylib.
+            # lld cannot help this leg -- the job dies inside rustc's LLVM,
+            # before any linker process is spawned -- so ThinLTO is the whole
+            # fix here rather than half of it.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
               set -e &&
               sudo apt-get update &&
