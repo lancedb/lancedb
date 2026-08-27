@@ -40,40 +40,43 @@ jobs:
           - target: aarch64-apple-darwin
             host: macos-latest
             features: fp16kernels
+            # Fat LTO (the workspace default in .cargo/config.toml) is
+            # single-threaded and is the peak-memory step of the build. On
+            # this runner it accounted for ~111 of the job's ~113 minutes,
+            # making it the critical path of the entire publish pipeline.
+            # ThinLTO parallelizes it across the runner's cores, for a few
+            # percent of runtime performance.
+            #
+            # This has to be a matrix field rather than a `pre_build` export:
+            # see the note on the job's `env:` block.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
               brew install protobuf
-              # Fat LTO (the workspace default in .cargo/config.toml) is
-              # single-threaded and is the peak-memory step of the build. On
-              # this runner it accounted for ~111 of the job's ~113 minutes,
-              # making it the critical path of the entire publish pipeline.
-              # ThinLTO parallelizes it across the runner's cores, for a few
-              # percent of runtime performance.
-              export CARGO_PROFILE_RELEASE_LTO=thin
-              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: x86_64-pc-windows-msvc
             host: windows-2025
             features: ","
+            # See the ThinLTO note on aarch64-apple-darwin above. Keeping
+            # peak memory down is also what lets this run on the standard
+            # 4-core runner: the 8-core larger runner was only needed to
+            # stop fat LTO from OOMing rustc-LLVM.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
               choco install --no-progress protoc ninja nasm
               tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
               # There is an issue where choco doesn't add nasm to the path
               export PATH="$PATH:/c/Program Files/NASM"
               nasm -v
-              # See the ThinLTO note on aarch64-apple-darwin above. Keeping
-              # peak memory down is also what lets this run on the standard
-              # 4-core runner: the 8-core larger runner was only needed to
-              # stop fat LTO from OOMing rustc-LLVM.
-              export CARGO_PROFILE_RELEASE_LTO=thin
-              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: aarch64-pc-windows-msvc
             host: windows-2025
             features: ","
+            # See the ThinLTO note on aarch64-apple-darwin above.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
                 choco install --no-progress protoc
                 rustup target add aarch64-pc-windows-msvc
-                # See the ThinLTO note on aarch64-apple-darwin above.
-                export CARGO_PROFILE_RELEASE_LTO=thin
-                export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
             features: fp16kernels
@@ -103,6 +106,20 @@ jobs:
             # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
             features: "fp16kernels"
+            # This leg OOM-killed rustc during the fat-LTO codegen of the
+            # cdylib (`signal: 9` with no diagnostic, ~27 minutes in) on every
+            # nightly. On arm64 Linux rustc links through GNU `ld`, which is
+            # the memory-hungry default; x86_64 already defaults to `rust-lld`,
+            # which is why only the arm64 legs hit this. Measured in-house on a
+            # comparable arm64 build (lancedb/sophon#7313): the largest single
+            # linker process dropped 7.0 -> 4.0 GiB, and wall time fell 35%.
+            #
+            # `clang` is named as the driver because rustc links through `cc`,
+            # and GCC honours `-fuse-ld=lld` only if it was built with lld
+            # support, silently ignoring it otherwise. The napi-rs image ships
+            # clang-18, which has it.
+            linker: clang
+            linker_flags: -C link-arg=-fuse-ld=lld
             pre_build: |-
               set -e &&
               apt-get update &&
@@ -123,6 +140,32 @@ jobs:
               export EXTRA_ARGS="-x"
     name: build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
+    # These have to be set on the job, not exported from `pre_build`.
+    # `Swatinem/rust-cache` hashes `RUSTFLAGS` and `CARGO_*` into its cache key,
+    # but it computes that key when the action runs, which is before any step.
+    # Values exported inside the build step are invisible to it, which means:
+    # key unchanged -> restore is an exact hit -> an exact hit makes the
+    # post-run save a no-op -> cargo still invalidates the restored artifacts
+    # because the flags differ -> the job rebuilds cold and never seeds a cache
+    # built with these flags, repeating that on every run. The ThinLTO legs
+    # below had been exporting these from `pre_build`, so they were paying a
+    # cold build every night.
+    #
+    # Deliberately NOT `RUSTFLAGS`: cargo's `RUSTFLAGS` environment variable
+    # silently discards *every* config-file rustflag -- `target.<triple>`,
+    # `target.<cfg>` and `build` alike -- which would drop the `target-cpu` and
+    # `target-feature` settings in .cargo/config.toml from the published
+    # binaries, with no warning. The per-target variable does not do that: on
+    # cargo 1.86 it is additive with `target.'cfg(all())'`. If a later cargo
+    # made it replace that tier instead, the only loss here is clippy lint
+    # flags, which do nothing in a release build.
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ matrix.settings.lto || 'fat' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ matrix.settings.codegen_units || '1' }}
+      # Empty on every other leg, which is harmless: a per-target variable is
+      # only consulted when that triple is the one being built.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.settings.linker }}
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.settings.linker_flags }}
     defaults:
       run:
         working-directory: nodejs
@@ -210,9 +253,17 @@ jobs:
           # cache step above saves. Previously the registry mounts pointed at
           # `.cargo/...`, a path nothing cached, so the container re-downloaded
           # the whole crate registry on every run.
+          #
+          # The bare `-e NAME` forms forward the job-level `env:` values into
+          # the container; without them the container would fall back to the
+          # workspace defaults, since `docker run` inherits nothing.
           options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
                     -v ${{ github.workspace }}/.cargo-cache/registry/cache:/usr/local/cargo/registry/cache \
                     -v ${{ github.workspace }}/.cargo-cache/registry/index:/usr/local/cargo/registry/index \
+                    -e CARGO_PROFILE_RELEASE_LTO \
+                    -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS \
+                    -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER \
+                    -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS \
                     -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
@@ -256,6 +307,23 @@ jobs:
         if: always()
         run: df -h
         shell: bash
+      # Peak memory is the thing that actually decides whether these legs pass,
+      # so record it rather than inferring it from whether the runner survived.
+      # `memory.peak` is a high-water mark, so reading it after the build is
+      # enough; taking the max over all cgroups covers the docker legs, whose
+      # build runs in a child cgroup rather than the runner's own.
+      - name: Report peak memory
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          peak=$(find /sys/fs/cgroup -name memory.peak -readable \
+                 -exec cat {} + 2>/dev/null | sort -n | tail -1)
+          if [ -n "$peak" ]; then
+            echo "peak memory: $((peak / 1024 / 1024)) MiB"
+          else
+            echo "peak memory: unavailable (no readable cgroup v2 memory.peak)"
+          fi
+          free -g || true
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
