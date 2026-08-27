@@ -399,6 +399,9 @@ pub trait QueryBase {
     /// x > 5 OR y = 'test'
     /// ```
     ///
+    /// Identifiers may be delimited with SQL-standard double quotes or
+    /// backticks. String literals must use single quotes.
+    ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).
     ///
@@ -913,6 +916,17 @@ impl QueryRequest {
     /// use different representations) the error is recorded and surfaced later
     /// by [`Self::check_filter`].
     pub(crate) fn add_filter(&mut self, new: QueryFilter) {
+        let new = match new {
+            QueryFilter::Sql(filter) => match crate::expr::canonicalize_sql_predicate(&filter) {
+                Ok(filter) => QueryFilter::Sql(filter),
+                Err(err) => {
+                    self.filter_error = Some(err.to_string());
+                    return;
+                }
+            },
+            other => other,
+        };
+
         self.filter = Some(match self.filter.take() {
             None => new,
             Some(existing) => match and_filters(existing, new) {
@@ -1174,12 +1188,12 @@ impl VectorQuery {
 
     /// Add another query vector to the search.
     ///
-    /// Multiple searches will be dispatched as part of the query.
-    /// This is a convenience method for adding multiple query vectors
-    /// to the search. It is not expected to be faster than issuing
-    /// multiple queries concurrently.
+    /// Multiple searches will be dispatched as a batch. Flat searches share
+    /// one table scan across the query vectors, avoiding the scan and memory
+    /// amplification of issuing the searches concurrently. Indexed searches
+    /// may still perform per-vector index work.
     ///
-    /// The output data will contain an additional columns `query_index` which
+    /// The output data will contain an additional column `query_index` which
     /// will contain the index of the query vector that was used to generate the
     /// result.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
@@ -1646,10 +1660,14 @@ mod tests {
     use std::{collections::HashSet, sync::Arc};
 
     use super::*;
-    use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
+    use arrow::{
+        array::downcast_array,
+        compute::concat_batches,
+        datatypes::{Int32Type, UInt8Type},
+    };
     use arrow_array::{
-        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
-        types::Float32Type,
+        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
+        StringArray, cast::AsArray, types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -1774,11 +1792,14 @@ mod tests {
             .postfilter();
         let result = query.execute().await;
         let mut stream = result.expect("should have result");
-        // should only have one batch
+        let mut num_rows = 0;
         while let Some(batch) = stream.next().await {
-            // post filter should have removed some rows
-            assert!(batch.expect("should be Ok").num_rows() < 10);
+            let batch = batch.expect("should be Ok");
+            let ids: &Int32Array = batch["id"].as_primitive();
+            assert!(ids.iter().all(|id| id.unwrap() % 2 == 0));
+            num_rows += batch.num_rows();
         }
+        assert!(num_rows <= 10);
 
         let query = table
             .query()
@@ -1873,6 +1894,157 @@ mod tests {
         assert!(query.request.check_filter().is_ok());
         // The combined filter executes without error.
         query.execute().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_double_quoted_predicates_across_table_operations() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("PartyAbbrev", DataType::Utf8, false),
+            ArrowField::new("path", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+                Arc::new(StringArray::from(vec!["D", "R", "R", "D"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x", "x"])),
+            ],
+        )
+        .unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn.create_table("parties", batch).execute().await.unwrap();
+        let batches = table
+            .query()
+            .only_if(r#""PartyAbbrev" = 'D'"#)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'D'"#.to_string()))
+                .await
+                .unwrap(),
+            2
+        );
+
+        // Public BaseTable dispatch cannot bypass canonicalization.
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql(r#""PartyAbbrev" = 'D'"#.to_string())),
+            ..Default::default()
+        });
+        let batches = table
+            .base_table()
+            .query(&query, Default::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(
+            table
+                .base_table()
+                .count_rows(Some(crate::table::Filter::Sql(
+                    r#""PartyAbbrev" = 'D'"#.to_string(),
+                )))
+                .await
+                .unwrap(),
+            2
+        );
+
+        for predicate in [
+            r#"id = 1 -- unmatched " in a valid SQL comment"#,
+            r#"id = 1 /* unmatched " in a valid SQL comment */"#,
+            r#"id = 1 /*! OR "PartyAbbrev" = 'D' */"#,
+            r#"path = '\' AND "PartyAbbrev" = 'D'"#,
+        ] {
+            let batches = table
+                .query()
+                .only_if(predicate)
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+        }
+
+        // The same canonical predicate contract applies to both merge filters.
+        let source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["D", "R", "R"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x"])),
+            ],
+        )
+        .unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_not_matched_by_source_delete(Some(r#""PartyAbbrev" = 'D'"#.to_string()));
+        let result = table
+            .base_table()
+            .merge_insert(
+                merge,
+                Box::new(RecordBatchIterator::new(vec![Ok(source)], schema.clone())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.num_deleted_rows, 1);
+
+        let source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["U", "U", "U"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x"])),
+            ],
+        )
+        .unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_matched_update_all(Some(r#"target."PartyAbbrev" = 'D'"#.to_string()));
+        merge
+            .execute(Box::new(RecordBatchIterator::new(vec![Ok(source)], schema)))
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'U'"#.to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        let update = table
+            .update()
+            .only_if(r#""PartyAbbrev" = 'R'"#)
+            .column("PartyAbbrev", "'X'");
+        table.base_table().update(update).await.unwrap();
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'X'"#.to_string()))
+                .await
+                .unwrap(),
+            2
+        );
+
+        let result = table
+            .base_table()
+            .delete(crate::table::Predicate::String(r#""PartyAbbrev" = 'X'"#))
+            .await
+            .unwrap();
+        assert_eq!(result.num_deleted_rows, 2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -2331,7 +2503,8 @@ mod tests {
             .limit(1);
 
         let plan = query.explain_plan(true).await.unwrap();
-        assert!(plan.contains("UnionExec"));
+        assert!(plan.contains("KNNVectorDistance: queries=2"));
+        assert!(!plan.contains("UnionExec"));
 
         let results = query
             .execute()
@@ -2344,6 +2517,100 @@ mod tests {
         assert_eq!(results.num_rows(), 2); // One result for each query vector.
         let query_index = results["query_index"].as_primitive::<Int32Type>();
         // We don't guarantee order.
+        assert!(query_index.values().contains(&0));
+        assert!(query_index.values().contains(&1));
+
+        // Batch KNN does not support a per-query offset, so offset queries keep
+        // the legacy per-vector plan to preserve their result semantics.
+        let offset_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .add_query_vector(&[0.5, 0.6, 0.7, 0.8])
+            .unwrap()
+            .limit(1)
+            .offset(1);
+        assert!(
+            offset_query
+                .explain_plan(true)
+                .await
+                .unwrap()
+                .contains("UnionExec")
+        );
+        let offset_results = offset_query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            offset_results
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multiple_binary_query_vectors() {
+        let vectors = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            vec![
+                Some(vec![Some(0), Some(0)]),
+                Some(vec![Some(255), Some(255)]),
+            ],
+            2,
+        );
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![0, 1])), Arc::new(vectors)],
+        )
+        .unwrap();
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("binary_batch", batch)
+            .execute()
+            .await
+            .unwrap();
+        let query = table
+            .query()
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+            .add_query_vector(&[255.0, 255.0])
+            .unwrap()
+            .distance_type(DistanceType::Hamming)
+            .limit(1);
+
+        // Binary queries retain the per-vector plan because Lance's binary
+        // nearest path requires primitive UInt8 query arrays.
+        assert!(
+            query
+                .explain_plan(true)
+                .await
+                .unwrap()
+                .contains("UnionExec")
+        );
+
+        let results = query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(results.num_rows(), 2);
+
+        let ids = results["id"].as_primitive::<Int32Type>();
+        assert!(ids.values().contains(&0));
+        assert!(ids.values().contains(&1));
+        let query_index = results["query_index"].as_primitive::<Int32Type>();
         assert!(query_index.values().contains(&0));
         assert!(query_index.values().contains(&1));
     }

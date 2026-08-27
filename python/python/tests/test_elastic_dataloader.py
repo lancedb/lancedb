@@ -32,15 +32,22 @@ Parameters used throughout:
 
 import dataclasses
 import logging
+import threading
 from unittest.mock import patch
 
 import lancedb
 import pyarrow as pa
 import pytest
+from utils import (
+    MockPermutationServer,
+    assert_server_safe_row_id_requests,
+    mock_remote_table,
+)
 
 torch = pytest.importorskip("torch")
 streaming = pytest.importorskip("lancedb.streaming")
 StreamingDataset = streaming.StreamingDataset
+StreamingDataLoader = streaming.StreamingDataLoader
 
 # ---------------------------------------------------------------------------
 # Dataset parameters
@@ -85,6 +92,27 @@ class FakeWorkerInfo:
 
     id: int
     num_workers: int
+
+
+def _collate_with_first_batch_error(samples):
+    ids = [sample["id"] for sample in samples]
+    if ids == [0, 1]:
+        raise ValueError("first batch fails")
+    return ids
+
+
+def _collate_with_first_batch_stop(samples):
+    ids = [sample["id"] for sample in samples]
+    if ids == [0, 1]:
+        raise StopIteration("first batch stopped")
+    return ids
+
+
+def _collate_with_first_batch_interrupt(samples):
+    ids = [sample["id"] for sample in samples]
+    if ids == [0, 1]:
+        raise KeyboardInterrupt("first batch interrupted")
+    return ids
 
 
 # ---------------------------------------------------------------------------
@@ -1003,6 +1031,565 @@ def test_multi_worker_elastic_det_across_worker_counts(lance_table):
 # ── Resumability with num_workers ─────────────────────────────────────────────
 
 
+def test_streaming_dataloader_commits_only_consumed_worker_batches(tmp_path):
+    """Prefetched worker state is committed only as the trainer receives it."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "worker_commit", pa.table({"id": [1, 2, 3, 4, 10, 20, 30, 40]})
+    )
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=4,
+    )
+    iterator = iter(loader)
+    try:
+        first = next(iterator)["id"].tolist()
+
+        assert first == [1, 2]
+        assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2, 0]
+        with pytest.raises(RuntimeError, match="complete logical step boundary"):
+            dataset.state_dict()
+
+        second = next(iterator)["id"].tolist()
+        assert second == [10, 20]
+        checkpoint = dataset.state_dict()
+        assert checkpoint["samples_consumed_per_split"] == [2, 2]
+        uninterrupted = [batch["id"].tolist() for batch in iterator]
+    finally:
+        iterator._shutdown_workers()
+
+    resumed = StreamingDataset(table, num_splits=2, shuffle=False)
+    resumed.load_state_dict(checkpoint)
+    resumed_loader = StreamingDataLoader(
+        resumed,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=4,
+    )
+    resumed_iterator = iter(resumed_loader)
+    try:
+        remaining = [batch["id"].tolist() for batch in resumed_iterator]
+    finally:
+        resumed_iterator._shutdown_workers()
+    assert remaining == uninterrupted == [[3, 4], [30, 40]]
+
+
+def test_distributed_checkpoint_uses_rank_local_worker_boundary(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("rank_boundary", pa.table({"id": list(range(8))}))
+    dataset = StreamingDataset(
+        table,
+        num_splits=4,
+        shuffle=False,
+        rank=0,
+        world_size=2,
+    )
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        assert next(iterator)["id"].tolist() == [0]
+        assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [
+            1,
+            0,
+            0,
+            0,
+        ]
+        with pytest.raises(RuntimeError, match="complete logical step boundary"):
+            dataset.state_dict()
+
+        assert next(iterator)["id"].tolist() == [2]
+        checkpoint = dataset.state_dict()
+        remaining = [batch["id"].tolist() for batch in iterator]
+    finally:
+        iterator._shutdown_workers()
+
+    assert checkpoint["samples_consumed_per_split"] == [1, 1, 0, 0]
+    assert remaining == [[1], [3]]
+
+
+def test_standard_dataloader_rejects_stale_parent_checkpoint(tmp_path):
+    """A standard DataLoader must not expose prefetched producer progress."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("untracked_workers", pa.table({"id": [1, 2, 10, 20]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    # Merely constructing the checkpoint-aware loader must not authorize a
+    # later plain DataLoader's worker progress.
+    StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        assert next(iterator)["id"].tolist() == [1, 2]
+        with pytest.raises(RuntimeError, match="Use StreamingDataLoader"):
+            dataset.state_dict()
+        list(iterator)
+    finally:
+        iterator._shutdown_workers()
+
+
+def test_streaming_dataloader_rejects_persistent_workers(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("persistent_workers", pa.table({"id": [1, 2]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+
+    with pytest.raises(ValueError, match="persistent_workers=True"):
+        StreamingDataLoader(
+            dataset,
+            batch_size=1,
+            num_workers=2,
+            persistent_workers=True,
+        )
+
+
+def test_collate_failure_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "collate_failure", pa.table({"id": [0, 1, 2, 3, 100, 101, 102, 103]})
+    )
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        collate_fn=_collate_with_first_batch_error,
+        prefetch_factor=2,
+    )
+    iterator = iter(loader)
+    try:
+        with pytest.raises(ValueError, match="first batch fails"):
+            next(iterator)
+        assert next(iterator) == [100, 101]
+        assert next(iterator) == [2, 3]
+        with pytest.raises(RuntimeError, match="failed before it was returned"):
+            dataset.state_dict()
+        list(iterator)
+    finally:
+        iterator._shutdown_workers()
+
+
+def test_collate_stop_iteration_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("collate_stop", pa.table({"id": list(range(6))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=0,
+        collate_fn=_collate_with_first_batch_stop,
+    )
+    iterator = iter(loader)
+
+    with pytest.raises(RuntimeError, match="collate_fn raised StopIteration"):
+        next(iterator)
+    assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
+    with pytest.raises(RuntimeError, match="failed before it was returned"):
+        dataset.state_dict()
+    assert list(iterator) == [[2, 3], [4, 5]]
+
+
+def test_batch_base_exception_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("collate_interrupt", pa.table({"id": list(range(6))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=0,
+        collate_fn=_collate_with_first_batch_interrupt,
+    )
+    iterator = iter(loader)
+
+    with pytest.raises(KeyboardInterrupt, match="first batch interrupted"):
+        next(iterator)
+    assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
+    with pytest.raises(RuntimeError, match="failed before it was returned"):
+        dataset.state_dict()
+    assert list(iterator) == [[2, 3], [4, 5]]
+
+
+def test_parent_commit_base_exception_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("commit_interrupt", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    iterator = iter(loader)
+    real_commit = dataset._commit_worker_state
+
+    def interrupt_after_commit(state, *, require_uniform):
+        real_commit(state, require_uniform=require_uniform)
+        raise KeyboardInterrupt("after parent commit")
+
+    with patch.object(
+        dataset, "_commit_worker_state", side_effect=interrupt_after_commit
+    ):
+        with pytest.raises(KeyboardInterrupt, match="after parent commit"):
+            next(iterator)
+
+    assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
+    with pytest.raises(RuntimeError, match="failed before it was returned"):
+        dataset.state_dict()
+
+
+def test_direct_iteration_surfaces_prefetch_failure_before_committing_row(
+    tmp_path, monkeypatch
+):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("prefetch_failure", pa.table({"id": list(range(4))}))
+    release = threading.Event()
+    failed = threading.Event()
+    real_getitems = streaming.Permutation.__getitems__
+
+    def controlled_getitems(permutation, indices):
+        if indices and indices[0] >= 2:
+            assert release.wait(timeout=5)
+            failed.set()
+            raise RuntimeError("later prefetched I/O failed")
+        return real_getitems(permutation, indices)
+
+    class SignalDict(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            release.set()
+            assert failed.wait(timeout=5)
+
+    monkeypatch.setattr(streaming.Permutation, "__getitems__", controlled_getitems)
+    dataset = StreamingDataset(
+        table,
+        num_splits=1,
+        shuffle=False,
+        read_batch_size=2,
+        io_queue_depth=2,
+    )
+    dataset._resume_positions = SignalDict()
+    iterator = iter(dataset)
+
+    assert next(iterator)["id"] == 0
+    with pytest.raises(RuntimeError, match="later prefetched I/O failed"):
+        next(iterator)
+
+    checkpoint = dataset.state_dict()
+    assert checkpoint["samples_consumed_per_split"] == [1]
+    assert checkpoint["positions_consumed_per_split"] == [1]
+
+
+@pytest.mark.parametrize("workers", [0, 1, 2])
+def test_streaming_dataloader_rejects_drop_last(tmp_path, workers):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("drop_last", pa.table({"id": [0, 1, 2]}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    worker_options = {"multiprocessing_context": "spawn"} if workers else {}
+
+    with pytest.raises(ValueError, match="drop_last=True"):
+        StreamingDataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=workers,
+            drop_last=True,
+            **worker_options,
+        )
+
+
+def test_streaming_dataloader_owns_one_iterator_until_teardown(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("iterator_owner", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context="spawn",
+    )
+
+    first = iter(loader)
+    try:
+        assert next(first)["id"].tolist() == [0, 1]
+        with pytest.raises(RuntimeError, match="concurrent iteration"):
+            iter(loader)
+    finally:
+        first._shutdown_workers()
+
+    second = iter(loader)
+    try:
+        assert [batch["id"].tolist() for batch in second] == [[2, 3]]
+    except BaseException:
+        second._shutdown_workers()
+        raise
+
+    # Natural exhaustion releases ownership too.
+    third = iter(loader)
+    try:
+        assert list(third) == []
+    finally:
+        third._shutdown_workers()
+
+
+def test_zero_worker_shutdown_closes_inner_iterator_before_release(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("zero_worker_shutdown", pa.table({"id": list(range(6))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+
+    first = iter(loader)
+    assert next(first)["id"].tolist() == [0, 1]
+    first._shutdown_workers()
+
+    assert dataset._consumer_iterator_active is False
+    assert dataset._raw_batches_ref is None
+    second = iter(loader)
+    try:
+        with pytest.raises(StopIteration):
+            next(first)
+        assert next(second)["id"].tolist() == [2, 3]
+    finally:
+        second._shutdown_workers()
+
+
+def test_direct_and_loader_admission_share_one_atomic_lease(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("direct_loader_lease", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    entered = threading.Event()
+    release = threading.Event()
+    direct_result = []
+    direct_error = []
+    contender = []
+    real_resolve = dataset._resolve_my_splits
+
+    def controlled_resolve():
+        if threading.current_thread().name == "direct-start":
+            entered.set()
+            assert release.wait(timeout=5)
+        return real_resolve()
+
+    def advance_direct(iterator):
+        try:
+            direct_result.append(next(iterator)["id"])
+        except BaseException as exc:
+            direct_error.append(exc)
+
+    monkeypatch.setattr(dataset, "_resolve_my_splits", controlled_resolve)
+    direct = iter(dataset)
+    thread = threading.Thread(
+        target=advance_direct, args=(direct,), name="direct-start"
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+    try:
+        with pytest.raises(RuntimeError, match="concurrent iteration"):
+            contender.append(iter(loader))
+    finally:
+        release.set()
+        thread.join(timeout=5)
+        if contender:
+            contender[0]._shutdown_workers()
+        direct.close()
+
+    assert not thread.is_alive()
+    assert direct_error == []
+    assert direct_result == [0]
+
+
+def test_loader_acquires_before_snapshot_and_cleans_interrupted_acquire(
+    tmp_path, monkeypatch
+):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("lease_snapshot", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    first = iter(loader)
+    assert next(first)["id"].tolist() == [0, 1]
+
+    entered = threading.Event()
+    release = threading.Event()
+    pending = []
+    pending_errors = []
+    observed_snapshots = []
+    real_acquire = dataset._acquire_consumer_iterator
+    real_snapshot = dataset._checkpoint_snapshot
+
+    def controlled_acquire():
+        if threading.current_thread().name == "stale-start":
+            entered.set()
+            assert release.wait(timeout=5)
+        return real_acquire()
+
+    def recording_snapshot():
+        state = real_snapshot()
+        if threading.current_thread().name == "stale-start":
+            observed_snapshots.append(state["samples_consumed_per_split"])
+        return state
+
+    def create_pending_iterator():
+        try:
+            pending.append(iter(loader))
+        except BaseException as exc:
+            pending_errors.append(exc)
+
+    monkeypatch.setattr(dataset, "_acquire_consumer_iterator", controlled_acquire)
+    monkeypatch.setattr(dataset, "_checkpoint_snapshot", recording_snapshot)
+    thread = threading.Thread(target=create_pending_iterator, name="stale-start")
+    thread.start()
+    assert entered.wait(timeout=5)
+    assert next(first)["id"].tolist() == [2, 3]
+    with pytest.raises(StopIteration):
+        next(first)
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert pending_errors == []
+    assert observed_snapshots == [[4]]
+    assert len(pending) == 1
+    assert list(pending[0]) == []
+    assert dataset.state_dict()["samples_consumed_per_split"] == [4]
+
+    def interrupted_acquire():
+        real_acquire()
+        raise KeyboardInterrupt("after acquire")
+
+    monkeypatch.setattr(dataset, "_acquire_consumer_iterator", interrupted_acquire)
+    with pytest.raises(KeyboardInterrupt, match="after acquire"):
+        iter(loader)
+    assert dataset._consumer_iterator_active is False
+
+
+def test_consumer_iterator_lease_publication_is_atomic(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("atomic_lease", pa.table({"id": [0, 1]}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=1, num_workers=0)
+    real_get_ident = streaming.threading.get_ident
+    calls = 0
+
+    def interrupt_during_publication():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyboardInterrupt("during lease mutation")
+        return real_get_ident()
+
+    monkeypatch.setattr(streaming.threading, "get_ident", interrupt_during_publication)
+    with pytest.raises(KeyboardInterrupt, match="during lease mutation"):
+        iter(loader)
+    monkeypatch.setattr(streaming.threading, "get_ident", real_get_ident)
+
+    assert dataset._consumer_iterator_active is False
+    iterator = iter(loader)
+    try:
+        assert next(iterator)["id"].tolist() == [0]
+    finally:
+        iterator._shutdown_workers()
+
+
+def test_streaming_dataloader_rejects_dataset_iter_override(tmp_path):
+    class CustomizedDataset(StreamingDataset):
+        def __iter__(self):
+            return iter([1000, 1001])
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("custom_iteration", pa.table({"id": [0, 1, 2]}))
+    dataset = CustomizedDataset(table, num_splits=1, shuffle=False)
+
+    assert list(dataset) == [1000, 1001]
+    with pytest.raises(TypeError, match="override __iter__"):
+        StreamingDataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=0,
+            collate_fn=list,
+        )
+
+
+def test_interleaved_adapters_do_not_authorize_plain_iteration(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table_a = db.create_table("adapter_a", pa.table({"id": [0, 1]}))
+    table_b = db.create_table("adapter_b", pa.table({"id": [10, 11]}))
+    dataset_a = StreamingDataset(table_a, num_splits=1, shuffle=False)
+    dataset_b = StreamingDataset(table_b, num_splits=1, shuffle=False)
+    initial_state = dataset_a.state_dict()
+
+    owner_a = dataset_a._acquire_consumer_iterator()
+    owner_b = dataset_b._acquire_consumer_iterator()
+    try:
+        iterator_a = iter(streaming._StreamingDatasetAdapter(dataset_a))
+        iterator_b = iter(streaming._StreamingDatasetAdapter(dataset_b))
+        assert next(iterator_a).data["id"] == 0
+        assert next(iterator_b).data["id"] == 10
+        assert [sample.data["id"] for sample in iterator_a] == [1]
+        assert [sample.data["id"] for sample in iterator_b] == [11]
+    finally:
+        dataset_a._release_consumer_iterator(owner_a)
+        dataset_b._release_consumer_iterator(owner_b)
+
+    dataset_a.load_state_dict(initial_state)
+    with patch(
+        "lancedb.streaming.get_worker_info",
+        return_value=FakeWorkerInfo(id=0, num_workers=1),
+    ):
+        plain_iterator = iter(dataset_a)
+        assert next(plain_iterator)["id"] == 0
+        plain_iterator.close()
+
+    assert dataset_a._untracked_worker_iteration[0] == 1
+    with pytest.raises(RuntimeError, match="Use StreamingDataLoader"):
+        dataset_a.state_dict()
+
+
+def test_resume_from_partial_split_cycle_preserves_remaining_order(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("partial_cycle", pa.table({"id": [1, 2, 10, 20]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    iterator = iter(dataset)
+
+    assert next(iterator)["id"] == 1
+    checkpoint = dataset.state_dict()
+    iterator.close()
+    assert checkpoint["samples_consumed_per_split"] == [1, 0]
+
+    resumed = StreamingDataset(table, num_splits=2, shuffle=False)
+    resumed.load_state_dict(checkpoint)
+    assert [row["id"] for row in resumed] == [10, 2, 20]
+
+
+def test_partial_cycle_resume_preserves_skip_truncation(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "partial_skip", pa.table({"id": [0, 1, 2, 3, 100, 101, 102, 103]})
+    )
+    kwargs = dict(
+        num_splits=2,
+        shuffle=False,
+        transform=_failing_transform({1, 2, 3}),
+        on_transform_error="skip",
+    )
+    dataset = StreamingDataset(table, **kwargs)
+    iterator = iter(dataset)
+
+    assert next(iterator)["id"] == 0
+    checkpoint = dataset.state_dict()
+    uninterrupted = [row["id"] for row in iterator]
+
+    resumed = StreamingDataset(table, **kwargs)
+    resumed.load_state_dict(checkpoint)
+    assert [row["id"] for row in resumed] == uninterrupted == [100]
+
+
 def test_multi_worker_resumability_same_topology(lance_table):
     """Checkpoint with num_workers=2, resume with num_workers=2: exact continuation."""
     world_size = 1
@@ -1367,6 +1954,188 @@ def test_transform_parallelism_must_be_positive(lance_table, transform_paralleli
             num_splits=NUM_SPLITS,
             transform_parallelism=transform_parallelism,
         )
+
+
+# ---------------------------------------------------------------------------
+# Backpressure / transform_queue_depth tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("transform_queue_depth", [0, -1])
+def test_transform_queue_depth_must_be_positive(lance_table, transform_queue_depth):
+    """transform_queue_depth=0 or negative must raise ValueError."""
+    with pytest.raises(
+        ValueError, match="transform_queue_depth must be greater than 0"
+    ):
+        StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            transform_queue_depth=transform_queue_depth,
+        )
+
+
+@pytest.mark.parametrize("transform_queue_depth", [1, 2, 4])
+def test_transform_queue_depth_correctness(lance_table, transform_queue_depth):
+    """With backpressure enabled, every row is still yielded exactly once."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=transform_queue_depth,
+        read_batch_size=8,
+    )
+    items = list(ds)
+    assert sorted(item["id"] for item in items) == list(range(NUM_ROWS))
+
+
+def test_transform_queue_depth_matches_no_backpressure(lance_table):
+    """With backpressure enabled the same samples are produced as without it."""
+    ds_unlimited = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_limited = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=1,
+    )
+    assert [item["id"] for item in ds_unlimited] == [
+        item["id"] for item in ds_limited
+    ], "transform_queue_depth must not affect the sample ordering or set"
+
+
+def test_transform_queue_depth_bounds_cooked_rows(lance_table):
+    """prefetch_queue_depth stays within transform_queue_depth * read_batch_size
+    per split when observed from the main thread during iteration."""
+    n_splits = 4
+    batch_size = 8
+    cooked_depth = 2
+    # max cooked rows across all 4 splits: 4 * 2 * 8 = 64
+    max_allowed = n_splits * cooked_depth * batch_size
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=n_splits,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=cooked_depth,
+        read_batch_size=batch_size,
+        transform_parallelism=1,
+        world_size=1,
+    )
+
+    peak = 0
+    for _ in ds:
+        depth = ds.prefetch_queue_depth
+        if depth > peak:
+            peak = depth
+
+    # The main thread observes depth *after* popping a row, so the peak is at
+    # most max_allowed (one row already popped from the split just served).
+    assert peak <= max_allowed, (
+        f"prefetch_queue_depth peaked at {peak}, expected <= {max_allowed}"
+    )
+
+
+def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
+    """Admission requires a full read_batch_size of free space, not just one slot.
+
+    The test intercepts ThreadPoolExecutor.submit to make I/O calls execute
+    synchronously on the main thread.  This ensures all raw batches land in
+    raw_batches (via _drain_io) before _try_submit_tx evaluates the admission
+    predicate for the first time.  Without this, the I/O future for batch N+1
+    might still be in io_pending at the capacity-minus-one transition, leaving
+    raw_batches empty and causing _try_submit_tx to skip the admission check
+    entirely — so both the correct and the broken predicate produce depth=0
+    observations and the test cannot distinguish them.
+
+    With all raw batches pre-loaded in raw_batches the 4→3 cooked transition
+    (consuming one row from a full cooked queue) always triggers _try_submit_tx
+    against a non-empty raw_batches.
+
+    With transform_queue_depth=1 and batch_size=4, max_cooked_rows=4.
+    A transform may only be submitted when in_pipeline + batch_size <= 4, i.e.
+    when in_pipeline == 0 (cooked is completely empty).  Under the old broken
+    predicate (in_pipeline >= max_cooked_rows) the second transform would be
+    admitted with cooked containing batch_size-1 rows still unconsumed.
+    """
+    import concurrent.futures as cf
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+
+    db = lancedb.connect(tmp_path)
+    batch_size = 4
+    # Four full batches → four transform submissions to observe.
+    table = db.create_table("t", pa.table({"id": list(range(batch_size * 4))}))
+
+    cooked_at_submit: list[int] = []
+
+    original_submit = ThreadPoolExecutor.submit
+
+    def tracking_submit(self, fn, *args, **kwargs):
+        name = getattr(fn, "__name__", "")
+        if name == "_io_call":
+            # Run I/O synchronously on the calling (main) thread and return an
+            # already-completed Future.  _drain_io checks fut.done(), so a
+            # completed Future is moved to raw_batches immediately on the next
+            # _advance call — making raw-batch readiness deterministic at the
+            # capacity-minus-one transition instead of depending on I/O thread
+            # scheduling.
+            fut = cf.Future()
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                fut.set_exception(exc)
+            return fut
+        if name == "_tx_call_guarded":
+            # Capture cooked depth synchronously on the main thread before the
+            # transform worker can drain the queue.
+            ref = ds._cooked_ref
+            cooked_at_submit.append(len(ref[0]) if ref is not None else -1)
+        return original_submit(self, fn, *args, **kwargs)
+
+    with patch.object(ThreadPoolExecutor, "submit", tracking_submit):
+        ds = StreamingDataset(
+            table,
+            num_splits=1,
+            shuffle_seed=42,
+            read_batch_size=batch_size,
+            transform_queue_depth=1,
+            transform_parallelism=1,
+        )
+        list(ds)
+
+    assert len(cooked_at_submit) == 4, (
+        f"Expected 4 transform submissions (one per batch), got {len(cooked_at_submit)}"
+    )
+    # With full-batch backpressure each transform is only admitted when the
+    # cooked queue is completely empty (depth == 0).  The old broken predicate
+    # would admit at depth == batch_size - 1 == 3.
+    assert all(depth == 0 for depth in cooked_at_submit), (
+        "Transform admitted with non-empty cooked queue; full-batch backpressure "
+        "requires in_pipeline + batch_size <= max_cooked_rows before admission. "
+        f"Cooked depths at each submission: {cooked_at_submit}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deprecated parameter name tests
+# ---------------------------------------------------------------------------
+
+
+def test_prefetch_batches_deprecated_warns(lance_table, caplog):
+    """prefetch_batches logs a deprecation warning and behaves like io_queue_depth."""
+    with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            prefetch_batches=2,
+        )
+    messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("deprecated" in m.lower() and "io_queue_depth" in m for m in messages), (
+        f"Expected deprecation warning mentioning io_queue_depth; got: {messages}"
+    )
+    assert sorted(item["id"] for item in ds) == list(range(NUM_ROWS))
 
 
 def test_filter_limits_rows(tmp_path):
@@ -1831,6 +2600,23 @@ def test_merge_state_dicts_validates_consistency(lance_table):
         StreamingDataset.merge_state_dicts([])
 
 
+def test_merge_state_dicts_combines_nonuniform_consumer_progress(lance_table):
+    dataset = StreamingDataset(
+        lance_table, num_splits=2, shuffle=False, shuffle_seed=SHUFFLE_SEED
+    )
+    rank0 = dataset.state_dict()
+    rank0["samples_consumed_per_split"] = [2, 0]
+    rank0["positions_consumed_per_split"] = [2, 0]
+    rank1 = dataset.state_dict()
+    rank1["samples_consumed_per_split"] = [0, 2]
+    rank1["positions_consumed_per_split"] = [0, 2]
+
+    merged = StreamingDataset.merge_state_dicts([rank0, rank1])
+
+    assert merged["samples_consumed_per_split"] == [2, 2]
+    assert merged["positions_consumed_per_split"] == [2, 2]
+
+
 def test_load_state_dict_without_positions_key(lance_table):
     """Checkpoints from before positions_consumed_per_split existed still
     resume exactly (positions equal sample counts when nothing is skipped)."""
@@ -1926,6 +2712,273 @@ def test_shuffle_seed_none_generates_stable_seed(lance_table):
     assert first == second, "Same resolved seed must produce the same ordering"
 
 
+# Sequence packing tests
+
+
+def _create_token_table(tmp_path, documents):
+    db = lancedb.connect(tmp_path)
+    tokens = pa.array(documents, type=pa.list_(pa.int64()))
+    return db.create_table("tokens", pa.table({"tokens": tokens}))
+
+
+def _packed_dataset(table, pack_sequences, *, blocks_per_epoch, pad_id=0, **kwargs):
+    return StreamingDataset(
+        table,
+        shuffle=False,
+        columns=["tokens"],
+        pack_sequences=pack_sequences,
+        eos_id=9,
+        pad_id=pad_id,
+        blocks_per_epoch=blocks_per_epoch,
+        **kwargs,
+    )
+
+
+def test_pack_sequences_emits_blocks_and_pads_final_tail(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2], [3, 4], [5]])
+    dataset = _packed_dataset(table, 6, blocks_per_epoch=2)
+
+    blocks = list(dataset)
+
+    assert len(blocks) == 2
+    assert blocks[0]["input_ids"].tolist() == [1, 2, 9, 3, 4, 9]
+    assert blocks[0]["doc_ids"].tolist() == [0, 0, 0, 1, 1, 1]
+    assert blocks[1]["input_ids"].tolist() == [5, 9, 0, 0, 0, 0]
+    assert blocks[1]["doc_ids"].tolist() == [0, 0, 0, 0, 0, 0]
+    assert blocks[0]["input_ids"].dtype == torch.int64
+    assert blocks[0]["doc_ids"].dtype == torch.int64
+
+
+def test_pack_sequences_pads_lagging_splits(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    dataset = _packed_dataset(table, 5, blocks_per_epoch=6, num_splits=2)
+    input_ids = [block["input_ids"].tolist() for block in dataset]
+    # Split 0 has four real tokens including EOS markers, while split 1 has
+    # eleven. Packing must emit three complete two-split cycles.
+    assert input_ids == [
+        [1, 9, 2, 9, 0],
+        [10, 11, 12, 13, 14],
+        [0, 0, 0, 0, 0],
+        [15, 16, 17, 9, 20],
+        [0, 0, 0, 0, 0],
+        [9, 0, 0, 0, 0],
+    ]
+
+    per_rank = []
+    for rank in range(2):
+        rank_dataset = _packed_dataset(
+            table,
+            5,
+            blocks_per_epoch=6,
+            num_splits=2,
+            world_size=2,
+            rank=rank,
+        )
+        per_rank.append([block["input_ids"].tolist() for block in rank_dataset])
+
+    assert [len(blocks) for blocks in per_rank] == [3, 3]
+    sharded = [block for cycle in zip(*per_rank) for block in cycle]
+    assert sharded == input_ids
+
+
+def test_pack_sequences_auto_estimates_filtered_token_column(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "tokens",
+        pa.table(
+            {
+                "tokens": pa.array([[1] * 4, [2] * 9], type=pa.list_(pa.int64())),
+                "keep": [True, False],
+            }
+        ),
+    )
+    table.add(
+        pa.table(
+            {
+                "tokens": pa.array([[3] * 4, [4] * 9], type=pa.list_(pa.int64())),
+                "keep": [True, False],
+            }
+        )
+    )
+
+    with pytest.warns(UserWarning, match="approximate token-count sample"):
+        dataset = _packed_dataset(
+            table,
+            5,
+            blocks_per_epoch="auto",
+            num_splits=2,
+            filter="keep",
+        )
+
+    # Two kept documents contain 8 tokens plus 2 EOS tokens: two blocks.
+    assert dataset.state_dict()["blocks_per_epoch"] == 2
+
+
+def test_pack_sequences_checkpoint_resumes_on_new_topology(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    kwargs = dict(pack_sequences=5, blocks_per_epoch=6, num_splits=2)
+    reference = list(_packed_dataset(table, **kwargs))
+
+    datasets = [
+        _packed_dataset(table, world_size=2, rank=rank, **kwargs) for rank in range(2)
+    ]
+    iterators = [iter(dataset) for dataset in datasets]
+    first_cycle = [next(iterator) for iterator in iterators]
+    checkpoint = StreamingDataset.merge_state_dicts(
+        [dataset.state_dict() for dataset in datasets]
+    )
+    for iterator in iterators:
+        iterator.close()
+
+    resumed = _packed_dataset(table, **kwargs)
+    resumed.load_state_dict(checkpoint)
+    actual_remaining = list(resumed)
+
+    assert [block["input_ids"].tolist() for block in first_cycle] == [
+        [1, 9, 2, 9, 0],
+        [10, 11, 12, 13, 14],
+    ]
+    assert checkpoint["blocks_emitted_per_split"] == [1, 1]
+    assert [block["input_ids"].tolist() for block in actual_remaining] == [
+        block["input_ids"].tolist() for block in reference[2:]
+    ]
+    assert [block["doc_ids"].tolist() for block in actual_remaining] == [
+        block["doc_ids"].tolist() for block in reference[2:]
+    ]
+
+
+def test_packed_checkpoint_requires_complete_split_cycle(tmp_path):
+    table = _create_token_table(tmp_path, [[1], [2], [10], [20]])
+    dataset = _packed_dataset(table, pack_sequences=3, blocks_per_epoch=4, num_splits=2)
+    iterator = iter(dataset)
+
+    next(iterator)
+    with pytest.raises(RuntimeError, match="complete logical step boundary"):
+        dataset.state_dict()
+
+    next(iterator)
+    assert dataset.state_dict()["blocks_emitted_per_split"] == [1, 1]
+    iterator.close()
+
+
+def test_streaming_dataloader_commits_consumed_packed_batches(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [3], [4], [10], [20], [30], [40]],
+    )
+    kwargs = dict(pack_sequences=4, blocks_per_epoch=4, num_splits=2)
+    dataset = _packed_dataset(table, **kwargs)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=2,
+    )
+    iterator = iter(loader)
+    try:
+        next(iterator)
+        with pytest.raises(RuntimeError, match="complete logical step boundary"):
+            dataset.state_dict()
+
+        next(iterator)
+        checkpoint = dataset.state_dict()
+        uninterrupted = [batch["input_ids"].tolist() for batch in iterator]
+    finally:
+        iterator._shutdown_workers()
+
+    resumed = _packed_dataset(table, **kwargs)
+    resumed.load_state_dict(checkpoint)
+    resumed_loader = StreamingDataLoader(
+        resumed,
+        batch_size=1,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=2,
+    )
+    resumed_iterator = iter(resumed_loader)
+    try:
+        remaining = [batch["input_ids"].tolist() for batch in resumed_iterator]
+    finally:
+        resumed_iterator._shutdown_workers()
+
+    assert checkpoint["blocks_emitted_per_split"] == [1, 1]
+    assert remaining == uninterrupted
+
+
+def test_pack_sequences_validates_configuration_and_tokens(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2]])
+
+    with pytest.raises(ValueError, match="pad_id is required"):
+        StreamingDataset(
+            table,
+            shuffle=False,
+            columns=["tokens"],
+            pack_sequences=4,
+            eos_id=9,
+        )
+
+    with pytest.raises(ValueError, match="blocks_per_epoch is required"):
+        StreamingDataset(
+            table,
+            shuffle=False,
+            columns=["tokens"],
+            pack_sequences=4,
+            eos_id=9,
+            pad_id=0,
+        )
+
+    with pytest.raises(ValueError, match="must be divisible"):
+        _packed_dataset(table, 4, blocks_per_epoch=3, num_splits=2)
+
+    with pytest.raises(ValueError, match="positive integer or 'auto'"):
+        _packed_dataset(table, 4, blocks_per_epoch="estimate")
+
+    checkpoint = _packed_dataset(table, 4, blocks_per_epoch=1).state_dict()
+    resumed = _packed_dataset(table, 4, blocks_per_epoch=1, pad_id=8)
+    with pytest.raises(ValueError, match="pad_id mismatch"):
+        resumed.load_state_dict(checkpoint)
+
+    float_db = lancedb.connect(tmp_path / "float")
+    float_table = float_db.create_table(
+        "tokens",
+        pa.table({"tokens": pa.array([[1.5, 2.5]], type=pa.list_(pa.float64()))}),
+    )
+    with pytest.raises(ValueError, match="token column with integer values"):
+        _packed_dataset(float_table, 4, blocks_per_epoch=1)
+
+    null_db = lancedb.connect(tmp_path / "null")
+    null_table = null_db.create_table(
+        "tokens",
+        pa.table({"tokens": pa.array([None], type=pa.list_(pa.int64()))}),
+    )
+    with pytest.raises(ValueError, match="does not support null token lists"):
+        list(_packed_dataset(null_table, 4, blocks_per_epoch=1))
+
+    null_value_db = lancedb.connect(tmp_path / "null_value")
+    null_value_table = null_value_db.create_table(
+        "tokens",
+        pa.table(
+            {"tokens": pa.array([[1], [2, None], [3]], type=pa.list_(pa.int64()))}
+        ),
+    )
+    blocks = list(
+        _packed_dataset(
+            null_value_table,
+            2,
+            blocks_per_epoch=2,
+            on_transform_error="skip",
+        )
+    )
+    assert [block["input_ids"].tolist() for block in blocks] == [[1, 9], [3, 9]]
+
+
 # ---------------------------------------------------------------------------
 # Doc examples — each test mirrors the code snippet in index.mdx so that
 # broken doc examples are caught before they ship.
@@ -1949,7 +3002,7 @@ def test_doc_example_basic(tmp_path):
 
 
 def test_doc_example_prefetch_params(tmp_path):
-    """doc: Prefetching — read_batch_size and prefetch_batches still cover all rows."""
+    """doc: Prefetching — read_batch_size and io_queue_depth still cover all rows."""
     db = lancedb.connect(tmp_path)
     table = db.create_table("t", pa.table({"id": list(range(NUM_ROWS))}))
 
@@ -1958,7 +3011,7 @@ def test_doc_example_prefetch_params(tmp_path):
         num_splits=NUM_SPLITS,
         shuffle_seed=SHUFFLE_SEED,
         read_batch_size=8,
-        prefetch_batches=2,
+        io_queue_depth=2,
     )
     assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
 
@@ -2118,3 +3171,27 @@ def test_doc_example_checkpoint(lance_table):
     assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
         "Consumed + remaining must cover every row exactly once"
     )
+
+
+# ---------------------------------------------------------------------------
+# Remote tables (LanceDB Cloud / Enterprise)
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_dataset_over_remote_table():
+    """StreamingDataset reads a remote table, with server-safe requests.
+
+    Builds a permutation over a remote table, then fetches batches from it by row id.
+    """
+    server = MockPermutationServer()
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(table, num_splits=2, shuffle_seed=SHUFFLE_SEED)
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == list(range(server.num_rows)), (
+        "Every row of the remote table must be yielded exactly once"
+    )
+    assert len(server.scans) == 1, "the permutation is built with one row-id scan"
+    assert server.takes, "rows must be fetched with row-id takes"
+    assert_server_safe_row_id_requests(server)

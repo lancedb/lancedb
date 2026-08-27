@@ -29,8 +29,14 @@ from .functions import (
     FunctionRegistrationRequest as FunctionRegistrationRequest,
     FunctionVersion as FunctionVersion,
     PythonRuntimeSpec as PythonRuntimeSpec,
+    RefreshColumnResult as RefreshColumnResult,
     UdfDefinition as UdfDefinition,
     udf as udf,
+)
+from .materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    MaterializedViewDefinition,
 )
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
@@ -171,6 +177,18 @@ def connect(
     ...         "aws_secret_access_key": "***",
     ...         "aws_region": "us-east-1",
     ...     },
+    ... )
+
+    For Azure Blob Storage, credentials can be passed directly without setting
+    environment variables:
+
+    >>> azure_storage_options = {
+    ...     "account_name": "some-account",
+    ...     "account_key": "some-key",
+    ... }
+    >>> db = lancedb.connect(  # doctest: +SKIP
+    ...     "az://my-container/my-database",
+    ...     storage_options=azure_storage_options,
     ... )
 
     For tests and temporary data, use an in-memory database:
@@ -459,6 +477,10 @@ async def connect_async(
     --------
 
     >>> import lancedb
+    >>> azure_storage_options = {
+    ...     "account_name": "some-account",
+    ...     "account_key": "some-key",
+    ... }
     >>> async def doctest_example():
     ...     # For a local directory, provide a path to the database
     ...     db = await lancedb.connect_async("~/.lancedb")
@@ -466,6 +488,11 @@ async def connect_async(
     ...     db = await lancedb.connect_async("s3://my-bucket/lancedb",
     ...                                      storage_options={
     ...                                          "aws_access_key_id": "***"})
+    ...     # Azure credentials can also be passed directly
+    ...     db = await lancedb.connect_async(
+    ...         "az://my-container/my-database",
+    ...         storage_options=azure_storage_options,
+    ...     )
     ...     # For tests and temporary data, use an in-memory database
     ...     db = await lancedb.connect_async("memory://")
     ...     # Connect to LanceDB cloud
@@ -506,6 +533,9 @@ async def connect_async(
 
 
 __all__ = [
+    "AsyncMaterializedView",
+    "MaterializedView",
+    "MaterializedViewDefinition",
     "connect",
     "connect_async",
     "tokenize",

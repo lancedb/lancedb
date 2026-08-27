@@ -102,6 +102,12 @@ listing a storage directory.
 
 ::: lancedb.job.AsyncJob
 
+## Materialized Views (Synchronous)
+
+::: lancedb.materialized_view.MaterializedView
+
+::: lancedb.materialized_view.MaterializedViewDefinition
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead
@@ -152,6 +158,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 ::: lancedb.query.BooleanQuery
 
 ::: lancedb.query.FullTextOperator
+
+::: lancedb.query.DocumentGranularity
 
 ::: lancedb.query.Occur
 
@@ -255,6 +263,8 @@ instead of being materialized with the rest of the row.
 
 ::: lancedb.streaming.StreamingDataset
 
+::: lancedb.streaming.StreamingDataLoader
+
 ::: lancedb.permutation.permutation_builder
 
 ::: lancedb.permutation.PermutationBuilder
@@ -294,6 +304,10 @@ Table hold your actual data as a collection of records / rows.
 ::: lancedb.table.AsyncTags
 
 ::: lancedb.table.AsyncBranches
+
+## Materialized Views (Asynchronous)
+
+::: lancedb.materialized_view.AsyncMaterializedView
 
 ## Indices (Asynchronous)
 

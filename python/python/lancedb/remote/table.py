@@ -49,7 +49,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.job import Job
-from lancedb.functions import FunctionApplication
+from lancedb.functions import FunctionApplication, RefreshColumnResult
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
@@ -61,6 +61,7 @@ from lancedb.table import _normalize_progress
 
 from ..query import (
     AnalyzePlanDistributedMetrics,
+    DocumentGranularity,
     LanceQueryBuilder,
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
@@ -349,6 +350,7 @@ class RemoteTable(Table):
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         block_size: int = 128,
+        document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -371,6 +373,7 @@ class RemoteTable(Table):
             ngram_max_length=ngram_max_length,
             prefix_only=prefix_only,
             block_size=block_size,
+            document_granularity=document_granularity,
         )
         LOOP.run(
             self._table.create_index(
@@ -610,6 +613,7 @@ class RemoteTable(Table):
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -642,6 +646,8 @@ class RemoteTable(Table):
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Not supported on LanceDB Cloud. Setting this raises.
 
         Returns
         -------
@@ -658,6 +664,7 @@ class RemoteTable(Table):
                     fill_value=fill_value,
                     progress=progress,
                     write_parallelism=write_parallelism,
+                    allow_external_blob_outside_bases=allow_external_blob_outside_bases,
                 )
             )
         finally:
@@ -972,7 +979,7 @@ class RemoteTable(Table):
     def refresh_column(self, column: str):
         return LOOP.run(self._table.refresh_column(column))
 
-    def refresh_column_async(self, column: str) -> Job:
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnResult]:
         return Job(LOOP.run(self._table.refresh_column_async(column)))
 
     def alter_columns(

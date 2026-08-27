@@ -278,6 +278,13 @@ impl Table {
         Ok(Query::new(self.inner_ref()?.query()))
     }
 
+    /// Return a read-only table handle pinned to the current query revision.
+    #[napi(catch_unwind)]
+    pub async fn query_snapshot(&self) -> napi::Result<Self> {
+        let snapshot = self.inner_ref()?.query_snapshot().await.default_error()?;
+        Ok(Self::new(snapshot))
+    }
+
     #[napi(catch_unwind)]
     pub fn take_offsets(&self, offsets: Vec<i64>) -> napi::Result<TakeQuery> {
         Ok(TakeQuery::new(
@@ -379,6 +386,26 @@ impl Table {
             .await
             .default_error()?;
         Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn refresh_materialized_view(
+        &self,
+        full: Option<bool>,
+        source_version: Option<i64>,
+    ) -> napi::Result<RefreshMaterializedViewResult> {
+        let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
+            .await
+            .default_error()?;
+        let mut builder = view.refresh().full(full.unwrap_or(false));
+        if let Some(version) = source_version {
+            let version = u64::try_from(version).map_err(|_| {
+                napi::Error::from_reason("sourceVersion must be a non-negative integer")
+            })?;
+            builder = builder.source_version(version);
+        }
+        let result = builder.execute().await.default_error()?;
+        Ok(result.into())
     }
 
     #[napi(catch_unwind)]
@@ -532,6 +559,12 @@ impl Table {
             .await
             .map(|val| val as i64)
             .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn checkout_current(&self) -> napi::Result<Self> {
+        let table = self.inner_ref()?.checkout_current().await.default_error()?;
+        Ok(Self::new(table))
     }
 
     #[napi(catch_unwind)]
@@ -1387,6 +1420,31 @@ pub struct RefreshColumnResult {
     pub version: i64,
 }
 
+#[napi(object)]
+pub struct RefreshMaterializedViewResult {
+    /// How the view was brought up to date: "rebuild", "incremental" or "no_op".
+    pub mode: String,
+    pub rows_written: i64,
+    pub source_version: i64,
+    pub version: i64,
+}
+
+impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
+    fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
+        let mode = match value.mode {
+            lancedb::RefreshMode::Rebuild => "rebuild",
+            lancedb::RefreshMode::Incremental => "incremental",
+            lancedb::RefreshMode::NoOp => "no_op",
+        };
+        Self {
+            mode: mode.to_string(),
+            rows_written: value.rows_written as i64,
+            source_version: value.source_version as i64,
+            version: value.version as i64,
+        }
+    }
+}
+
 impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
     fn from(value: lancedb::table::RefreshColumnResult) -> Self {
         Self {
@@ -1605,18 +1663,18 @@ impl Branches {
     }
 
     #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
-    pub async fn merge(
+    pub async fn cherry_pick(
         &self,
         from_branch: String,
         dry_run: Option<bool>,
     ) -> napi::Result<serde_json::Value> {
         let result = self
             .inner
-            .merge_branch(&from_branch, dry_run.unwrap_or(false))
+            .cherry_pick(&from_branch, dry_run.unwrap_or(false))
             .await
             .default_error()?;
         serde_json::to_value(result).map_err(|err| {
-            napi::Error::from_reason(format!("failed to serialize branch merge result: {err}"))
+            napi::Error::from_reason(format!("failed to serialize cherry-pick result: {err}"))
         })
     }
 }

@@ -46,7 +46,13 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
-from .job import AsyncJob, Job, _function_job
+from .job import AsyncJob, Job, _typed_job
+from .materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    SelectArg,
+    normalize_select,
+)
 from .table import (
     AsyncTable,
     LanceTable,
@@ -509,6 +515,70 @@ class DBConnection(EnforceOverrides):
         A LanceTable object representing the table.
         """
         raise NotImplementedError
+
+    def create_materialized_view(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> MaterializedView:
+        """Define a materialized view named ``name`` over the table ``source``.
+
+        The view is created empty, with the query recorded in its schema
+        metadata; ``view.refresh()`` computes the rows. The view is a normal
+        table: it can be queried, indexed and searched, and it appears in
+        ``table_names``. Local databases only.
+
+        The source table must have stable row ids (create it with the
+        ``new_table_enable_stable_row_ids`` storage option): they keep the
+        view's provenance valid across source compactions, and cannot be
+        enabled after a table exists.
+
+        Parameters
+        ----------
+        name: str
+            The name of the view.
+        source: str
+            The name of the source table, in this database.
+        select: list or dict, optional
+            The view's columns: column names, ``(alias, SQL expression)``
+            pairs, or a dict of the same. Omitting it selects every source
+            column, expanded against the source schema at creation time.
+        where: str, optional
+            SQL predicate; only matching source rows appear in the view.
+        limit: int, optional
+            Cap the view at this many rows, in materialization order.
+
+        Returns
+        -------
+        MaterializedView
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def open_materialized_view(self, name: str) -> MaterializedView:
+        """Open the materialized view named ``name``.
+
+        Raises ``ValueError`` if the table exists but is not a materialized
+        view.
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def list_materialized_views(self) -> List[str]:
+        """The names of the materialized views in this database.
+
+        Found by reading every table's schema, so this costs an open per
+        table.
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
 
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the database.
@@ -1135,6 +1205,58 @@ class LanceDBConnection(DBConnection):
         elif version is not None:
             tbl.checkout(version)
         return tbl
+
+    @override
+    def create_materialized_view(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> MaterializedView:
+        """Define a materialized view named ``name`` over the table ``source``.
+        See
+        [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect(
+        ...     "./.lancedb",
+        ...     storage_options={"new_table_enable_stable_row_ids": "true"},
+        ... )
+        >>> data = [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
+        >>> table = db.create_table("people", data)
+        >>> view = db.create_materialized_view(
+        ...     "adults",
+        ...     "people",
+        ...     select=["name", ("shout", "upper(name)")],
+        ...     where="age >= 18",
+        ... )
+        >>> result = view.refresh()
+        >>> result.rows_written
+        1
+        """
+        LOOP.run(
+            self._conn.create_materialized_view(
+                name, source, select=select, where=where, limit=limit
+            )
+        )
+        return MaterializedView(self.open_table(name))
+
+    @override
+    def open_materialized_view(self, name: str) -> MaterializedView:
+        """Open the materialized view named ``name``."""
+        view = MaterializedView(self.open_table(name))
+        view.definition
+        return view
+
+    @override
+    def list_materialized_views(self) -> List[str]:
+        """The names of the materialized views in this database."""
+        return LOOP.run(self._conn.list_materialized_views())
 
     def clone_table(
         self,
@@ -1906,6 +2028,50 @@ class AsyncConnection(object):
             await tbl.checkout(version)
         return tbl
 
+    async def create_materialized_view(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> AsyncMaterializedView:
+        """Define a materialized view named ``name`` over the table ``source``.
+        See
+        [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
+        """
+        inner = await self._inner.create_materialized_view(
+            name,
+            source,
+            projections=normalize_select(select),
+            filter=where,
+            limit=limit,
+        )
+        return AsyncMaterializedView(AsyncTable(inner))
+
+    async def open_materialized_view(self, name: str) -> AsyncMaterializedView:
+        """Open the materialized view named ``name``.
+
+        Raises ``ValueError`` if the table exists but is not a materialized
+        view.
+        """
+        if self.uri.startswith("db://"):
+            raise NotImplementedError(
+                "materialized views are supported only on local databases"
+            )
+        view = AsyncMaterializedView(await self.open_table(name))
+        await view.definition()
+        return view
+
+    async def list_materialized_views(self) -> List[str]:
+        """The names of the materialized views in this database.
+
+        Found by reading every table's schema, so this costs an open per
+        table.
+        """
+        return await self._inner.list_materialized_views()
+
     async def clone_table(
         self,
         target_table_name: str,
@@ -2071,7 +2237,7 @@ class AsyncConnection(object):
         inner = await self._inner.create_function_async(
             definition.registration_request.to_canonical_json()
         )
-        return _function_job(inner)
+        return _typed_job(inner, FunctionVersion.from_json)
 
     async def get_function(self, name: str, *, version: str) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""

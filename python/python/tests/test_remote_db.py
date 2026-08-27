@@ -242,8 +242,8 @@ def test_remote_table_branches_sync():
         table.branches.delete("exp")
 
 
-def test_remote_table_branch_merge_defaults_to_execute():
-    merge_bodies = []
+def test_remote_table_cherry_pick_defaults_to_execute():
+    cherry_pick_bodies = []
     diff = {
         "fromBranch": "exp",
         "parentVersion": 1,
@@ -265,8 +265,7 @@ def test_remote_table_branch_merge_defaults_to_execute():
         "changedColumns": [],
         "addedIndexes": [],
         "removedIndexes": [],
-        "mergeable": True,
-        "mergeBlockers": [],
+        "errors": [],
     }
 
     def handler(request):
@@ -276,11 +275,11 @@ def test_remote_table_branch_merge_defaults_to_execute():
         else:
             content_len = int(request.headers.get("Content-Length"))
             request_body = json.loads(request.rfile.read(content_len))
-            merge_bodies.append(request_body)
+            cherry_pick_bodies.append(request_body)
             dry_run = request_body["dry_run"]
             status = 200 if dry_run else 409
             body = {
-                "status": "ready" if dry_run else "rejected",
+                "status": "ready" if dry_run else "failed",
                 "diff": diff,
                 "preview": {"promotedColumns": []},
             }
@@ -292,10 +291,10 @@ def test_remote_table_branch_merge_defaults_to_execute():
 
     with mock_lancedb_connection(handler) as db:
         branches = db.open_table("test").branches
-        assert branches.merge("exp")["status"] == "rejected"
-        assert branches.merge("exp", dry_run=True)["status"] == "ready"
+        assert branches.cherry_pick("exp")["status"] == "failed"
+        assert branches.cherry_pick("exp", dry_run=True)["status"] == "ready"
 
-    assert merge_bodies == [
+    assert cherry_pick_bodies == [
         {"from_branch": "exp", "dry_run": False},
         {"from_branch": "exp", "dry_run": True},
     ]
@@ -876,9 +875,83 @@ def test_remote_create_index_async_returns_job():
         table = db.create_table("test", [{"id": 1}])
         job = table.create_index_async("id", config=BTree())
         assert job.id == "job-1"
-        job.wait(timeout=timedelta(seconds=30))
+        assert job.wait(timeout=timedelta(seconds=30)) is None
         assert len(describe_calls) == 2
         job.cancel()
+
+
+def test_remote_refresh_async_returns_typed_terminal_result():
+    terminal_result = {
+        "rows_assigned": 12,
+        "rows_failed": 0,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+    }
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/backfill_column":
+            assert json.loads(body)["column"] == "derived"
+            request.send_response(202)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "refresh-1"}')
+        elif request.path == "/v1/jobs/describe":
+            assert json.loads(body)["job_id"] == "refresh-1"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "job_id": "refresh-1",
+                        "job_type": "function_refresh",
+                        "job_state": "DONE",
+                        "result": terminal_result,
+                    }
+                ).encode()
+            )
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "id",
+                                    "type": {"type": "int64"},
+                                    "nullable": False,
+                                }
+                            ]
+                        },
+                    }
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        job = table.refresh_column_async("derived")
+        assert job.id == "refresh-1"
+        result = job.wait(timeout=timedelta(seconds=30))
+
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.model_dump() == terminal_result
+    assert result.rows_filled == 12
+    assert result.version == 8
 
 
 def test_remote_job_wait_raises_on_failure():
@@ -1543,6 +1616,49 @@ def test_query_sync_fts():
             .limit(42)
             .to_list()
         )
+
+
+def test_query_sync_fts_document_granularity():
+    from lancedb.query import DocumentGranularity, MatchQuery
+
+    def handler(body):
+        assert body == {
+            "full_text_query": {
+                "query": {
+                    "match": {
+                        "column": "docs.content",
+                        "terms": "alpha",
+                        "boost": 1.0,
+                        "fuzziness": 0,
+                        "max_expansions": 50,
+                        "operator": "Or",
+                        "prefix_length": 0,
+                        "document_granularity": "list_element",
+                    }
+                }
+            },
+            "k": 10,
+            "prefilter": True,
+            "vector": [],
+            "version": None,
+        }
+        return pa.table(
+            {
+                "id": [1, 1],
+                "_doc_index": pa.array([[0], [4]], type=pa.list_(pa.uint32())),
+            }
+        )
+
+    with query_test_table(handler, server_version=Version("0.6.0")) as table:
+        result = table.search(
+            MatchQuery(
+                "alpha",
+                "docs.content",
+                document_granularity=DocumentGranularity.LIST_ELEMENT,
+            )
+        ).to_arrow()
+
+    assert result["_doc_index"].to_pylist() == [[0], [4]]
 
 
 def test_query_sync_hybrid():

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from lancedb import col
 import lancedb.functions as functions
 from lancedb.functions import (
     FunctionApplication,
@@ -34,21 +35,6 @@ def fixture(name: str) -> str:
 
 def job_result(name: str) -> dict:
     return json.loads(fixture(name))["result"]
-
-
-def assert_no_secret_values(value):
-    if isinstance(value, dict):
-        for key, child in value.items():
-            assert key not in {
-                "secret_value",
-                "secret_values",
-                "resolved_secret",
-                "resolved_secrets",
-            }
-            assert_no_secret_values(child)
-    elif isinstance(value, list):
-        for child in value:
-            assert_no_secret_values(child)
 
 
 def test_public_function_values_are_in_api_reference():
@@ -108,7 +94,6 @@ def test_function_version_identity_is_immutable_and_exact():
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.name == "embed"
     assert version.version == "fv_01K3EXACT"
-    assert version.required_secrets == ("HF_TOKEN",)
 
     with pytest.raises((TypeError, ValueError)):
         version.version = "fv_changed"
@@ -118,6 +103,80 @@ def test_function_version_identity_is_immutable_and_exact():
     changed = dict(value)
     changed["version"] = "fv_changed"
     assert FunctionVersion(**changed) != version
+
+
+def test_function_version_binds_named_columns_as_one_immutable_application():
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+
+    application = version(text=col("documents.body"))
+
+    assert application.function.name == version.name
+    assert application.function.version == version.version
+    assert application.output is version.signature.output
+    assert [
+        (value.parameter, value.kind, value.value["path"])
+        for value in application.inputs
+    ] == [("text", "column", "documents.body")]
+
+
+def test_function_version_binding_validates_names_and_direct_columns():
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+
+    with pytest.raises(TypeError, match=r"missing inputs: \['text'\]"):
+        version()
+    with pytest.raises(TypeError, match=r"unknown inputs: \['body'\]"):
+        version(text=col("text"), body=col("body"))
+    with pytest.raises(TypeError, match="direct col"):
+        version(text=col("text").lower())
+
+
+def test_function_version_keeps_named_struct_outputs_in_one_application():
+    value = job_result("remote_function_job.json")
+    value["name"] = "text_features"
+    value["version"] = "fv_multi_output"
+    value["signature"] = {
+        "inputs": [
+            {"name": "title", "arrow_type": "utf8", "nullable": True},
+            {"name": "body", "arrow_type": "utf8", "nullable": True},
+        ],
+        "output": {
+            "kind": "named_struct",
+            "fields": [
+                {
+                    "name": "normalized_text",
+                    "arrow_type": "utf8",
+                    "nullable": False,
+                },
+                {
+                    "name": "token_count",
+                    "arrow_type": "int64",
+                    "nullable": False,
+                },
+            ],
+        },
+    }
+    version = FunctionVersion(**value)
+
+    application = version(body=col("body"), title=col("title")).rename(
+        columns={
+            "normalized_text": "search_text",
+            "token_count": "search_token_count",
+        }
+    )
+
+    assert [value.parameter for value in application.inputs] == ["title", "body"]
+    assert [field.name for field in application.output.fields] == [
+        "normalized_text",
+        "token_count",
+    ]
+    assert dict(application.columns) == {
+        "normalized_text": "search_text",
+        "token_count": "search_token_count",
+    }
 
 
 def test_unknown_fields_and_discriminators_are_forward_decodable():
@@ -143,7 +202,6 @@ def test_function_application_uses_rename_columns_only():
     assert application.columns["normalized_text"] == "search_text"
     assert renamed.columns["normalized_text"] == "body_normalized"
     assert renamed.function == application.function
-    assert renamed.group_id == application.group_id
     assert not hasattr(application, "rename_outputs")
     with pytest.raises(TypeError, match="immutable"):
         renamed.columns["normalized_text"] = "changed"
@@ -164,7 +222,6 @@ def test_function_application_uses_rename_columns_only():
 
 def test_binding_and_refresh_result_keep_stable_remote_fields():
     binding = FunctionBinding.from_json(fixture("remote_function_binding.json"))
-    assert binding.revision == 3
     assert binding.function.version == "fv_01K3TEXT"
     assert [output.output_ordinal for output in binding.outputs] == [0, 1]
     assert binding.input_schema is not None
@@ -219,15 +276,6 @@ def test_refresh_result_rejects_non_u64_values(field):
         RefreshColumnResult.from_json(json.dumps(value))
 
 
-def test_canonical_client_values_contain_secret_names_only():
-    version = FunctionVersion.from_json(
-        json.dumps(job_result("remote_function_job.json"))
-    )
-    canonical = json.loads(version.to_canonical_json())
-    assert canonical["required_secrets"] == ["HF_TOKEN"]
-    assert_no_secret_values(canonical)
-
-
 class _FunctionDeclarationInner:
     def __init__(self):
         self.calls = []
@@ -244,7 +292,7 @@ def known_application() -> FunctionApplication:
 
 
 @pytest.mark.asyncio
-async def test_add_columns_routes_struct_as_one_and_grouped_expansion_atomically():
+async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomically():
     inner = _FunctionDeclarationInner()
     table = AsyncTable(inner)
     application = known_application()
@@ -265,12 +313,12 @@ async def test_add_columns_routes_struct_as_one_and_grouped_expansion_atomically
 
 
 @pytest.mark.asyncio
-async def test_add_columns_rejects_mixed_groups_and_unknown_newer_application():
+async def test_add_columns_rejects_multiple_bindings_and_unknown_newer_application():
     inner = _FunctionDeclarationInner()
     table = AsyncTable(inner)
     application = known_application()
 
-    with pytest.raises(ValueError, match="exactly one Function sibling group"):
+    with pytest.raises(ValueError, match="exactly one Function binding"):
         await table.add_columns({"a": application, "b": application})
 
     future = json.loads(fixture("remote_function_application.json"))
@@ -298,7 +346,6 @@ def test_rename_requires_named_struct_and_keeps_partial_mapping_immutable():
                     "arrow_type": "list<float32>",
                     "nullable": False,
                 },
-                "group_id": "fg_scalar",
             }
         )
     )

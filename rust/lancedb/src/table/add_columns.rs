@@ -88,7 +88,7 @@ impl AddColumnsBuilder {
     }
 
     /// Declare every field of a named-struct Function result as one atomic
-    /// sibling group. Result-field aliases come from
+    /// binding. Result-field aliases come from
     /// [`FunctionApplication::columns`](crate::function::FunctionApplication::columns).
     ///
     /// ```
