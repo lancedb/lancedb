@@ -103,6 +103,18 @@ def test_sql_rejects_invalid_remote_database(monkeypatch, database):
 
 
 @pytest.mark.parametrize(
+    "database", ["db://user:password@analytics", "db://analytics:1234"]
+)
+def test_sql_rejects_database_authority_details(monkeypatch, database):
+    def connect(*args, **kwargs):
+        pytest.fail("invalid database authority must be rejected before connecting")
+
+    monkeypatch.setattr(lancedb, "connect", connect)
+    with pytest.raises(ValueError, match="must contain only a database name"):
+        lancedb.sql("SELECT 1", database=database)
+
+
+@pytest.mark.parametrize(
     ("uri", "expected"),
     [
         ("grpc://sql.example.com:50051", "grpc://sql.example.com:50051"),
@@ -163,6 +175,34 @@ def test_rejects_unsupported_hostname_verification_setting():
     )
 
     with pytest.raises(ValueError, match="cannot disable hostname verification"):
+        sql_module._flight_client_kwargs(connection, "grpc+tls://localhost:10026")
+
+
+def test_tls_custom_ca_is_added_to_platform_roots(monkeypatch, tmp_path):
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_bytes(b"CUSTOM-CA")
+    context = SimpleNamespace(get_ca_certs=lambda binary_form: [b"platform-der"])
+    monkeypatch.setattr(sql_module.ssl, "create_default_context", lambda: context)
+    monkeypatch.setattr(
+        sql_module.ssl,
+        "DER_cert_to_PEM_cert",
+        lambda cert: "PLATFORM-CA\n",
+    )
+    connection = FakeRemoteConnection(
+        client_config=ClientConfig(tls_config=TlsConfig(ssl_ca_cert=str(ca_file)))
+    )
+
+    kwargs = sql_module._flight_client_kwargs(connection, "grpc+tls://localhost:10026")
+
+    assert kwargs["tls_root_certs"] == b"PLATFORM-CA\nCUSTOM-CA"
+
+
+def test_mtls_requires_certificate_and_key():
+    connection = FakeRemoteConnection(
+        client_config=ClientConfig(tls_config=TlsConfig(cert_file="cert.pem"))
+    )
+
+    with pytest.raises(ValueError, match="requires both cert_file and key_file"):
         sql_module._flight_client_kwargs(connection, "grpc+tls://localhost:10026")
 
 
@@ -295,6 +335,20 @@ def test_flight_options_use_default_timeout():
     assert streaming_options.timeout == -1
 
 
+def test_flight_options_use_remaining_overall_deadline(monkeypatch):
+    monkeypatch.setattr(sql_module.time, "monotonic", lambda: 100.0)
+
+    options = sql_module._flight_call_options(
+        FakeRemoteConnection(),
+        sql_module._flight_module(),
+        "request-id",
+        streaming=True,
+        deadline=112.5,
+    )
+
+    assert options.timeout == 12.5
+
+
 def test_explicit_api_key_header_suppresses_derived_bearer():
     connection = FakeRemoteConnection(
         client_config=ClientConfig(extra_headers={"X-Api-Key": "other-key"})
@@ -322,6 +376,7 @@ def test_tls_coordinator_rejects_plaintext_endpoint():
             flight=sql_module._flight_module(),
             request_id="request-id",
             primary_uri="grpc+tls://coordinator:10026",
+            deadline=None,
         )
 
 

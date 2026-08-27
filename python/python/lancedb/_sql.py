@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from pathlib import Path
+import ssl
+import time
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlparse
 import uuid
@@ -142,10 +144,17 @@ def _flight_client_kwargs(
 
     kwargs: Dict[str, Any] = {}
     if tls_config.ssl_ca_cert is not None:
-        kwargs["tls_root_certs"] = Path(tls_config.ssl_ca_cert).read_bytes()
-    if tls_config.cert_file is not None:
+        context = ssl.create_default_context()
+        platform_roots = b"".join(
+            ssl.DER_cert_to_PEM_cert(cert).encode("ascii")
+            for cert in context.get_ca_certs(binary_form=True)
+        )
+        configured_roots = Path(tls_config.ssl_ca_cert).read_bytes()
+        kwargs["tls_root_certs"] = platform_roots + configured_roots
+    if (tls_config.cert_file is None) != (tls_config.key_file is None):
+        raise ValueError("Flight SQL mTLS requires both cert_file and key_file")
+    if tls_config.cert_file is not None and tls_config.key_file is not None:
         kwargs["cert_chain"] = Path(tls_config.cert_file).read_bytes()
-    if tls_config.key_file is not None:
         kwargs["private_key"] = Path(tls_config.key_file).read_bytes()
     return kwargs
 
@@ -166,6 +175,7 @@ def _flight_call_options(
     request_id: str,
     *,
     streaming: bool = False,
+    deadline: Optional[float] = None,
 ) -> Any:
     headers: Dict[bytes, tuple[bytes, bytes]] = {}
 
@@ -200,13 +210,12 @@ def _flight_call_options(
     )
 
     timeout = None
-    timeout_config = connection.client_config.timeout_config
-    if timeout_config is not None:
-        duration = timeout_config.timeout
-        if duration is None and not streaming:
-            duration = timeout_config.read_timeout
-        if duration is not None:
-            timeout = duration.total_seconds()
+    if deadline is not None:
+        timeout = max(0.0, deadline - time.monotonic())
+    elif not streaming:
+        timeout_config = connection.client_config.timeout_config
+        if timeout_config is not None and timeout_config.read_timeout is not None:
+            timeout = timeout_config.read_timeout.total_seconds()
     if timeout is None and not streaming:
         timeout = _DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS
 
@@ -230,6 +239,7 @@ def _read_endpoint(
     flight: Any,
     request_id: str,
     primary_uri: str,
+    deadline: Optional[float],
 ) -> pa.Table:
     locations = list(endpoint.locations)
     location_uri = _location_uri(locations[0]) if locations else None
@@ -248,7 +258,13 @@ def _read_endpoint(
         )
 
     try:
-        options = _flight_call_options(connection, flight, request_id, streaming=True)
+        options = _flight_call_options(
+            connection,
+            flight,
+            request_id,
+            streaming=True,
+            deadline=deadline,
+        )
         return client.do_get(endpoint.ticket, options).read_all()
     finally:
         if client is not primary_client:
@@ -262,6 +278,13 @@ def _execute_flight_sql(
 ) -> pa.Table:
     flight = _flight_module()
     request_id = str(uuid.uuid4())
+    timeout_config = connection.client_config.timeout_config
+    overall_timeout = timeout_config.timeout if timeout_config is not None else None
+    deadline = (
+        time.monotonic() + overall_timeout.total_seconds()
+        if overall_timeout is not None
+        else None
+    )
     resolved_uri = _resolve_flight_sql_uri(connection, flight_sql_uri)
     client = flight.FlightClient(
         resolved_uri,
@@ -273,10 +296,11 @@ def _execute_flight_sql(
 
     try:
         info = client.get_flight_info(
-            descriptor, _flight_call_options(connection, flight, request_id)
+            descriptor,
+            _flight_call_options(connection, flight, request_id, deadline=deadline),
         )
         if not info.endpoints:
-            raise RuntimeError("Flight SQL returned no result endpoints")
+            return pa.Table.from_batches([], schema=info.schema)
 
         tables = [
             _read_endpoint(
@@ -286,6 +310,7 @@ def _execute_flight_sql(
                 flight,
                 request_id,
                 resolved_uri,
+                deadline,
             )
             for endpoint in info.endpoints
         ]
@@ -370,6 +395,16 @@ def sql(
     parsed_database = urlparse(database_uri)
     if not database_uri.startswith("db://") or parsed_database.netloc == "":
         raise ValueError("lancedb.sql requires a remote db:// database")
+    try:
+        database_port = parsed_database.port
+    except ValueError as err:
+        raise ValueError(f"Invalid database URI port: {err}") from err
+    if (
+        parsed_database.username is not None
+        or parsed_database.password is not None
+        or database_port is not None
+    ):
+        raise ValueError("lancedb.sql database URI must contain only a database name")
     if (
         parsed_database.path not in ("", "/")
         or parsed_database.params
