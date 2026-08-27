@@ -270,7 +270,8 @@ def _iter_projection_pairs(
             if isinstance(expr, str):
                 yield name, expr
             elif isinstance(expr, Expr):
-                yield name, expr.to_sql()
+                source = expr._column_name()
+                yield name, source if source is not None else expr.to_sql()
         return
     for column in projection:
         if isinstance(column, str):
@@ -280,7 +281,8 @@ def _iter_projection_pairs(
             if isinstance(expr, str):
                 yield name, expr
             elif isinstance(expr, Expr):
-                yield name, expr.to_sql()
+                source = expr._column_name()
+                yield name, source if source is not None else expr.to_sql()
 
 
 def _set_blob_column(tbl: pa.Table, output_name: str, blobs: pa.Array) -> pa.Table:
