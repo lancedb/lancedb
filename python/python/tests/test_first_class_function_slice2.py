@@ -21,6 +21,7 @@ import pytest
 import lancedb
 from lancedb.functions import (
     _MAX_FUNCTION_SECRET_VALUE_BYTES,
+    _MAX_FUNCTION_SECRET_VALUES_BYTES,
     FunctionRegistrationRequest,
     UdfDefinition,
     udf,
@@ -780,6 +781,43 @@ def test_secret_value_rejects_over_utf8_byte_limit_before_json_construction(
     )
     with pytest.raises(ValueError, match=r"exceeds the 65536-byte limit"):
         normalize_score._submission_json({"API_TOKEN": value})
+
+
+def test_secret_values_accept_exact_aggregate_utf8_byte_limit(monkeypatch):
+    names = tuple(f"SECRET_{index}" for index in range(8))
+    value = "é" * (_MAX_FUNCTION_SECRET_VALUE_BYTES // len("é".encode("utf-8")))
+    values = {name: value for name in names}
+    monkeypatch.setattr(
+        normalize_score,
+        "_request",
+        normalize_score._request._copy(update={"required_secrets": names}),
+    )
+
+    submission = json.loads(normalize_score._submission_json(values))
+
+    assert submission["secret_values"] == values
+    assert sum(len(item.encode("utf-8")) for item in values.values()) == (
+        _MAX_FUNCTION_SECRET_VALUES_BYTES
+    )
+
+
+def test_secret_values_reject_aggregate_over_limit_before_construction(monkeypatch):
+    names = tuple(f"SECRET_{index}" for index in range(9))
+    values = {name: "x" * _MAX_FUNCTION_SECRET_VALUE_BYTES for name in names}
+    monkeypatch.setattr(
+        normalize_score,
+        "_request",
+        normalize_score._request._copy(update={"required_secrets": names}),
+    )
+
+    def fail_if_json_construction_starts(self):
+        pytest.fail("oversized aggregate reached JSON construction")
+
+    monkeypatch.setattr(
+        FunctionRegistrationRequest, "_known_dict", fail_if_json_construction_starts
+    )
+    with pytest.raises(ValueError, match=r"exceed.*524288-byte request limit"):
+        normalize_score._submission_json(values)
 
 
 @pytest.mark.asyncio

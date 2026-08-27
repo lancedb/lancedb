@@ -894,7 +894,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    pub(crate) fn log_request(&self, request: &Request, request_id: &String) {
+    pub(crate) fn log_request(&self, request: &Request, request_id: &str) {
         if log::log_enabled!(log::Level::Debug) {
             debug!("{}", request_log_message(request, request_id));
         }

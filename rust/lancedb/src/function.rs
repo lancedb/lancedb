@@ -19,6 +19,12 @@ use crate::{Error, Result};
 pub(crate) const MAX_FUNCTION_SECRET_VALUE_BYTES: usize = 64 * 1024;
 const MAX_FUNCTION_SECRET_VALUES_BYTES: usize = 512 * 1024;
 
+fn is_portable_environment_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'))
+}
+
 fn invalid_json(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
         message: format!("invalid remote Function JSON: {error}"),
@@ -433,7 +439,32 @@ pub struct FunctionRegistrationRequest {
 
 impl FunctionRegistrationRequest {
     pub(crate) fn validate_secret_values(&self) -> Result<()> {
-        let required = self.required_secrets.iter().collect::<BTreeSet<_>>();
+        let mut required = BTreeSet::new();
+        for name in &self.required_secrets {
+            if !is_portable_environment_name(name) {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Function secret name {name:?} must be a portable environment variable name"
+                    ),
+                });
+            }
+            if !required.insert(name) {
+                return Err(Error::InvalidInput {
+                    message: format!("Function required_secrets contains duplicate name {name:?}"),
+                });
+            }
+        }
+
+        if let PythonRuntimeSpec::Python { env, .. } = &self.runtime
+            && let Some(name) = required.iter().find(|name| env.contains_key(**name))
+        {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Function runtime env and secret names must be disjoint: {name:?}"
+                ),
+            });
+        }
+
         let provided = self.secret_values.keys().collect::<BTreeSet<_>>();
         if required != provided {
             return Err(Error::InvalidInput {
@@ -686,7 +717,7 @@ impl_json!(RefreshColumnResult);
 mod secret_value_tests {
     use super::{
         FunctionRegistrationRequest, MAX_FUNCTION_SECRET_VALUE_BYTES,
-        MAX_FUNCTION_SECRET_VALUES_BYTES,
+        MAX_FUNCTION_SECRET_VALUES_BYTES, PythonRuntimeSpec,
     };
     use crate::Error;
 
@@ -733,6 +764,67 @@ mod secret_value_tests {
     }
 
     #[test]
+    fn rejects_invalid_duplicate_and_overlapping_secret_declarations() {
+        let mut invalid_name = request();
+        invalid_name.required_secrets = vec!["BAD=NAME".to_string()];
+        invalid_name
+            .secret_values
+            .insert("BAD=NAME".to_string(), "secret".to_string());
+
+        let mut duplicate = request();
+        duplicate.required_secrets = vec!["API_TOKEN".to_string(), "API_TOKEN".to_string()];
+        duplicate
+            .secret_values
+            .insert("API_TOKEN".to_string(), "secret".to_string());
+
+        let mut overlap = request();
+        overlap
+            .secret_values
+            .insert("API_TOKEN".to_string(), "secret".to_string());
+        if let PythonRuntimeSpec::Python { env, .. } = &mut overlap.runtime {
+            env.insert("API_TOKEN".to_string(), "public".to_string());
+        }
+
+        assert!(matches!(
+            invalid_name.validate_secret_values(),
+            Err(Error::InvalidInput { message }) if message.contains("portable environment variable")
+        ));
+        assert!(matches!(
+            duplicate.validate_secret_values(),
+            Err(Error::InvalidInput { message }) if message.contains("duplicate")
+        ));
+        assert!(matches!(
+            overlap.validate_secret_values(),
+            Err(Error::InvalidInput { message }) if message.contains("must be disjoint")
+        ));
+    }
+
+    #[test]
+    fn enforces_portable_secret_name_boundaries() {
+        for name in ["A", "_", "A0_"] {
+            let mut request = request();
+            request.required_secrets = vec![name.to_string()];
+            request
+                .secret_values
+                .insert(name.to_string(), "secret".to_string());
+            request.validate_secret_values().unwrap();
+        }
+
+        for name in ["", "0TOKEN", "BAD-NAME", "TÖKEN"] {
+            let mut request = request();
+            request.required_secrets = vec![name.to_string()];
+            request
+                .secret_values
+                .insert(name.to_string(), "secret".to_string());
+            assert!(matches!(
+                request.validate_secret_values(),
+                Err(Error::InvalidInput { message })
+                    if message.contains("portable environment variable")
+            ));
+        }
+    }
+
+    #[test]
     fn accepts_exact_secret_value_utf8_byte_limit() {
         for value in [
             "x".repeat(MAX_FUNCTION_SECRET_VALUE_BYTES),
@@ -776,6 +868,27 @@ mod secret_value_tests {
             Err(Error::InvalidInput { message })
                 if message.contains(&format!("{MAX_FUNCTION_SECRET_VALUES_BYTES}-byte request limit"))
         ));
+    }
+
+    #[test]
+    fn accepts_exact_aggregate_secret_value_byte_limit() {
+        let mut request = request();
+        request.required_secrets = (0..8).map(|index| format!("SECRET_{index}")).collect();
+        request.secret_values = request
+            .required_secrets
+            .iter()
+            .map(|name| (name.clone(), "x".repeat(MAX_FUNCTION_SECRET_VALUE_BYTES)))
+            .collect();
+
+        assert_eq!(
+            request
+                .secret_values
+                .values()
+                .map(String::len)
+                .sum::<usize>(),
+            MAX_FUNCTION_SECRET_VALUES_BYTES
+        );
+        request.validate_secret_values().unwrap();
     }
 }
 

@@ -488,6 +488,7 @@ _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Keep this byte limit aligned with Sophon's MAX_FUNCTION_SECRET_VALUE_BYTES.
 _MAX_FUNCTION_SECRET_VALUE_BYTES = 64 * 1024
+_MAX_FUNCTION_SECRET_VALUES_BYTES = 512 * 1024
 
 
 def _validate_secret_value(name: str, value: Any) -> str:
@@ -1038,8 +1039,16 @@ class UdfDefinition:
             )
 
         canonical_values = {}
+        total_bytes = 0
         for name in sorted(secret_values):
-            canonical_values[name] = _validate_secret_value(name, secret_values[name])
+            value = _validate_secret_value(name, secret_values[name])
+            total_bytes += len(value.encode("utf-8"))
+            if total_bytes > _MAX_FUNCTION_SECRET_VALUES_BYTES:
+                raise ValueError(
+                    "Function secret values exceed the "
+                    f"{_MAX_FUNCTION_SECRET_VALUES_BYTES}-byte request limit"
+                )
+            canonical_values[name] = value
 
         submission = self._request._known_dict()
         if canonical_values:
