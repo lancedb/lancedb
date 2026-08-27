@@ -2785,7 +2785,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
+        computed_columns::ensure_publishable_schema(&batches.arrow_schema())?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2885,6 +2885,7 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
+        computed_columns::ensure_publishable_schema(&batches.arrow_schema())?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
@@ -2963,6 +2964,38 @@ impl NativeTable {
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
         let mut dataset = (*self.dataset.get().await?).clone();
+        // A column join writes onto existing rows, so it is a write path like
+        // any other: no refresh-owned values, no fabricated declarations.
+        let table_schema = arrow_schema::Schema::from(dataset.schema());
+        let right_schema = batches.schema();
+        computed_columns::ensure_not_written(
+            &table_schema,
+            right_schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .filter(|name| *name != right_on),
+        )?;
+        // Wider than ensure_no_foreign_declarations, which it subsumes: a
+        // legacy marker must not ride in either.
+        if let Some(field) = right_schema.fields().iter().find(|field| {
+            field
+                .metadata()
+                .keys()
+                .any(|key| computed_columns::is_write_protection_key(key))
+        }) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "merged column '{}' carries computed-column declaration metadata; \
+                     declarations cannot be introduced through a column join",
+                    field.name()
+                ),
+            });
+        }
+        computed_columns::ensure_no_foreign_binding_envelope(
+            right_schema.metadata(),
+            "a column join's schema metadata",
+        )?;
         dataset.merge(batches, left_on, right_on).await?;
         self.dataset.update(dataset);
         Ok(())
@@ -3052,6 +3085,41 @@ impl NativeTable {
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
         let mut dataset = (*self.dataset.get().await?).clone();
+        // The immutable binding envelope must ride through verbatim; only an
+        // invalid one may be dropped. Judge the map lance will actually apply.
+        let upsert_values: HashMap<String, String> = upsert_values.into_iter().collect();
+        let current = dataset
+            .schema()
+            .metadata
+            .get(computed_columns::FUNCTION_BINDINGS_META_KEY)
+            .cloned();
+        let incoming = upsert_values.get(computed_columns::FUNCTION_BINDINGS_META_KEY);
+        match (&current, incoming) {
+            (_, Some(value)) if Some(value) != current.as_ref() => {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "'{}' cannot be introduced or rewritten through schema-metadata \
+                         replacement: Function bindings are written only by declaration \
+                         planning",
+                        computed_columns::FUNCTION_BINDINGS_META_KEY
+                    ),
+                });
+            }
+            (Some(_), None) => {
+                let schema = arrow_schema::Schema::from(dataset.schema());
+                if computed_columns::function_bindings(&schema).is_ok() {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "replacing schema metadata must preserve '{}' verbatim: it \
+                             holds the table's immutable Function bindings",
+                            computed_columns::FUNCTION_BINDINGS_META_KEY
+                        ),
+                    });
+                }
+                // Invalid envelope: dropping it is the repair path.
+            }
+            _ => {}
+        }
         // TODO: update this when we implement metadata APIs
         #[allow(deprecated)]
         dataset.replace_schema_metadata(upsert_values).await?;
@@ -3073,6 +3141,47 @@ impl NativeTable {
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
         let mut dataset = (*self.dataset.get().await?).clone();
+        // Deprecated, but a replacement here would still erase a protection
+        // marker. Resolved by field id, matching this API's addressing.
+        let schema = arrow_schema::Schema::from(dataset.schema());
+        let protected = computed_columns::write_protected_columns(&schema);
+        let mut protected_ids = std::collections::HashSet::new();
+        for field in dataset.schema().fields.iter() {
+            if protected.iter().any(|name| name == &field.name) {
+                fn collect(
+                    field: &lance::datatypes::Field,
+                    out: &mut std::collections::HashSet<u32>,
+                ) {
+                    out.insert(field.id as u32);
+                    for child in &field.children {
+                        collect(child, out);
+                    }
+                }
+                collect(field, &mut protected_ids);
+            }
+        }
+        let new_values: Vec<(u32, HashMap<String, String>)> = new_values.into_iter().collect();
+        if let Some((id, _)) = new_values.iter().find(|(id, _)| protected_ids.contains(id)) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "replacing metadata of field id {id} would erase a computed-column \
+                     declaration; drop the column and declare it again"
+                ),
+            });
+        }
+        // And the inverse: a fabricated marker would wedge the table.
+        if let Some((id, _)) = new_values.iter().find(|(_, metadata)| {
+            metadata
+                .keys()
+                .any(|key| computed_columns::is_write_protection_key(key))
+        }) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "metadata for field id {id} contains computed-column declaration keys; \
+                     declarations cannot be introduced through metadata replacement"
+                ),
+            });
+        }
         dataset.replace_field_metadata(new_values).await?;
         self.dataset.update(dataset);
         Ok(())
@@ -3267,12 +3376,26 @@ impl BaseTable for NativeTable {
 
         let table_schema = Schema::from(&ds.schema().clone());
         computed_columns::ensure_supported_function_metadata(&table_schema)?;
-        computed_columns::ensure_not_written(
-            &table_schema,
-            add.data.schema().fields().iter().map(|f| f.name().as_str()),
-        )?;
-        if matches!(add.mode, AddDataMode::Overwrite) {
-            computed_columns::ensure_no_foreign_declarations(add.data.schema().fields())?;
+        // Value-aware, not name-based: appends pad computed columns with nulls.
+        let protected = computed_columns::write_protected_columns(&table_schema);
+        if !protected.is_empty() {
+            add.data = Box::new(computed_columns::WriteGuardedScannable::new(
+                add.data, protected,
+            ));
+        }
+        // Explicit lance_write_params outrank the builder mode, so the
+        // effective mode decides whether this write publishes its schema.
+        let effective_overwrite = match add
+            .write_options
+            .lance_write_params
+            .as_ref()
+            .map(|params| params.mode)
+        {
+            Some(mode) => !matches!(mode, WriteMode::Append),
+            None => matches!(add.mode, AddDataMode::Overwrite),
+        };
+        if effective_overwrite {
+            computed_columns::ensure_publishable_schema(&add.data.schema())?;
         }
 
         let num_partitions = if let Some(parallelism) = add.write_parallelism {
@@ -4946,6 +5069,218 @@ mod tests {
             manifest.config.get("test_key2"),
             Some(&"test_val2_update".to_string())
         );
+    }
+
+    /// The envelope declaration planning would write.
+    fn valid_envelope() -> String {
+        computed_columns::function_bindings_metadata(&[]).unwrap()
+    }
+
+    /// Write `value` as the binding envelope straight onto the dataset, below
+    /// the guard, as declaration planning does.
+    async fn plant_envelope(native: &NativeTable, value: &str) {
+        let mut dataset = (*native.dataset.get().await.unwrap()).clone();
+        #[allow(deprecated)]
+        dataset
+            .replace_schema_metadata(vec![(
+                computed_columns::FUNCTION_BINDINGS_META_KEY.to_string(),
+                value.to_string(),
+            )])
+            .await
+            .unwrap();
+        native.dataset.update(dataset);
+    }
+
+    /// A one-column table for the envelope guards.
+    async fn envelope_table(name: &str) -> Table {
+        crate::connect("memory://")
+            .execute()
+            .await
+            .unwrap()
+            .create_table(name, arrow_array::record_batch!(("x", Int32, [1])).unwrap())
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    /// The generic schema-metadata API never writes the binding envelope; an
+    /// invalid one may still be dropped, so a corrupted table is repairable.
+    #[tokio::test]
+    async fn schema_metadata_replacement_guards_the_binding_envelope() {
+        let key = computed_columns::FUNCTION_BINDINGS_META_KEY.to_string();
+        let table = envelope_table("bindings_meta").await;
+        let native = table.as_native().unwrap();
+
+        // Introduction through the generic API is refused.
+        let err = native
+            .replace_schema_metadata(vec![(key.clone(), "not-json".to_string())])
+            .await
+            .expect_err("introducing an envelope must be refused");
+        assert!(err.to_string().contains("declaration planning"), "{err}");
+
+        let valid = valid_envelope();
+        plant_envelope(native, &valid).await;
+        let err = native
+            .replace_schema_metadata(vec![("note".to_string(), "hi".to_string())])
+            .await
+            .expect_err("dropping a valid envelope must be refused");
+        assert!(err.to_string().contains("verbatim"), "{err}");
+        let err = native
+            .replace_schema_metadata(vec![(key.clone(), "rewritten".to_string())])
+            .await
+            .expect_err("rewriting a valid envelope must be refused");
+        assert!(err.to_string().contains("declaration planning"), "{err}");
+        native
+            .replace_schema_metadata(vec![
+                (key.clone(), valid.clone()),
+                ("note".to_string(), "hi".to_string()),
+            ])
+            .await
+            .unwrap();
+
+        // Dropping an invalid envelope is the repair path.
+        plant_envelope(native, "not-json").await;
+        native
+            .replace_schema_metadata(vec![("note".to_string(), "repaired".to_string())])
+            .await
+            .expect("dropping an invalid envelope is the repair path");
+    }
+
+    /// The guard judges the deduplicated map, exactly as lance applies it.
+    #[tokio::test]
+    async fn schema_metadata_replacement_judges_the_effective_map() {
+        let key = computed_columns::FUNCTION_BINDINGS_META_KEY.to_string();
+        let table = envelope_table("bindings_dupes").await;
+        let native = table.as_native().unwrap();
+        let valid = valid_envelope();
+        plant_envelope(native, &valid).await;
+
+        // First entry preserves, last duplicate rewrites: refused.
+        let err = native
+            .replace_schema_metadata(vec![
+                (key.clone(), valid.clone()),
+                (key.clone(), r#"{"version":1,"bindings":[{}]}"#.to_string()),
+            ])
+            .await
+            .expect_err("a duplicate rewriting entry must be refused");
+        assert!(err.to_string().contains("declaration planning"), "{err}");
+
+        // Duplicate identical preservation entries are harmless.
+        native
+            .replace_schema_metadata(vec![(key.clone(), valid.clone()), (key, valid)])
+            .await
+            .unwrap();
+    }
+
+    /// Row-only writes never publish their input schema, so a self-derived
+    /// batch carrying the table's own envelope is admitted. The join is not.
+    #[tokio::test]
+    async fn row_only_writes_admit_self_derived_schemas() {
+        let key = computed_columns::FUNCTION_BINDINGS_META_KEY;
+        let table = envelope_table("envelope_ingest").await;
+        let native = table.as_native().unwrap();
+        let valid = valid_envelope();
+        plant_envelope(native, &valid).await;
+
+        // A batch carrying the table's own envelope, as a query result would.
+        let self_derived = computed_columns::test_support::tag_schema(
+            arrow_array::record_batch!(("x", Int32, [2])).unwrap(),
+            &[(key, &valid)],
+        );
+
+        // add: admitted, row lands, table envelope untouched.
+        table.add(self_derived.clone()).execute().await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+
+        // merge_insert: likewise.
+        let mut merge_builder = table.merge_insert(&["x"]);
+        merge_builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        merge_builder
+            .execute(Box::new(RecordBatchIterator::new(
+                vec![Ok(self_derived.clone())],
+                self_derived.schema(),
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            table.schema().await.unwrap().metadata().get(key),
+            Some(&valid),
+            "row-only writes must not touch the table envelope"
+        );
+
+        // The column join imports schema metadata, so it still refuses.
+        let join = computed_columns::test_support::tag_schema(
+            arrow_array::record_batch!(("x", Int32, [1]), ("joined", Int32, [Some(9)])).unwrap(),
+            &[(key, &valid)],
+        );
+        let err = native
+            .clone()
+            .merge(
+                RecordBatchIterator::new(vec![Ok(join.clone())], join.schema()),
+                "x",
+                "x",
+            )
+            .await
+            .expect_err("column join with an envelope must be refused");
+        assert!(err.to_string().contains("declaration planning"), "{err}");
+    }
+
+    /// An Append-mode builder carrying WriteParams::Overwrite publishes its
+    /// input schema, so a smuggled declaration is refused.
+    #[tokio::test]
+    async fn write_params_overwrite_cannot_smuggle_declarations() {
+        let table = envelope_table("effective_overwrite").await;
+        let tainted = computed_columns::test_support::tag_field(
+            arrow_array::record_batch!(("x", Int32, [2]), ("y", Int32, [Some(999)])).unwrap(),
+            1,
+            &[
+                ("computed_column", "true"),
+                ("computed_column.kind", "sql"),
+                ("computed_column.expression", "x + 1"),
+                ("computed_column.inputs", r#"["x"]"#),
+            ],
+        );
+        let err = table
+            .add(tainted)
+            .mode(AddDataMode::Append)
+            .write_options(WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    mode: WriteMode::Overwrite,
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .expect_err("an effective overwrite carrying a declaration must be refused");
+        assert!(
+            err.to_string().contains("computed-column metadata"),
+            "{err}"
+        );
+    }
+
+    /// Creation publishes the input schema, so a caller-supplied envelope is
+    /// refused there too.
+    #[tokio::test]
+    async fn create_refuses_a_foreign_binding_envelope() {
+        let poisoned = computed_columns::test_support::tag_schema(
+            arrow_array::record_batch!(("x", Int32, [1])).unwrap(),
+            &[(
+                computed_columns::FUNCTION_BINDINGS_META_KEY,
+                r#"{"version":1,"bindings":[]}"#,
+            )],
+        );
+        let err = crate::connect("memory://")
+            .execute()
+            .await
+            .unwrap()
+            .create_table("foreign_envelope", poisoned)
+            .execute()
+            .await
+            .expect_err("creation with a caller-supplied envelope must be refused");
+        assert!(err.to_string().contains("declaration planning"), "{err}");
     }
 
     #[tokio::test]

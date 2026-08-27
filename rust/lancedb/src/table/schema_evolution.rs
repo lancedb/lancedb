@@ -242,15 +242,13 @@ pub(crate) async fn execute_update_field_metadata(
     // silently erase it.
     let schema = ArrowSchema::from(dataset.schema());
     computed_columns::ensure_no_function_bindings_for_mutation(&schema, "schema evolution")?;
-    let declared: Vec<String> = computed_columns::computed_columns(&schema)
-        .into_iter()
-        .map(|declaration| declaration.name)
-        .collect();
+    let declared: Vec<String> = computed_columns::write_protected_columns(&schema);
     for update in updates {
+        // Set and delete alike: a removal arrives as a `None`-valued key.
         if update
             .metadata
             .keys()
-            .any(|key| computed_columns::is_declaration_key(key))
+            .any(|key| computed_columns::is_write_protection_key(key))
         {
             return Err(Error::InvalidInput {
                 message: format!(
@@ -293,7 +291,9 @@ pub(crate) async fn execute_update_field_metadata(
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int32Array, StringArray, record_batch};
+    use std::collections::HashMap;
+
+    use arrow_array::{Int32Array, RecordBatchIterator, StringArray, record_batch};
     use arrow_schema::DataType;
     use futures::TryStreamExt;
     use lance::dataset::ColumnAlteration;
@@ -301,7 +301,224 @@ mod tests {
     use super::FieldMetadataUpdate;
     use crate::connect;
     use crate::query::{ExecutableQuery, QueryBase, Select};
-    use crate::table::NewColumnTransform;
+    use crate::table::computed_columns::test_support::tag_field;
+    use crate::table::{NewColumnTransform, Table};
+
+    /// A table whose `y` column carries the legacy `virtual_column` marker.
+    async fn legacy_table(name: &str, extra: &[(&str, &str)]) -> Table {
+        let mut metadata = vec![("virtual_column", "true")];
+        metadata.extend_from_slice(extra);
+        let batch = tag_field(
+            record_batch!(("x", Int32, [1]), ("y", Int32, [None])).unwrap(),
+            1,
+            &metadata,
+        );
+        connect("memory://")
+            .execute()
+            .await
+            .unwrap()
+            .create_table(name, batch)
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    /// The write guard still refuses a direct value for `y`.
+    async fn assert_direct_write_refused(table: &Table) {
+        let values = record_batch!(("x", Int32, [2]), ("y", Int32, [Some(999)])).unwrap();
+        let err = table
+            .add(values)
+            .execute()
+            .await
+            .expect_err("direct write to the legacy column must be refused");
+        assert!(err.to_string().contains("computed"), "{err}");
+    }
+
+    /// The lance field id of `name`.
+    async fn field_id(table: &Table, name: &str) -> u32 {
+        table
+            .as_native()
+            .unwrap()
+            .manifest()
+            .await
+            .unwrap()
+            .schema
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.id as u32)
+            .unwrap()
+    }
+
+    /// A legacy-tagged column's keys are immutable through the field-metadata
+    /// API, like a modern declaration's, and the write guard holds after each.
+    #[tokio::test]
+    async fn legacy_marker_survives_field_metadata_mutation() {
+        let table = legacy_table("legacy_meta", &[]).await;
+
+        // Removing the marker (a None-valued key) is refused.
+        let mut removal = FieldMetadataUpdate::new("y");
+        removal.metadata.insert("virtual_column".to_string(), None);
+        let err = table
+            .update_field_metadata(&[removal])
+            .await
+            .expect_err("removing the legacy marker must be refused");
+        assert!(err.to_string().contains("declaration"), "{err}");
+
+        // Editing a legacy declaration key is refused.
+        let edit = FieldMetadataUpdate::new("y").set("virtual_column.expression", "x * 3");
+        let err = table
+            .update_field_metadata(&[edit])
+            .await
+            .expect_err("editing a legacy declaration key must be refused");
+        assert!(err.to_string().contains("declaration"), "{err}");
+
+        // Replacing the field's whole metadata map is refused.
+        let mut replace = FieldMetadataUpdate::new("y").set("note", "hi");
+        replace.replace = true;
+        let err = table
+            .update_field_metadata(&[replace])
+            .await
+            .expect_err("replace on a write-protected field must be refused");
+        assert!(err.to_string().contains("erase"), "{err}");
+
+        assert_direct_write_refused(&table).await;
+    }
+
+    /// Casting a legacy-tagged column is refused: the cast would erase its
+    /// marker.
+    #[tokio::test]
+    async fn legacy_marker_survives_alter_columns_cast() {
+        let table = legacy_table("legacy_cast", &[]).await;
+
+        let err = table
+            .alter_columns(&[ColumnAlteration::new("y".into()).cast_to(DataType::Int64)])
+            .await
+            .expect_err("casting the legacy column must be refused");
+        assert!(err.to_string().contains("computed"), "{err}");
+
+        assert_direct_write_refused(&table).await;
+    }
+
+    /// The deprecated field-id replacement is bound by the same invariant:
+    /// stripping a protection marker through it is refused.
+    #[tokio::test]
+    async fn legacy_marker_survives_deprecated_replace_field_metadata() {
+        let table = legacy_table("legacy_replace", &[]).await;
+        let y_id = field_id(&table, "y").await;
+
+        #[allow(deprecated)]
+        let err = table
+            .as_native()
+            .unwrap()
+            .replace_field_metadata(vec![(y_id, HashMap::new())])
+            .await
+            .expect_err("replacing the legacy field's metadata must be refused");
+        assert!(err.to_string().contains("declaration"), "{err}");
+
+        assert_direct_write_refused(&table).await;
+    }
+
+    /// The column join is a write path: right-side values are refused too.
+    #[tokio::test]
+    async fn legacy_column_rejects_merge_join_values() {
+        let table = legacy_table("legacy_merge_join", &[]).await;
+        let right = record_batch!(("x", Int32, [1]), ("y", Int32, [Some(999)])).unwrap();
+        let err = table
+            .as_native()
+            .unwrap()
+            .clone()
+            .merge(
+                RecordBatchIterator::new(vec![Ok(right.clone())], right.schema()),
+                "x",
+                "x",
+            )
+            .await
+            .expect_err("merging values into the legacy column must be refused");
+        assert!(err.to_string().contains("computed"), "{err}");
+    }
+
+    /// A fabricated marker through the deprecated field-id replacement would
+    /// wedge the table, so it is refused.
+    #[tokio::test]
+    async fn field_metadata_replacement_rejects_fabricated_markers() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2]), ("v", Int32, [10, 20])).unwrap();
+        let table = conn
+            .create_table("fabricate_marker", batch)
+            .execute()
+            .await
+            .unwrap();
+        let v_id = field_id(&table, "v").await;
+
+        for key in [
+            "virtual_column",
+            "computed_column",
+            "virtual_column.expression",
+        ] {
+            #[allow(deprecated)]
+            let err = table
+                .as_native()
+                .unwrap()
+                .replace_field_metadata(vec![(
+                    v_id,
+                    HashMap::from([(key.to_string(), "true".to_string())]),
+                )])
+                .await
+                .expect_err("fabricating a declaration marker must be refused");
+            assert!(err.to_string().contains("declaration"), "{key}: {err}");
+        }
+    }
+
+    /// A column join cannot introduce declaration-tagged fields either.
+    #[tokio::test]
+    async fn merge_join_rejects_fabricated_markers() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table(
+                "fabricate_merge",
+                record_batch!(("x", Int32, [1, 2])).unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let right = tag_field(
+            record_batch!(("x", Int32, [1]), ("planted", Int32, [Some(7)])).unwrap(),
+            1,
+            &[("virtual_column", "true")],
+        );
+        let err = table
+            .as_native()
+            .unwrap()
+            .clone()
+            .merge(
+                RecordBatchIterator::new(vec![Ok(right.clone())], right.schema()),
+                "x",
+                "x",
+            )
+            .await
+            .expect_err("merging a declaration-tagged column must be refused");
+        assert!(err.to_string().contains("declaration"), "{err}");
+    }
+
+    /// A column a legacy declaration records as an input is protected from
+    /// rename, retype, and drop, matching the modern input policy.
+    #[tokio::test]
+    async fn legacy_recorded_inputs_are_protected() {
+        let table = legacy_table("legacy_inputs", &[("virtual_column.inputs", r#"["x"]"#)]).await;
+
+        let err = table
+            .alter_columns(&[ColumnAlteration::new("x".into()).rename("x2".into())])
+            .await
+            .expect_err("renaming a recorded legacy input must be refused");
+        assert!(err.to_string().contains("is read by"), "{err}");
+
+        let err = table
+            .drop_columns(&["x"])
+            .await
+            .expect_err("dropping a recorded legacy input must be refused");
+        assert!(err.to_string().contains("is read by"), "{err}");
+    }
 
     // Add Columns Tests
 
