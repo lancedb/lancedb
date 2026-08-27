@@ -7,6 +7,16 @@
 //! therefore idempotent and does not observe input mutation -- once a row is
 //! filled, changing what the expression reads leaves the stored result alone.
 //!
+//! A column's computed inputs are filled first -- the dependency graph is
+//! walked once, each reachable column filled once in dependency order, each
+//! fill its own commit. Every fill in the pass, the requested column's
+//! included, covers only the fragments of the snapshot the pass started
+//! from: a commit may rebase over a concurrent append, and the fragment that
+//! admits carries placeholder nulls no earlier fill covered, so it waits for
+//! a later refresh rather than being read as values. Two concurrent fills of
+//! one input collide on its field in lance's conflict check, so a dependent
+//! fill can only commit over inputs that were durable when it read them.
+//!
 //! Two passes per fragment. The first scans only the unfilled live rows and
 //! evaluates the expression over them, which yields the exact fill count and
 //! decides whether the fragment is staged at all -- a fragment where nothing
@@ -41,7 +51,8 @@ use crate::{Error, Result};
 /// The result of refreshing a computed column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RefreshColumnResult {
-    /// Rows that had a value computed.
+    /// Rows that had a value computed, in the requested column only; inputs
+    /// filled on its behalf are not counted.
     #[serde(default)]
     pub rows_filled: u64,
     /// The commit version associated with the operation.
@@ -52,6 +63,7 @@ pub struct RefreshColumnResult {
 struct RefreshExecution {
     result: RefreshColumnResult,
     source_version: u64,
+    published_version: Option<u64>,
 }
 
 /// Internal implementation of the refresh logic.
@@ -74,7 +86,12 @@ async fn execute_refresh_column_with_source(
 
     let expression = declared_expression(&dataset, column)?;
     let schema = Arc::new(ArrowSchema::from(dataset.schema()));
-    let bound = Arc::new(super::computed_columns::bind(schema, column, &expression)?);
+    let bound = Arc::new(super::computed_columns::bind(
+        schema.clone(),
+        column,
+        &expression,
+    )?);
+    ensure_inputs_filled(&dataset, &schema, column, &bound).await?;
     let field = dataset
         .schema()
         .field(column)
@@ -100,25 +117,25 @@ async fn execute_refresh_column_with_source(
         replacements.push(fragment.write_columns(values, &column_schema).await?);
     }
 
+    let source_version = dataset.version().version;
     if replacements.is_empty() {
-        let source_version = dataset.version().version;
         return Ok(RefreshExecution {
             result: RefreshColumnResult {
                 rows_filled: 0,
                 version: source_version,
             },
             source_version,
+            published_version: None,
         });
     }
 
-    let read_version = dataset.version().version;
     // The dataset's own session, so registrations and caches survive the
     // commit being installed on the handle.
     let session = dataset.session();
     let new_dataset = Dataset::commit(
         WriteDestination::Dataset(dataset.clone()),
         Operation::DataReplacement { replacements },
-        Some(read_version),
+        Some(source_version),
         None,
         None,
         session,
@@ -133,8 +150,50 @@ async fn execute_refresh_column_with_source(
             rows_filled,
             version,
         },
-        source_version: read_version,
+        source_version,
+        published_version: Some(version),
     })
+}
+
+/// Refuse while a computed input still has rows a refresh of it would fill:
+/// read now, its placeholder null would be evaluated as a value and kept.
+async fn ensure_inputs_filled(
+    dataset: &Dataset,
+    schema: &Arc<ArrowSchema>,
+    column: &str,
+    bound: &BoundExpression,
+) -> Result<()> {
+    for input in &bound.roots {
+        let Some(declaration) = schema
+            .field_with_name(input)
+            .ok()
+            .and_then(computed_column_from_field)
+        else {
+            continue;
+        };
+        let ComputedColumnKind::Sql { expression } = &declaration.kind else {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "computed column '{column}' reads '{input}', whose fill state this \
+                     refresh cannot check; refresh '{input}' first"
+                ),
+            });
+        };
+        let input_bound = super::computed_columns::bind(schema.clone(), input, expression)?;
+        let mut unfilled = 0u64;
+        for fragment in dataset.get_fragments() {
+            unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input).await?;
+        }
+        if unfilled > 0 {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "computed column '{column}' reads '{input}', which has {unfilled} unfilled \
+                     rows; refresh '{input}' first"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Run the refresh as a [`Job`] in this process.
@@ -160,8 +219,7 @@ pub(crate) async fn execute_refresh_column_async(
             rows_failed: 0,
             rows_remaining: 0,
             source_version: execution.source_version,
-            published_version: (execution.result.rows_filled > 0)
-                .then_some(execution.result.version),
+            published_version: execution.published_version,
         })
     })))
 }
@@ -384,7 +442,8 @@ mod tests {
             .version)
     }
 
-    async fn read(table: &Table, column: &str) -> Vec<Option<i32>> {
+    async fn read(table: &Table, column: &str) -> Vec<Option<i64>> {
+        use arrow_array::{Array, Int64Array};
         let batches = table
             .query()
             .select(Select::columns(&[column]))
@@ -394,15 +453,19 @@ mod tests {
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
-        let mut values: Vec<Option<i32>> = batches
+        let mut values: Vec<Option<i64>> = batches
             .iter()
             .flat_map(|batch| {
-                batch[column]
-                    .as_any()
-                    .downcast_ref::<Int32Array>()
-                    .unwrap()
-                    .iter()
-                    .collect::<Vec<_>>()
+                let array = &batch[column];
+                match array.as_any().downcast_ref::<Int32Array>() {
+                    Some(ints) => ints.iter().map(|v| v.map(i64::from)).collect::<Vec<_>>(),
+                    None => array
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .iter()
+                        .collect::<Vec<_>>(),
+                }
             })
             .collect();
         values.sort();
@@ -412,6 +475,98 @@ mod tests {
     async fn append(table: &Table, values: Vec<i32>) {
         let batch = record_batch!(("x", Int32, values)).unwrap();
         table.add(batch).execute().await.unwrap();
+    }
+
+    /// The gate's reproducer: `b = coalesce(a, 0)` refreshed before `a`
+    /// must not bake zeros from `a`'s placeholder null. It is refused, and
+    /// names the input, until `a` is filled -- after every append too.
+    #[tokio::test]
+    async fn test_dependent_refresh_refuses_an_unfilled_input() {
+        let table = table_with("dependent_refresh_order", vec![1, 2, 3]).await;
+        table
+            .add_columns()
+            .computed("a", "x + 1")
+            .computed("b", "coalesce(a, 0)")
+            .execute()
+            .await
+            .unwrap();
+
+        let err = table.refresh_column("b").await.unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("refresh 'a' first")),
+            "{err}"
+        );
+        assert_eq!(read(&table, "b").await, vec![None, None, None]);
+
+        assert_eq!(table.refresh_column("a").await.unwrap().rows_filled, 3);
+        assert_eq!(table.refresh_column("b").await.unwrap().rows_filled, 3);
+        assert_eq!(read(&table, "b").await, vec![Some(2), Some(3), Some(4)]);
+
+        append(&table, vec![10]).await;
+        assert!(table.refresh_column("b").await.is_err());
+        table.refresh_column("a").await.unwrap();
+        assert_eq!(table.refresh_column("b").await.unwrap().rows_filled, 1);
+        assert_eq!(
+            table.count_rows(Some("b = 0".to_string())).await.unwrap(),
+            0
+        );
+    }
+
+    /// Names that need quoting, and a nested input, survive the trip through
+    /// declaration metadata and the dependency check: the recorded inputs
+    /// are matched by name, never re-parsed as SQL.
+    #[tokio::test]
+    async fn test_dependent_refresh_handles_awkward_column_names() {
+        use arrow_array::{Int32Array, StructArray};
+        use arrow_schema::{DataType, Field, Fields};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let age_fields = Fields::from(vec![Field::new("age", DataType::Int32, true)]);
+        let meta = StructArray::new(
+            age_fields.clone(),
+            vec![Arc::new(Int32Array::from(vec![10, 20])) as _],
+            None,
+        );
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            Field::new("camelCase", DataType::Int32, true),
+            Field::new("with-hyphen", DataType::Int32, true),
+            Field::new("meta", DataType::Struct(age_fields), true),
+        ]));
+        let batch = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])) as _,
+                Arc::new(Int32Array::from(vec![100, 200])) as _,
+                Arc::new(meta) as _,
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("awkward_names", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .add_columns()
+            .computed("y", "`camelCase` * 2")
+            .computed("z", "coalesce(y, 0) + `with-hyphen` + meta.age")
+            .execute()
+            .await
+            .unwrap();
+        let z = crate::table::computed_columns::computed_columns(
+            table.schema().await.unwrap().as_ref(),
+        )
+        .into_iter()
+        .find(|c| c.name == "z")
+        .unwrap();
+        assert_eq!(z.inputs, vec!["meta.age", "with-hyphen", "y"]);
+
+        let err = table.refresh_column("z").await.unwrap_err();
+        assert!(err.to_string().contains("refresh 'y' first"), "{err}");
+        assert_eq!(table.refresh_column("y").await.unwrap().rows_filled, 2);
+        assert_eq!(table.refresh_column("z").await.unwrap().rows_filled, 2);
+        assert_eq!(read(&table, "z").await, vec![Some(112), Some(224)]);
     }
 
     #[tokio::test]
@@ -651,7 +806,8 @@ mod tests {
 
         let read_back = read(&table, "doubled").await;
         assert_eq!(read_back.len(), 20_000);
-        let mut expected: Vec<Option<i32>> = values.iter().map(|v| Some(v * 2)).collect();
+        let mut expected: Vec<Option<i64>> =
+            values.iter().map(|v| Some(i64::from(v * 2))).collect();
         expected.sort();
         assert_eq!(read_back, expected);
     }
