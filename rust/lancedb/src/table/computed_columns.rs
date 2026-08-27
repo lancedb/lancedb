@@ -37,6 +37,9 @@ use crate::{Error, Result};
 /// Field metadata key marking a column as computed. The value is `"true"`.
 pub const COMPUTED_COLUMN_META_KEY: &str = "computed_column";
 
+/// Pre-`computed_column.*` marker: honored by the write guards, not parsed.
+pub const LEGACY_VIRTUAL_COLUMN_META_KEY: &str = "virtual_column";
+
 /// Field metadata key naming the kind of rule that defines the column.
 pub const KIND_META_KEY: &str = "computed_column.kind";
 
@@ -1042,17 +1045,100 @@ pub(crate) fn ensure_not_an_input(schema: &SchemaRef, paths: &[&str]) -> Result<
                     ),
                 });
             }
-            if inputs.iter().any(|input| root(input) == root(path)) {
-                return Err(Error::InvalidInput {
-                    message: format!(
-                        "column '{}' is read by computed column '{}'; drop that column first",
-                        path, declaration.name
-                    ),
-                });
+            ensure_not_read(&declaration.name, &inputs, path)?;
+        }
+    }
+    // Legacy declarations record their inputs in metadata; honor them the same.
+    for (column, inputs) in legacy_input_roots(schema.as_ref())? {
+        for path in paths {
+            if column != *path {
+                ensure_not_read(&column, &inputs, path)?;
             }
         }
     }
     Ok(())
+}
+
+/// Reject `path` when `column`'s declaration reads it.
+fn ensure_not_read(column: &str, inputs: &[String], path: &str) -> Result<()> {
+    if inputs.iter().any(|input| root(input) == root(path)) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "column '{path}' is read by computed column '{column}'; drop that column first"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Recorded inputs of every legacy-tagged column. An unreadable record is
+/// refused rather than ignored, matching the unevaluable-expression policy.
+fn legacy_input_roots(schema: &ArrowSchema) -> Result<Vec<(String, Vec<String>)>> {
+    let mut out = Vec::new();
+    for field in schema.fields() {
+        let metadata = field.metadata();
+        if !is_legacy_tagged(metadata) {
+            continue;
+        }
+        let mut inputs = Vec::new();
+        for key in ["virtual_column.inputs", "virtual_column.udf_inputs"] {
+            if let Some(raw) = metadata.get(key) {
+                let parsed: Vec<String> =
+                    serde_json::from_str(raw).map_err(|e| Error::InvalidInput {
+                        message: format!(
+                            "computed column '{}' has an unreadable '{key}' record ({e}); \
+                             drop it before changing the schema",
+                            field.name()
+                        ),
+                    })?;
+                inputs.extend(parsed);
+            }
+        }
+        if !inputs.is_empty() {
+            out.push((field.name().clone(), inputs));
+        }
+    }
+    Ok(out)
+}
+
+/// A schema published as the table's own -- creation and every effective
+/// overwrite -- carries no caller-supplied declarations. Row-only writes never
+/// publish their input schema, so metadata there is inert.
+pub(crate) fn ensure_publishable_schema(schema: &ArrowSchema) -> Result<()> {
+    ensure_no_foreign_declarations(schema.fields())?;
+    ensure_no_foreign_binding_envelope(schema.metadata(), "a published table schema")
+}
+
+/// Refuse incoming schema metadata carrying the Function-binding envelope:
+/// ingestion imports keys the table lacks, and a fabricated one wedges it.
+pub(crate) fn ensure_no_foreign_binding_envelope(
+    metadata: &HashMap<String, String>,
+    path: &str,
+) -> Result<()> {
+    if metadata.contains_key(FUNCTION_BINDINGS_META_KEY) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "'{FUNCTION_BINDINGS_META_KEY}' cannot be introduced through {path}: \
+                 Function bindings are written only by declaration planning"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Columns whose values may only be materialized by refresh, under either
+/// convention.
+pub fn write_protected_columns(schema: &ArrowSchema) -> Vec<String> {
+    schema
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            let metadata = field.metadata();
+            let declared =
+                metadata.get(COMPUTED_COLUMN_META_KEY).map(String::as_str) == Some("true");
+            (declared || is_legacy_tagged(metadata)).then(|| field.name().clone())
+        })
+        .collect()
 }
 
 /// Reject a write that supplies values for a computed column directly:
@@ -1061,22 +1147,63 @@ pub(crate) fn ensure_not_written<'a>(
     schema: &ArrowSchema,
     written: impl IntoIterator<Item = &'a str>,
 ) -> Result<()> {
-    let declared: Vec<String> = computed_columns(schema)
-        .into_iter()
-        .map(|declaration| declaration.name)
-        .collect();
+    let protected = write_protected_columns(schema);
     for name in written {
-        if declared.iter().any(|declared| declared == root(name)) {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "column '{}' is computed; its values come from refresh and cannot be \
-                     written directly",
-                    root(name)
-                ),
-            });
+        if protected.iter().any(|column| column == root(name)) {
+            return Err(direct_write_error(root(name)));
         }
     }
     Ok(())
+}
+
+fn direct_write_error(name: &str) -> Error {
+    Error::InvalidInput {
+        message: format!(
+            "column '{name}' is computed; its values come from refresh and cannot be \
+             written directly"
+        ),
+    }
+}
+
+/// Rejects any batch carrying non-null values for a write-protected column.
+/// Names are not enough: appends pad them as all-null placeholders.
+pub(crate) struct WriteGuardedScannable {
+    inner: Box<dyn crate::data::scannable::Scannable>,
+    protected: Arc<Vec<String>>,
+}
+
+impl WriteGuardedScannable {
+    pub(crate) fn new(
+        inner: Box<dyn crate::data::scannable::Scannable>,
+        protected: Vec<String>,
+    ) -> Self {
+        Self {
+            inner,
+            protected: Arc::new(protected),
+        }
+    }
+}
+
+impl crate::data::scannable::Scannable for WriteGuardedScannable {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    fn scan_as_stream(&mut self) -> crate::arrow::SendableRecordBatchStream {
+        use futures::StreamExt;
+        let protected = self.protected.clone();
+        let schema = self.inner.schema();
+        let stream = self.inner.scan_as_stream().map(move |batch| {
+            let batch = batch?;
+            ensure_batch_writes_no_computed_values(&protected, &batch)?;
+            Ok(batch)
+        });
+        Box::pin(crate::arrow::SimpleRecordBatchStream { schema, stream })
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        self.inner.num_rows()
+    }
 }
 
 /// Reject a batch holding values for a computed column. Null slots are the
@@ -1089,12 +1216,7 @@ pub(crate) fn ensure_batch_writes_no_computed_values(
         if let Some(column) = batch.column_by_name(name)
             && column.null_count() != column.len()
         {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "column '{name}' is computed; its values come from refresh and cannot \
-                     be written directly"
-                ),
-            });
+            return Err(direct_write_error(name));
         }
     }
     Ok(())
@@ -1129,6 +1251,28 @@ pub(crate) fn is_declaration_key(key: &str) -> bool {
     key == COMPUTED_COLUMN_META_KEY || key.starts_with("computed_column.")
 }
 
+/// Keys the metadata-mutation boundary must refuse: editing or removing one
+/// strips write protection. Wider than [`is_declaration_key`] by design.
+pub(crate) fn is_write_protection_key(key: &str) -> bool {
+    is_declaration_key(key) || is_legacy_key(key)
+}
+
+/// True for a legacy `virtual_column` metadata key.
+fn is_legacy_key(key: &str) -> bool {
+    key == LEGACY_VIRTUAL_COLUMN_META_KEY || key.starts_with("virtual_column.")
+}
+
+/// True for a field carrying the legacy convention.
+fn is_legacy_tagged(metadata: &HashMap<String, String>) -> bool {
+    metadata.iter().any(|(key, value)| {
+        if key == LEGACY_VIRTUAL_COLUMN_META_KEY {
+            value == "true"
+        } else {
+            is_legacy_key(key)
+        }
+    })
+}
+
 /// Reject retyping a computed column itself.
 ///
 /// A cast keeps the stored expression while changing the type it must yield
@@ -1136,14 +1280,14 @@ pub(crate) fn is_declaration_key(key: &str) -> bool {
 /// declaration silently stops being one. Dropping and redeclaring is the
 /// coherent way to change a computed column's type.
 pub(crate) fn ensure_not_retyped(schema: &ArrowSchema, paths: &[&str]) -> Result<()> {
-    for declaration in computed_columns(schema) {
+    // Legacy-tagged too: a cast rewrites the field without its metadata.
+    for protected in write_protected_columns(schema) {
         for path in paths {
-            if declaration.name == root(path) {
+            if protected == root(path) {
                 return Err(Error::InvalidInput {
                     message: format!(
-                        "column '{}' is computed; drop it and declare it again to change \
-                         its type",
-                        declaration.name
+                        "column '{protected}' is computed; drop it and declare it again \
+                         to change its type"
                     ),
                 });
             }
@@ -1338,8 +1482,72 @@ pub(super) async fn add_foreign_kind(table: &crate::Table, name: &str, kind: &st
     .unwrap();
 }
 
+/// Batch builders for tests that plant declaration metadata, which
+/// `record_batch!` cannot express.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use arrow_array::RecordBatch;
+    use arrow_schema::Schema as ArrowSchema;
+
+    use super::HashMap;
+
+    fn owned(metadata: &[(&str, &str)]) -> HashMap<String, String> {
+        metadata
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    /// `batch` with `field`'s metadata replaced.
+    pub fn tag_field(batch: RecordBatch, field: usize, metadata: &[(&str, &str)]) -> RecordBatch {
+        let mut fields = batch.schema().fields().to_vec();
+        fields[field] = Arc::new(
+            fields[field]
+                .as_ref()
+                .clone()
+                .with_metadata(owned(metadata)),
+        );
+        RecordBatch::try_new(Arc::new(ArrowSchema::new(fields)), batch.columns().to_vec()).unwrap()
+    }
+
+    /// `batch` with schema-level `metadata` attached.
+    pub fn tag_schema(batch: RecordBatch, metadata: &[(&str, &str)]) -> RecordBatch {
+        let schema = batch
+            .schema()
+            .as_ref()
+            .clone()
+            .with_metadata(owned(metadata));
+        RecordBatch::try_new(Arc::new(schema), batch.columns().to_vec()).unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// Legacy `virtual_column` columns are write-protected too.
+    #[test]
+    fn legacy_virtual_columns_are_write_protected() {
+        use std::collections::HashMap;
+        let plain = ArrowField::new("id", DataType::Int64, false);
+        let legacy_tagged = ArrowField::new("y", DataType::Int64, true).with_metadata(
+            HashMap::from([("virtual_column".to_string(), "true".to_string())]),
+        );
+        let legacy_prefixed = ArrowField::new("v", DataType::Utf8, true).with_metadata(
+            HashMap::from([("virtual_column.udf_name".to_string(), "f".to_string())]),
+        );
+        let schema = ArrowSchema::new(vec![plain, legacy_tagged, legacy_prefixed]);
+
+        let protected = super::write_protected_columns(&schema);
+        assert_eq!(protected, vec!["y".to_string(), "v".to_string()]);
+
+        super::ensure_not_written(&schema, ["id"]).unwrap();
+        let err = super::ensure_not_written(&schema, ["id", "y"]).unwrap_err();
+        assert!(err.to_string().contains("computed"), "{err}");
+        let err = super::ensure_not_written(&schema, ["v"]).unwrap_err();
+        assert!(err.to_string().contains("computed"), "{err}");
+    }
+
     #[test]
     fn output_arrow_type_grammar_matches_the_shared_golden() {
         let golden: serde_json::Value = serde_json::from_str(include_str!(

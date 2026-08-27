@@ -908,6 +908,41 @@ mod tests {
         table.add(batch).execute().await.unwrap();
     }
 
+    /// A legacy-tagged table is refused at LSM install like a modern one.
+    #[tokio::test]
+    async fn lsm_install_refuses_legacy_write_protected_columns() {
+        use std::collections::HashMap;
+        let conn = crate::connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("x", arrow_schema::DataType::Int32, false),
+            arrow_schema::Field::new("y", arrow_schema::DataType::Int32, true).with_metadata(
+                HashMap::from([("virtual_column".to_string(), "true".to_string())]),
+            ),
+        ]));
+        let batch = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(Int32Array::from(vec![None as Option<i32>])),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("legacy_lsm", batch)
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["x"]).await.unwrap();
+        let err = table
+            .set_lsm_write_spec(crate::table::LsmWriteSpec::unsharded())
+            .await
+            .expect_err("LSM install on a legacy-protected table must be refused");
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("computed")),
+            "{err:?}"
+        );
+    }
+
     /// Both orders of declare+spec are refused at the source (see the
     /// schema_evolution tests); refresh's own check covers a dataset another
     /// writer left in that state.

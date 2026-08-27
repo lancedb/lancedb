@@ -194,12 +194,9 @@ impl ExecutionPlan for InsertExec {
 
         let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let input_schema = input_stream.schema();
-        let declared: Vec<String> = crate::table::computed_columns::computed_columns(
+        let declared: Vec<String> = crate::table::computed_columns::write_protected_columns(
             &arrow_schema::Schema::from(self.dataset.schema()),
-        )
-        .into_iter()
-        .map(|declaration| declaration.name)
-        .collect();
+        );
         let input_stream: SendableRecordBatchStream =
             Box::pin(InstrumentedRecordBatchStreamAdapter::new(
                 input_schema,
