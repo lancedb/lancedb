@@ -4183,14 +4183,6 @@ mod tests {
                 parent_list_calls: self.parent_list_calls.clone(),
             })
         }
-
-        fn wrap_paginated(
-            &self,
-            _store_prefix: &str,
-            _original: Arc<dyn object_store::list::PaginatedListStore>,
-        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
-            None
-        }
     }
 
     #[tokio::test]
@@ -4293,14 +4285,6 @@ mod tests {
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
             original
-        }
-
-        fn wrap_paginated(
-            &self,
-            _store_prefix: &str,
-            original: Arc<dyn object_store::list::PaginatedListStore>,
-        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
-            Some(original)
         }
     }
 
