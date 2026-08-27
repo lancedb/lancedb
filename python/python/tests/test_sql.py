@@ -41,6 +41,12 @@ class RecordingFlightCallOptions:
         self.headers = headers
 
 
+@pytest.fixture(autouse=True)
+def clear_timeout_environment(monkeypatch):
+    monkeypatch.delenv("LANCE_CLIENT_TIMEOUT", raising=False)
+    monkeypatch.delenv("LANCE_CLIENT_READ_TIMEOUT", raising=False)
+
+
 def test_sql_resolves_database_with_connect(monkeypatch):
     connection = FakeRemoteConnection()
     connect_args = {}
@@ -308,6 +314,7 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
     for options in all_options:
         headers = dict(options.headers)
         assert headers[b"authorization"] == b"Bearer oauth-token"
+        assert headers[b"x-lancedb-credential-type"] == b"oidc"
         assert headers[b"database"] == b"analytics"
         assert headers[b"namespace-path"] == b"events$raw"
         assert headers[b"x-extra"] == b"value"
@@ -420,6 +427,16 @@ def test_explicit_api_key_header_suppresses_derived_bearer():
     headers = dict(options.headers)
     assert headers[b"x-api-key"] == b"other-key"
     assert b"authorization" not in headers
+
+
+def test_derived_api_key_bearer_is_not_marked_as_oidc():
+    options = sql_module._flight_call_options(
+        FakeRemoteConnection(), sql_module._flight_module(), "request-id"
+    )
+
+    headers = dict(options.headers)
+    assert headers[b"authorization"] == b"Bearer test-key"
+    assert b"x-lancedb-credential-type" not in headers
 
 
 def test_tls_coordinator_rejects_plaintext_endpoint():

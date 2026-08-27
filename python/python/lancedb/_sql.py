@@ -208,6 +208,7 @@ def _flight_call_options(
     extra_headers = connection.client_config.extra_headers or {}
     header_provider = connection.client_config.header_provider
     provider_headers = header_provider.get_headers() if header_provider else {}
+    provider_header_names = {str(key).lower() for key in provider_headers}
     credential_names = {
         str(key).lower() for key in [*extra_headers.keys(), *provider_headers.keys()]
     }
@@ -219,6 +220,11 @@ def _flight_call_options(
         add_headers({"authorization": f"Bearer {connection.api_key}"})
     add_headers(extra_headers)
     add_headers(provider_headers)
+    if (
+        "authorization" in provider_header_names
+        and "x-lancedb-credential-type" not in credential_names
+    ):
+        add_headers({"x-lancedb-credential-type": "oidc"})
     add_headers(
         {
             "database": connection.db_name,
