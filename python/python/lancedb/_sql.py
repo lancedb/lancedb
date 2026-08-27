@@ -14,6 +14,7 @@ import pyarrow as pa
 from .background_loop import LOOP
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
+from .remote.header import OAuthProvider
 
 
 _COMMAND_STATEMENT_QUERY_TYPE_URL = (
@@ -208,7 +209,6 @@ def _flight_call_options(
     extra_headers = connection.client_config.extra_headers or {}
     header_provider = connection.client_config.header_provider
     provider_headers = header_provider.get_headers() if header_provider else {}
-    provider_header_names = {str(key).lower() for key in provider_headers}
     credential_names = {
         str(key).lower() for key in [*extra_headers.keys(), *provider_headers.keys()]
     }
@@ -221,7 +221,7 @@ def _flight_call_options(
     add_headers(extra_headers)
     add_headers(provider_headers)
     if (
-        "authorization" in provider_header_names
+        isinstance(header_provider, OAuthProvider)
         and "x-lancedb-credential-type" not in credential_names
     ):
         add_headers({"x-lancedb-credential-type": "oidc"})

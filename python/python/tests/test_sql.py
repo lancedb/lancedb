@@ -12,6 +12,7 @@ import pytest
 import lancedb
 from lancedb.remote import ClientConfig
 from lancedb.remote import TlsConfig
+from lancedb.remote.header import OAuthProvider, StaticHeaderProvider
 
 
 sql_module = importlib.import_module("lancedb._sql")
@@ -286,8 +287,8 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
         client_config=ClientConfig(
             timeout_config={"read_timeout": timedelta(seconds=7)},
             extra_headers={"X-Extra": "value"},
-            header_provider=SimpleNamespace(
-                get_headers=lambda: {"Authorization": "Bearer oauth-token"}
+            header_provider=OAuthProvider(
+                lambda: {"access_token": "oauth-token", "expires_in": 3600}
             ),
         )
     )
@@ -344,7 +345,7 @@ def test_flight_error_preserves_type_and_includes_statement_request_id(monkeypat
 
     real_flight = sql_module._flight_module()
     fake_flight = SimpleNamespace(
-        FlightCallOptions=real_flight.FlightCallOptions,
+        FlightCallOptions=RecordingFlightCallOptions,
         FlightClient=FailingFlightClient,
         FlightDescriptor=real_flight.FlightDescriptor,
     )
@@ -421,7 +422,9 @@ def test_explicit_api_key_header_suppresses_derived_bearer():
     )
 
     options = sql_module._flight_call_options(
-        connection, sql_module._flight_module(), "request-id"
+        connection,
+        SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions),
+        "request-id",
     )
 
     headers = dict(options.headers)
@@ -431,11 +434,32 @@ def test_explicit_api_key_header_suppresses_derived_bearer():
 
 def test_derived_api_key_bearer_is_not_marked_as_oidc():
     options = sql_module._flight_call_options(
-        FakeRemoteConnection(), sql_module._flight_module(), "request-id"
+        FakeRemoteConnection(),
+        SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions),
+        "request-id",
     )
 
     headers = dict(options.headers)
     assert headers[b"authorization"] == b"Bearer test-key"
+    assert b"x-lancedb-credential-type" not in headers
+
+
+def test_static_provider_api_key_bearer_is_not_marked_as_oidc():
+    connection = FakeRemoteConnection(
+        client_config=ClientConfig(
+            header_provider=StaticHeaderProvider(
+                {"Authorization": "Bearer static-api-key"}
+            )
+        )
+    )
+    options = sql_module._flight_call_options(
+        connection,
+        SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions),
+        "request-id",
+    )
+
+    headers = dict(options.headers)
+    assert headers[b"authorization"] == b"Bearer static-api-key"
     assert b"x-lancedb-credential-type" not in headers
 
 
