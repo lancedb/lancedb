@@ -25,8 +25,9 @@ class FakeRemoteConnection:
         db_name="analytics",
         host_override="http://localhost:10024",
         client_config=None,
+        api_key="test-key",
     ):
-        self.api_key = "test-key"
+        self.api_key = api_key
         self.db_name = db_name
         self.host_override = host_override
         self.client_config = client_config or ClientConfig()
@@ -193,7 +194,7 @@ def test_sql_rejects_invalid_database_name(monkeypatch, database):
         lancedb.sql("SELECT 1", database=database)
 
 
-@pytest.mark.parametrize("namespace_path", ["", "café"])
+@pytest.mark.parametrize("namespace_path", ["", "café", "pub\tlic"])
 def test_sql_rejects_invalid_namespace_path(monkeypatch, namespace_path):
     def connect(*args, **kwargs):
         pytest.fail("invalid namespace must be rejected before connecting")
@@ -566,6 +567,48 @@ def test_rejects_non_ascii_metadata():
     with pytest.raises(ValueError, match="metadata must be ASCII"):
         sql_module._flight_call_options(
             connection, sql_module._flight_module(), "request-id"
+        )
+
+
+@pytest.mark.parametrize(
+    "extra_headers",
+    [{"x-name": "line\nbreak"}, {"invalid key": "value"}],
+)
+def test_rejects_invalid_text_metadata(extra_headers):
+    connection = FakeRemoteConnection(
+        client_config=ClientConfig(extra_headers=extra_headers)
+    )
+
+    with pytest.raises(ValueError, match="metadata"):
+        sql_module._flight_call_options(
+            connection,
+            SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions),
+            "request-id",
+        )
+
+
+def test_rejects_api_key_with_control_characters():
+    with pytest.raises(ValueError, match="printable ASCII"):
+        sql_module._flight_call_options(
+            FakeRemoteConnection(api_key="test-key\n"),
+            SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions),
+            "request-id",
+        )
+
+
+def test_rejects_missing_flight_credentials():
+    connection = FakeRemoteConnection(
+        api_key="",
+        client_config=ClientConfig(
+            header_provider=StaticHeaderProvider({"x-trace-id": "trace-id"})
+        ),
+    )
+
+    with pytest.raises(ValueError, match="authentication credentials are required"):
+        sql_module._flight_call_options(
+            connection,
+            SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions),
+            "request-id",
         )
 
 

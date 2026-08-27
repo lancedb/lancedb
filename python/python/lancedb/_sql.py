@@ -200,10 +200,25 @@ def _flight_call_options(
     def add_headers(values: Dict[Any, Any]) -> None:
         for key, value in values.items():
             try:
-                encoded_key = str(key).lower().encode("ascii")
-                encoded_value = str(value).encode("ascii")
-            except UnicodeEncodeError as err:
+                encoded_key = (
+                    key.lower()
+                    if isinstance(key, bytes)
+                    else str(key).lower().encode("ascii")
+                )
+                encoded_value = (
+                    value if isinstance(value, bytes) else str(value).encode("ascii")
+                )
+            except (UnicodeEncodeError, AttributeError) as err:
                 raise ValueError(f"Flight SQL metadata must be ASCII: {key!r}") from err
+            valid_key_bytes = b"abcdefghijklmnopqrstuvwxyz0123456789-_."
+            if not encoded_key or any(
+                byte not in valid_key_bytes for byte in encoded_key
+            ):
+                raise ValueError(f"Invalid Flight SQL metadata key: {key!r}")
+            if any(byte < 0x20 or byte > 0x7E for byte in encoded_value):
+                raise ValueError(
+                    f"Flight SQL metadata must be printable ASCII: {key!r}"
+                )
             headers[encoded_key] = (encoded_key, encoded_value)
 
     extra_headers = connection.client_config.extra_headers or {}
@@ -217,6 +232,8 @@ def _flight_call_options(
             "Flight SQL accepts either authorization or x-api-key, not both"
         )
     if not credential_names.intersection({"authorization", "x-api-key"}):
+        if not connection.api_key:
+            raise ValueError("Flight SQL authentication credentials are required")
         add_headers({"authorization": f"Bearer {connection.api_key}"})
     add_headers(extra_headers)
     add_headers(provider_headers)
@@ -398,9 +415,11 @@ def _validate_namespace_path(namespace_path: str) -> None:
     if not isinstance(namespace_path, str) or not namespace_path:
         raise ValueError("lancedb.sql namespace_path must be a non-empty string")
     try:
-        namespace_path.encode("ascii")
+        encoded = namespace_path.encode("ascii")
     except UnicodeEncodeError as err:
         raise ValueError("lancedb.sql namespace_path must be ASCII") from err
+    if any(byte < 0x20 or byte > 0x7E for byte in encoded):
+        raise ValueError("lancedb.sql namespace_path must be printable ASCII")
 
 
 def _normalize_client_config(
