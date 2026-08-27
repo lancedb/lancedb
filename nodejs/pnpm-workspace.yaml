@@ -47,3 +47,10 @@ minimumReleaseAgeExclude:
   - js-yaml@4.3.1
   - tar@7.5.21
   - '@opentelemetry/core@2.8.0'
+
+# @huggingface/transformers pins sharp ^0.33.5 and no released version has moved
+# past ^0.34.5, all of which inherit the libvips CVEs in GHSA-f88m-g3jw-g9cj.
+# Force the patched line. sharp is only reached by transformers' image pipeline,
+# which LanceDB's text embedding function never uses.
+overrides:
+  sharp: ^0.35.4
