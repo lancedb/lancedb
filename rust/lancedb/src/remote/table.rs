@@ -5734,9 +5734,8 @@ mod tests {
             ))
             .execute()
             .await;
-        let err = match result {
-            Ok(_) => panic!("legacy remote query unexpectedly succeeded"),
-            Err(err) => err,
+        let Err(err) = result else {
+            panic!("legacy remote query unexpectedly succeeded")
         };
 
         assert!(
