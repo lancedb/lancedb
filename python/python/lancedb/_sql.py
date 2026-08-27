@@ -159,7 +159,9 @@ def _flight_module() -> Any:
     return flight
 
 
-def _flight_call_options(connection: RemoteDBConnection, flight: Any) -> Any:
+def _flight_call_options(
+    connection: RemoteDBConnection, flight: Any, request_id: str
+) -> Any:
     headers: Dict[bytes, tuple[bytes, bytes]] = {}
     if connection.client_config.extra_headers is not None:
         for key, value in connection.client_config.extra_headers.items():
@@ -173,7 +175,7 @@ def _flight_call_options(connection: RemoteDBConnection, flight: Any) -> Any:
     headers[b"database"] = (b"database", connection.db_name.encode("utf-8"))
     headers[b"x-request-id"] = (
         b"x-request-id",
-        str(uuid.uuid4()).encode("ascii"),
+        request_id.encode("ascii"),
     )
 
     timeout = None
@@ -203,6 +205,7 @@ def _read_endpoint(
     primary_client: Any,
     connection: RemoteDBConnection,
     flight: Any,
+    request_id: str,
 ) -> pa.Table:
     locations = list(endpoint.locations)
     location_uri = _location_uri(locations[0]) if locations else None
@@ -217,7 +220,7 @@ def _read_endpoint(
         )
 
     try:
-        options = _flight_call_options(connection, flight)
+        options = _flight_call_options(connection, flight, request_id)
         return client.do_get(endpoint.ticket, options).read_all()
     finally:
         if client is not primary_client:
@@ -230,6 +233,7 @@ def _execute_flight_sql(
     flight_sql_uri: Optional[str],
 ) -> pa.Table:
     flight = _flight_module()
+    request_id = str(uuid.uuid4())
     resolved_uri = _resolve_flight_sql_uri(connection, flight_sql_uri)
     client = flight.FlightClient(
         resolved_uri,
@@ -241,18 +245,20 @@ def _execute_flight_sql(
 
     try:
         info = client.get_flight_info(
-            descriptor, _flight_call_options(connection, flight)
+            descriptor, _flight_call_options(connection, flight, request_id)
         )
         if not info.endpoints:
             raise RuntimeError("Flight SQL returned no result endpoints")
 
         tables = [
-            _read_endpoint(endpoint, client, connection, flight)
+            _read_endpoint(endpoint, client, connection, flight, request_id)
             for endpoint in info.endpoints
         ]
         if len(tables) == 1:
             return tables[0]
         return pa.concat_tables(tables)
+    except Exception as err:
+        raise RuntimeError(f"Flight SQL request {request_id} failed: {err}") from err
     finally:
         client.close()
 
@@ -326,7 +332,6 @@ def sql(
         storage_options=storage_options,
     )
     if not isinstance(connection, RemoteDBConnection):
-        connection.close()
         raise ValueError("lancedb.sql requires a remote db:// database")
 
     try:

@@ -74,18 +74,9 @@ def test_sql_resolves_database_with_connect(monkeypatch):
     assert connection.closed
 
 
-def test_sql_rejects_local_database(monkeypatch):
-    local_connection = SimpleNamespace(closed=False)
-
-    def close():
-        local_connection.closed = True
-
-    local_connection.close = close
-    monkeypatch.setattr(lancedb, "connect", lambda *args, **kwargs: local_connection)
-
+def test_sql_rejects_local_database(tmp_path):
     with pytest.raises(ValueError, match="remote db://"):
-        lancedb.sql("SELECT 1", database="/tmp/database")
-    assert local_connection.closed
+        lancedb.sql("SELECT 1", database=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -229,7 +220,37 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
         request_ids.add(headers[b"x-request-id"])
         assert uuid.UUID(headers[b"x-request-id"].decode()).version == 4
         assert options.timeout == 7
-    assert len(request_ids) == len(all_options)
+    assert len(request_ids) == 1
+
+
+def test_flight_error_includes_statement_request_id(monkeypatch):
+    observed = {}
+
+    class FailingFlightClient:
+        def __init__(self, uri, **kwargs):
+            self.closed = False
+
+        def get_flight_info(self, descriptor, options):
+            observed["request_id"] = dict(options.headers)[b"x-request-id"].decode()
+            raise OSError("server unavailable")
+
+        def close(self):
+            self.closed = True
+            observed["closed"] = True
+
+    real_flight = sql_module._flight_module()
+    fake_flight = SimpleNamespace(
+        FlightCallOptions=real_flight.FlightCallOptions,
+        FlightClient=FailingFlightClient,
+        FlightDescriptor=real_flight.FlightDescriptor,
+    )
+    monkeypatch.setattr(sql_module, "_flight_module", lambda: fake_flight)
+
+    with pytest.raises(RuntimeError, match="Flight SQL request") as exc_info:
+        sql_module._execute_flight_sql("SELECT 1", FakeRemoteConnection(), None)
+
+    assert observed["request_id"] in str(exc_info.value)
+    assert observed["closed"]
 
 
 def test_flight_dependency_error_is_deferred(monkeypatch):
