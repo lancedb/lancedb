@@ -11,7 +11,6 @@ import uuid
 import pyarrow as pa
 
 from .background_loop import LOOP
-from .common import URI
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 
@@ -174,6 +173,7 @@ def _flight_call_options(
     flight: Any,
     request_id: str,
     *,
+    namespace_path: str = "public",
     streaming: bool = False,
     deadline: Optional[float] = None,
 ) -> Any:
@@ -205,6 +205,7 @@ def _flight_call_options(
     add_headers(
         {
             "database": connection.db_name,
+            "namespace_path": namespace_path,
             "x-request-id": request_id,
         }
     )
@@ -240,6 +241,7 @@ def _read_endpoint(
     request_id: str,
     primary_uri: str,
     deadline: Optional[float],
+    namespace_path: str = "public",
 ) -> pa.Table:
     locations = list(endpoint.locations)
     location_uri = _location_uri(locations[0]) if locations else None
@@ -262,6 +264,7 @@ def _read_endpoint(
             connection,
             flight,
             request_id,
+            namespace_path=namespace_path,
             streaming=True,
             deadline=deadline,
         )
@@ -275,6 +278,7 @@ def _execute_flight_sql(
     query: str,
     connection: RemoteDBConnection,
     flight_sql_uri: Optional[str],
+    namespace_path: str = "public",
 ) -> pa.Table:
     flight = _flight_module()
     request_id = str(uuid.uuid4())
@@ -297,7 +301,13 @@ def _execute_flight_sql(
     try:
         info = client.get_flight_info(
             descriptor,
-            _flight_call_options(connection, flight, request_id, deadline=deadline),
+            _flight_call_options(
+                connection,
+                flight,
+                request_id,
+                namespace_path=namespace_path,
+                deadline=deadline,
+            ),
         )
         if not info.endpoints:
             return pa.Table.from_batches([], schema=info.schema)
@@ -311,6 +321,7 @@ def _execute_flight_sql(
                 request_id,
                 resolved_uri,
                 deadline,
+                namespace_path,
             )
             for endpoint in info.endpoints
         ]
@@ -328,10 +339,50 @@ def _execute_flight_sql(
         client.close()
 
 
+def _database_uri(database: str) -> str:
+    if not isinstance(database, str) or not database:
+        raise ValueError("lancedb.sql database must be a non-empty database name")
+    try:
+        database.encode("ascii")
+    except UnicodeEncodeError as err:
+        raise ValueError("lancedb.sql database must be ASCII") from err
+
+    database_uri = f"db://{database}"
+    parsed = urlparse(database_uri)
+    try:
+        database_port = parsed.port
+    except ValueError as err:
+        raise ValueError(f"Invalid database name: {err}") from err
+    if (
+        parsed.netloc != database
+        or parsed.username is not None
+        or parsed.password is not None
+        or database_port is not None
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "lancedb.sql database must be a database name, not a URI or path"
+        )
+    return database_uri
+
+
+def _validate_namespace_path(namespace_path: str) -> None:
+    if not isinstance(namespace_path, str) or not namespace_path:
+        raise ValueError("lancedb.sql namespace_path must be a non-empty string")
+    try:
+        namespace_path.encode("ascii")
+    except UnicodeEncodeError as err:
+        raise ValueError("lancedb.sql namespace_path must be ASCII") from err
+
+
 def sql(
     query: str,
-    database: URI,
     *,
+    database: str = "lancedb",
+    namespace_path: str = "public",
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
@@ -341,17 +392,21 @@ def sql(
 ) -> pa.Table:
     """Execute a SQL statement through a LanceDB Flight SQL server.
 
-    The database is resolved with :func:`lancedb.connect` and becomes the
-    statement's default SQL catalog. Fully qualified table references can query
-    other databases available to the same server and credentials.
+    The logical database is resolved with :func:`lancedb.connect` and becomes
+    the statement's default SQL catalog. The namespace path becomes its default
+    SQL schema. Fully qualified table references can query other databases and
+    namespaces available to the same server and credentials.
 
     Parameters
     ----------
     query: str
         The SQL statement to execute.
-    database: str or Path
-        A remote ``db://`` database URI resolved through :func:`lancedb.connect`.
-        Database-prefix paths are not supported by Flight SQL.
+    database: str, default "lancedb"
+        The default SQL database. It is resolved internally as
+        ``db://<database>`` through :func:`lancedb.connect`.
+    namespace_path: str, default "public"
+        The default SQL namespace for unqualified table names. Nested namespace
+        paths use Sophon's ``$``-joined SQL representation.
     api_key: str, optional
         The API key used for the LanceDB connection and Flight SQL authentication.
         Can be set with the ``LANCEDB_API_KEY`` environment variable.
@@ -383,38 +438,20 @@ def sql(
     --------
     >>> import lancedb
     >>> result = lancedb.sql(  # doctest: +SKIP
-    ...     "SELECT * FROM analytics.public.events LIMIT 10",
-    ...     database="db://analytics",
+    ...     "SELECT * FROM events LIMIT 10",
+    ...     database="analytics",
+    ...     namespace_path="public",
     ...     api_key="ldb_...",
     ...     flight_sql_uri="grpc+tls://sql.example.com:10026",
     ... )
     """
     import lancedb
 
-    database_uri = str(database)
-    parsed_database = urlparse(database_uri)
-    if not database_uri.startswith("db://") or parsed_database.netloc == "":
-        raise ValueError("lancedb.sql requires a remote db:// database")
-    try:
-        database_port = parsed_database.port
-    except ValueError as err:
-        raise ValueError(f"Invalid database URI port: {err}") from err
-    if (
-        parsed_database.username is not None
-        or parsed_database.password is not None
-        or database_port is not None
-    ):
-        raise ValueError("lancedb.sql database URI must contain only a database name")
-    if (
-        parsed_database.path not in ("", "/")
-        or parsed_database.params
-        or parsed_database.query
-        or parsed_database.fragment
-    ):
-        raise ValueError("lancedb.sql does not support database URI prefixes")
+    database_uri = _database_uri(database)
+    _validate_namespace_path(namespace_path)
 
     connection = lancedb.connect(
-        database,
+        database_uri,
         api_key=api_key,
         region=region,
         host_override=host_override,
@@ -425,6 +462,11 @@ def sql(
         raise ValueError("lancedb.sql requires a remote db:// database")
 
     try:
-        return _execute_flight_sql(query, connection, flight_sql_uri)
+        return _execute_flight_sql(
+            query,
+            connection,
+            flight_sql_uri,
+            namespace_path,
+        )
     finally:
         LOOP.run(connection.close())

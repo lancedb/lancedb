@@ -21,11 +21,12 @@ class FakeRemoteConnection:
     def __init__(
         self,
         *,
+        db_name="analytics",
         host_override="http://localhost:10024",
         client_config=None,
     ):
         self.api_key = "test-key"
-        self.db_name = "analytics"
+        self.db_name = db_name
         self.host_override = host_override
         self.client_config = client_config or ClientConfig()
         self.closed = False
@@ -46,15 +47,23 @@ def test_sql_resolves_database_with_connect(monkeypatch):
 
     monkeypatch.setattr(lancedb, "connect", connect)
     monkeypatch.setattr(sql_module, "RemoteDBConnection", FakeRemoteConnection)
-    monkeypatch.setattr(
-        sql_module,
-        "_execute_flight_sql",
-        lambda query, resolved_connection, uri: expected,
-    )
+    execute_args = {}
+
+    def execute(query, resolved_connection, uri, namespace_path):
+        execute_args.update(
+            query=query,
+            connection=resolved_connection,
+            uri=uri,
+            namespace_path=namespace_path,
+        )
+        return expected
+
+    monkeypatch.setattr(sql_module, "_execute_flight_sql", execute)
 
     actual = lancedb.sql(
         "SELECT 1",
-        database="db://analytics",
+        database="analytics",
+        namespace_path="events$raw",
         api_key="test-key",
         region="us-east-2",
         host_override="http://localhost:10024",
@@ -71,47 +80,61 @@ def test_sql_resolves_database_with_connect(monkeypatch):
         "client_config": None,
         "storage_options": {"allow_http": "true"},
     }
+    assert execute_args == {
+        "query": "SELECT 1",
+        "connection": connection,
+        "uri": "grpc://localhost:10025",
+        "namespace_path": "events$raw",
+    }
     assert connection.closed
 
 
-def test_sql_rejects_local_database(monkeypatch, tmp_path):
-    def connect(*args, **kwargs):
-        pytest.fail("local database must be rejected before connecting")
+def test_sql_uses_default_database_and_namespace(monkeypatch):
+    connection = FakeRemoteConnection(db_name="lancedb")
+    observed = {}
+
+    def connect(database, **kwargs):
+        observed["database_uri"] = database
+        return connection
+
+    def execute(query, resolved_connection, uri, namespace_path):
+        observed["namespace_path"] = namespace_path
+        return pa.table({"value": [1]})
 
     monkeypatch.setattr(lancedb, "connect", connect)
-    with pytest.raises(ValueError, match="remote db://"):
-        lancedb.sql("SELECT 1", database=tmp_path)
+    monkeypatch.setattr(sql_module, "RemoteDBConnection", FakeRemoteConnection)
+    monkeypatch.setattr(sql_module, "_execute_flight_sql", execute)
 
+    lancedb.sql("SELECT 1")
 
-def test_sql_rejects_database_prefix(monkeypatch):
-    def connect(*args, **kwargs):
-        pytest.fail("database prefix must be rejected before connecting")
-
-    monkeypatch.setattr(lancedb, "connect", connect)
-    with pytest.raises(ValueError, match="does not support database URI prefixes"):
-        lancedb.sql("SELECT 1", database="db://analytics/tenant1")
-
-
-@pytest.mark.parametrize("database", ["DB://analytics", "db://"])
-def test_sql_rejects_invalid_remote_database(monkeypatch, database):
-    def connect(*args, **kwargs):
-        pytest.fail("invalid remote database must be rejected before connecting")
-
-    monkeypatch.setattr(lancedb, "connect", connect)
-    with pytest.raises(ValueError, match="remote db://"):
-        lancedb.sql("SELECT 1", database=database)
+    assert observed == {
+        "database_uri": "db://lancedb",
+        "namespace_path": "public",
+    }
+    assert connection.closed
 
 
 @pytest.mark.parametrize(
-    "database", ["db://user:password@analytics", "db://analytics:1234"]
+    "database",
+    ["", "db://analytics", "analytics/tenant1", "user@analytics", "analytics:1234"],
 )
-def test_sql_rejects_database_authority_details(monkeypatch, database):
+def test_sql_rejects_invalid_database_name(monkeypatch, database):
     def connect(*args, **kwargs):
-        pytest.fail("invalid database authority must be rejected before connecting")
+        pytest.fail("invalid database must be rejected before connecting")
 
     monkeypatch.setattr(lancedb, "connect", connect)
-    with pytest.raises(ValueError, match="must contain only a database name"):
+    with pytest.raises(ValueError, match="database"):
         lancedb.sql("SELECT 1", database=database)
+
+
+@pytest.mark.parametrize("namespace_path", ["", "café"])
+def test_sql_rejects_invalid_namespace_path(monkeypatch, namespace_path):
+    def connect(*args, **kwargs):
+        pytest.fail("invalid namespace must be rejected before connecting")
+
+    monkeypatch.setattr(lancedb, "connect", connect)
+    with pytest.raises(ValueError, match="namespace_path"):
+        lancedb.sql("SELECT 1", namespace_path=namespace_path)
 
 
 @pytest.mark.parametrize(
@@ -261,7 +284,9 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
         )
     )
 
-    result = sql_module._execute_flight_sql("SELECT 1", connection, None)
+    result = sql_module._execute_flight_sql(
+        "SELECT 1", connection, None, namespace_path="events$raw"
+    )
 
     assert result == pa.concat_tables([first, second])
     assert [client.uri for client in clients] == [
@@ -282,6 +307,7 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
         headers = dict(options.headers)
         assert headers[b"authorization"] == b"Bearer oauth-token"
         assert headers[b"database"] == b"analytics"
+        assert headers[b"namespace_path"] == b"events$raw"
         assert headers[b"x-extra"] == b"value"
         request_ids.add(headers[b"x-request-id"])
         assert uuid.UUID(headers[b"x-request-id"].decode()).version == 4
