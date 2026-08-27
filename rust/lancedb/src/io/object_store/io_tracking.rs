@@ -58,14 +58,12 @@ impl WrappingObjectStore for IoStatsHolder {
         })
     }
 
-    // This exists to count requests, so it gives up the pushdown rather than let a listing
-    // go around the counter.
     fn wrap_paginated(
         &self,
         _store_prefix: &str,
-        _original: Arc<dyn PaginatedListStore>,
+        original: Arc<dyn PaginatedListStore>,
     ) -> Option<Arc<dyn PaginatedListStore>> {
-        None
+        Some(original)
     }
 }
 
