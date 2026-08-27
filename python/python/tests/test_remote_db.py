@@ -1618,6 +1618,49 @@ def test_query_sync_fts():
         )
 
 
+def test_query_sync_fts_document_granularity():
+    from lancedb.query import DocumentGranularity, MatchQuery
+
+    def handler(body):
+        assert body == {
+            "full_text_query": {
+                "query": {
+                    "match": {
+                        "column": "docs.content",
+                        "terms": "alpha",
+                        "boost": 1.0,
+                        "fuzziness": 0,
+                        "max_expansions": 50,
+                        "operator": "Or",
+                        "prefix_length": 0,
+                        "document_granularity": "list_element",
+                    }
+                }
+            },
+            "k": 10,
+            "prefilter": True,
+            "vector": [],
+            "version": None,
+        }
+        return pa.table(
+            {
+                "id": [1, 1],
+                "_doc_index": pa.array([[0], [4]], type=pa.list_(pa.uint32())),
+            }
+        )
+
+    with query_test_table(handler, server_version=Version("0.6.0")) as table:
+        result = table.search(
+            MatchQuery(
+                "alpha",
+                "docs.content",
+                document_granularity=DocumentGranularity.LIST_ELEMENT,
+            )
+        ).to_arrow()
+
+    assert result["_doc_index"].to_pylist() == [[0], [4]]
+
+
 def test_query_sync_hybrid():
     def handler(body):
         if "full_text_query" in body:

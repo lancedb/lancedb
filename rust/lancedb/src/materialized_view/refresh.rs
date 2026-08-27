@@ -46,8 +46,9 @@ use lance_table::format::Fragment;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    INCARNATION_META_KEY, MaterializedViewDefinition, REFRESHED_AT_MS_META_KEY,
-    SOURCE_ROW_ID_COLUMN, SOURCE_VERSION_META_KEY,
+    DEFINITION_META_KEY, INCARNATION_META_KEY, MaterializedViewDefinition,
+    REFRESHED_AT_MS_META_KEY, SOURCE_ROW_ID_COLUMN, SOURCE_VERSION_META_KEY,
+    definition_to_metadata,
 };
 use crate::database::OpenTableRequest;
 use crate::table::{NativeTable, NativeTableExt, Table};
@@ -197,7 +198,27 @@ pub(crate) async fn execute_refresh(
             ),
         });
     }
+    let definition_changed =
+        definition.filter != replanned.filter || definition.inputs != replanned.inputs;
     let definition = &replanned;
+
+    // A watermark written for a legacy raw filter certifies the rows that
+    // filter produced, not the canonical predicate above. Rebuild instead of
+    // accepting or advancing it, and persist the migrated definition in the
+    // same metadata commit that certifies the replacement rows.
+    if definition_changed {
+        return rebuild(
+            view_native,
+            &view_ds,
+            &source_ds,
+            source_version,
+            source_ts,
+            definition,
+            true,
+            expected_incarnation,
+        )
+        .await;
+    }
 
     let metadata = &view_ds.schema().metadata;
     let watermark: Option<u64> = metadata
@@ -257,6 +278,7 @@ pub(crate) async fn execute_refresh(
                         source_version,
                         source_ts,
                         definition,
+                        false,
                         expected_incarnation,
                     )
                     .await
@@ -271,6 +293,7 @@ pub(crate) async fn execute_refresh(
                 source_version,
                 source_ts,
                 definition,
+                false,
                 expected_incarnation,
             )
             .await
@@ -683,6 +706,7 @@ async fn incremental(
             view_ds.clone(),
             source_version,
             source_ts,
+            None,
             expected_incarnation,
         )
         .await?;
@@ -704,6 +728,7 @@ async fn incremental(
             published,
             source_version,
             source_ts,
+            None,
             expected_incarnation,
         )
         .await?;
@@ -775,6 +800,7 @@ async fn incremental(
             published,
             source_version,
             source_ts,
+            None,
             expected_incarnation,
         )
         .await?;
@@ -824,12 +850,14 @@ async fn incremental(
         appended,
         source_version,
         source_ts,
+        None,
         expected_incarnation,
     )
     .await?;
     Ok(Some(result))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn rebuild(
     view_native: &NativeTable,
     view_ds: &Dataset,
@@ -837,6 +865,7 @@ async fn rebuild(
     source_version: u64,
     source_ts: u128,
     definition: &MaterializedViewDefinition,
+    persist_definition: bool,
     expected_incarnation: Option<&str>,
 ) -> Result<RefreshMaterializedViewResult> {
     let rows_written = Arc::new(AtomicU64::new(0));
@@ -867,6 +896,7 @@ async fn rebuild(
         replaced,
         source_version,
         source_ts,
+        persist_definition.then_some(definition),
         expected_incarnation,
     )
     .await?;
@@ -981,6 +1011,7 @@ async fn stamp_watermark(
     mut dataset: Dataset,
     source_version: u64,
     source_ts: u128,
+    definition: Option<&MaterializedViewDefinition>,
     expected_incarnation: Option<&str>,
 ) -> Result<u64> {
     ensure_incarnation(&dataset, expected_incarnation, dataset.uri()).await?;
@@ -993,27 +1024,32 @@ async fn stamp_watermark(
         .get(INCARNATION_META_KEY)
         .cloned()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    dataset
-        .update_schema_metadata([
-            (INCARNATION_META_KEY.to_string(), Some(incarnation)),
-            (
-                SOURCE_VERSION_META_KEY.to_string(),
-                Some(source_version.to_string()),
-            ),
-            (
-                SOURCE_VERSION_TS_META_KEY.to_string(),
-                Some(source_ts.to_string()),
-            ),
-            (
-                REFRESHED_AT_MS_META_KEY.to_string(),
-                Some(now_ms().to_string()),
-            ),
-            (
-                VIEW_VERSION_META_KEY.to_string(),
-                Some(predicted.to_string()),
-            ),
-        ])
-        .await?;
+    let mut metadata = vec![(INCARNATION_META_KEY.to_string(), Some(incarnation))];
+    if let Some(definition) = definition {
+        metadata.push((
+            DEFINITION_META_KEY.to_string(),
+            Some(definition_to_metadata(definition)?),
+        ));
+    }
+    metadata.extend([
+        (
+            SOURCE_VERSION_META_KEY.to_string(),
+            Some(source_version.to_string()),
+        ),
+        (
+            SOURCE_VERSION_TS_META_KEY.to_string(),
+            Some(source_ts.to_string()),
+        ),
+        (
+            REFRESHED_AT_MS_META_KEY.to_string(),
+            Some(now_ms().to_string()),
+        ),
+        (
+            VIEW_VERSION_META_KEY.to_string(),
+            Some(predicted.to_string()),
+        ),
+    ]);
+    dataset.update_schema_metadata(metadata).await?;
     let actual = dataset.version().version;
     if actual != predicted {
         return Err(Error::Runtime {
@@ -1583,6 +1619,106 @@ mod tests {
         let result = view.refresh().execute().await.unwrap();
         assert_eq!(result.rows_written, 2);
         assert_eq!(read(view.table(), "x").await, vec![20, 40]);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_case_filter_is_canonicalized_for_lineage_and_refresh() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("PartyAbbrev", Utf8, ["D", "R", "D"])
+        )
+        .unwrap();
+        conn.create_table("src", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        conn.create_materialized_view("democrats", "src")
+            .select([("id", "id")])
+            .only_if(r#""PartyAbbrev" = 'D'"#)
+            .execute()
+            .await
+            .unwrap();
+
+        // Reopen from schema metadata so these assertions cover the stored
+        // predicate and lineage, not only the declaration-time handle.
+        let view = conn.open_materialized_view("democrats").await.unwrap();
+        assert_eq!(
+            view.definition().filter.as_deref(),
+            Some("`PartyAbbrev` = 'D'")
+        );
+        assert_eq!(view.definition().inputs, ["PartyAbbrev", "id"]);
+
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.rows_written, 2);
+        assert_eq!(read(view.table(), "id").await, vec![1, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_legacy_raw_filter_rebuilds_and_persists_canonical_definition() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("PartyAbbrev", Utf8, ["D", "R", "D"])
+        )
+        .unwrap();
+        conn.create_table("legacy_src", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("legacy_view", "legacy_src")
+            .select([("id", "id")])
+            .only_if(r#""PartyAbbrev" = 'X'"#)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 0);
+
+        // Model a definition and up-to-date watermark written before filter
+        // canonicalization was applied to materialized views.
+        let mut legacy = view.definition().clone();
+        legacy.filter = Some(r#""PartyAbbrev" = 'D'"#.into());
+        legacy.inputs = vec!["id".into()];
+        let native = view.table().as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        let predicted = dataset.version().version + 1;
+        dataset
+            .update_schema_metadata([
+                (
+                    DEFINITION_META_KEY.to_string(),
+                    Some(definition_to_metadata(&legacy).unwrap()),
+                ),
+                (
+                    VIEW_VERSION_META_KEY.to_string(),
+                    Some(predicted.to_string()),
+                ),
+            ])
+            .await
+            .unwrap();
+        native.dataset.update(dataset);
+
+        let reopened = conn.open_materialized_view("legacy_view").await.unwrap();
+        let result = reopened.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 2);
+        assert_eq!(read(reopened.table(), "id").await, vec![1, 3]);
+
+        // A fresh handle proves the migration was stored alongside the new
+        // watermark and therefore happens only once.
+        let migrated = conn.open_materialized_view("legacy_view").await.unwrap();
+        assert_eq!(
+            migrated.definition().filter.as_deref(),
+            Some("`PartyAbbrev` = 'D'")
+        );
+        assert_eq!(migrated.definition().inputs, ["PartyAbbrev", "id"]);
+        assert_eq!(
+            migrated.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+        assert_eq!(read(migrated.table(), "id").await, vec![1, 3]);
     }
 
     #[tokio::test]
@@ -2767,7 +2903,7 @@ mod tests {
         let stale = view_native.dataset.get().await.unwrap().as_ref().clone();
         view.table().delete("x = 1").await.unwrap();
 
-        let err = stamp_watermark(view_native, stale, 99, 99, None).await;
+        let err = stamp_watermark(view_native, stale, 99, 99, None, None).await;
         assert!(err.is_err());
 
         let result = view.refresh().execute().await.unwrap();

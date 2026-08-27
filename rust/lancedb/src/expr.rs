@@ -19,6 +19,7 @@
 
 mod sql;
 
+pub(crate) use sql::canonicalize_sql_predicate;
 pub use sql::expr_to_sql_string;
 
 use std::sync::Arc;

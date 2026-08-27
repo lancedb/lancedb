@@ -6,6 +6,9 @@ import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
 import {
+  Field as CurrentField,
+  LargeBinary as CurrentLargeBinary,
+  Schema as CurrentSchema,
   Vector as CurrentVector,
   convertToTable,
   tableFromIPC as currentTableFromIPC,
@@ -36,6 +39,24 @@ function sampleRecords(): Array<Record<string, any>> {
     },
   ];
 }
+
+it("preserves field metadata from a provided schema", async function () {
+  const jsonMetadata = new Map([["ARROW:extension:name", "lance.json"]]);
+  const schema = new CurrentSchema([
+    new CurrentField("meta", new CurrentLargeBinary(), true, jsonMetadata),
+  ]);
+
+  const table = makeArrowTable(
+    [{ meta: Buffer.from(JSON.stringify({ source: "test" })) }],
+    { schema },
+  );
+
+  expect(table.schema.fields[0].metadata).toEqual(jsonMetadata);
+
+  const roundTripped = currentTableFromIPC(await fromTableToBuffer(table));
+  expect(roundTripped.schema.fields[0].metadata).toEqual(jsonMetadata);
+});
+
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Arrow",
   (
