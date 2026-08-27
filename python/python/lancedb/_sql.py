@@ -205,7 +205,7 @@ def _flight_call_options(
     add_headers(
         {
             "database": connection.db_name,
-            "namespace_path": namespace_path,
+            "namespace-path": namespace_path,
             "x-request-id": request_id,
         }
     )

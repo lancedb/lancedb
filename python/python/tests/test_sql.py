@@ -307,7 +307,7 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
         headers = dict(options.headers)
         assert headers[b"authorization"] == b"Bearer oauth-token"
         assert headers[b"database"] == b"analytics"
-        assert headers[b"namespace_path"] == b"events$raw"
+        assert headers[b"namespace-path"] == b"events$raw"
         assert headers[b"x-extra"] == b"value"
         request_ids.add(headers[b"x-request-id"])
         assert uuid.UUID(headers[b"x-request-id"].decode()).version == 4
