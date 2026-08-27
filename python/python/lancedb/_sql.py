@@ -402,6 +402,25 @@ def _validate_namespace_path(namespace_path: str) -> None:
         raise ValueError("lancedb.sql namespace_path must be ASCII") from err
 
 
+def _normalize_client_config(
+    client_config: Union[ClientConfig, Dict[str, Any], None],
+) -> Optional[ClientConfig]:
+    if isinstance(client_config, dict):
+        return ClientConfig(**client_config)
+    return client_config
+
+
+def _has_configured_credentials(client_config: Optional[ClientConfig]) -> bool:
+    if client_config is None:
+        return False
+    if client_config.header_provider is not None:
+        return True
+    header_names = {
+        str(key).lower() for key in (client_config.extra_headers or {}).keys()
+    }
+    return bool(header_names.intersection({"authorization", "x-api-key"}))
+
+
 def sql(
     query: str,
     *,
@@ -451,7 +470,9 @@ def sql(
         uses a 300-second planning timeout when neither an overall nor read
         timeout is set. ``LANCE_CLIENT_TIMEOUT`` and
         ``LANCE_CLIENT_READ_TIMEOUT`` provide the same environment fallbacks as
-        the REST client. Only an overall timeout caps result streaming.
+        the REST client. Only an overall timeout caps result streaming. A custom
+        header provider returning an OIDC bearer token must also return
+        ``x-lancedb-credential-type: oidc``.
     storage_options: dict, optional
         Storage options forwarded to :func:`lancedb.connect`.
 
@@ -475,13 +496,19 @@ def sql(
 
     database_uri = _database_uri(database)
     _validate_namespace_path(namespace_path)
+    resolved_client_config = _normalize_client_config(client_config)
+    connection_api_key = api_key
+    if connection_api_key is None and _has_configured_credentials(
+        resolved_client_config
+    ):
+        connection_api_key = ""
 
     connection = lancedb.connect(
         database_uri,
-        api_key=api_key,
+        api_key=connection_api_key,
         region=region,
         host_override=host_override,
-        client_config=client_config,
+        client_config=resolved_client_config,
         storage_options=storage_options,
     )
     if not isinstance(connection, RemoteDBConnection):

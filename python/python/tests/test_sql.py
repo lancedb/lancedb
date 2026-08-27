@@ -127,6 +127,32 @@ def test_sql_uses_default_database_and_namespace(monkeypatch):
     assert connection.closed
 
 
+def test_sql_allows_header_credentials_without_api_key(monkeypatch):
+    connection = FakeRemoteConnection()
+    observed = {}
+    client_config = ClientConfig(
+        header_provider=OAuthProvider(lambda: {"access_token": "oauth-token"})
+    )
+
+    def connect(database, **kwargs):
+        observed.update(kwargs)
+        return connection
+
+    monkeypatch.setattr(lancedb, "connect", connect)
+    monkeypatch.setattr(sql_module, "RemoteDBConnection", FakeRemoteConnection)
+    monkeypatch.setattr(
+        sql_module,
+        "_execute_flight_sql",
+        lambda *args, **kwargs: pa.table({"value": [1]}),
+    )
+
+    lancedb.sql("SELECT 1", client_config=client_config)
+
+    assert observed["api_key"] == ""
+    assert observed["client_config"] is client_config
+    assert connection.closed
+
+
 @pytest.mark.parametrize(
     "database",
     ["", "db://analytics", "analytics/tenant1", "user@analytics", "analytics:1234"],
