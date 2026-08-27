@@ -150,12 +150,18 @@ jobs:
               # The linker `clang` needs to target aarch64 and use lld. Paths
               # are the ones the image's own CFLAGS use; see the Dockerfile
               # linked above.
-              printf '%s\n' '#!/bin/sh' 'exec clang --target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot --gcc-toolchain=/usr/aarch64-unknown-linux-gnu -fuse-ld=lld "$@"' > /tmp/aarch64-lld-clang
+              # Two echoes rather than one printf with a newline escape in its
+              # format string: something between this file and the container
+              # rewrites that escape to a `;`, so printf produced the single
+              # line `#!/bin/sh;exec clang ...`. The kernel then read
+              # the interpreter as `/bin/sh;exec` and the wrapper failed with a
+              # bare "not found". echo's newline is generated at run time inside
+              # the container, so nothing can rewrite it.
+              echo '#!/bin/sh' > /tmp/aarch64-lld-clang
+              echo 'exec clang --target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot --gcc-toolchain=/usr/aarch64-unknown-linux-gnu -fuse-ld=lld "$@"' >> /tmp/aarch64-lld-clang
               chmod 0755 /tmp/aarch64-lld-clang
-              # Show the wrapper as written. A previous attempt at
-              # /usr/local/bin failed with a bare "not found" from the shell
-              # with no error from the write itself, so print enough to tell a
-              # missing file from a bad shebang next time.
+              # Print the wrapper as written, so a mangled shebang is visible
+              # here rather than as a bare "not found" 30 minutes later.
               ls -l /tmp/aarch64-lld-clang
               od -c /tmp/aarch64-lld-clang | head -3
               # Link a trivial program through the wrapper the build will use.
