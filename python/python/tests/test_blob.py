@@ -8,7 +8,12 @@ import pyarrow.compute as pc
 import pytest
 
 import lancedb
-from lancedb._blob import read_row_ids_from_hits, stash_auto_row_ids
+from lancedb._blob import (
+    blob_v2_projection_sources,
+    read_row_ids_from_hits,
+    stash_auto_row_ids,
+)
+from lancedb.expr import col
 from lancedb.index import FTS
 from lancedb.schema import blob_column_paths, blob_v2_column_paths
 
@@ -68,6 +73,14 @@ def test_blob_v2_column_paths_include_list_children():
         "large_images.large_image",
         "fixed_images.fixed_image",
     ]
+
+
+def test_blob_v2_projection_sources_use_typed_column_name():
+    schema = pa.schema([lancedb.blob("blob")])
+
+    assert blob_v2_projection_sources(schema, {"blob_alias": col("blob")}) == {
+        "blob_alias": "blob"
+    }
 
 
 def _legacy_v1_table(name):
@@ -164,6 +177,20 @@ async def test_async_table_to_pandas_descriptions_mode_omits_row_id():
     descriptor = df["image"].iloc[0]
     assert "_lance_row_id" not in descriptor
     assert set(descriptor.keys()) == {"kind", "position", "size", "blob_id", "blob_uri"}
+
+
+@pytest.mark.asyncio
+async def test_async_typed_blob_projection_preserves_source_column():
+    db = await lancedb.connect_async("memory:///typed_blob_projection")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = await db.create_table("typed_blob_projection", schema=schema)
+    await table.add([{"id": 1, "blob": b"alpha"}])
+
+    hits = await table.query().select({"blob_alias": col("blob")}).to_arrow()
+
+    assert "_lance_row_id" in hits.schema.field("blob_alias").type.names
+    blobs = await table.fetch_blobs("blob", hits)
+    assert blobs.to_pylist() == [b"alpha"]
 
 
 def test_fetch_blobs_round_trip():
@@ -400,6 +427,50 @@ async def test_blob_v2_hybrid_fetch_blobs_async():
     assert "_rowid" not in hits.column_names
     assert "_lance_row_id" in hits.schema.field("image").type.names
     blobs = await table.fetch_blobs("image", hits)
+    assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_typed_blob_projection_preserves_source_column():
+    db = await lancedb.connect_async("memory:///hybrid_typed_blob")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("text", pa.utf8()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            lancedb.blob("blob"),
+        ]
+    )
+    table = await db.create_table("hybrid_typed_blob", schema=schema)
+    await table.add(
+        [
+            {
+                "id": 1,
+                "text": "hello alpha",
+                "vector": [1.0, 0.0],
+                "blob": b"alpha",
+            },
+            {
+                "id": 2,
+                "text": "hello beta",
+                "vector": [0.9, 0.1],
+                "blob": b"beta",
+            },
+        ]
+    )
+    await table.create_index("text", config=FTS(with_position=False))
+
+    hits = await (
+        table.query()
+        .nearest_to([1.0, 0.0])
+        .nearest_to_text("hello")
+        .select({"blob_alias": col("blob")})
+        .limit(2)
+        .to_arrow()
+    )
+
+    assert "_lance_row_id" in hits.schema.field("blob_alias").type.names
+    blobs = await table.fetch_blobs("blob", hits)
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
 
 

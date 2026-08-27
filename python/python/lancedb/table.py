@@ -1744,7 +1744,7 @@ class Table(ABC):
     @abstractmethod
     def update(
         self,
-        where: Optional[str] = None,
+        where: Optional[Union[str, Expr]] = None,
         values: Optional[dict] = None,
         *,
         values_sql: Optional[Dict[str, str]] = None,
@@ -1759,9 +1759,11 @@ class Table(ABC):
 
         Parameters
         ----------
-        where: str, optional
-            The SQL where clause to use when updating rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        where: str or [Expr][lancedb.expr.Expr], optional
+            The filter condition. Can be a SQL string or a type-safe
+            [Expr][lancedb.expr.Expr] built with [col][lancedb.expr.col] and
+            [lit][lancedb.expr.lit]. The filter must not be empty, or it will
+            error.
         values: dict, optional
             The values to update. The keys are the column names and the values
             are the values to set.
@@ -1779,6 +1781,7 @@ class Table(ABC):
         Examples
         --------
         >>> import lancedb
+        >>> from lancedb.expr import col
         >>> import pandas as pd
         >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
@@ -1788,7 +1791,7 @@ class Table(ABC):
         0  1  [1.0, 2.0]
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
-        >>> table.update(where="x = 2", values={"vector": [10.0, 10]})
+        >>> table.update(where=col("x") == 2, values={"vector": [10.0, 10]})
         UpdateResult(rows_updated=1, version=2)
         >>> table.to_pandas()
            x        vector
@@ -3841,7 +3844,7 @@ class LanceTable(Table):
 
     def update(
         self,
-        where: Optional[str] = None,
+        where: Optional[Union[str, Expr]] = None,
         values: Optional[dict] = None,
         *,
         values_sql: Optional[Dict[str, str]] = None,
@@ -3852,9 +3855,11 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        where: str, optional
-            The SQL where clause to use when updating rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        where: str or [Expr][lancedb.expr.Expr], optional
+            The filter condition. Can be a SQL string or a type-safe
+            [Expr][lancedb.expr.Expr] built with [col][lancedb.expr.col] and
+            [lit][lancedb.expr.lit]. The filter must not be empty, or it will
+            error.
         values: dict, optional
             The values to update. The keys are the column names and the values
             are the values to set.
@@ -3872,6 +3877,7 @@ class LanceTable(Table):
         Examples
         --------
         >>> import lancedb
+        >>> from lancedb.expr import col
         >>> import pandas as pd
         >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
@@ -3881,7 +3887,7 @@ class LanceTable(Table):
         0  1  [1.0, 2.0]
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
-        >>> table.update(where="x = 2", values={"vector": [10.0, 10]})
+        >>> table.update(where=col("x") == 2, values={"vector": [10.0, 10]})
         UpdateResult(rows_updated=1, version=2)
         >>> table.to_pandas()
            x        vector
@@ -5995,7 +6001,7 @@ class AsyncTable:
         self,
         updates: Optional[Dict[str, Any]] = None,
         *,
-        where: Optional[str] = None,
+        where: Optional[Union[str, Expr]] = None,
         updates_sql: Optional[Dict[str, str]] = None,
     ) -> UpdateResult:
         """
@@ -6010,9 +6016,11 @@ class AsyncTable:
             The updates to apply.  The keys should be the name of the column to
             update.  The values should be the new values to assign.  This is
             required unless updates_sql is supplied.
-        where: str, optional
-            An SQL filter that controls which rows are updated. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'.  Only rows that satisfy this filter will be udpated.
+        where: str or [Expr][lancedb.expr.Expr], optional
+            The filter condition. Can be a SQL string or a type-safe
+            [Expr][lancedb.expr.Expr] built with [col][lancedb.expr.col] and
+            [lit][lancedb.expr.lit]. Only rows that satisfy this filter will
+            be updated.
         updates_sql: dict, optional
             The updates to apply, expressed as SQL expression strings.  The keys should
             be column names. The values should be SQL expressions.  These can be SQL
@@ -6030,13 +6038,14 @@ class AsyncTable:
         --------
         >>> import asyncio
         >>> import lancedb
+        >>> from lancedb.expr import col
         >>> import pandas as pd
         >>> async def demo_update():
         ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
         ...     db = await lancedb.connect_async("./.lancedb")
         ...     table = await db.create_table("my_table", data)
         ...     # x is [1, 2], vector is [[1, 2], [3, 4]]
-        ...     await table.update({"vector": [10, 10]}, where="x = 2")
+        ...     await table.update({"vector": [10, 10]}, where=col("x") == 2)
         ...     # x is [1, 2], vector is [[1, 2], [10, 10]]
         ...     await table.update(updates_sql={"x": "x + 1"})
         ...     # x is [2, 3], vector is [[1, 2], [10, 10]]
@@ -6050,7 +6059,8 @@ class AsyncTable:
         if updates is not None:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
 
-        return await self._inner.update(updates_sql, where)
+        predicate = where.to_sql() if isinstance(where, Expr) else where
+        return await self._inner.update(updates_sql, predicate)
 
     async def add_columns(
         self,
