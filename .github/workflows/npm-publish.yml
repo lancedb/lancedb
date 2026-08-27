@@ -117,9 +117,20 @@ jobs:
             # `clang` is named as the driver because rustc links through `cc`,
             # and GCC honours `-fuse-ld=lld` only if it was built with lld
             # support, silently ignoring it otherwise. The napi-rs image ships
-            # clang-18, which has it.
+            # clang-18 and lld-18, which do.
+            #
+            # clang is a single cross-capable binary, so it needs to be told
+            # what it is linking for. Without `--target` it defaults to the
+            # x86_64 host and hands aarch64 objects to /usr/bin/ld, which
+            # rejects them with "Relocations in generic ELF (EM: 183)". The
+            # sysroot and toolchain paths are the ones the image's own CFLAGS
+            # use; see the Dockerfile linked above.
             linker: clang
-            linker_flags: -C link-arg=-fuse-ld=lld
+            linker_flags: >-
+              -C link-arg=--target=aarch64-unknown-linux-gnu
+              -C link-arg=--sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot
+              -C link-arg=--gcc-toolchain=/usr/aarch64-unknown-linux-gnu
+              -C link-arg=-fuse-ld=lld
             pre_build: |-
               set -e &&
               apt-get update &&
@@ -128,7 +139,19 @@ jobs:
               # The manylinux2014 sysroot has glibc 2.17 headers which lack
               # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.
               export CFLAGS="$CFLAGS -DAT_HWCAP2=26" &&
-              rustup target add aarch64-unknown-linux-gnu
+              rustup target add aarch64-unknown-linux-gnu &&
+              # Link a trivial program with exactly the flags configured above.
+              # The real link is the last thing the build does, ~30 minutes in,
+              # so without this a wrong linker config costs a full build to
+              # discover. This costs seconds and fails the job immediately.
+              echo 'int main(void){return 0;}' > /tmp/probe.c &&
+              clang --target=aarch64-unknown-linux-gnu \
+                --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot \
+                --gcc-toolchain=/usr/aarch64-unknown-linux-gnu \
+                -fuse-ld=lld /tmp/probe.c -o /tmp/probe &&
+              readelf -h /tmp/probe | grep -E 'Machine|Type' &&
+              clang --target=aarch64-unknown-linux-gnu -fuse-ld=lld \
+                -print-prog-name=ld.lld
           - target: aarch64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             features: ","
