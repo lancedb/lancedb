@@ -7,13 +7,17 @@
 //! This module contains client/wire values only. Catalog persistence,
 //! environment bake, secret resolution, and execution are owned by Sophon.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::de::{self, DeserializeOwned};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::{Error, Result};
+
+// Keep these byte limits aligned with Sophon's Function submission validation.
+pub(crate) const MAX_FUNCTION_SECRET_VALUE_BYTES: usize = 64 * 1024;
+const MAX_FUNCTION_SECRET_VALUES_BYTES: usize = 512 * 1024;
 
 fn invalid_json(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
@@ -427,6 +431,56 @@ pub struct FunctionRegistrationRequest {
     pub secret_values: BTreeMap<String, String>,
 }
 
+impl FunctionRegistrationRequest {
+    pub(crate) fn validate_secret_values(&self) -> Result<()> {
+        let required = self.required_secrets.iter().collect::<BTreeSet<_>>();
+        let provided = self.secret_values.keys().collect::<BTreeSet<_>>();
+        if required != provided {
+            return Err(Error::InvalidInput {
+                message: "Function secret_values keys must exactly match required_secrets"
+                    .to_string(),
+            });
+        }
+
+        let mut total_bytes = 0usize;
+        for (name, value) in &self.secret_values {
+            if value.is_empty() {
+                return Err(Error::InvalidInput {
+                    message: format!("Function secret {name:?} value must be non-empty"),
+                });
+            }
+            if value.contains('\0') {
+                return Err(Error::InvalidInput {
+                    message: format!("Function secret {name:?} value must not contain NUL"),
+                });
+            }
+            if value.len() > MAX_FUNCTION_SECRET_VALUE_BYTES {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Function secret {name:?} value exceeds the \
+                         {MAX_FUNCTION_SECRET_VALUE_BYTES}-byte limit"
+                    ),
+                });
+            }
+            total_bytes =
+                total_bytes
+                    .checked_add(value.len())
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "Function secret values exceed the request byte limit".to_string(),
+                    })?;
+        }
+        if total_bytes > MAX_FUNCTION_SECRET_VALUES_BYTES {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Function secret values exceed the \
+                     {MAX_FUNCTION_SECRET_VALUES_BYTES}-byte request limit"
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for FunctionRegistrationRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let secret_values = self
@@ -627,6 +681,103 @@ impl RefreshColumnResult {
 }
 
 impl_json!(RefreshColumnResult);
+
+#[cfg(test)]
+mod secret_value_tests {
+    use super::{
+        FunctionRegistrationRequest, MAX_FUNCTION_SECRET_VALUE_BYTES,
+        MAX_FUNCTION_SECRET_VALUES_BYTES,
+    };
+    use crate::Error;
+
+    fn request() -> FunctionRegistrationRequest {
+        FunctionRegistrationRequest::from_json(include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn validates_secret_name_and_value_invariants() {
+        let missing = request();
+        assert!(matches!(
+            missing.validate_secret_values(),
+            Err(Error::InvalidInput { message }) if message.contains("exactly match")
+        ));
+
+        let mut empty = request();
+        empty
+            .secret_values
+            .insert("API_TOKEN".to_string(), String::new());
+        assert!(matches!(
+            empty.validate_secret_values(),
+            Err(Error::InvalidInput { message }) if message.contains("non-empty")
+        ));
+
+        let mut nul = request();
+        nul.secret_values
+            .insert("API_TOKEN".to_string(), "before\0after".to_string());
+        assert!(matches!(
+            nul.validate_secret_values(),
+            Err(Error::InvalidInput { message }) if message.contains("NUL")
+        ));
+
+        let mut unexpected = request();
+        unexpected
+            .secret_values
+            .insert("OTHER".to_string(), "value".to_string());
+        assert!(matches!(
+            unexpected.validate_secret_values(),
+            Err(Error::InvalidInput { message }) if message.contains("exactly match")
+        ));
+    }
+
+    #[test]
+    fn accepts_exact_secret_value_utf8_byte_limit() {
+        for value in [
+            "x".repeat(MAX_FUNCTION_SECRET_VALUE_BYTES),
+            "é".repeat(MAX_FUNCTION_SECRET_VALUE_BYTES / "é".len()),
+        ] {
+            assert_eq!(value.len(), MAX_FUNCTION_SECRET_VALUE_BYTES);
+            let mut request = request();
+            request.secret_values.insert("API_TOKEN".to_string(), value);
+            request.validate_secret_values().unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_secret_value_over_utf8_byte_limit() {
+        for value in [
+            "x".repeat(MAX_FUNCTION_SECRET_VALUE_BYTES + 1),
+            "é".repeat(MAX_FUNCTION_SECRET_VALUE_BYTES / "é".len() + 1),
+        ] {
+            assert!(value.len() > MAX_FUNCTION_SECRET_VALUE_BYTES);
+            let mut request = request();
+            request.secret_values.insert("API_TOKEN".to_string(), value);
+            assert!(matches!(
+                request.validate_secret_values(),
+                Err(Error::InvalidInput { message }) if message.contains("65536-byte limit")
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_aggregate_secret_value_bytes_over_server_limit() {
+        let mut request = request();
+        request.required_secrets = (0..9).map(|index| format!("SECRET_{index}")).collect();
+        request.secret_values = request
+            .required_secrets
+            .iter()
+            .map(|name| (name.clone(), "x".repeat(MAX_FUNCTION_SECRET_VALUE_BYTES)))
+            .collect();
+
+        assert!(matches!(
+            request.validate_secret_values(),
+            Err(Error::InvalidInput { message })
+                if message.contains(&format!("{MAX_FUNCTION_SECRET_VALUES_BYTES}-byte request limit"))
+        ));
+    }
+}
 
 #[cfg(test)]
 mod conda_environment_tests {

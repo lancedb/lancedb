@@ -45,6 +45,31 @@ fn redacted_json_body(request: &Request) -> Option<String> {
     serde_json::to_string(&value).ok()
 }
 
+fn request_log_message(request: &Request, request_id: &str) -> String {
+    let prefix = format!(
+        "Sending request_id={}: {} {}",
+        request_id,
+        request.method(),
+        request.url()
+    );
+    let content_type = request
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next());
+    if content_type.is_some_and(|value| value.eq_ignore_ascii_case("application/json")) {
+        // Never format the raw Request here: its Debug representation is not a
+        // redaction boundary and may include the original body. If the JSON body
+        // cannot be structurally parsed, suppress it instead of logging raw bytes.
+        let body = redacted_json_body(request).unwrap_or_else(|| SUPPRESSED_JSON_BODY.to_string());
+        format!("{prefix} with body {body}")
+    } else {
+        // Method and URL are sufficient request context. Raw Request formatting
+        // may expose headers or a non-JSON body, so it is never a logging fallback.
+        prefix
+    }
+}
+
 /// Configuration for TLS/mTLS settings.
 #[derive(Clone, Debug)]
 pub struct TlsConfig {
@@ -871,27 +896,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
 
     pub(crate) fn log_request(&self, request: &Request, request_id: &String) {
         if log::log_enabled!(log::Level::Debug) {
-            let content_type = request
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(';').next());
-            if content_type.is_some_and(|value| value.eq_ignore_ascii_case("application/json")) {
-                // Never format the raw Request here: its Debug representation is not a
-                // redaction boundary and may include the original body. If the JSON body
-                // cannot be structurally parsed, suppress it instead of logging raw bytes.
-                let body =
-                    redacted_json_body(request).unwrap_or_else(|| SUPPRESSED_JSON_BODY.to_string());
-                debug!(
-                    "Sending request_id={}: {} {} with body {}",
-                    request_id,
-                    request.method(),
-                    request.url(),
-                    body
-                );
-            } else {
-                debug!("Sending request_id={}: {:?}", request_id, request);
-            }
+            debug!("{}", request_log_message(request, request_id));
         }
     }
 
@@ -1102,102 +1107,59 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use log::{Log, Metadata, Record};
     use serial_test::serial;
-    use std::{
-        sync::{
-            Once,
-            atomic::{AtomicBool, Ordering},
-        },
-        time::Duration,
-    };
+    use std::time::Duration;
 
     // Serializes the env-var-mutating tests below: cargo test runs tests in
     // parallel, but several of these tests read and write the same process-
     // global env vars (`LANCEDB_USER_ID*`), so they would race without this.
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    static CAPTURED_LOGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    static CAPTURE_LOGS: AtomicBool = AtomicBool::new(false);
-    static LOGGER_INIT: Once = Once::new();
-
-    struct CaptureLogger;
-
-    impl Log for CaptureLogger {
-        fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-            metadata.level() <= log::Level::Debug
-        }
-
-        fn log(&self, record: &Record<'_>) {
-            if self.enabled(record.metadata()) && CAPTURE_LOGS.load(Ordering::Relaxed) {
-                CAPTURED_LOGS
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .push(format!("{} {}", record.target(), record.args()));
-            }
-        }
-
-        fn flush(&self) {}
-    }
-
-    static CAPTURE_LOGGER: CaptureLogger = CaptureLogger;
-
-    fn initialize_capture_logger() {
-        LOGGER_INIT.call_once(|| {
-            log::set_logger(&CAPTURE_LOGGER).expect("test logger should initialize once");
-            log::set_max_level(log::LevelFilter::Debug);
-        });
-    }
-
-    fn take_captured_logs() -> String {
-        let mut logs = CAPTURED_LOGS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let captured = logs.join("\n");
-        logs.clear();
-        captured
-    }
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    #[tokio::test]
-    #[serial(request_logging)]
-    async fn test_json_request_logging_redacts_secrets_and_suppresses_malformed_bodies() {
+    #[test]
+    fn test_request_log_message_redacts_secrets_and_never_formats_raw_requests() {
         const SECRET_SENTINEL: &str = "udf-secret-log-sentinel-7e4e";
         const MALFORMED_SENTINEL: &str = "malformed-secret-log-sentinel-b652";
+        const NON_JSON_SENTINEL: &str = "non-json-secret-log-sentinel-7fd1";
 
-        initialize_capture_logger();
-        take_captured_logs();
-        CAPTURE_LOGS.store(true, Ordering::Relaxed);
-
-        let client = test_utils::client_with_handler(|_| {
-            http::Response::builder().status(200).body("").unwrap()
-        });
-        let request = client
-            .post("/v1/functions/create")
+        let request = reqwest::Client::new()
+            .post("https://example.com/v1/functions/create")
             .json(&serde_json::json!({
                 "name": "uses_secret",
                 "nested": {
                     "secret_values": {"OPENAI_API_KEY": SECRET_SENTINEL},
                     "safe": "visible-value"
                 }
-            }));
-        client.send(request).await.unwrap();
+            }))
+            .build()
+            .unwrap();
+        let log_message = request_log_message(&request, "valid-json");
 
-        let malformed_request = client
-            .post("/v1/functions/create")
+        let malformed_request = reqwest::Client::new()
+            .post("https://example.com/v1/functions/create")
             .header("content-type", "application/json; charset=utf-8")
-            .body(format!(r#"{{"secret_values":"{MALFORMED_SENTINEL}""#));
-        client.send(malformed_request).await.unwrap();
+            .body(format!(r#"{{"secret_values":"{MALFORMED_SENTINEL}""#))
+            .build()
+            .unwrap();
+        let malformed_log_message = request_log_message(&malformed_request, "malformed-json");
 
-        CAPTURE_LOGS.store(false, Ordering::Relaxed);
-        let captured = take_captured_logs();
-        assert!(captured.contains("visible-value"));
-        assert!(captured.contains(REDACTED_JSON_VALUE));
-        assert!(captured.contains(SUPPRESSED_JSON_BODY));
-        assert!(!captured.contains(SECRET_SENTINEL));
-        assert!(!captured.contains(MALFORMED_SENTINEL));
+        let non_json_request = reqwest::Client::new()
+            .post("https://example.com/v1/functions/create")
+            .header("content-type", "text/plain")
+            .body(NON_JSON_SENTINEL)
+            .build()
+            .unwrap();
+        let non_json_log_message = request_log_message(&non_json_request, "non-json");
+
+        assert!(log_message.contains("visible-value"));
+        assert!(log_message.contains(REDACTED_JSON_VALUE));
+        assert!(!log_message.contains(SECRET_SENTINEL));
+        assert!(malformed_log_message.contains(SUPPRESSED_JSON_BODY));
+        assert!(!malformed_log_message.contains(MALFORMED_SENTINEL));
+        assert!(!non_json_log_message.contains(NON_JSON_SENTINEL));
     }
 
     #[test]
