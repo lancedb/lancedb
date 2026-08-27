@@ -1686,6 +1686,17 @@ mod tests {
         assert_eq!(page.tables, vec!["real"]);
     }
 
+    #[tokio::test]
+    async fn listing_ignores_empty_table_name() {
+        let (tempdir, db) = setup_database().await;
+        create_dir_all(tempdir.path().join(".lance")).unwrap();
+        let page = db.list_tables(ListTablesRequest::default()).await.unwrap();
+        assert!(
+            page.tables.is_empty(),
+            "invalid empty table name was listed"
+        );
+    }
+
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
         let tempdir = tempdir().unwrap();
         let uri = tempdir.path().to_str().unwrap();
