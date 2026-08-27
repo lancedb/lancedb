@@ -497,7 +497,7 @@ def sql(
     database_uri = _database_uri(database)
     _validate_namespace_path(namespace_path)
     resolved_client_config = _normalize_client_config(client_config)
-    connection_api_key = api_key
+    connection_api_key = api_key or os.environ.get("LANCEDB_API_KEY")
     if connection_api_key is None and _has_configured_credentials(
         resolved_client_config
     ):

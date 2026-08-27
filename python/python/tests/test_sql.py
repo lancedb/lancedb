@@ -46,6 +46,7 @@ class RecordingFlightCallOptions:
 def clear_timeout_environment(monkeypatch):
     monkeypatch.delenv("LANCE_CLIENT_TIMEOUT", raising=False)
     monkeypatch.delenv("LANCE_CLIENT_READ_TIMEOUT", raising=False)
+    monkeypatch.delenv("LANCEDB_API_KEY", raising=False)
 
 
 def test_sql_resolves_database_with_connect(monkeypatch):
@@ -150,6 +151,32 @@ def test_sql_allows_header_credentials_without_api_key(monkeypatch):
 
     assert observed["api_key"] == ""
     assert observed["client_config"] is client_config
+    assert connection.closed
+
+
+def test_sql_preserves_environment_api_key_for_metadata_provider(monkeypatch):
+    connection = FakeRemoteConnection()
+    observed = {}
+    client_config = ClientConfig(
+        header_provider=StaticHeaderProvider({"x-trace-id": "trace-id"})
+    )
+
+    def connect(database, **kwargs):
+        observed.update(kwargs)
+        return connection
+
+    monkeypatch.setenv("LANCEDB_API_KEY", "environment-key")
+    monkeypatch.setattr(lancedb, "connect", connect)
+    monkeypatch.setattr(sql_module, "RemoteDBConnection", FakeRemoteConnection)
+    monkeypatch.setattr(
+        sql_module,
+        "_execute_flight_sql",
+        lambda *args, **kwargs: pa.table({"value": [1]}),
+    )
+
+    lancedb.sql("SELECT 1", client_config=client_config)
+
+    assert observed["api_key"] == "environment-key"
     assert connection.closed
 
 
