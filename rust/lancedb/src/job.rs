@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
@@ -26,20 +26,16 @@ pub(crate) trait JobHandle: Send + Sync {
 }
 
 /// A backend-neutral successful terminal result.
-///
-/// Local operations do not carry a value. Remote operations may carry JSON
-/// that the public [`Job`] decodes according to its result type.
+#[derive(Clone)]
 pub(crate) struct TerminalResult {
-    #[allow(dead_code)] // Typed remote submit endpoints consume this after Slice 1.
     value: Option<Value>,
-    #[allow(dead_code)] // Preserved so typed decode errors retain request correlation.
     request_id: Option<String>,
 }
 
 impl TerminalResult {
-    pub(crate) fn local() -> Self {
+    fn local(value: Value) -> Self {
         Self {
-            value: None,
+            value: Some(value),
             request_id: None,
         }
     }
@@ -51,23 +47,35 @@ impl TerminalResult {
         }
     }
 
-    #[allow(dead_code)] // Exercised by the remote typed-result fixtures in Slice 1.
+    pub(crate) fn value(&self) -> Option<&Value> {
+        self.value.as_ref()
+    }
+
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
-        let request_id = self.request_id.unwrap_or_default();
-        let value = self.value.ok_or_else(|| Error::Http {
-            source: "successful typed job response did not contain a result".into(),
-            request_id: request_id.clone(),
-            status_code: None,
+        let value = self.value.ok_or_else(|| match &self.request_id {
+            Some(request_id) => Error::Http {
+                source: "successful typed job response did not contain a result".into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            },
+            None => Error::Runtime {
+                message: "successful typed job did not contain a result".to_string(),
+            },
         })?;
-        serde_json::from_value(value).map_err(|error| Error::Http {
-            source: format!("failed to parse typed job result: {error}").into(),
-            request_id,
-            status_code: None,
+        serde_json::from_value(value).map_err(|error| match self.request_id {
+            Some(request_id) => Error::Http {
+                source: format!("failed to parse typed job result: {error}").into(),
+                request_id,
+                status_code: None,
+            },
+            None => Error::Runtime {
+                message: format!("failed to parse typed job result: {error}"),
+            },
         })
     }
 }
 
-type ResultDecoder<T> = fn(TerminalResult) -> Result<T>;
+type ResultDecoder<T> = Arc<dyn Fn(TerminalResult) -> Result<T> + Send + Sync>;
 
 enum JobInner<T> {
     Handle {
@@ -79,7 +87,9 @@ enum JobInner<T> {
 
 /// A handle to an operation that may still be running.
 ///
-/// The operation may already be complete when the handle is created.
+/// The operation may already be complete when the handle is created. `T` is
+/// the endpoint's successful terminal result; unit-result operations use the
+/// default `Job<()>`.
 pub struct Job<T = ()>
 where
     T: Clone + Send + Sync + 'static,
@@ -111,14 +121,9 @@ impl Job<()> {
         Self {
             inner: JobInner::Handle {
                 handle,
-                decode: |_| Ok(()),
+                decode: Arc::new(|_| Ok(())),
             },
         }
-    }
-
-    /// A unit-result job running as a task in this process.
-    pub(crate) fn spawned(task: JoinHandle<Result<()>>) -> Self {
-        Self::new(Box::new(SpawnedJob::new(task)))
     }
 }
 
@@ -131,9 +136,19 @@ where
         Self {
             inner: JobInner::Handle {
                 handle,
-                decode: TerminalResult::decode::<T>,
+                decode: Arc::new(TerminalResult::decode::<T>),
             },
         }
+    }
+}
+
+impl<T> Job<T>
+where
+    T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+{
+    /// A typed job running as a task in this process.
+    pub(crate) fn spawned(task: JoinHandle<Result<T>>) -> Self {
+        Self::new_typed(Box::new(SpawnedJob::new(task)))
     }
 }
 
@@ -169,11 +184,13 @@ where
 
     /// Waits until the operation reaches a terminal state.
     ///
+    /// Returns the endpoint's typed result. Unit-result jobs return `()`.
+    ///
     /// Returns [`crate::Error::JobFailed`] if the operation failed and
     /// [`crate::Error::JobCancelled`] if it was cancelled.
     pub async fn wait(&self) -> Result<T> {
         match &self.inner {
-            JobInner::Handle { handle, decode } => decode(handle.wait().await?),
+            JobInner::Handle { handle, decode } => (decode)(handle.wait().await?),
             JobInner::Completed(result) => Ok(result.clone()),
         }
     }
@@ -187,21 +204,53 @@ where
             JobInner::Completed(_) => Ok(()),
         }
     }
+
+    /// Maps a successful terminal result without changing the job lifecycle.
+    /// The mapping may run once for each call to [`Job::wait`], so it should
+    /// be deterministic and free of externally visible side effects.
+    ///
+    /// ```
+    /// use lancedb::{Job, function::RefreshColumnResult};
+    ///
+    /// # async fn rows_assigned(
+    /// #     job: Job<RefreshColumnResult>,
+    /// # ) -> lancedb::Result<u64> {
+    /// let job = job.map(|result| result.rows_assigned);
+    /// job.wait().await
+    /// # }
+    /// ```
+    pub fn map<U, F>(self, map: F) -> Job<U>
+    where
+        U: Clone + Send + Sync + 'static,
+        F: Fn(T) -> U + Send + Sync + 'static,
+    {
+        match self.inner {
+            JobInner::Handle { handle, decode } => Job {
+                inner: JobInner::Handle {
+                    handle,
+                    decode: Arc::new(move |result| Ok(map((decode)(result)?))),
+                },
+            },
+            JobInner::Completed(result) => Job {
+                inner: JobInner::Completed(map(result)),
+            },
+        }
+    }
 }
 
 /// How an in-process operation ended. Cloneable so every waiter can be given
 /// the outcome; [`Error`] is not, so failures share one behind an [`Arc`].
 #[derive(Clone)]
 enum Outcome {
-    Succeeded,
+    Succeeded(TerminalResult),
     Failed(Arc<Error>),
     Cancelled,
 }
 
 impl Outcome {
-    fn into_result(self) -> Result<()> {
+    fn into_result(self) -> Result<TerminalResult> {
         match self {
-            Self::Succeeded => Ok(()),
+            Self::Succeeded(result) => Ok(result),
             Self::Failed(source) => Err(Error::JobFailed {
                 job_id: None,
                 failure: JobFailure::from_source(source),
@@ -220,12 +269,20 @@ struct SpawnedJob {
 }
 
 impl SpawnedJob {
-    fn new(task: JoinHandle<Result<()>>) -> Self {
+    fn new<T>(task: JoinHandle<Result<T>>) -> Self
+    where
+        T: Serialize + Send + 'static,
+    {
         let abort = task.abort_handle();
         let (tx, outcome) = watch::channel(None);
         tokio::spawn(async move {
             let outcome = match task.await {
-                Ok(Ok(())) => Outcome::Succeeded,
+                Ok(Ok(result)) => match serde_json::to_value(result) {
+                    Ok(value) => Outcome::Succeeded(TerminalResult::local(value)),
+                    Err(err) => Outcome::Failed(Arc::new(Error::Runtime {
+                        message: format!("failed to serialize job result: {err}"),
+                    })),
+                },
                 Ok(Err(err)) => Outcome::Failed(Arc::new(err)),
                 Err(err) if err.is_cancelled() => Outcome::Cancelled,
                 Err(err) => Outcome::Failed(Arc::new(Error::Runtime {
@@ -243,7 +300,7 @@ impl JobHandle for SpawnedJob {
     async fn status(&self) -> Result<String> {
         let label = match &*self.outcome.borrow() {
             None => "running",
-            Some(Outcome::Succeeded) => "finished",
+            Some(Outcome::Succeeded(_)) => "finished",
             Some(Outcome::Failed(_)) => "failed",
             Some(Outcome::Cancelled) => "cancelled",
         };
@@ -256,16 +313,41 @@ impl JobHandle for SpawnedJob {
             .wait_for(|outcome| outcome.is_some())
             .await
             .map_err(|_| Error::Runtime {
-                message: "index job outcome was dropped before it completed".to_string(),
+                message: "job outcome was dropped before it completed".to_string(),
             })?
             .clone()
             .expect("wait_for returns once an outcome is set");
-        settled.into_result()?;
-        Ok(TerminalResult::local())
+        settled.into_result()
     }
 
     async fn cancel(&self) -> Result<()> {
         self.abort.abort();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn mapped_spawned_job_reuses_outcome() {
+        let job = Job::spawned(tokio::spawn(async { Ok(41_u64) })).map(|value| value + 1);
+
+        assert_eq!(job.wait().await.unwrap(), 42);
+        assert_eq!(job.wait().await.unwrap(), 42);
+        assert_eq!(job.status().await.unwrap(), "finished");
+    }
+
+    #[tokio::test]
+    async fn mapped_spawned_job_preserves_cancellation() {
+        let job = Job::spawned(tokio::spawn(async { pending::<Result<u64>>().await }))
+            .map(|value| value.to_string());
+
+        job.cancel().await.unwrap();
+        assert!(matches!(job.wait().await, Err(Error::JobCancelled { .. })));
+        assert_eq!(job.status().await.unwrap(), "cancelled");
     }
 }

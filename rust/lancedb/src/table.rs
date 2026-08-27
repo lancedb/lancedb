@@ -59,7 +59,9 @@ use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
 use crate::job::Job;
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
+use crate::utils::{
+    PatchReadParam, PatchWriteParam, public_fts_field_path_by_id, resolve_arrow_field_path,
+};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
@@ -562,6 +564,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Create a read-only handle pinned to the table's current active revision.
+    ///
+    /// The returned handle is independent from later refreshes or checkouts on
+    /// this handle.  This is used by bindings that must prepare client-side
+    /// query state from the same revision that the query will execute against.
+    #[doc(hidden)]
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -753,7 +762,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are not supported on this table type".into(),
         })
     }
-    /// Declare one immutable registered-Function output group.
+    /// Declare one immutable registered-Function binding.
     async fn add_function_columns(
         &self,
         _application: &crate::function::FunctionApplication,
@@ -773,7 +782,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
     /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
     /// the operation.
-    async fn refresh_column_async(&self, _column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        _column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         Err(Error::NotSupported {
             message: "computed columns are supported only on local tables".into(),
         })
@@ -784,6 +796,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
     /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
+    /// Return a new table handle pinned to the exact revision currently visible.
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "checkout_current is not supported on this table type".into(),
+        })
+    }
     /// Checkout a specific version of the table.
     async fn checkout(&self, version: u64) -> Result<()>;
     /// Checkout a table version referenced by a tag.
@@ -791,6 +809,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Return an independent handle pinned to the version currently selected.
+    ///
+    /// Backends that can advance between requests should override this for
+    /// multi-request operations that need snapshot consistency. Backends whose
+    /// existing handles already provide the desired behavior return `None`.
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        Ok(None)
+    }
     /// Whether repeated identical scans return rows in the same order.
     ///
     /// Callers that assign meaning to a row's position must order the results
@@ -1124,13 +1150,26 @@ impl Table {
         self.inner.schema().await
     }
 
+    /// Create a read-only handle pinned to the current active revision.
+    #[doc(hidden)]
+    pub async fn query_snapshot(&self) -> Result<Self> {
+        Ok(Self {
+            inner: self.inner.query_snapshot().await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
+    }
+
     /// Count the number of rows in this dataset.
     ///
     /// # Arguments
     ///
     /// * `filter` if present, only count rows matching the filter
     pub async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        self.inner.count_rows(filter.map(Filter::Sql)).await
+        let filter = filter
+            .map(|predicate| crate::expr::canonicalize_sql_predicate(&predicate).map(Filter::Sql))
+            .transpose()?;
+        self.inner.count_rows(filter).await
     }
 
     /// Names of the blob v2 columns in this table, in declaration order.
@@ -1330,7 +1369,13 @@ impl Table {
     /// # });
     /// ```
     pub async fn delete(&self, predicate: impl Into<Predicate<'_>>) -> Result<DeleteResult> {
-        self.inner.delete(predicate.into()).await
+        match predicate.into() {
+            Predicate::String(predicate) => {
+                let predicate = crate::expr::canonicalize_sql_predicate(predicate)?;
+                self.inner.delete(Predicate::String(&predicate)).await
+            }
+            predicate @ Predicate::Expr(_) => self.inner.delete(predicate).await,
+        }
     }
 
     /// Create an index on the provided column(s).
@@ -1710,7 +1755,9 @@ impl Table {
     /// operation instead of blocking until it completes.
     ///
     /// The job may already be complete when returned, and callers must not
-    /// assume the column is filled until [`Job::wait`] returns. Invalid input
+    /// assume the column is filled until [`Job::wait`] returns. A successful
+    /// wait returns the durable [`crate::function::RefreshColumnResult`] for
+    /// both expression-backed and Function-backed columns. Invalid input
     /// -- an unknown column, or one that is not computed -- is reported by
     /// this call rather than by the job. On local tables the job runs as an
     /// in-process task; on LanceDB Cloud and Enterprise it is the server's
@@ -1721,11 +1768,15 @@ impl Table {
     /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// let job = table.refresh_column_async("doubled").await?;
     /// println!("refresh running: {:?}", job.status().await?);
-    /// job.wait().await?;
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn refresh_column_async(&self, column: impl AsRef<str>) -> Result<Job> {
+    pub async fn refresh_column_async(
+        &self,
+        column: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
     }
 
@@ -1737,7 +1788,23 @@ impl Table {
         self.inner.alter_columns(alterations).await
     }
 
-    /// Update per-field metadata (merges by default).
+    /// Update per-field (column) metadata.
+    ///
+    /// Each [`FieldMetadataUpdate`] is merged into the field's existing metadata
+    /// by default; use [`FieldMetadataUpdate::remove`] to delete a key, or
+    /// [`FieldMetadataUpdate::replace`] to swap the field's entire metadata map.
+    ///
+    /// The following keys are treated specially, by convention, and should be
+    /// used when appropriate:
+    ///
+    /// - `lancedb:description`: for a human-readable description of a field.
+    /// - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+    ///   names the tag category; e.g. `lancedb:tag:model: "clip"`.
+    /// - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+    ///   `feature_v2` might be in the same logical column.
+    /// - `lancedb:status`: for status options (`production`, `candidate`,
+    ///   `deprecated`, `archived`) to designate the current life cycle state of
+    ///   this column.
     pub async fn update_field_metadata(
         &self,
         updates: &[FieldMetadataUpdate],
@@ -1927,6 +1994,20 @@ impl Table {
     /// version to replace the current table with a previous version.
     pub async fn version(&self) -> Result<u64> {
         self.inner.version().await
+    }
+
+    /// Return a new table handle pinned to the exact revision currently visible.
+    ///
+    /// This is used when asynchronous preparation must remain consistent with
+    /// the revision used for a later read.
+    #[doc(hidden)]
+    pub async fn checkout_current(&self) -> Result<Self> {
+        let inner = self.inner.checkout_current().await?;
+        Ok(Self {
+            inner,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
     }
 
     /// Checks out a specific version of the Table
@@ -3024,8 +3105,31 @@ impl BaseTable for NativeTable {
         &self.id
     }
 
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
+        let snapshot = self.dataset.new_query_snapshot().await?;
+        let mut table = self.with_dataset(snapshot);
+        // QueryTable requests do not carry a revision. A pinned snapshot must
+        // execute locally until the namespace API can accept that revision.
+        table
+            .pushdown_operations
+            .remove(&NamespaceClientPushdownOperation::QueryTable);
+        Ok(Arc::new(table))
+    }
+
     async fn version(&self) -> Result<u64> {
         Ok(self.dataset.get().await?.version().version)
+    }
+
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        let current = self.dataset.get().await?;
+        let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
+            current.as_ref().clone(),
+            self.read_consistency_interval,
+        );
+        Ok(Arc::new(Self {
+            dataset,
+            ..self.clone()
+        }))
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
@@ -3146,7 +3250,10 @@ impl BaseTable for NativeTable {
         let dataset = self.dataset.get().await?;
         match filter {
             None => Ok(dataset.count_rows(None).await?),
-            Some(Filter::Sql(sql)) => Ok(dataset.count_rows(Some(sql)).await?),
+            Some(Filter::Sql(sql)) => {
+                let sql = crate::expr::canonicalize_sql_predicate(&sql)?;
+                Ok(dataset.count_rows(Some(sql)).await?)
+            }
             Some(Filter::Datafusion(_)) => Err(Error::NotSupported {
                 message: "Datafusion filters are not yet supported".to_string(),
             }),
@@ -3193,7 +3300,7 @@ impl BaseTable for NativeTable {
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        let lance_params = output
+        let mut lance_params = output
             .write_options
             .lance_write_params
             .unwrap_or(WriteParams {
@@ -3203,6 +3310,9 @@ impl BaseTable for NativeTable {
                 },
                 ..Default::default()
             });
+        if output.allow_external_blob_outside_bases {
+            lance_params.allow_external_blob_outside_bases = true;
+        }
 
         // Repartition for write parallelism if beneficial.
         let plan = if num_partitions > 1 {
@@ -3427,7 +3537,10 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
-    async fn refresh_column_async(&self, column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         refresh::execute_refresh_column_async(self, column).await
     }
 
@@ -3478,7 +3591,14 @@ impl BaseTable for NativeTable {
                 let field_ids = idx_desc.field_ids();
                 let mut columns = Vec::with_capacity(field_ids.len());
                 for field_id in field_ids {
-                    let field_path = match dataset.schema().field_path(*field_id as i32) {
+                    let field_path = match if index_type == crate::index::IndexType::FTS {
+                        public_fts_field_path_by_id(dataset.schema(), *field_id as i32)
+                    } else {
+                        dataset
+                            .schema()
+                            .field_path(*field_id as i32)
+                            .map_err(Into::into)
+                    } {
                         Ok(field_path) => field_path,
                         Err(e) => {
                             log::warn!(
@@ -4065,6 +4185,14 @@ mod tests {
                 parent_list_calls: self.parent_list_calls.clone(),
             })
         }
+
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            _original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            None
+        }
     }
 
     #[tokio::test]
@@ -4167,6 +4295,14 @@ mod tests {
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
             original
+        }
+
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            Some(original)
         }
     }
 

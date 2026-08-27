@@ -974,17 +974,15 @@ impl Database for ListingDatabase {
             f.drain(0..index);
         }
 
-        // Determine if there's a next page
-        let next_page_token = if let Some(limit) = request.limit {
-            if f.len() > limit as usize {
-                let token = f[limit as usize].clone();
+        // Determine if there's a next page. The token is the last name of this page,
+        // not the first of the next one: the next page resumes strictly after the
+        // token, so naming the next page's first entry would skip it.
+        let next_page_token = match request.limit {
+            Some(limit) if f.len() > limit as usize => {
                 f.truncate(limit as usize);
-                Some(token)
-            } else {
-                None
+                f.last().cloned()
             }
-        } else {
-            None
+            _ => None,
         };
 
         Ok(ListTablesResponse {
@@ -1478,7 +1476,7 @@ mod tests {
     use crate::table::{AnyQuery, WriteOptions};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
-    use futures::{TryStreamExt, stream::once};
+    use futures::{TryStreamExt, future::try_join_all, stream::once};
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1614,6 +1612,59 @@ mod tests {
             1,
             "expected one manifest conflict, got {results:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_open_table_reuses_connection_object_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let session = Arc::new(lance::session::Session::default());
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session.clone()),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let before = session.store_registry().stats();
+        let opened_tables = try_join_all((0..32).map(|_| {
+            db.open_table(OpenTableRequest {
+                name: "test".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+        }))
+        .await
+        .unwrap();
+        let after = session.store_registry().stats();
+
+        assert_eq!(opened_tables.len(), 32);
+        assert_eq!(after.misses, before.misses);
+        assert_eq!(after.active_stores, before.active_stores);
+        assert!(after.hits >= before.hits + 32);
     }
 
     #[tokio::test]

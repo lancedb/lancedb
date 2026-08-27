@@ -31,12 +31,14 @@ import type {
   JobDescription,
   JobInfo,
   ListNamespacesResponse,
+  ListTablesResponse,
 } from "./native";
 export type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
   DropNamespaceResponse,
   ListNamespacesResponse,
+  ListTablesResponse,
 };
 import { sanitizeTable } from "./sanitize";
 import { LocalTable, Table } from "./table";
@@ -134,6 +136,10 @@ export interface OpenTableOptions {
   indexCacheSize?: number;
 }
 
+/**
+ * @deprecated Use {@link ListTablesOptions} with {@link Connection.listTables}
+ * instead.
+ */
 export interface TableNamesOptions {
   /**
    * If present, only return names that come lexicographically after the
@@ -144,6 +150,24 @@ export interface TableNamesOptions {
    */
   startAfter?: string;
   /** An optional limit to the number of results to return. */
+  limit?: number;
+}
+
+export interface ListTablesOptions {
+  /**
+   * Token from a previous response, to resume listing where it left off.
+   *
+   * The token is opaque: it carries whatever the database needs to resume, and
+   * callers should not construct or interpret one.
+   */
+  pageToken?: string;
+  /**
+   * An upper bound on how many tables to return.
+   *
+   * A page may hold fewer than this and still not be the last one, so keep
+   * going while the response carries a page token rather than while pages are
+   * full.
+   */
   limit?: number;
 }
 
@@ -231,6 +255,7 @@ export abstract class Connection {
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point (backwards compatibility)
    *
+   * @deprecated Use {@link Connection.listTables} instead.
    */
   abstract tableNames(options?: Partial<TableNamesOptions>): Promise<string[]>;
   /**
@@ -241,11 +266,52 @@ export abstract class Connection {
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point
    *
+   * @deprecated Use {@link Connection.listTables} instead.
    */
   abstract tableNames(
     namespacePath?: string[],
     options?: Partial<TableNamesOptions>,
   ): Promise<string[]>;
+
+  /**
+   * List a page of the tables in this database.
+   *
+   * To retrieve the tables after the page, pass the `pageToken` the response
+   * carries back in. A page can be shorter than `limit` without being the last
+   * one, so walk until a response carries no page token:
+   *
+   * ```ts
+   * const names = [];
+   * let pageToken = undefined;
+   * do {
+   *   const page = await conn.listTables({ pageToken, limit: 100 });
+   *   names.push(...page.tables);
+   *   pageToken = page.pageToken;
+   * } while (pageToken);
+   * ```
+   *
+   * @param {Partial<ListTablesOptions>} options - Pagination options
+   *   (`pageToken`, `limit`).
+   * @returns {Promise<ListTablesResponse>} A page of table names and an
+   *   optional token for the tables after it.
+   */
+  abstract listTables(
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse>;
+  /**
+   * List a page of the tables in this database.
+   *
+   * @param {string[]} namespacePath - The namespace path to list tables from
+   *   (defaults to root namespace)
+   * @param {Partial<ListTablesOptions>} options - Pagination options
+   *   (`pageToken`, `limit`).
+   * @returns {Promise<ListTablesResponse>} A page of table names and an
+   *   optional token for the tables after it.
+   */
+  abstract listTables(
+    namespacePath?: string[],
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse>;
 
   /**
    * Open a table in the database.
@@ -599,6 +665,25 @@ export class LocalConnection extends Connection {
 
   async listMaterializedViews(): Promise<string[]> {
     return await this.inner.listMaterializedViews();
+  }
+
+  async listTables(
+    namespacePathOrOptions?: string[] | Partial<ListTablesOptions>,
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse> {
+    // Detect if first argument is namespacePath array or options object
+    const namespacePath = Array.isArray(namespacePathOrOptions)
+      ? namespacePathOrOptions
+      : undefined;
+    const listTablesOptions = Array.isArray(namespacePathOrOptions)
+      ? options
+      : namespacePathOrOptions;
+
+    return this.inner.listTables(
+      namespacePath ?? [],
+      listTablesOptions?.pageToken,
+      listTablesOptions?.limit,
+    );
   }
 
   async openTable(

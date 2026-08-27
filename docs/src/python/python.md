@@ -161,6 +161,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 
 ::: lancedb.query.FullTextOperator
 
+::: lancedb.query.DocumentGranularity
+
 ::: lancedb.query.Occur
 
 ## Embeddings
@@ -262,6 +264,8 @@ instead of being materialized with the rest of the row.
 ## PyTorch
 
 ::: lancedb.streaming.StreamingDataset
+
+::: lancedb.streaming.StreamingDataLoader
 
 ::: lancedb.permutation.permutation_builder
 

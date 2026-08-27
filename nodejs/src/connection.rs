@@ -17,6 +17,7 @@ use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, conne
 
 use lance_namespace::models::{
     CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
+    ListTablesRequest,
 };
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
@@ -33,6 +34,12 @@ pub struct DescribeNamespaceResponse {
 #[napi(object)]
 pub struct ListNamespacesResponse {
     pub namespaces: Vec<String>,
+    pub page_token: Option<String>,
+}
+
+#[napi(object)]
+pub struct ListTablesResponse {
+    pub tables: Vec<String>,
     pub page_token: Option<String>,
 }
 
@@ -204,6 +211,33 @@ impl Connection {
             op = op.limit(limit);
         }
         op.execute().await.default_error()
+    }
+
+    /// List a page of tables in the database.
+    #[napi(catch_unwind)]
+    pub async fn list_tables(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> napi::Result<ListTablesResponse> {
+        let request = ListTablesRequest {
+            // The root namespace is an empty path, not an absent one: a namespace-backed
+            // database rejects a request that names no namespace.
+            id: Some(namespace_path.unwrap_or_default()),
+            page_token,
+            limit: limit.map(|limit| i32::try_from(limit).unwrap_or(i32::MAX)),
+            ..Default::default()
+        };
+        let response = self
+            .get_inner()?
+            .list_tables(request)
+            .await
+            .default_error()?;
+        Ok(ListTablesResponse {
+            tables: response.tables,
+            page_token: response.page_token,
+        })
     }
 
     /// Create table from a Apache Arrow IPC (file) buffer.
