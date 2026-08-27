@@ -19,6 +19,7 @@ _COMMAND_STATEMENT_QUERY_TYPE_URL = (
 )
 _DEFAULT_FLIGHT_SQL_PORT = 10025
 _DEFAULT_FLIGHT_SQL_TLS_PORT = 10026
+_DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS = 300.0
 
 
 def _encode_varint(value: int) -> bytes:
@@ -163,22 +164,34 @@ def _flight_call_options(
     connection: RemoteDBConnection, flight: Any, request_id: str
 ) -> Any:
     headers: Dict[bytes, tuple[bytes, bytes]] = {}
+
+    def add_headers(values: Dict[Any, Any]) -> None:
+        for key, value in values.items():
+            try:
+                encoded_key = str(key).lower().encode("ascii")
+                encoded_value = str(value).encode("ascii")
+            except UnicodeEncodeError as err:
+                raise ValueError(f"Flight SQL metadata must be ASCII: {key!r}") from err
+            headers[encoded_key] = (encoded_key, encoded_value)
+
     if connection.client_config.extra_headers is not None:
-        for key, value in connection.client_config.extra_headers.items():
-            encoded_key = str(key).lower().encode("ascii")
-            headers[encoded_key] = (encoded_key, str(value).encode("utf-8"))
-
-    headers[b"authorization"] = (
-        b"authorization",
-        f"Bearer {connection.api_key}".encode("utf-8"),
+        add_headers(connection.client_config.extra_headers)
+    add_headers(
+        {
+            "authorization": f"Bearer {connection.api_key}",
+        }
     )
-    headers[b"database"] = (b"database", connection.db_name.encode("utf-8"))
-    headers[b"x-request-id"] = (
-        b"x-request-id",
-        request_id.encode("ascii"),
+    header_provider = connection.client_config.header_provider
+    if header_provider is not None:
+        add_headers(header_provider.get_headers())
+    add_headers(
+        {
+            "database": connection.db_name,
+            "x-request-id": request_id,
+        }
     )
 
-    timeout = None
+    timeout = _DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS
     timeout_config = connection.client_config.timeout_config
     if timeout_config is not None:
         duration = timeout_config.timeout
@@ -206,6 +219,7 @@ def _read_endpoint(
     connection: RemoteDBConnection,
     flight: Any,
     request_id: str,
+    primary_uri: str,
 ) -> pa.Table:
     locations = list(endpoint.locations)
     location_uri = _location_uri(locations[0]) if locations else None
@@ -214,6 +228,11 @@ def _read_endpoint(
     )
     client = primary_client
     if not reuse_primary:
+        location_uri = _normalize_flight_sql_uri(location_uri)
+        if primary_uri.startswith("grpc+tls://") and not location_uri.startswith(
+            "grpc+tls://"
+        ):
+            raise ValueError("Flight SQL refused a TLS-to-plaintext endpoint redirect")
         client = flight.FlightClient(
             location_uri,
             **_flight_client_kwargs(connection, location_uri),
@@ -251,14 +270,26 @@ def _execute_flight_sql(
             raise RuntimeError("Flight SQL returned no result endpoints")
 
         tables = [
-            _read_endpoint(endpoint, client, connection, flight, request_id)
+            _read_endpoint(
+                endpoint,
+                client,
+                connection,
+                flight,
+                request_id,
+                resolved_uri,
+            )
             for endpoint in info.endpoints
         ]
         if len(tables) == 1:
             return tables[0]
         return pa.concat_tables(tables)
     except Exception as err:
-        raise RuntimeError(f"Flight SQL request {request_id} failed: {err}") from err
+        message = f"Flight SQL request {request_id} failed: {err}"
+        try:
+            err.args = (message, *err.args[1:])
+        except Exception:
+            raise RuntimeError(message) from err
+        raise
     finally:
         client.close()
 
@@ -286,6 +317,7 @@ def sql(
         The SQL statement to execute.
     database: str or Path
         A remote ``db://`` database URI resolved through :func:`lancedb.connect`.
+        Database-prefix paths are not supported by Flight SQL.
     api_key: str, optional
         The API key used for the LanceDB connection and Flight SQL authentication.
         Can be set with the ``LANCEDB_API_KEY`` environment variable.
@@ -301,8 +333,9 @@ def sql(
         The Flight SQL endpoint. Use this for TLS and deployments where the HTTP
         and Flight SQL endpoints do not share a host or consecutive ports.
     client_config: ClientConfig or dict, optional
-        Remote client configuration. Static headers, timeouts, and TLS files are
-        also applied to Flight SQL where supported.
+        Remote client configuration. Static and dynamic headers, timeouts, and
+        TLS files are also applied to Flight SQL where supported. Flight SQL
+        uses a 300-second timeout when neither an overall nor read timeout is set.
     storage_options: dict, optional
         Storage options forwarded to :func:`lancedb.connect`.
 
@@ -322,6 +355,18 @@ def sql(
     ... )
     """
     import lancedb
+
+    database_uri = str(database)
+    parsed_database = urlparse(database_uri)
+    if parsed_database.scheme != "db":
+        raise ValueError("lancedb.sql requires a remote db:// database")
+    if (
+        parsed_database.path not in ("", "/")
+        or parsed_database.params
+        or parsed_database.query
+        or parsed_database.fragment
+    ):
+        raise ValueError("lancedb.sql does not support database URI prefixes")
 
     connection = lancedb.connect(
         database,

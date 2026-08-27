@@ -74,9 +74,22 @@ def test_sql_resolves_database_with_connect(monkeypatch):
     assert connection.closed
 
 
-def test_sql_rejects_local_database(tmp_path):
+def test_sql_rejects_local_database(monkeypatch, tmp_path):
+    def connect(*args, **kwargs):
+        pytest.fail("local database must be rejected before connecting")
+
+    monkeypatch.setattr(lancedb, "connect", connect)
     with pytest.raises(ValueError, match="remote db://"):
         lancedb.sql("SELECT 1", database=tmp_path)
+
+
+def test_sql_rejects_database_prefix(monkeypatch):
+    def connect(*args, **kwargs):
+        pytest.fail("database prefix must be rejected before connecting")
+
+    monkeypatch.setattr(lancedb, "connect", connect)
+    with pytest.raises(ValueError, match="does not support database URI prefixes"):
+        lancedb.sql("SELECT 1", database="db://analytics/tenant1")
 
 
 @pytest.mark.parametrize(
@@ -169,7 +182,7 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
                     SimpleNamespace(ticket="ticket-1", locations=[]),
                     SimpleNamespace(
                         ticket="ticket-2",
-                        locations=[SimpleNamespace(uri=b"grpc://worker:10025")],
+                        locations=[SimpleNamespace(uri=b"grpcs://worker")],
                     ),
                 ]
             )
@@ -192,6 +205,9 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
         client_config=ClientConfig(
             timeout_config={"read_timeout": timedelta(seconds=7)},
             extra_headers={"X-Extra": "value"},
+            header_provider=SimpleNamespace(
+                get_headers=lambda: {"Authorization": "Bearer oauth-token"}
+            ),
         )
     )
 
@@ -200,12 +216,12 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
     assert result == pa.concat_tables([first, second])
     assert [client.uri for client in clients] == [
         "grpc://localhost:10025",
-        "grpc://worker:10025",
+        "grpc+tls://worker:10026",
     ]
     assert all(client.closed for client in clients)
     assert [(uri, ticket) for uri, ticket, _ in observed["get_calls"]] == [
         ("grpc://localhost:10025", "ticket-1"),
-        ("grpc://worker:10025", "ticket-2"),
+        ("grpc+tls://worker:10026", "ticket-2"),
     ]
 
     all_options = [observed["get_options"]] + [
@@ -214,7 +230,7 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
     request_ids = set()
     for options in all_options:
         headers = dict(options.headers)
-        assert headers[b"authorization"] == b"Bearer test-key"
+        assert headers[b"authorization"] == b"Bearer oauth-token"
         assert headers[b"database"] == b"analytics"
         assert headers[b"x-extra"] == b"value"
         request_ids.add(headers[b"x-request-id"])
@@ -223,7 +239,7 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
     assert len(request_ids) == 1
 
 
-def test_flight_error_includes_statement_request_id(monkeypatch):
+def test_flight_error_preserves_type_and_includes_statement_request_id(monkeypatch):
     observed = {}
 
     class FailingFlightClient:
@@ -246,11 +262,46 @@ def test_flight_error_includes_statement_request_id(monkeypatch):
     )
     monkeypatch.setattr(sql_module, "_flight_module", lambda: fake_flight)
 
-    with pytest.raises(RuntimeError, match="Flight SQL request") as exc_info:
+    with pytest.raises(OSError, match="Flight SQL request") as exc_info:
         sql_module._execute_flight_sql("SELECT 1", FakeRemoteConnection(), None)
 
     assert observed["request_id"] in str(exc_info.value)
     assert observed["closed"]
+
+
+def test_flight_options_use_default_timeout():
+    options = sql_module._flight_call_options(
+        FakeRemoteConnection(), sql_module._flight_module(), "request-id"
+    )
+
+    assert options.timeout == 300
+
+
+def test_tls_coordinator_rejects_plaintext_endpoint():
+    endpoint = SimpleNamespace(
+        ticket="ticket", locations=[SimpleNamespace(uri=b"grpc://worker:10025")]
+    )
+
+    with pytest.raises(ValueError, match="TLS-to-plaintext"):
+        sql_module._read_endpoint(
+            endpoint,
+            primary_client=SimpleNamespace(),
+            connection=FakeRemoteConnection(),
+            flight=sql_module._flight_module(),
+            request_id="request-id",
+            primary_uri="grpc+tls://coordinator:10026",
+        )
+
+
+def test_rejects_non_ascii_metadata():
+    connection = FakeRemoteConnection(
+        client_config=ClientConfig(extra_headers={"x-name": "José"})
+    )
+
+    with pytest.raises(ValueError, match="metadata must be ASCII"):
+        sql_module._flight_call_options(
+            connection, sql_module._flight_module(), "request-id"
+        )
 
 
 def test_flight_dependency_error_is_deferred(monkeypatch):
