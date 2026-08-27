@@ -295,6 +295,7 @@ fn table_name(location: &object_store::path::Path, dir_suffix: &str) -> Option<S
         .filename()?
         .strip_suffix(dir_suffix)
         .map(String::from)
+        .filter(|name| !name.is_empty())
 }
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
@@ -961,20 +962,17 @@ impl Database for ListingDatabase {
 
     /// List the tables in the database, a page at a time.
     ///
-    /// The page token and the page size go into the object store's list request rather than
-    /// being applied to a full listing, so a page costs what the page holds and not what the
-    /// database holds. Stores with no paginated list API list the level in full and page it
-    /// locally, which is what every store did before.
+    /// The page_token is opaque, unlike the `start_after` parameter of [`Self::table_names()`].
     ///
-    /// The token is opaque and is only meaningful to the store that issued it: it carries a
-    /// continuation token where the store has one. It is not a table name, and a caller must
-    /// not construct one. A page can be shorter than `limit` and still be followed by more, so
-    /// the token is what ends a walk.
+    /// When there are no more results, the returned page_token will be None.
     ///
-    /// Tables come back in the order the store lists directories, which is by key. That
-    /// differs from sorting by name only between a name and one that extends it:
-    /// `users-archive` precedes `users`, because the `-` of `users-archive.lance` sorts below
-    /// the `.` of `users.lance`.
+    /// `limit` is the maximum number of tables to return in the response. But it is possible
+    /// for the response to contain fewer than `limit` tables, even when there are more tables
+    /// to return. Clients should check the returned page_token to determine if there are
+    /// more results, rather than relying on the number of tables returned.
+    ///
+    /// The order that results are returned in not guaranteed to be stable across calls,
+    /// so clients should not rely on it.
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
             return self.namespace_database().list_tables(request).await;

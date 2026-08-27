@@ -188,8 +188,6 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
         })
     }
 
-    // Only writes are mirrored, and a listing reads, so a pushed-down listing sees the same
-    // primary this wrapper would have read from.
     fn wrap_paginated(
         &self,
         _store_prefix: &str,
