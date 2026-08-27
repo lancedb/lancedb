@@ -2515,10 +2515,19 @@ impl NativeTable {
         managed_versioning: Option<bool>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
-        // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
+        let has_caller_store_wrapper = params
+            .store_options
+            .as_ref()
+            .and_then(|options| options.object_store_wrapper.as_ref())
+            .is_some();
+        // A caller wrapper must remain outside connection-level compatibility
+        // behavior. When there is no caller wrapper, apply the compatibility
+        // layer after loading so the session's registered store can be reused.
+        let (params, wrapper_after_load) = match write_store_wrapper {
+            Some(wrapper) if has_caller_store_wrapper => {
+                (params.patch_with_store_wrapper(wrapper)?, None)
+            }
+            wrapper => (params, wrapper),
         };
 
         // Build table_id from namespace + name
@@ -2576,6 +2585,14 @@ impl NativeTable {
                 });
             }
             Err(e) => return Err(e.into()),
+        };
+        // Resolve the store from the session registry before applying a
+        // connection-level write wrapper. Wrapper identity is part of the
+        // registry key, so including it in ReadParams prevents reuse when the
+        // opened table (and its wrapped store) is short-lived.
+        let dataset = match wrapper_after_load {
+            Some(wrapper) => dataset.with_object_store_wrappers([wrapper]),
+            None => dataset,
         };
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
@@ -2678,11 +2695,16 @@ impl NativeTable {
         if let Some(sess) = session {
             params.session(sess);
         }
-
-        // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
+        let has_caller_store_wrapper = params
+            .store_options
+            .as_ref()
+            .and_then(|options| options.object_store_wrapper.as_ref())
+            .is_some();
+        let (params, wrapper_after_load) = match write_store_wrapper {
+            Some(wrapper) if has_caller_store_wrapper => {
+                (params.patch_with_store_wrapper(wrapper)?, None)
+            }
+            wrapper => (params, wrapper),
         };
 
         // Build table_id from namespace + name
@@ -2706,6 +2728,13 @@ impl NativeTable {
                 },
                 e => e.into(),
             })?;
+        // Apply the write wrapper after the session registry has resolved the
+        // shared store. The cloned dataset retains the wrapper for subsequent
+        // reads, manifest commits, and any additional base stores.
+        let dataset = match wrapper_after_load {
+            Some(wrapper) => dataset.with_object_store_wrappers([wrapper]),
+            None => dataset,
+        };
 
         let uri = dataset.uri().to_string();
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
@@ -3915,8 +3944,8 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use arrow_array::{
@@ -4302,6 +4331,66 @@ mod tests {
         ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
             Some(original)
         }
+    }
+
+    #[derive(Debug)]
+    struct OrderedStoreWrapper {
+        name: &'static str,
+        order: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl WrappingObjectStore for OrderedStoreWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            self.order.lock().unwrap().push(self.name);
+            original
+        }
+    }
+
+    #[tokio::test]
+    async fn test_open_with_params_keeps_caller_store_wrapper_outermost() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let batch = make_test_batches();
+        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+        Dataset::write(reader, uri, None).await.unwrap();
+
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let caller_wrapper = Arc::new(OrderedStoreWrapper {
+            name: "caller",
+            order: order.clone(),
+        });
+        let compatibility_wrapper = Arc::new(OrderedStoreWrapper {
+            name: "compatibility",
+            order: order.clone(),
+        });
+        let params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store_wrapper: Some(caller_wrapper),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        NativeTable::open_with_params(
+            uri,
+            "test",
+            vec![],
+            Some(compatibility_wrapper),
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*order.lock().unwrap(), vec!["compatibility", "caller"]);
     }
 
     #[tokio::test]
