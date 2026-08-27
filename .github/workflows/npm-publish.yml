@@ -40,15 +40,7 @@ jobs:
           - target: aarch64-apple-darwin
             host: macos-latest
             features: fp16kernels
-            # Fat LTO (the workspace default in .cargo/config.toml) is
-            # single-threaded and is the peak-memory step of the build. On
-            # this runner it accounted for ~111 of the job's ~113 minutes,
-            # making it the critical path of the entire publish pipeline.
-            # ThinLTO parallelizes it across the runner's cores, for a few
-            # percent of runtime performance.
-            #
-            # This has to be a matrix field rather than a `pre_build` export:
-            # see the note on the job's `env:` block.
+            # Fat LTO was ~111 of this job's ~113 minutes.
             lto: thin
             codegen_units: 16
             pre_build: |-
@@ -56,10 +48,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             host: windows-2025
             features: ","
-            # See the ThinLTO note on aarch64-apple-darwin above. Keeping
-            # peak memory down is also what lets this run on the standard
-            # 4-core runner: the 8-core larger runner was only needed to
-            # stop fat LTO from OOMing rustc-LLVM.
+            # The lower peak also keeps this on the standard 4-core runner.
             lto: thin
             codegen_units: 16
             pre_build: |-
@@ -71,7 +60,6 @@ jobs:
           - target: aarch64-pc-windows-msvc
             host: windows-2025
             features: ","
-            # See the ThinLTO note on aarch64-apple-darwin above.
             lto: thin
             codegen_units: 16
             pre_build: |-
@@ -106,41 +94,13 @@ jobs:
             # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
             features: "fp16kernels"
-            # See the ThinLTO note on aarch64-apple-darwin above. Needed here
-            # for headroom rather than speed: with lld in place and fat LTO,
-            # this leg still peaked at 31391 MiB against the runner's 32 GiB
-            # and was OOM-killed 27 minutes into the cdylib. The dependency
-            # build alone peaks at ~18 GiB, so the fat-LTO codegen accounts for
-            # roughly 13 GiB on top of it.
+            # Fat LTO OOM-killed rustc every nightly; even with lld it peaked
+            # at 31391 MiB of the runner's 32 GiB.
             lto: thin
             codegen_units: 16
-            # This leg OOM-killed rustc during the fat-LTO codegen of the
-            # cdylib (`signal: 9` with no diagnostic, ~27 minutes in) on every
-            # nightly. On arm64 Linux rustc links through GNU `ld`, which is
-            # the memory-hungry default; x86_64 already defaults to `rust-lld`,
-            # which is why only the arm64 legs hit this. Measured in-house on a
-            # comparable arm64 build (lancedb/sophon#7313): the largest single
-            # linker process dropped 7.0 -> 4.0 GiB, and wall time fell 35%.
-            # That was not enough on its own here, but it is a real saving and
-            # lld is the better linker to be on regardless.
-            #
-            # `clang` is named as the driver because rustc links through `cc`,
-            # and GCC honours `-fuse-ld=lld` only if it was built with lld
-            # support, silently ignoring it otherwise. The napi-rs image ships
-            # clang-18 and lld-18, which do.
-            #
-            # clang is a single cross-capable binary, so it needs to be told
-            # what it is linking for. Without `--target` it defaults to the
-            # x86_64 host and hands aarch64 objects to /usr/bin/ld, which
-            # rejects them with "Relocations in generic ELF (EM: 183)".
-            #
-            # Those flags are baked into a wrapper script rather than passed as
-            # `-C link-arg`, because the per-target rustflags variable does not
-            # reach every unit that links: dependency crates which link a dylib
-            # (crc-fast, lance-arrow) were invoked as bare `clang` with none of
-            # the flags, while the linker variable itself did apply. Putting
-            # them in the linker binary makes every link step get them,
-            # independent of how cargo propagates rustflags.
+            # arm64 Linux links through GNU `ld` where x86_64 defaults to
+            # `rust-lld`, which is why only arm64 OOM'd. lld cut the largest
+            # linker process 7.0 -> 4.0 GiB (lancedb/sophon#7313).
             linker: /tmp/aarch64-lld-clang
             pre_build: |-
               set -e &&
@@ -151,46 +111,28 @@ jobs:
               # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.
               export CFLAGS="$CFLAGS -DAT_HWCAP2=26" &&
               rustup target add aarch64-unknown-linux-gnu
-              # Everything below is deliberately NOT part of an `&&` chain. In
-              # dash, errexit does not fire for a non-final command in an
-              # `&&` list, so a failure mid-chain was reported and then
-              # ignored, letting the build run on with a linker that did not
-              # work. Separate statements abort on the first failure.
+              # Not `&&`-chained: in dash, errexit does not fire for a
+              # non-final command in an `&&` list, so failures were ignored.
               #
-              # The linker `clang` needs to target aarch64 and use lld. Paths
-              # are the ones the image's own CFLAGS use; see the Dockerfile
-              # linked above.
-              # Two echoes rather than one printf with a newline escape in its
-              # format string: something between this file and the container
-              # rewrites that escape to a `;`, so printf produced the single
-              # line `#!/bin/sh;exec clang ...`. The kernel then read
-              # the interpreter as `/bin/sh;exec` and the wrapper failed with a
-              # bare "not found". echo's newline is generated at run time inside
-              # the container, so nothing can rewrite it.
+              # A wrapper rather than `-C link-arg` because the per-target
+              # rustflags variable does not reach every unit that links, while
+              # the linker variable does. `clang` because GCC silently ignores
+              # `-fuse-ld=lld` unless built with lld support. Two echoes
+              # because printf's newline escape gets rewritten to `;` between
+              # here and the container.
               echo '#!/bin/sh' > /tmp/aarch64-lld-clang
               echo 'exec clang --target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot --gcc-toolchain=/usr/aarch64-unknown-linux-gnu -fuse-ld=lld "$@"' >> /tmp/aarch64-lld-clang
               chmod 0755 /tmp/aarch64-lld-clang
-              # Print the wrapper as written, so a mangled shebang is visible
-              # here rather than as a bare "not found" 30 minutes later.
-              ls -l /tmp/aarch64-lld-clang
-              od -c /tmp/aarch64-lld-clang | head -3
-              # Link a trivial program through the wrapper the build will use.
-              # The cdylib link is the last thing the build does, ~30 minutes
-              # in, so without this a wrong linker config costs a full build to
-              # discover. This costs seconds and fails the job immediately.
+              # Fail now, not at the cdylib link ~30 minutes later. Linking at
+              # all also proves lld resolved; clang errors out when it cannot.
               echo 'int main(void){return 0;}' > /tmp/probe.c
               /tmp/aarch64-lld-clang /tmp/probe.c -o /tmp/probe
-              readelf -h /tmp/probe | grep -E 'Machine|Type'
-              clang --target=aarch64-unknown-linux-gnu -fuse-ld=lld -print-prog-name=ld.lld
+              readelf -h /tmp/probe | grep AArch64
           - target: aarch64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             features: ","
-            # See the ThinLTO note on aarch64-apple-darwin above. As on
-            # aarch64-gnu, this is for headroom: the runner was killed after
-            # 28.5 minutes of silence on the fat-LTO codegen of the cdylib.
-            # lld cannot help this leg -- the job dies inside rustc's LLVM,
-            # before any linker process is spawned -- so ThinLTO is the whole
-            # fix here rather than half of it.
+            # Fat LTO took the whole runner down. lld cannot help: it died
+            # inside rustc's LLVM, before any linker was spawned.
             lto: thin
             codegen_units: 16
             pre_build: |-
@@ -201,32 +143,19 @@ jobs:
               export EXTRA_ARGS="-x"
     name: build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
-    # These have to be set on the job, not exported from `pre_build`.
-    # `Swatinem/rust-cache` hashes `RUSTFLAGS` and `CARGO_*` into its cache key,
-    # but it computes that key when the action runs, which is before any step.
-    # Values exported inside the build step are invisible to it, which means:
-    # key unchanged -> restore is an exact hit -> an exact hit makes the
-    # post-run save a no-op -> cargo still invalidates the restored artifacts
-    # because the flags differ -> the job rebuilds cold and never seeds a cache
-    # built with these flags, repeating that on every run. The ThinLTO legs
-    # below had been exporting these from `pre_build`, so they were paying a
-    # cold build every night.
+    # On the job, not exported from `pre_build`: `Swatinem/rust-cache` hashes
+    # `CARGO_*` into its cache key before any step runs, so a step-local export
+    # leaves the key unchanged while cargo still rebuilds cold. The ThinLTO
+    # legs had been doing that every run.
     #
-    # Deliberately NOT `RUSTFLAGS`: cargo's `RUSTFLAGS` environment variable
-    # silently discards *every* config-file rustflag -- `target.<triple>`,
-    # `target.<cfg>` and `build` alike -- which would drop the `target-cpu` and
-    # `target-feature` settings in .cargo/config.toml from the published
-    # binaries, with no warning. The per-target variable does not do that: on
-    # cargo 1.86 it is additive with `target.'cfg(all())'`. If a later cargo
-    # made it replace that tier instead, the only loss here is clippy lint
-    # flags, which do nothing in a release build.
+    # Not `RUSTFLAGS`: setting it, even to "", discards every config-file
+    # rustflag, silently dropping .cargo/config.toml's `target-cpu` and
+    # `target-feature` from the published binaries.
     env:
       CARGO_PROFILE_RELEASE_LTO: ${{ matrix.settings.lto || 'fat' }}
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ matrix.settings.codegen_units || '1' }}
-      # Empty on every other leg, which is harmless: a per-target variable is
-      # only consulted when that triple is the one being built.
+      # Empty elsewhere: a per-target variable is only read for that triple.
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.settings.linker }}
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.settings.linker_flags }}
     defaults:
       run:
         working-directory: nodejs
@@ -273,19 +202,15 @@ jobs:
           # creating ref). The nightly cadence also keeps entries inside
           # GitHub's 7-day eviction window, which a tag-only trigger would not.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Docker builds can use rust-cache too. `target/` already lives on the
-      # host because the whole workspace is bind-mounted into the container, and
-      # rust-cache's prune and save run host-side, so they can manage it -- which
-      # is what keeps the entry to dependency artifacts rather than a multi-GB
-      # copy of everything.
+      # Docker builds can use rust-cache too: the workspace is bind-mounted, so
+      # `target/` lives on the host and rust-cache's prune keeps the entry
+      # small.
       #
       # Two differences from the native builds. The container's CARGO_HOME is
-      # bind-mounted from `.cargo-cache` rather than the host's ~/.cargo, so that
-      # has to be cached explicitly. And the key is derived from the *host* rustc
-      # version, which is not the compiler that produced these artifacts; that is
-      # safe because cargo fingerprints the real compiler and rebuilds on a
-      # mismatch, it just means a base-image toolchain bump costs one cold build
-      # instead of invalidating the key.
+      # bind-mounted from `.cargo-cache` rather than ~/.cargo, so that is cached
+      # explicitly. And the key uses the *host* rustc version, not the compiler
+      # that built these artifacts -- safe, since cargo fingerprints the real
+      # one; a base-image bump just costs one cold build.
       - name: Cache cargo (docker builds)
         uses: Swatinem/rust-cache@v2
         if: ${{ matrix.settings.docker }}
@@ -315,16 +240,13 @@ jobs:
           # `.cargo/...`, a path nothing cached, so the container re-downloaded
           # the whole crate registry on every run.
           #
-          # The bare `-e NAME` forms forward the job-level `env:` values into
-          # the container; without them the container would fall back to the
-          # workspace defaults, since `docker run` inherits nothing.
+          # `docker run` inherits nothing; `-e NAME` carries the job's `env:` in.
           options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
                     -v ${{ github.workspace }}/.cargo-cache/registry/cache:/usr/local/cargo/registry/cache \
                     -v ${{ github.workspace }}/.cargo-cache/registry/index:/usr/local/cargo/registry/index \
                     -e CARGO_PROFILE_RELEASE_LTO \
                     -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS \
                     -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER \
-                    -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS \
                     -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
@@ -368,11 +290,6 @@ jobs:
         if: always()
         run: df -h
         shell: bash
-      # Peak memory is the thing that actually decides whether these legs pass,
-      # so record it rather than inferring it from whether the runner survived.
-      # `memory.peak` is a high-water mark, so reading it after the build is
-      # enough; taking the max over all cgroups covers the docker legs, whose
-      # build runs in a child cgroup rather than the runner's own.
       - name: Report peak memory
         if: always() && runner.os == 'Linux'
         shell: bash
