@@ -131,7 +131,7 @@ jobs:
             # the flags, while the linker variable itself did apply. Putting
             # them in the linker binary makes every link step get them,
             # independent of how cargo propagates rustflags.
-            linker: /usr/local/bin/aarch64-lld-clang
+            linker: /tmp/aarch64-lld-clang
             pre_build: |-
               set -e &&
               apt-get update &&
@@ -140,21 +140,32 @@ jobs:
               # The manylinux2014 sysroot has glibc 2.17 headers which lack
               # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.
               export CFLAGS="$CFLAGS -DAT_HWCAP2=26" &&
-              rustup target add aarch64-unknown-linux-gnu &&
+              rustup target add aarch64-unknown-linux-gnu
+              # Everything below is deliberately NOT part of an `&&` chain. In
+              # dash, errexit does not fire for a non-final command in an
+              # `&&` list, so a failure mid-chain was reported and then
+              # ignored, letting the build run on with a linker that did not
+              # work. Separate statements abort on the first failure.
+              #
               # The linker `clang` needs to target aarch64 and use lld. Paths
               # are the ones the image's own CFLAGS use; see the Dockerfile
               # linked above.
-              printf '%s\n' '#!/bin/sh' 'exec clang --target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot --gcc-toolchain=/usr/aarch64-unknown-linux-gnu -fuse-ld=lld "$@"' > /usr/local/bin/aarch64-lld-clang &&
-              chmod +x /usr/local/bin/aarch64-lld-clang &&
+              printf '%s\n' '#!/bin/sh' 'exec clang --target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot --gcc-toolchain=/usr/aarch64-unknown-linux-gnu -fuse-ld=lld "$@"' > /tmp/aarch64-lld-clang
+              chmod 0755 /tmp/aarch64-lld-clang
+              # Show the wrapper as written. A previous attempt at
+              # /usr/local/bin failed with a bare "not found" from the shell
+              # with no error from the write itself, so print enough to tell a
+              # missing file from a bad shebang next time.
+              ls -l /tmp/aarch64-lld-clang
+              od -c /tmp/aarch64-lld-clang | head -3
               # Link a trivial program through the wrapper the build will use.
               # The cdylib link is the last thing the build does, ~30 minutes
               # in, so without this a wrong linker config costs a full build to
               # discover. This costs seconds and fails the job immediately.
-              echo 'int main(void){return 0;}' > /tmp/probe.c &&
-              /usr/local/bin/aarch64-lld-clang /tmp/probe.c -o /tmp/probe &&
-              readelf -h /tmp/probe | grep -E 'Machine|Type' &&
-              clang --target=aarch64-unknown-linux-gnu -fuse-ld=lld \
-                -print-prog-name=ld.lld
+              echo 'int main(void){return 0;}' > /tmp/probe.c
+              /tmp/aarch64-lld-clang /tmp/probe.c -o /tmp/probe
+              readelf -h /tmp/probe | grep -E 'Machine|Type'
+              clang --target=aarch64-unknown-linux-gnu -fuse-ld=lld -print-prog-name=ld.lld
           - target: aarch64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             features: ","
