@@ -3561,6 +3561,27 @@ describe("when creating an empty table", () => {
     expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
   });
 
+  it("can add and query JSON data", async () => {
+    const schema = new Schema([
+      new Field("id", new Int32(), true),
+      new Field(
+        "meta",
+        new Utf8(),
+        true,
+        new Map([["ARROW:extension:name", "arrow.json"]]),
+      ),
+    ]);
+    const table = await con.createEmptyTable("json", schema);
+    const meta = JSON.stringify({ x: 1 });
+
+    await table.add([{ id: 1, meta }]);
+
+    const rows = await table.query().toArray();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(1);
+    expect(rows[0].meta).toBe(meta);
+  });
+
   it("can create an empty table from schema that specifies field types by name", async () => {
     const schemaLike = {
       fields: [
