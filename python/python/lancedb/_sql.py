@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 import uuid
 
 import pyarrow as pa
-from pyarrow import flight
 
 from .background_loop import LOOP
 from .common import URI
@@ -82,9 +81,13 @@ def _normalize_flight_sql_uri(uri: str) -> str:
         else _DEFAULT_FLIGHT_SQL_PORT
     )
     try:
-        port = parsed.port or default_port
+        port = parsed.port
     except ValueError as err:
         raise ValueError(f"Invalid flight_sql_uri port: {err}") from err
+    if port == 0:
+        raise ValueError("flight_sql_uri port must be greater than zero")
+    if port is None:
+        port = default_port
     return f"{scheme}://{_format_host(parsed.hostname)}:{port}"
 
 
@@ -129,6 +132,12 @@ def _flight_client_kwargs(
     tls_config = connection.client_config.tls_config
     if tls_config is None:
         return {}
+    if not tls_config.assert_hostname:
+        raise ValueError(
+            "Flight SQL cannot disable hostname verification without also "
+            "disabling certificate verification; configure a valid TLS "
+            "hostname instead"
+        )
 
     kwargs: Dict[str, Any] = {}
     if tls_config.ssl_ca_cert is not None:
@@ -137,28 +146,42 @@ def _flight_client_kwargs(
         kwargs["cert_chain"] = Path(tls_config.cert_file).read_bytes()
     if tls_config.key_file is not None:
         kwargs["private_key"] = Path(tls_config.key_file).read_bytes()
-    if not tls_config.assert_hostname:
-        kwargs["disable_server_verification"] = True
     return kwargs
 
 
-def _flight_call_options(connection: RemoteDBConnection) -> flight.FlightCallOptions:
-    headers: Dict[str, tuple[str, str]] = {}
+def _flight_module() -> Any:
+    try:
+        from pyarrow import flight
+    except ImportError as err:
+        raise ImportError(
+            "lancedb.sql requires a PyArrow build with Flight support"
+        ) from err
+    return flight
+
+
+def _flight_call_options(connection: RemoteDBConnection, flight: Any) -> Any:
+    headers: Dict[bytes, tuple[bytes, bytes]] = {}
     if connection.client_config.extra_headers is not None:
         for key, value in connection.client_config.extra_headers.items():
-            headers[key.lower()] = (str(key), str(value))
+            encoded_key = str(key).lower().encode("ascii")
+            headers[encoded_key] = (encoded_key, str(value).encode("utf-8"))
 
-    headers["authorization"] = (
-        "authorization",
-        f"Bearer {connection.api_key}",
+    headers[b"authorization"] = (
+        b"authorization",
+        f"Bearer {connection.api_key}".encode("utf-8"),
     )
-    headers["database"] = ("database", connection.db_name)
-    headers["x-request-id"] = ("x-request-id", str(uuid.uuid4()))
+    headers[b"database"] = (b"database", connection.db_name.encode("utf-8"))
+    headers[b"x-request-id"] = (
+        b"x-request-id",
+        str(uuid.uuid4()).encode("ascii"),
+    )
 
     timeout = None
     timeout_config = connection.client_config.timeout_config
     if timeout_config is not None:
-        duration = timeout_config.timeout or timeout_config.read_timeout
+        duration = timeout_config.timeout
+        if duration is None:
+            duration = timeout_config.read_timeout
         if duration is not None:
             timeout = duration.total_seconds()
 
@@ -168,28 +191,63 @@ def _flight_call_options(connection: RemoteDBConnection) -> flight.FlightCallOpt
     )
 
 
+def _location_uri(location: Any) -> str:
+    uri = location.uri
+    if isinstance(uri, bytes):
+        return uri.decode("utf-8")
+    return str(uri)
+
+
+def _read_endpoint(
+    endpoint: Any,
+    primary_client: Any,
+    connection: RemoteDBConnection,
+    flight: Any,
+) -> pa.Table:
+    locations = list(endpoint.locations)
+    location_uri = _location_uri(locations[0]) if locations else None
+    reuse_primary = location_uri is None or location_uri.startswith(
+        "arrow-flight-reuse-connection:"
+    )
+    client = primary_client
+    if not reuse_primary:
+        client = flight.FlightClient(
+            location_uri,
+            **_flight_client_kwargs(connection, location_uri),
+        )
+
+    try:
+        options = _flight_call_options(connection, flight)
+        return client.do_get(endpoint.ticket, options).read_all()
+    finally:
+        if client is not primary_client:
+            client.close()
+
+
 def _execute_flight_sql(
     query: str,
     connection: RemoteDBConnection,
     flight_sql_uri: Optional[str],
 ) -> pa.Table:
+    flight = _flight_module()
     resolved_uri = _resolve_flight_sql_uri(connection, flight_sql_uri)
     client = flight.FlightClient(
         resolved_uri,
         **_flight_client_kwargs(connection, resolved_uri),
     )
-    options = _flight_call_options(connection)
     descriptor = flight.FlightDescriptor.for_command(
         _encode_command_statement_query(query)
     )
 
     try:
-        info = client.get_flight_info(descriptor, options)
+        info = client.get_flight_info(
+            descriptor, _flight_call_options(connection, flight)
+        )
         if not info.endpoints:
             raise RuntimeError("Flight SQL returned no result endpoints")
 
         tables = [
-            client.do_get(endpoint.ticket, options).read_all()
+            _read_endpoint(endpoint, client, connection, flight)
             for endpoint in info.endpoints
         ]
         if len(tables) == 1:
@@ -229,8 +287,9 @@ def sql(
         The LanceDB Cloud region passed to :func:`lancedb.connect`.
     host_override: str, optional
         The LanceDB Enterprise HTTP endpoint passed to :func:`lancedb.connect`.
-        For a plaintext endpoint with an explicit port, Flight SQL defaults to
-        the following port. For example, ``http://localhost:10024`` resolves to
+        For a plaintext endpoint, Flight SQL defaults to the following port.
+        For example, ``http://localhost:10024`` resolves to
+        ``grpc://localhost:10025``, while ``http://localhost`` resolves to
         ``grpc://localhost:10025``.
     flight_sql_uri: str, optional
         The Flight SQL endpoint. Use this for TLS and deployments where the HTTP
@@ -267,6 +326,7 @@ def sql(
         storage_options=storage_options,
     )
     if not isinstance(connection, RemoteDBConnection):
+        connection.close()
         raise ValueError("lancedb.sql requires a remote db:// database")
 
     try:

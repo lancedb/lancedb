@@ -47,7 +47,7 @@ from .namespace import (
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
 )
-from .sql import sql as sql
+from ._sql import sql as sql
 
 
 if TYPE_CHECKING:
@@ -576,6 +576,7 @@ __all__ = [
     "LsmWriteSpec",
     "RemoteDBConnection",
     "Session",
+    "sql",
     "Table",
     "__version__",
 ]
