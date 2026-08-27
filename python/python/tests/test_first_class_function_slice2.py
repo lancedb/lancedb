@@ -19,7 +19,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.functions import UdfDefinition, udf
+from lancedb.functions import FunctionRegistrationRequest, UdfDefinition, udf
 
 THRESHOLD = 20
 _CACHE = None
@@ -39,10 +39,26 @@ FIXTURES = (
 @udf(
     pip=["numpy>=2"],
     env={"MODE": "test"},
+    secrets=["API_TOKEN"],
     python_version="3.12",
 )
 def normalize_score(value: float) -> float:
     return value / 100.0
+
+
+def _assert_no_secret_values(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            assert key not in {
+                "secret_value",
+                "secret_values",
+                "resolved_secret",
+                "resolved_secrets",
+            }
+            _assert_no_secret_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_no_secret_values(child)
 
 
 def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
@@ -59,6 +75,8 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+    assert request["required_secrets"] == ["API_TOKEN"]
+    _assert_no_secret_values(request)
 
 
 def _run_packaged(definition, *args):
@@ -372,6 +390,7 @@ def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
         output_schema=None,
         pip=(),
         env={},
+        secrets=(),
         python_version=None,
     )
     with pytest.raises(ValueError, match="binds that name to another value"):
@@ -526,13 +545,54 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
             return value
 
 
+def test_secret_names_are_canonical_and_disjoint_from_environment():
+    @udf(secrets=["Z_TOKEN", "A_TOKEN", "Z_TOKEN"])
+    def canonical_secrets(value: int) -> int:
+        return value
+
+    assert canonical_secrets.registration_request.required_secrets == (
+        "A_TOKEN",
+        "Z_TOKEN",
+    )
+
+    with pytest.raises(ValueError, match="must be disjoint"):
+
+        @udf(env={"TOKEN": "plaintext"}, secrets=["TOKEN"])
+        def overlapping(value: int) -> int:
+            return value
+
+
+def test_declared_secret_api_still_requires_explicit_create_values():
+    @udf(secrets=["API_TOKEN"])
+    def declared_secret(value: int) -> int:
+        return value
+
+    with pytest.raises(ValueError, match="missing"):
+        declared_secret._submission_json(None)
+    submission = json.loads(
+        declared_secret._submission_json({"API_TOKEN": "explicit-secret"})
+    )
+    assert submission["required_secrets"] == ["API_TOKEN"]
+    assert submission["secret_values"] == {"API_TOKEN": "explicit-secret"}
+
+
+def test_no_secrets_preserve_canonical_registration_shape():
+    @udf
+    def no_secrets(value: int) -> int:
+        return value
+
+    canonical = json.loads(no_secrets.registration_request.to_canonical_json())
+    assert "required_secrets" not in canonical
+    assert json.loads(no_secrets._submission_json(None)) == canonical
+
+
 def test_local_function_catalog_operations_are_not_supported(tmp_path):
     db = lancedb.connect(tmp_path)
     message = "Function catalog operations are not supported by this database"
     with pytest.raises(NotImplementedError, match=message):
-        db.create_function(normalize_score)
+        db.create_function(normalize_score, secrets={"API_TOKEN": "value"})
     with pytest.raises(NotImplementedError, match=message):
-        db.create_function_async(normalize_score)
+        db.create_function_async(normalize_score, secrets={"API_TOKEN": "value"})
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version="fv_exact")
 
@@ -562,6 +622,7 @@ def _mock_remote_function_catalog():
                     "runtime": body["runtime"],
                     "runtime_digest": "sha256:runtime",
                     "environment_digest": "sha256:environment",
+                    "required_secrets": body.get("required_secrets", []),
                     "created_at": "2026-08-21T00:00:00Z",
                 }
                 response = {"job_id": "job-register"}
@@ -608,7 +669,9 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        registration = db.create_function_async(normalize_score)
+        registration = db.create_function_async(
+            normalize_score, secrets={"API_TOKEN": "secret-value"}
+        )
         assert registration.id == "job-register"
         created = registration.wait()
         reopened = db.get_function("normalize_score", version=created.version)
@@ -617,9 +680,18 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
     assert reopened.name == "normalize_score"
     assert reopened.version == "fv_exact"
     create_request = state["requests"][0][1]
-    assert create_request == json.loads(
+    expected = json.loads(normalize_score.registration_request.to_canonical_json())
+    expected["secret_values"] = {"API_TOKEN": "secret-value"}
+    assert create_request == expected
+    durable_request = FunctionRegistrationRequest.from_json(json.dumps(create_request))
+    assert not hasattr(durable_request, "secret_values")
+    assert "secret_values" not in json.loads(durable_request.to_canonical_json())
+    assert "secret_values" not in json.loads(
         normalize_score.registration_request.to_canonical_json()
     )
+    assert "secret-value" not in repr(normalize_score)
+    assert "secret-value" not in repr(normalize_score.registration_request)
+    assert not hasattr(created, "secret_values")
 
 
 def test_blocking_remote_registration_returns_function_version():
@@ -630,7 +702,9 @@ def test_blocking_remote_registration_returns_function_version():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        created = db.create_function(normalize_score)
+        created = db.create_function(
+            normalize_score, secrets={"API_TOKEN": "blocking-secret"}
+        )
 
     assert created.name == "normalize_score"
     assert created.version == "fv_exact"
@@ -638,3 +712,49 @@ def test_blocking_remote_registration_returns_function_version():
         "/v1/functions/create",
         "/v1/jobs/describe",
     ]
+    assert state["requests"][0][1]["secret_values"] == {"API_TOKEN": "blocking-secret"}
+
+
+@pytest.mark.parametrize(
+    ("secret_values", "error_type", "message"),
+    [
+        (None, ValueError, "missing"),
+        ({}, ValueError, "missing"),
+        ({"OTHER": "value"}, ValueError, "missing.*unexpected"),
+        ({"API_TOKEN": ""}, ValueError, "non-empty"),
+        ({"API_TOKEN": "bad\0value"}, ValueError, "NUL"),
+        ({"API_TOKEN": 123}, TypeError, "must be a string"),
+        ([("API_TOKEN", "value")], TypeError, "must be a mapping"),
+    ],
+)
+def test_secret_values_are_validated_before_remote_request(
+    secret_values, error_type, message
+):
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        with pytest.raises(error_type, match=message):
+            db.create_function_async(normalize_score, secrets=secret_values)
+        assert state["requests"] == []
+
+
+@pytest.mark.asyncio
+async def test_async_remote_registration_submits_secret_values_only_once():
+    with _mock_remote_function_catalog() as (host, state):
+        db = await lancedb.connect_async(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        registration = await db.create_function_async(
+            normalize_score, secrets={"API_TOKEN": "async-secret"}
+        )
+        created = await registration.wait()
+
+    assert state["requests"][0][1]["secret_values"] == {"API_TOKEN": "async-secret"}
+    assert not hasattr(created, "secret_values")

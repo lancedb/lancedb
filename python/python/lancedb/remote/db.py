@@ -7,7 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Union
 from urllib.parse import urlparse
 import warnings
 
@@ -742,8 +742,15 @@ class RemoteDBConnection(DBConnection):
         return Job(self._conn.job(job_id))
 
     @override
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        return Job(LOOP.run(self._conn.create_function_async(definition)))
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, str]] = None,
+    ) -> Job[FunctionVersion]:
+        return Job(
+            LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
+        )
 
     @override
     def get_function(self, name: str, *, version: str) -> FunctionVersion:

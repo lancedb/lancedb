@@ -5,7 +5,7 @@
 //! backend-neutral terminal result of a computed-column refresh.
 //!
 //! This module contains client/wire values only. Catalog persistence,
-//! environment bake, and execution are owned by Sophon.
+//! environment bake, secret resolution, and execution are owned by Sophon.
 
 use std::collections::BTreeMap;
 
@@ -198,6 +198,11 @@ pub struct PythonEnvironmentSpec {
 }
 
 /// Reproducible Python runtime definition understood by Sophon.
+///
+/// `env` contains non-secret values. Secret values are submission-only in the
+/// client model and do not become part of this public runtime identity;
+/// [`FunctionVersion::required_secrets`] contains names only. Sophon persists
+/// submitted values separately in the private execution artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PythonRuntimeSpec {
@@ -239,7 +244,7 @@ impl PythonRuntimeSpec {
         }
     }
 
-    /// Environment variables, or `None` for an unknown kind.
+    /// Non-secret environment variables, or `None` for an unknown kind.
     pub fn env(&self) -> Option<&BTreeMap<String, String>> {
         match self {
             Self::Python { env, .. } => Some(env),
@@ -324,6 +329,8 @@ pub struct FunctionVersion {
     runtime: PythonRuntimeSpec,
     runtime_digest: String,
     environment_digest: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    required_secrets: Vec<String>,
     created_at: String,
 }
 
@@ -354,6 +361,12 @@ impl FunctionVersion {
 
     pub fn environment_digest(&self) -> &str {
         &self.environment_digest
+    }
+
+    /// Required secret names. Resolved values exist only in Sophon's private
+    /// execution artifact and worker launch path.
+    pub fn required_secrets(&self) -> &[String] {
+        &self.required_secrets
     }
 
     pub fn created_at(&self) -> &str {
@@ -397,12 +410,40 @@ pub struct FunctionArtifactRequest {
 }
 
 /// Stable request envelope for remote immutable Function registration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Secret values are submission-only in the client model. Sophon persists them
+/// in the database-scoped private execution artifact; returned
+/// [`FunctionVersion`] and Job metadata contain only
+/// [`Self::required_secrets`] names. Debug formatting always redacts values.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_secrets: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_values: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for FunctionRegistrationRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secret_values = self
+            .secret_values
+            .keys()
+            .map(|name| (name, "[REDACTED]"))
+            .collect::<BTreeMap<_, _>>();
+        formatter
+            .debug_struct("FunctionRegistrationRequest")
+            .field("name", &self.name)
+            .field("artifact", &self.artifact)
+            .field("signature", &self.signature)
+            .field("runtime", &self.runtime)
+            .field("required_secrets", &self.required_secrets)
+            .field("secret_values", &secret_values)
+            .finish()
+    }
 }
 
 impl_json!(FunctionRegistrationRequest);

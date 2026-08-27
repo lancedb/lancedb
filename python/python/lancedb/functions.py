@@ -4,7 +4,7 @@
 """Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
-environment bake, and execution are owned by Sophon.
+environment bake, secret resolution, and execution are owned by Sophon.
 ``RefreshColumnResult`` is also the backend-neutral result of a local
 expression-backed refresh job.
 """
@@ -229,7 +229,7 @@ class PythonEnvironmentSpec(_RemoteValue):
 
 
 class PythonRuntimeSpec(_RemoteValue):
-    """Remote runtime definition with environment values.
+    """Remote runtime definition with non-secret environment values.
 
     V1 supports ``kind="python"``. Newer runtime kinds remain readable, while
     their unknown payload fields are intentionally not retained by the client.
@@ -268,6 +268,7 @@ class FunctionVersion(_RemoteValue):
     runtime: PythonRuntimeSpec
     runtime_digest: str
     environment_digest: str
+    required_secrets: tuple[str, ...] = ()
     created_at: str
 
     def __call__(self, **inputs: Any) -> FunctionApplication:
@@ -329,12 +330,17 @@ class FunctionVersion(_RemoteValue):
 
 
 class FunctionRegistrationRequest(_RemoteValue):
-    """Stable remote registration envelope produced by :func:`udf`."""
+    """Stable remote registration envelope produced by :func:`udf`.
+
+    Only secret names are represented. Secret values are supplied separately
+    when the definition is submitted and are not part of this durable value.
+    """
 
     name: str
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
+    required_secrets: tuple[str, ...] = ()
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -479,6 +485,18 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_secret_value(name: str, value: Any) -> str:
+    """Validate one secret value before building the create request."""
+    if not isinstance(value, str):
+        raise TypeError(f"Function secret {name!r} value must be a string")
+    if not value:
+        raise ValueError(f"Function secret {name!r} value must be non-empty")
+    if "\0" in value:
+        raise ValueError(f"Function secret {name!r} value must not contain NUL")
+    return value
 
 
 _GRAMMAR_PRIMITIVES = (
@@ -909,6 +927,7 @@ class UdfDefinition:
         output_schema: Optional[pa.DataType | pa.Field | pa.Schema],
         pip: tuple[str, ...],
         env: Mapping[str, str],
+        secrets: tuple[str, ...],
         python_version: Optional[str],
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
@@ -935,6 +954,17 @@ class UdfDefinition:
             for key, value in environment.items()
         ):
             raise TypeError("Function env keys and values must be strings")
+        required_secrets = tuple(sorted(set(secrets)))
+        invalid_secrets = [
+            secret for secret in required_secrets if not _SECRET_NAME.fullmatch(secret)
+        ]
+        if invalid_secrets:
+            raise ValueError(f"invalid Function secret names: {invalid_secrets!r}")
+        overlap = set(environment) & set(required_secrets)
+        if overlap:
+            raise ValueError(
+                f"Function env and secret names must be disjoint: {sorted(overlap)!r}"
+            )
         signature = _infer_signature(function, input_schema, output_schema)
         source = _package_source(function)
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
@@ -963,13 +993,56 @@ class UdfDefinition:
             ),
             signature=signature,
             runtime=runtime,
+            required_secrets=required_secrets,
         )
         functools.update_wrapper(self, function)
 
     @property
     def registration_request(self) -> FunctionRegistrationRequest:
-        """The immutable request sent by ``create_function_async``."""
+        """The immutable, value-free client model for a Function submission."""
         return self._request
+
+    def _submission_json(self, secrets: Optional[Mapping[str, str]]) -> str:
+        """Build one registration submission without retaining values on self."""
+        if secrets is None:
+            secret_values: Mapping[str, str] = {}
+        elif not isinstance(secrets, Mapping):
+            raise TypeError("Function secrets must be a mapping of names to strings")
+        else:
+            secret_values = secrets
+
+        if any(not isinstance(name, str) for name in secret_values):
+            raise TypeError("Function secret names must be strings")
+        expected = set(self._request.required_secrets)
+        provided = set(secret_values)
+        if provided != expected:
+            missing = sorted(expected - provided)
+            unexpected = sorted(provided - expected)
+            details = []
+            if missing:
+                details.append(f"missing: {missing!r}")
+            if unexpected:
+                details.append(f"unexpected: {unexpected!r}")
+            raise ValueError(
+                "Function secret values must exactly match the declared secrets ("
+                + "; ".join(details)
+                + ")"
+            )
+
+        canonical_values = {}
+        for name in sorted(secret_values):
+            canonical_values[name] = _validate_secret_value(name, secret_values[name])
+
+        submission = self._request._known_dict()
+        if canonical_values:
+            submission["secret_values"] = canonical_values
+        return json.dumps(
+            submission,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     def __call__(self, *args, **kwargs):
         return self._function(*args, **kwargs)
@@ -988,6 +1061,7 @@ def udf(
     output_schema: Optional[pa.DataType | pa.Field | pa.Schema] = None,
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
+    secrets: tuple[str, ...] | list[str] = (),
     python_version: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
@@ -1002,6 +1076,7 @@ def udf(
     output_schema: Optional[pa.DataType | pa.Field | pa.Schema] = None,
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
+    secrets: tuple[str, ...] | list[str] = (),
     python_version: Optional[str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
@@ -1032,7 +1107,10 @@ def udf(
     conda_channels : sequence of str, optional
         Conda channels in priority order; requires ``conda``.
     env : mapping of str to str, optional
-        Environment variables included in the Function definition.
+        Non-secret environment variables. Use ``secrets`` for credentials.
+    secrets : sequence of str, optional
+        Names of secrets required by the callable. Supply their values separately
+        to ``create_function`` or ``create_function_async``.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
 
@@ -1054,11 +1132,15 @@ def udf(
     Examples
     --------
     >>> from lancedb import udf
-    >>> @udf(pip=["numpy==2.2.0"])
+    >>> @udf(pip=["numpy==2.2.0"], secrets=["MODEL_TOKEN"])
     ... def score(value: float) -> float:
     ...     return value * 2
     >>> score(1.5)
     3.0
+    >>> db.create_function(  # doctest: +SKIP
+    ...     score, secrets={"MODEL_TOKEN": "user-secret-value"}
+    ... )
+
     """
 
     def decorate(target: Callable[..., Any]) -> UdfDefinition:
@@ -1069,6 +1151,7 @@ def udf(
             output_schema=output_schema,
             pip=tuple(pip),
             env={} if env is None else env,
+            secrets=tuple(secrets),
             python_version=python_version,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),

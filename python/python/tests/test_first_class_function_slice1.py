@@ -37,6 +37,21 @@ def job_result(name: str) -> dict:
     return json.loads(fixture(name))["result"]
 
 
+def assert_no_secret_values(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            assert key not in {
+                "secret_value",
+                "secret_values",
+                "resolved_secret",
+                "resolved_secrets",
+            }
+            assert_no_secret_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            assert_no_secret_values(child)
+
+
 def test_public_function_values_are_in_api_reference():
     docs = Path(__file__).parents[3] / "docs" / "src" / "python" / "python.md"
     rendered = docs.read_text()
@@ -94,6 +109,7 @@ def test_function_version_identity_is_immutable_and_exact():
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.name == "embed"
     assert version.version == "fv_01K3EXACT"
+    assert version.required_secrets == ("HF_TOKEN",)
 
     with pytest.raises((TypeError, ValueError)):
         version.version = "fv_changed"
@@ -274,6 +290,15 @@ def test_refresh_result_rejects_non_u64_values(field):
     value[field] = "1"
     with pytest.raises(ValueError):
         RefreshColumnResult.from_json(json.dumps(value))
+
+
+def test_canonical_client_values_contain_secret_names_only():
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+    canonical = json.loads(version.to_canonical_json())
+    assert canonical["required_secrets"] == ["HF_TOKEN"]
+    assert_no_secret_values(canonical)
 
 
 class _FunctionDeclarationInner:
