@@ -17,21 +17,21 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import java.util.OptionalLong;
 
-/** One flushed L0 generation. */
-public class GenerationStats {
+/** One SSTable. */
+public class SsTableStats {
   private static final String CONTEXT = "generation stats";
 
   private final long generation;
   private final long bytes;
   private final Long rows;
 
-  GenerationStats(long generation, long bytes, Long rows) {
+  SsTableStats(long generation, long bytes, Long rows) {
     this.generation = generation;
     this.bytes = bytes;
     this.rows = rows;
   }
 
-  /** The generation number. Increases as memtables are sealed into L0. */
+  /** The generation number. Increases as memtables are frozen into SSTables. */
   public long generation() {
     return generation;
   }
@@ -42,16 +42,16 @@ public class GenerationStats {
   }
 
   /**
-   * Rows in this generation, present only when {@code includeGenerationRows} was requested. Off by
+   * Rows in this generation, present only when {@code includeSstableRows} was requested. Off by
    * default because each count opens an uncached Lance dataset.
    */
   public OptionalLong rows() {
     return rows == null ? OptionalLong.empty() : OptionalLong.of(rows);
   }
 
-  static GenerationStats fromJson(JsonNode node) {
+  static SsTableStats fromJson(JsonNode node) {
     JsonFields.requiredObject(node, CONTEXT);
-    return new GenerationStats(
+    return new SsTableStats(
         JsonFields.requiredLong(node, "generation", CONTEXT),
         JsonFields.requiredLong(node, "bytes", CONTEXT),
         JsonFields.optionalLong(node, "rows", CONTEXT));
@@ -59,6 +59,6 @@ public class GenerationStats {
 
   @Override
   public String toString() {
-    return "GenerationStats{generation=" + generation + ", bytes=" + bytes + ", rows=" + rows + "}";
+    return "SsTableStats{generation=" + generation + ", bytes=" + bytes + ", rows=" + rows + "}";
   }
 }

@@ -33,16 +33,16 @@ use pyo3::{
 
 mod scannable;
 
-/// Convert `LsmStats` to a Python dict, preserving the per-bucket list.
+/// Convert `LsmStats` to a Python dict, preserving the per-table-shard list.
 ///
 /// Deliberately not flattened to a table-level summary: a table is N
-/// buckets on one node, and the per-bucket detail is the reason the
-/// endpoint exists — flattening hides the single hot bucket someone opened
+/// table shards on one node, and the per-shard detail is the reason the
+/// endpoint exists — flattening hides the single hot table shard someone opened
 /// it to find.
 fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult<Py<PyDict>> {
     let out = PyDict::new(py);
-    let buckets = PyList::empty(py);
-    for b in &stats.buckets {
+    let table_shards = PyList::empty(py);
+    for b in &stats.table_shards {
         let e = PyDict::new(py);
         e.set_item("shard_id", &b.shard_id)?;
         e.set_item("status", &b.status)?;
@@ -58,15 +58,15 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
             b.wal_entry_position_last_seen,
         )?;
 
-        let generations = PyList::empty(py);
-        for g in &b.generations {
+        let sstables = PyList::empty(py);
+        for g in &b.sstables {
             let ge = PyDict::new(py);
             ge.set_item("generation", g.generation)?;
             ge.set_item("bytes", g.bytes)?;
             ge.set_item("rows", g.rows)?;
-            generations.append(ge)?;
+            sstables.append(ge)?;
         }
-        e.set_item("generations", generations)?;
+        e.set_item("sstables", sstables)?;
         e.set_item("compacting", b.compacting)?;
 
         e.set_item(
@@ -88,9 +88,9 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
                 })
                 .transpose()?,
         )?;
-        buckets.append(e)?;
+        table_shards.append(e)?;
     }
-    out.set_item("buckets", buckets)?;
+    out.set_item("table_shards", table_shards)?;
     Ok(out.unbind())
 }
 
@@ -1492,7 +1492,7 @@ impl Table {
         })
     }
 
-    /// Seal every bucket's active memtable into L0.
+    /// Freeze every table shard's active memtable into an SSTable.
     pub fn flush_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(
@@ -1501,7 +1501,7 @@ impl Table {
         )
     }
 
-    /// Trigger a background L0 → base pass per bucket. Returns once the
+    /// Trigger a background SSTable compaction pass per table shard. Returns once the
     /// passes are dispatched, not once they finish — watch `get_lsm_stats`.
     pub fn compact_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -1511,15 +1511,15 @@ impl Table {
     }
 
     /// Live LSM state, or `None` when the LSM write path is not enabled.
-    #[pyo3(signature = (include_generation_rows=false))]
+    #[pyo3(signature = (include_sstable_rows=false))]
     pub fn get_lsm_stats(
         self_: PyRef<'_, Self>,
-        include_generation_rows: bool,
+        include_sstable_rows: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner
-                .get_lsm_stats(include_generation_rows)
+                .get_lsm_stats(include_sstable_rows)
                 .await
                 .infer_error()?;
             Python::attach(|py| stats.map(|s| lsm_stats_to_py(py, &s)).transpose())
