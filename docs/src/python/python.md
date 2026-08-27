@@ -28,6 +28,29 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.Session
 
+## Flight SQL
+
+Execute SQL against a remote LanceDB database through its Flight SQL endpoint.
+The database passed to `lancedb.sql` is the default catalog, while fully qualified
+table references can query other databases available to the same deployment:
+
+```python
+import lancedb
+
+result = lancedb.sql(
+    """
+    SELECT events.id, accounts.name
+    FROM analytics.public.events AS events
+    JOIN users.public.accounts AS accounts ON events.user_id = accounts.id
+    """,
+    database="db://analytics",
+    api_key="ldb_...",
+    flight_sql_uri="grpc+tls://sql.example.com:10026",
+)
+```
+
+::: lancedb.sql
+
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
