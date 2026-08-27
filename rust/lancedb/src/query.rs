@@ -399,6 +399,9 @@ pub trait QueryBase {
     /// x > 5 OR y = 'test'
     /// ```
     ///
+    /// Identifiers may be delimited with SQL-standard double quotes or
+    /// backticks. String literals must use single quotes.
+    ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).
     ///
@@ -913,6 +916,17 @@ impl QueryRequest {
     /// use different representations) the error is recorded and surfaced later
     /// by [`Self::check_filter`].
     pub(crate) fn add_filter(&mut self, new: QueryFilter) {
+        let new = match new {
+            QueryFilter::Sql(filter) => match crate::expr::canonicalize_sql_predicate(&filter) {
+                Ok(filter) => QueryFilter::Sql(filter),
+                Err(err) => {
+                    self.filter_error = Some(err.to_string());
+                    return;
+                }
+            },
+            other => other,
+        };
+
         self.filter = Some(match self.filter.take() {
             None => new,
             Some(existing) => match and_filters(existing, new) {
@@ -1652,8 +1666,8 @@ mod tests {
         datatypes::{Int32Type, UInt8Type},
     };
     use arrow_array::{
-        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
-        types::Float32Type,
+        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
+        StringArray, cast::AsArray, types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -1880,6 +1894,157 @@ mod tests {
         assert!(query.request.check_filter().is_ok());
         // The combined filter executes without error.
         query.execute().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_double_quoted_predicates_across_table_operations() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("PartyAbbrev", DataType::Utf8, false),
+            ArrowField::new("path", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+                Arc::new(StringArray::from(vec!["D", "R", "R", "D"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x", "x"])),
+            ],
+        )
+        .unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn.create_table("parties", batch).execute().await.unwrap();
+        let batches = table
+            .query()
+            .only_if(r#""PartyAbbrev" = 'D'"#)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'D'"#.to_string()))
+                .await
+                .unwrap(),
+            2
+        );
+
+        // Public BaseTable dispatch cannot bypass canonicalization.
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql(r#""PartyAbbrev" = 'D'"#.to_string())),
+            ..Default::default()
+        });
+        let batches = table
+            .base_table()
+            .query(&query, Default::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(
+            table
+                .base_table()
+                .count_rows(Some(crate::table::Filter::Sql(
+                    r#""PartyAbbrev" = 'D'"#.to_string(),
+                )))
+                .await
+                .unwrap(),
+            2
+        );
+
+        for predicate in [
+            r#"id = 1 -- unmatched " in a valid SQL comment"#,
+            r#"id = 1 /* unmatched " in a valid SQL comment */"#,
+            r#"id = 1 /*! OR "PartyAbbrev" = 'D' */"#,
+            r#"path = '\' AND "PartyAbbrev" = 'D'"#,
+        ] {
+            let batches = table
+                .query()
+                .only_if(predicate)
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+        }
+
+        // The same canonical predicate contract applies to both merge filters.
+        let source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["D", "R", "R"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x"])),
+            ],
+        )
+        .unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_not_matched_by_source_delete(Some(r#""PartyAbbrev" = 'D'"#.to_string()));
+        let result = table
+            .base_table()
+            .merge_insert(
+                merge,
+                Box::new(RecordBatchIterator::new(vec![Ok(source)], schema.clone())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.num_deleted_rows, 1);
+
+        let source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["U", "U", "U"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x"])),
+            ],
+        )
+        .unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_matched_update_all(Some(r#"target."PartyAbbrev" = 'D'"#.to_string()));
+        merge
+            .execute(Box::new(RecordBatchIterator::new(vec![Ok(source)], schema)))
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'U'"#.to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        let update = table
+            .update()
+            .only_if(r#""PartyAbbrev" = 'R'"#)
+            .column("PartyAbbrev", "'X'");
+        table.base_table().update(update).await.unwrap();
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'X'"#.to_string()))
+                .await
+                .unwrap(),
+            2
+        );
+
+        let result = table
+            .base_table()
+            .delete(crate::table::Predicate::String(r#""PartyAbbrev" = 'X'"#))
+            .await
+            .unwrap();
+        assert_eq!(result.num_deleted_rows, 2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
 
     #[tokio::test]

@@ -31,8 +31,9 @@ pub(crate) async fn execute_delete(
     table.dataset.ensure_mutable()?;
     match predicate {
         Predicate::String(s) => {
+            let predicate = crate::expr::canonicalize_sql_predicate(s)?;
             let mut dataset = (*table.dataset.get().await?).clone();
-            let delete_result = dataset.delete(s).boxed().await?;
+            let delete_result = dataset.delete(&predicate).boxed().await?;
             let num_deleted_rows = delete_result.num_deleted_rows;
             let version = dataset.version().version;
             table.dataset.update(dataset);
