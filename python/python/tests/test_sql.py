@@ -442,6 +442,31 @@ def test_flight_options_use_remaining_overall_deadline(monkeypatch):
     assert options.timeout_argument == 12.5
 
 
+@pytest.mark.parametrize(
+    ("read_timeout", "deadline", "expected"),
+    [(7, 112.5, 7), (20, 112.5, 12.5)],
+)
+def test_flight_planning_uses_smaller_timeout_bound(
+    monkeypatch, read_timeout, deadline, expected
+):
+    monkeypatch.setattr(sql_module.time, "monotonic", lambda: 100.0)
+    flight = SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions)
+    connection = FakeRemoteConnection(
+        client_config=ClientConfig(
+            timeout_config={"read_timeout": timedelta(seconds=read_timeout)}
+        )
+    )
+
+    options = sql_module._flight_call_options(
+        connection,
+        flight,
+        "request-id",
+        deadline=deadline,
+    )
+
+    assert options.timeout_argument == expected
+
+
 def test_flight_options_use_read_timeout_environment(monkeypatch):
     monkeypatch.setenv("LANCE_CLIENT_READ_TIMEOUT", "17")
     flight = SimpleNamespace(FlightCallOptions=RecordingFlightCallOptions)

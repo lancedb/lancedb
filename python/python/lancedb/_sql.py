@@ -236,14 +236,15 @@ def _flight_call_options(
     timeout = None
     if deadline is not None:
         timeout = max(0.0, deadline - time.monotonic())
-    elif not streaming:
+    if not streaming:
         timeout_config = connection.client_config.timeout_config
         configured_timeout = (
             timeout_config.read_timeout if timeout_config is not None else None
         )
-        timeout = _timeout_seconds(configured_timeout, "LANCE_CLIENT_READ_TIMEOUT")
-    if timeout is None and not streaming:
-        timeout = _DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS
+        read_timeout = _timeout_seconds(configured_timeout, "LANCE_CLIENT_READ_TIMEOUT")
+        if read_timeout is None:
+            read_timeout = _DEFAULT_FLIGHT_SQL_TIMEOUT_SECONDS
+        timeout = read_timeout if timeout is None else min(timeout, read_timeout)
 
     return flight.FlightCallOptions(
         timeout=timeout,
