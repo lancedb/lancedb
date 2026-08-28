@@ -491,17 +491,42 @@ fn flight_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use arrow_flight::FlightInfo;
-    use arrow_flight::flight_service_server::FlightServiceServer;
+    use arrow_array::Int64Array;
+    use arrow_flight::encode::FlightDataEncoderBuilder;
+    use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
     use arrow_flight::sql::server::FlightSqlService;
-    use arrow_flight::sql::{CommandStatementQuery, SqlInfo};
+    use arrow_flight::sql::{
+        CommandStatementQuery, ProstMessageExt, SqlInfo, TicketStatementQuery,
+    };
+    use arrow_flight::{FlightEndpoint, FlightInfo, Ticket};
+    use arrow_schema::{DataType, Field, Schema};
     use tonic::{Request, Response, Status};
 
     use super::*;
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct TestFlightSqlService {
         query_count: Arc<AtomicUsize>,
+        headers: Arc<std::sync::Mutex<Vec<(String, String, String, String)>>>,
+        result: RecordBatch,
+    }
+
+    impl Default for TestFlightSqlService {
+        fn default() -> Self {
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "value",
+                DataType::Int64,
+                false,
+            )]));
+            let result =
+                RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![42_i64]))])
+                    .unwrap();
+            Self {
+                query_count: Arc::new(AtomicUsize::new(0)),
+                headers: Arc::new(std::sync::Mutex::new(Vec::new())),
+                result,
+            }
+        }
     }
 
     #[tonic::async_trait]
@@ -510,11 +535,52 @@ mod tests {
 
         async fn get_flight_info_statement(
             &self,
-            _query: CommandStatementQuery,
-            _request: Request<arrow_flight::FlightDescriptor>,
+            query: CommandStatementQuery,
+            request: Request<arrow_flight::FlightDescriptor>,
         ) -> std::result::Result<Response<FlightInfo>, Status> {
             self.query_count.fetch_add(1, Ordering::SeqCst);
-            Ok(Response::new(FlightInfo::default()))
+            let metadata = request.metadata();
+            let header = |name| {
+                metadata
+                    .get(name)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap()
+                    .to_string()
+            };
+            self.headers.lock().unwrap().push((
+                header("database"),
+                header("namespace-path"),
+                header("x-request-id"),
+                header("x-api-key"),
+            ));
+
+            let mut info = FlightInfo::new().with_endpoint(
+                FlightEndpoint::new().with_ticket(Ticket::new(
+                    TicketStatementQuery {
+                        statement_handle: query.query.clone().into(),
+                    }
+                    .as_any()
+                    .encode_to_vec(),
+                )),
+            );
+            if query.query != "SELECT empty" {
+                info = info.try_with_schema(self.result.schema_ref()).unwrap();
+            }
+            Ok(Response::new(info))
+        }
+
+        async fn do_get_statement(
+            &self,
+            ticket: TicketStatementQuery,
+            _request: Request<Ticket>,
+        ) -> std::result::Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+            let empty = ticket.statement_handle.as_ref() == b"SELECT empty";
+            let input = futures::stream::iter((!empty).then_some(Ok(self.result.clone())));
+            let stream = FlightDataEncoderBuilder::new()
+                .with_schema(self.result.schema())
+                .build(input)
+                .map_err(Status::from);
+            Ok(Response::new(Box::pin(stream)))
         }
 
         async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
@@ -528,6 +594,8 @@ mod tests {
 
         let service = TestFlightSqlService::default();
         let query_count = service.query_count.clone();
+        let headers = service.headers.clone();
+        let expected = service.result.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(
             tonic::transport::Server::builder()
@@ -555,17 +623,37 @@ mod tests {
         let uri = format!("grpc://{address}");
         assert_eq!(client.initialized_client_count().await, 0);
 
-        client
+        let first = client
             .execute("SELECT 1", &["public".to_string()], Some(&uri))
             .await
             .unwrap();
-        client
-            .execute("SELECT 2", &["public".to_string()], Some(&uri))
+        let second = client
+            .execute(
+                "SELECT 2",
+                &["events".to_string(), "raw".to_string()],
+                Some(&uri),
+            )
+            .await
+            .unwrap();
+        let empty = client
+            .execute("SELECT empty", &["public".to_string()], Some(&uri))
             .await
             .unwrap();
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 2);
+        assert_eq!(query_count.load(Ordering::SeqCst), 3);
+        assert_eq!(first, vec![expected.clone()]);
+        assert_eq!(second, vec![expected.clone()]);
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].schema(), expected.schema());
+        assert_eq!(empty[0].num_rows(), 0);
+        let headers = headers.lock().unwrap();
+        assert_eq!(headers[0].0, "analytics");
+        assert_eq!(headers[0].1, "public");
+        assert_eq!(headers[0].3, "test-key");
+        assert_eq!(headers[1].1, "events$raw");
+        assert_ne!(headers[0].2, headers[1].2);
+        assert_ne!(headers[1].2, headers[2].2);
         let _ = shutdown_tx.send(());
         server.await.unwrap().unwrap();
     }
