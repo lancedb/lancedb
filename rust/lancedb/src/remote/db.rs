@@ -112,8 +112,6 @@ pub struct RemoteDatabaseOptions {
     /// This is required when connecting to LanceDB Enterprise and should be
     /// provided if using an on-premises LanceDB Enterprise instance.
     pub host_override: Option<String>,
-    /// The Flight SQL host override
-    pub sql_host_override: Option<String>,
     /// Storage options configure the storage layer (e.g. S3, GCS, Azure, etc.)
     ///
     /// See available options at <https://docs.lancedb.com/storage/>
@@ -132,7 +130,6 @@ impl RemoteDatabaseOptions {
         let api_key = map.get(OPT_REMOTE_API_KEY).cloned();
         let region = map.get(OPT_REMOTE_REGION).cloned();
         let host_override = map.get(OPT_REMOTE_HOST_OVERRIDE).cloned();
-        let sql_host_override = map.get(OPT_REMOTE_SQL_HOST_OVERRIDE).cloned();
         let storage_options = map
             .iter()
             .filter(|(key, _)| !key.starts_with(OPT_REMOTE_PREFIX))
@@ -142,7 +139,6 @@ impl RemoteDatabaseOptions {
             api_key,
             region,
             host_override,
-            sql_host_override,
             storage_options,
         })
     }
@@ -161,12 +157,6 @@ impl DatabaseOptions for RemoteDatabaseOptions {
         }
         if let Some(host_override) = &self.host_override {
             map.insert(OPT_REMOTE_HOST_OVERRIDE.to_string(), host_override.clone());
-        }
-        if let Some(sql_host_override) = &self.sql_host_override {
-            map.insert(
-                OPT_REMOTE_SQL_HOST_OVERRIDE.to_string(),
-                sql_host_override.clone(),
-            );
         }
     }
 }
@@ -210,12 +200,6 @@ impl RemoteDatabaseOptionsBuilder {
     /// * `host_override` - The LanceDB Enterprise host override
     pub fn host_override(mut self, host_override: String) -> Self {
         self.options.host_override = Some(host_override);
-        self
-    }
-
-    /// Set the LanceDB Enterprise Flight SQL host override
-    pub fn sql_host_override(mut self, sql_host_override: String) -> Self {
-        self.options.sql_host_override = Some(sql_host_override);
         self
     }
 }

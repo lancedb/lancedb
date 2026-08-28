@@ -1138,6 +1138,7 @@ impl ConnectBuilder {
 
         let mut merged_options = self.request.options.clone();
         Self::apply_env_defaults(&ENV_VARS_TO_STORAGE_OPTS, &mut merged_options);
+        let sql_host_override = merged_options.get(OPT_REMOTE_SQL_HOST_OVERRIDE).cloned();
         let options = RemoteDatabaseOptions::parse_from_map(&merged_options)?;
 
         let region = options.region.ok_or_else(|| Error::InvalidInput {
@@ -1184,7 +1185,7 @@ impl ConnectBuilder {
             &api_key,
             &region,
             options.host_override,
-            options.sql_host_override,
+            sql_host_override,
             client_config,
             storage_options.into(),
             self.request.read_consistency_interval,

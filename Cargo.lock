@@ -5539,6 +5539,7 @@ dependencies = [
  "polars",
  "polars-arrow",
  "pprof 0.14.1",
+ "prost",
  "rand 0.9.5",
  "random_word",
  "regex",

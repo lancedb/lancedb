@@ -98,6 +98,7 @@ semver = { workspace = true }
 [dev-dependencies]
 anyhow = "1"
 lance-testing = { workspace = true }
+prost = "0.14"
 tempfile = { workspace = true }
 random_word = { version = "0.4.3", features = ["en"] }
 roaring = "0.11.4"
