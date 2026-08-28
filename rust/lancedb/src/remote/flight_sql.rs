@@ -294,7 +294,7 @@ async fn endpoint_channel(
     let Some(location) = endpoint.location.first() else {
         return Ok(primary_channel);
     };
-    if location.uri == REUSE_CONNECTION_URI {
+    if is_reuse_connection_uri(&location.uri) {
         return Ok(primary_channel);
     }
     let target = normalize_flight_sql_uri(&location.uri)?;
@@ -304,6 +304,10 @@ async fn endpoint_channel(
         });
     }
     connect_channel(&target, config, request_id).await
+}
+
+fn is_reuse_connection_uri(uri: &str) -> bool {
+    uri.starts_with(REUSE_CONNECTION_URI)
 }
 
 async fn connect_channel(
@@ -503,5 +507,12 @@ mod tests {
         assert!(validate_namespace_path(&["events$raw".into()]).is_err());
         assert!(validate_namespace_path(&["".into()]).is_err());
         assert!(validate_namespace_path(&["café".into()]).is_err());
+    }
+
+    #[test]
+    fn accepts_reuse_connection_uri_variants() {
+        assert!(is_reuse_connection_uri("arrow-flight-reuse-connection:"));
+        assert!(is_reuse_connection_uri("arrow-flight-reuse-connection://?"));
+        assert!(!is_reuse_connection_uri("grpc://localhost:10025"));
     }
 }
