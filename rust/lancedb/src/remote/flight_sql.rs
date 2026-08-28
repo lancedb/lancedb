@@ -493,9 +493,8 @@ mod tests {
 
     use arrow_flight::FlightInfo;
     use arrow_flight::flight_service_server::FlightServiceServer;
-    use arrow_flight::sql::CommandStatementQuery;
-    use arrow_flight::sql::metadata::SqlInfo;
     use arrow_flight::sql::server::FlightSqlService;
+    use arrow_flight::sql::{CommandStatementQuery, SqlInfo};
     use tonic::{Request, Response, Status};
 
     use super::*;
