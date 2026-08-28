@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use arrow::pyarrow::ToPyArrow;
 use pyo3::exceptions::PyValueError;
-use pyo3::types::{PyAnyMethods, PyList, PyListMethods, PyModule, PyModuleMethods};
+use pyo3::types::{PyAnyMethods, PyList, PyListMethods, PyModule};
 use pyo3::{Bound, Py, PyAny, PyResult, Python, pyfunction};
 
 use crate::connection::PyClientConfig;
@@ -66,7 +66,7 @@ pub fn sql(
         None => vec!["public".to_string()],
     };
 
-    let rust_client_config = client_config.map(Into::into);
+    let rust_client_config: Option<lancedb::remote::ClientConfig> = client_config.map(Into::into);
     let mut resolved_api_key = api_key.or_else(|| std::env::var("LANCEDB_API_KEY").ok());
     if resolved_api_key.is_none()
         && rust_client_config.as_ref().is_some_and(|config| {
