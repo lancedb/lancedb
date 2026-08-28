@@ -38,7 +38,7 @@ from .materialized_view import (
     MaterializedView,
     MaterializedViewDefinition,
 )
-from .table import AsyncTable, Table
+from .table import AsyncTable, ComputedColumn as ComputedColumn, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (

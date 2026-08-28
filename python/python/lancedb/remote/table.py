@@ -67,7 +67,16 @@ from ..query import (
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
 )
-from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
+from ..table import (
+    AsyncTable,
+    BlobMode,
+    Branches,
+    ComputedColumn,
+    IndexStatistics,
+    Query,
+    Table,
+    Tags,
+)
 from ..types import BaseTokenizerType
 
 
@@ -975,14 +984,9 @@ class RemoteTable(Table):
         | FunctionApplication
         | None = None,
         *,
-        computed: Dict[str, str] | None = None,
-        computed_blobs: Dict[str, str] | None = None,
+        computed: Dict[str, str | ComputedColumn] | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(
-            self._table.add_columns(
-                transforms, computed=computed, computed_blobs=computed_blobs
-            )
-        )
+        return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
     def refresh_column(self, column: str):
         return LOOP.run(self._table.refresh_column(column))

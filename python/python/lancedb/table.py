@@ -913,6 +913,47 @@ def _normalize_progress(progress):
     return progress, False
 
 
+@dataclass(frozen=True)
+class ComputedColumn:
+    """A computed-column expression with explicit output semantics.
+
+    Plain strings passed to ``Table.add_columns(computed=...)`` infer their
+    output type. Use :meth:`blob` when a ``LargeBinary`` expression should be
+    published as Blob v2.
+    """
+
+    expression: str
+    output: Literal["inferred", "blob_v2"] = "inferred"
+
+    def __post_init__(self):
+        if not isinstance(self.expression, str):
+            raise TypeError("ComputedColumn.expression must be a string")
+        if self.output not in ("inferred", "blob_v2"):
+            raise ValueError("ComputedColumn.output must be 'inferred' or 'blob_v2'")
+
+    @classmethod
+    def blob(cls, expression: str) -> ComputedColumn:
+        """Publish a ``LargeBinary`` expression result as Blob v2."""
+        return cls(expression=expression, output="blob_v2")
+
+
+def _normalize_computed_columns(
+    computed: Dict[str, str | ComputedColumn],
+) -> list[tuple[str, str, Literal["inferred", "blob_v2"]]]:
+    columns: list[tuple[str, str, Literal["inferred", "blob_v2"]]] = []
+    for name, declaration in computed.items():
+        if isinstance(declaration, str):
+            columns.append((name, declaration, "inferred"))
+        elif isinstance(declaration, ComputedColumn):
+            columns.append((name, declaration.expression, declaration.output))
+        else:
+            raise TypeError(
+                "computed values must be SQL expression strings or "
+                "ComputedColumn values"
+            )
+    return columns
+
+
 class Table(ABC):
     """
     A Table is a collection of Records in a LanceDB Database.
@@ -2142,8 +2183,7 @@ class Table(ABC):
         | pa.Schema
         | None = None,
         *,
-        computed: Dict[str, str] | None = None,
-        computed_blobs: Dict[str, str] | None = None,
+        computed: Dict[str, str | ComputedColumn] | None = None,
     ):
         """
         Add new columns with defined values.
@@ -2165,10 +2205,13 @@ class Table(ABC):
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
-        computed: Dict[str, str], optional
+        computed: Dict[str, str | ComputedColumn], optional
             A map of column name to a SQL expression defining the column. The
             column's type and inputs are derived from the expression, so no
-            data type is supplied.
+            data type is supplied. Use ``ComputedColumn.blob(expression)``
+            when a ``LargeBinary`` result should be stored as Blob v2. All
+            entries share mapping insertion order, including dependencies
+            between inferred and Blob outputs.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get
@@ -2185,12 +2228,6 @@ class Table(ABC):
             server, and the refresh runs as a server job -- see
             [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
             Cannot be combined with ``transforms``.
-        computed_blobs: Dict[str, str], optional
-            A map of Blob v2 output column names to SQL expressions returning
-            ``LargeBinary`` payload bytes. Blob inputs named by an expression
-            are materialized as bytes, and refresh stores the result as Blob
-            v2 so ``blob_columns()`` and Blob read APIs continue to recognize
-            it. Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -4306,14 +4343,9 @@ class LanceTable(Table):
         | pa.Schema
         | None = None,
         *,
-        computed: Dict[str, str] | None = None,
-        computed_blobs: Dict[str, str] | None = None,
+        computed: Dict[str, str | ComputedColumn] | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(
-            self._table.add_columns(
-                transforms, computed=computed, computed_blobs=computed_blobs
-            )
-        )
+        return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
     def refresh_column(self, column: str) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows. See
@@ -6259,8 +6291,7 @@ class AsyncTable:
         | pa.Schema
         | None = None,
         *,
-        computed: dict[str, str] | None = None,
-        computed_blobs: dict[str, str] | None = None,
+        computed: dict[str, str | ComputedColumn] | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -6280,9 +6311,12 @@ class AsyncTable:
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
-        computed: Dict[str, str], optional
+        computed: Dict[str, str | ComputedColumn], optional
             A map of column name to a SQL expression defining the column. The
-            column's type and inputs are derived from the expression.
+            column's type and inputs are derived from the expression. Use
+            ``ComputedColumn.blob(expression)`` to publish a ``LargeBinary``
+            result as Blob v2. Mapping insertion order is the declaration and
+            dependency order.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get
@@ -6296,11 +6330,6 @@ class AsyncTable:
 
             On LanceDB Cloud and Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
-        computed_blobs: Dict[str, str], optional
-            A map of Blob v2 output column names to SQL expressions returning
-            ``LargeBinary`` payload bytes. Blob inputs are materialized as
-            payload bytes during refresh. Cannot be combined with
-            ``transforms``.
 
         Returns
         -------
@@ -6324,7 +6353,7 @@ class AsyncTable:
             function_output_name, function_application = next(iter(transforms.items()))
 
         if function_application is not None:
-            if computed or computed_blobs:
+            if computed:
                 raise ValueError(
                     "add_columns cannot mix a Function application with SQL "
                     "computed columns"
@@ -6340,14 +6369,13 @@ class AsyncTable:
             {isinstance(f, pa.Field) for f in transforms}
         ):
             transforms = pa.schema(transforms)
-        if computed or computed_blobs:
+        if computed:
             if transforms:
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
                 )
             return await self._inner.add_computed_columns(
-                list((computed or {}).items()),
-                list((computed_blobs or {}).items()),
+                _normalize_computed_columns(computed)
             )
         if transforms is None:
             raise ValueError("add_columns requires transforms or computed columns")

@@ -4100,11 +4100,13 @@ def test_computed_blob_input_and_explicit_output(tmp_path):
     )
 
     table.add_columns(
-        computed={"payload_copy": "image"},
-        computed_blobs={"image_copy": "image"},
+        computed={
+            "image_copy": lancedb.ComputedColumn.blob("image"),
+            "payload_copy": "image_copy",
+        }
     )
-    assert table.refresh_column("payload_copy").rows_filled == 2
     assert table.refresh_column("image_copy").rows_filled == 2
+    assert table.refresh_column("payload_copy").rows_filled == 2
 
     values = table.to_arrow()["payload_copy"].combine_chunks().to_pylist()
     assert values == [b"hello", b"", None]
@@ -4120,7 +4122,20 @@ def test_computed_blob_rejects_eager_transforms(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed_blob_mixed", [{"x": 1}])
     with pytest.raises(ValueError):
-        table.add_columns({"a": "x + 1"}, computed_blobs={"b": "x"})
+        table.add_columns(
+            {"a": "x + 1"},
+            computed={"b": lancedb.ComputedColumn.blob("x")},
+        )
+
+
+def test_computed_column_validates_explicit_output():
+    assert lancedb.ComputedColumn("x + 1").output == "inferred"
+    assert lancedb.ComputedColumn.blob("image").output == "blob_v2"
+
+    with pytest.raises(TypeError, match="expression must be a string"):
+        lancedb.ComputedColumn(42)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="output must be"):
+        lancedb.ComputedColumn("x", output="binary")  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

@@ -20,8 +20,9 @@ use arrow::{
 use lancedb::blob::{BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, ComputedColumnDeclaration, Duration, FieldMetadataUpdate,
+    FtsToken as LanceDbFtsToken, NewColumnTransform, OptimizeAction, OptimizeOptions, Ref,
+    Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -1575,20 +1576,24 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (columns, blob_columns=None))]
     pub fn add_computed_columns(
         self_: PyRef<'_, Self>,
-        columns: Vec<(String, String)>,
-        blob_columns: Option<Vec<(String, String)>>,
+        columns: Vec<(String, String, String)>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.add_columns();
-            for (name, expression) in columns {
-                builder = builder.computed(name, expression);
-            }
-            for (name, expression) in blob_columns.unwrap_or_default() {
-                builder = builder.computed_blob(name, expression);
+            for (name, expression, output) in columns {
+                let declaration = match output.as_str() {
+                    "inferred" => ComputedColumnDeclaration::inferred(name, expression),
+                    "blob_v2" => ComputedColumnDeclaration::blob(name, expression),
+                    output => {
+                        return Err(PyValueError::new_err(format!(
+                            "unsupported computed-column output '{output}'"
+                        )));
+                    }
+                };
+                builder = builder.computed_column(declaration);
             }
             let result = builder.execute().await.infer_error()?;
             Ok(AddColumnsResult::from(result))

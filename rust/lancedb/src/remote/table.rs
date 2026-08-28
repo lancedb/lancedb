@@ -7450,7 +7450,10 @@ mod tests {
 
         let result = table
             .add_columns()
-            .computed_blob("image_copy", "image")
+            .computed_column(crate::table::ComputedColumnDeclaration::blob(
+                "image_copy",
+                "image",
+            ))
             .execute()
             .await
             .unwrap();

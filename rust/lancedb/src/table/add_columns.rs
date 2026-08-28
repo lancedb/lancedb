@@ -83,35 +83,32 @@ impl AddColumnsBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn computed(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
-        self.computed
-            .push(ComputedColumnDeclaration::inferred(name, expression));
-        self
+    pub fn computed(self, name: impl Into<String>, expression: impl Into<String>) -> Self {
+        self.computed_column(ComputedColumnDeclaration::inferred(name, expression))
     }
 
-    /// Add a Blob v2 column defined by a `LargeBinary` expression and filled
-    /// by a later refresh.
+    /// Add one computed-column declaration with explicit output semantics.
     ///
-    /// Blob inputs in the expression are materialized as their payload bytes.
-    /// The expression result is wrapped back into the Blob v2 logical type
-    /// before publication, so queries and [`Table::blob_columns`](super::Table::blob_columns)
-    /// continue to recognize the output as a Blob column.
+    /// Use [`ComputedColumnDeclaration::blob`] when a `LargeBinary` expression
+    /// should be published as Blob v2. Declarations share one ordered stream,
+    /// so a later expression may reference a column declared earlier in the
+    /// same builder.
     ///
     /// ```
     /// # use lancedb::Table;
+    /// # use lancedb::table::ComputedColumnDeclaration;
     /// # async fn declare(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// table
     ///     .add_columns()
-    ///     .computed_blob("image_copy", "image")
+    ///     .computed_column(ComputedColumnDeclaration::blob("image_copy", "image"))
     ///     .execute()
     ///     .await?;
     /// table.refresh_column("image_copy").await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn computed_blob(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
-        self.computed
-            .push(ComputedColumnDeclaration::blob(name, expression));
+    pub fn computed_column(mut self, declaration: ComputedColumnDeclaration) -> Self {
+        self.computed.push(declaration);
         self
     }
 

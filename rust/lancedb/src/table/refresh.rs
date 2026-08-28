@@ -513,6 +513,7 @@ mod tests {
 
     use crate::connect;
     use crate::query::{ExecutableQuery, QueryBase, Select};
+    use crate::table::ComputedColumnDeclaration;
     use crate::{Error, Result, Table};
 
     async fn table_with(name: &str, values: Vec<i32>) -> Table {
@@ -1344,7 +1345,7 @@ mod tests {
         .await;
         table
             .add_columns()
-            .computed_blob("image_copy", "image")
+            .computed_column(ComputedColumnDeclaration::blob("image_copy", "image"))
             .execute()
             .await
             .unwrap();
@@ -1463,7 +1464,7 @@ mod tests {
 
         let error = table
             .add_columns()
-            .computed_blob("invalid", "id + 1")
+            .computed_column(ComputedColumnDeclaration::blob("invalid", "id + 1"))
             .execute()
             .await
             .unwrap_err();

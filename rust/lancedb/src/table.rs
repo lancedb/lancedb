@@ -95,7 +95,8 @@ pub use cherry_pick::{
 };
 pub use chrono::Duration;
 pub use computed_columns::{
-    ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
+    ComputedColumn, ComputedColumnDeclaration, ComputedColumnKind, ComputedColumnOutput,
+    computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
 use futures::future::join_all;

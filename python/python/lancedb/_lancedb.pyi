@@ -353,8 +353,7 @@ class Table:
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
     async def add_computed_columns(
         self,
-        columns: list[tuple[str, str]],
-        blob_columns: Optional[list[tuple[str, str]]] = None,
+        columns: list[tuple[str, str, Literal["inferred", "blob_v2"]]],
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self, application_json: str, output_name: Optional[str]
