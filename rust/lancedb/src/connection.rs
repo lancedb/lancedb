@@ -1180,12 +1180,15 @@ impl ConnectBuilder {
         }
 
         let storage_options = StorageOptions(options.storage_options.clone());
+        let host_overrides = crate::remote::db::RemoteHostOverrides {
+            rest: options.host_override,
+            sql: sql_host_override,
+        };
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.request.uri,
             &api_key,
             &region,
-            options.host_override,
-            sql_host_override,
+            host_overrides,
             client_config,
             storage_options.into(),
             self.request.read_consistency_interval,

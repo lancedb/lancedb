@@ -272,13 +272,17 @@ impl DynamicContextProvider for NamespaceHeaderProviderContext {
     }
 }
 
+pub(crate) struct RemoteHostOverrides {
+    pub(crate) rest: Option<String>,
+    pub(crate) sql: Option<String>,
+}
+
 impl RemoteDatabase {
     pub fn try_new(
         uri: &str,
         api_key: &str,
         region: &str,
-        host_override: Option<String>,
-        sql_host_override: Option<String>,
+        host_overrides: RemoteHostOverrides,
         client_config: ClientConfig,
         options: RemoteOptions,
         read_consistency_interval: Option<std::time::Duration>,
@@ -287,15 +291,15 @@ impl RemoteDatabase {
         let flight_sql_client = FlightSqlClient::new(
             parsed.db_name.clone(),
             api_key.to_string(),
-            host_override.clone(),
-            sql_host_override,
+            host_overrides.rest.clone(),
+            host_overrides.sql,
             client_config.clone(),
         );
         let header_map = RestfulLanceDbClient::<Sender>::default_headers(
             api_key,
             region,
             &parsed.db_name,
-            host_override.is_some(),
+            host_overrides.rest.is_some(),
             &options,
             parsed.db_prefix.as_deref(),
             &client_config,
@@ -323,7 +327,7 @@ impl RemoteDatabase {
         let client = RestfulLanceDbClient::try_new(
             &parsed,
             region,
-            host_override,
+            host_overrides.rest,
             header_map,
             client_config.clone(),
             read_consistency_interval,
