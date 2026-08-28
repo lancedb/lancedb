@@ -750,8 +750,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Declare computed columns, each defined by a SQL expression.
     ///
     /// Where the declaration is planned depends on the backend: a local table
-    /// validates and types the expression itself, a remote one sends the text
-    /// for the server to plan.
+    /// validates and types the expression itself, while a remote one sends the
+    /// expression for the server to plan.
     async fn add_computed_columns(
         &self,
         _columns: &[(String, String)],

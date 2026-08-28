@@ -2165,9 +2165,11 @@ class Table(ABC):
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
-            A map of column name to a SQL expression defining the column. The
-            column's type and inputs are derived from the expression, so no
-            data type is supplied.
+            A mapping from output column names to SQL expressions derives each
+            output field from its expression. A direct projection of a Blob v2
+            field inherits Blob v2 semantics; other expressions derive their
+            ordinary Arrow type. Mapping order is declaration and dependency
+            order.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get
@@ -6268,8 +6270,11 @@ class AsyncTable:
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
-            A map of column name to a SQL expression defining the column. The
-            column's type and inputs are derived from the expression.
+            A mapping from output column names to SQL expressions derives each
+            output field from its expression. A direct projection of a Blob v2
+            field inherits Blob v2 semantics; other expressions derive their
+            ordinary Arrow type. Mapping order is declaration and dependency
+            order.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get

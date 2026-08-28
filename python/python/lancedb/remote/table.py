@@ -67,7 +67,15 @@ from ..query import (
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
 )
-from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
+from ..table import (
+    AsyncTable,
+    BlobMode,
+    Branches,
+    IndexStatistics,
+    Query,
+    Table,
+    Tags,
+)
 from ..types import BaseTokenizerType
 
 
