@@ -86,7 +86,7 @@ impl FlightSqlClientConfig {
             .await
             .map_err(|_| flight_error(request_id, "Flight SQL query planning timed out"))?
             .map_err(|err| flight_error(request_id, err))?;
-        let result_schema = if info.schema.is_empty() {
+        let mut result_schema = if info.schema.is_empty() {
             None
         } else {
             Some(std::sync::Arc::new(
@@ -123,6 +123,9 @@ impl FlightSqlClientConfig {
                     Some(batch) => batches.push(batch),
                     None => break,
                 }
+            }
+            if result_schema.is_none() {
+                result_schema = stream.schema().cloned();
             }
         }
         if batches.is_empty()
