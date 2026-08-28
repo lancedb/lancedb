@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -325,6 +326,7 @@ pub struct PyQueryRequest {
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
+    pub select_source_columns: Option<HashMap<String, String>>,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
     pub use_lsm: Option<bool>,
@@ -355,6 +357,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 full_text_search: query_request
                     .full_text_search
                     .map(|fts| PyLanceDB(fts.query)),
+                select_source_columns: PySelect::source_columns(&query_request.select),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
@@ -380,6 +383,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 offset: vector_query.base.offset,
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
+                select_source_columns: PySelect::source_columns(&vector_query.base.select),
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
                 with_row_id: Some(vector_query.base.with_row_id),
@@ -411,6 +415,25 @@ impl From<AnyQuery> for PyQueryRequest {
 // Python representation of query selection
 #[derive(Clone)]
 pub struct PySelect(Select);
+
+impl PySelect {
+    fn source_columns(select: &Select) -> Option<HashMap<String, String>> {
+        match select {
+            Select::Expr(pairs) => Some(
+                pairs
+                    .iter()
+                    .filter_map(|(output, expr)| match expr {
+                        lancedb::expr::DfExpr::Column(column) if column.relation.is_none() => {
+                            Some((output.clone(), column.name.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+}
 
 impl<'py> IntoPyObject<'py> for PySelect {
     type Target = PyAny;

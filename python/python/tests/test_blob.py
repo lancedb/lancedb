@@ -2,15 +2,39 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import io
+import subprocess
+import sys
+import textwrap
 
+import lance
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
+from lance.blob import BlobType as LanceBlobType
 
 import lancedb
-from lancedb._blob import read_row_ids_from_hits, stash_auto_row_ids
+from lancedb._blob import (
+    blob_v2_projection_sources,
+    read_row_ids_from_hits,
+    stash_auto_row_ids,
+)
+from lancedb.expr import col
 from lancedb.index import FTS
 from lancedb.schema import blob_column_paths, blob_v2_column_paths
+
+
+_HIDE_LANCE_BLOB = """\
+import importlib.abc
+import sys
+
+class _MissingLanceBlob(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "lance.blob" or fullname.startswith("lance.blob."):
+            raise ModuleNotFoundError(fullname, name="lance.blob")
+
+sys.modules.pop("lance.blob", None)
+sys.meta_path.insert(0, _MissingLanceBlob())
+"""
 
 
 def _blob_table(name, rows):
@@ -46,6 +70,181 @@ def test_blob_factory_declares_v2_field():
     field = lancedb.blob("image")
     assert isinstance(field.type, pa.ExtensionType)
     assert field.type.extension_name == "lance.blob.v2"
+    assert lancedb.BlobType is LanceBlobType
+    assert type(field.type) is LanceBlobType
+
+
+def test_blob_type_works_without_pylance():
+    script = _HIDE_LANCE_BLOB + textwrap.dedent(
+        """\
+        import lancedb
+        import pyarrow as pa
+
+        field = lancedb.blob("image")
+        if not isinstance(field.type, pa.ExtensionType):
+            raise SystemExit("expected an extension type")
+        if field.type.extension_name != "lance.blob.v2":
+            raise SystemExit(field.type.extension_name)
+        if lancedb.BlobType is not type(field.type):
+            raise SystemExit("BlobType is not the field type class")
+        if lancedb.BlobType.__module__ != "lancedb.schema":
+            raise SystemExit(lancedb.BlobType.__module__)
+
+        db = lancedb.connect("memory:///")
+        table = db.create_table(
+            "images",
+            schema=pa.schema([pa.field("id", pa.int64()), field]),
+        )
+        table.add([{"id": 1, "image": b"hello"}])
+        result = (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute([{"id": 1, "image": b"updated"}, {"id": 2, "image": b"inserted"}])
+        )
+        if result.num_updated_rows != 1 or result.num_inserted_rows != 1:
+            raise SystemExit(
+                f"merge_insert rows updated={result.num_updated_rows} "
+                f"inserted={result.num_inserted_rows}"
+            )
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_blob_resolves_pylance_type_without_eager_import():
+    script = textwrap.dedent(
+        """\
+        import sys
+        import lancedb
+
+        if "lance.blob" in sys.modules:
+            raise SystemExit("import lancedb imported lance.blob")
+        field = lancedb.blob("image")
+        from lance.blob import BlobType
+
+        if type(field.type) is not BlobType:
+            raise SystemExit(f"{type(field.type)} is not {BlobType}")
+        import lance
+
+        image = lance.blob_array([b"x"])
+        if type(image.type) is not BlobType:
+            raise SystemExit("blob_array used a different class")
+        if type(image.type) is not type(field.type):
+            raise SystemExit("field and array classes differ")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_blob_fallback_fails_if_name_already_registered():
+    script = _HIDE_LANCE_BLOB + textwrap.dedent(
+        """\
+        import pyarrow as pa
+
+        class OtherBlobType(pa.ExtensionType):
+            def __init__(self):
+                super().__init__(
+                    pa.struct([pa.field("data", pa.large_binary())]),
+                    "lance.blob.v2",
+                )
+
+            def __arrow_ext_serialize__(self):
+                return b""
+
+            @classmethod
+            def __arrow_ext_deserialize__(cls, storage_type, serialized):
+                return cls()
+
+        pa.register_extension_type(OtherBlobType())
+        import lancedb
+
+        try:
+            lancedb.blob("image")
+        except ValueError as err:
+            if "already registered" not in str(err):
+                raise SystemExit(err)
+        else:
+            raise SystemExit("expected ValueError")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_blob_type_rejects_competing_registration_with_pylance():
+    script = textwrap.dedent(
+        """\
+        import pyarrow as pa
+        import pyarrow.ipc
+
+        class OtherBlobType(pa.ExtensionType):
+            def __init__(self):
+                super().__init__(
+                    pa.struct(
+                        [
+                            pa.field("data", pa.large_binary()),
+                            pa.field("uri", pa.utf8()),
+                            pa.field("position", pa.uint64()),
+                            pa.field("size", pa.uint64()),
+                        ]
+                    ),
+                    "lance.blob.v2",
+                )
+
+            def __arrow_ext_serialize__(self):
+                return b""
+
+            @classmethod
+            def __arrow_ext_deserialize__(cls, storage_type, serialized):
+                return cls()
+
+        pa.register_extension_type(OtherBlobType())
+
+        from lance.blob import BlobType
+
+        if BlobType is OtherBlobType:
+            raise SystemExit("pylance BlobType was replaced")
+        schema = pa.schema([pa.field("value", BlobType())])
+        restored = pa.ipc.read_schema(schema.serialize())
+        if type(restored.field("value").type) is not OtherBlobType:
+            raise SystemExit(type(restored.field("value").type))
+
+        import lancedb
+
+        try:
+            lancedb.blob("image")
+        except ValueError as err:
+            if "__main__.OtherBlobType" not in str(err):
+                raise SystemExit(err)
+        else:
+            raise SystemExit("expected ValueError")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_blob_v2_column_paths_include_list_children():
@@ -68,6 +267,14 @@ def test_blob_v2_column_paths_include_list_children():
         "large_images.large_image",
         "fixed_images.fixed_image",
     ]
+
+
+def test_blob_v2_projection_sources_use_typed_column_name():
+    schema = pa.schema([lancedb.blob("blob")])
+
+    assert blob_v2_projection_sources(schema, {"blob_alias": col("blob")}) == {
+        "blob_alias": "blob"
+    }
 
 
 def _legacy_v1_table(name):
@@ -166,6 +373,20 @@ async def test_async_table_to_pandas_descriptions_mode_omits_row_id():
     assert set(descriptor.keys()) == {"kind", "position", "size", "blob_id", "blob_uri"}
 
 
+@pytest.mark.asyncio
+async def test_async_typed_blob_projection_preserves_source_column():
+    db = await lancedb.connect_async("memory:///typed_blob_projection")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = await db.create_table("typed_blob_projection", schema=schema)
+    await table.add([{"id": 1, "blob": b"alpha"}])
+
+    hits = await table.query().select({"blob_alias": col("blob")}).to_arrow()
+
+    assert "_lance_row_id" in hits.schema.field("blob_alias").type.names
+    blobs = await table.fetch_blobs("blob", hits)
+    assert blobs.to_pylist() == [b"alpha"]
+
+
 def test_fetch_blobs_round_trip():
     table = _blob_table(
         "round_trip",
@@ -174,6 +395,292 @@ def test_fetch_blobs_round_trip():
     by_id = _row_ids_by_id(table)
     blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
     assert [blobs[0].as_py(), blobs[1].as_py()] == [b"alpha", b"beta"]
+
+
+def test_merge_insert_writes_python_bytes():
+    table = _blob_table("merge_bytes", [{"id": 1, "image": b"before"}])
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute([{"id": 1, "image": b"updated"}, {"id": 2, "image": b"inserted"}])
+    )
+    assert result.num_updated_rows == 1
+    assert result.num_inserted_rows == 1
+    by_id = _row_ids_by_id(table)
+    blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
+    assert blobs.to_pylist() == [b"updated", b"inserted"]
+
+
+def test_merge_insert_bytes_after_reopen_without_touching_blob_type(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("images", schema=schema)
+    table.add([{"id": 1, "image": b"hello"}])
+
+    script = textwrap.dedent(
+        f"""\
+        import lancedb
+
+        db = lancedb.connect({str(tmp_path)!r})
+        table = db.open_table("images")
+        image_type = table.schema.field("image").type
+        if type(image_type).__name__ != "StructType":
+            raise SystemExit(f"expected StructType, got {{type(image_type)}}")
+        result = (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(
+                [{{"id": 1, "image": b"updated"}}, {{"id": 2, "image": b"inserted"}}]
+            )
+        )
+        if result.num_updated_rows != 1 or result.num_inserted_rows != 1:
+            raise SystemExit(
+                f"rows updated={{result.num_updated_rows}} "
+                f"inserted={{result.num_inserted_rows}}"
+            )
+        hits = table.search().with_row_id(True).limit(10).to_arrow()
+        by_id = dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+        blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
+        if blobs.to_pylist() != [b"updated", b"inserted"]:
+            raise SystemExit(blobs.to_pylist())
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_merge_insert_bytes_after_reopen_without_pylance(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("images", schema=schema)
+    table.add([{"id": 1, "image": b"hello"}])
+
+    script = _HIDE_LANCE_BLOB + textwrap.dedent(
+        f"""\
+        import lancedb
+
+        db = lancedb.connect({str(tmp_path)!r})
+        table = db.open_table("images")
+        image_type = table.schema.field("image").type
+        if type(image_type).__name__ != "StructType":
+            raise SystemExit(f"expected StructType, got {{type(image_type)}}")
+        result = (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(
+                [{{"id": 1, "image": b"updated"}}, {{"id": 2, "image": b"inserted"}}]
+            )
+        )
+        if result.num_updated_rows != 1 or result.num_inserted_rows != 1:
+            raise SystemExit(
+                f"rows updated={{result.num_updated_rows}} "
+                f"inserted={{result.num_inserted_rows}}"
+            )
+        hits = table.search().with_row_id(True).limit(10).to_arrow()
+        by_id = dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+        blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
+        if blobs.to_pylist() != [b"updated", b"inserted"]:
+            raise SystemExit(blobs.to_pylist())
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_merge_insert_blob_array_into_reopened_unregistered_table(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("images", schema=schema)
+    table.add([{"id": 1, "image": b"before"}])
+
+    script = textwrap.dedent(
+        f"""\
+        import pyarrow as pa
+        import lancedb
+
+        db = lancedb.connect({str(tmp_path)!r})
+        table = db.open_table("images")
+        image_type = table.schema.field("image").type
+        if type(image_type).__name__ != "StructType":
+            raise SystemExit(
+                f"expected StructType before lance import, got {{type(image_type)}}"
+            )
+
+        import lance
+
+        updates = pa.Table.from_arrays(
+            [
+                pa.array([1, 2], type=pa.int64()),
+                lance.blob_array([b"updated", b"inserted"]),
+            ],
+            names=["id", "image"],
+        )
+        result = (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(updates)
+        )
+        if result.num_updated_rows != 1 or result.num_inserted_rows != 1:
+            raise SystemExit(
+                f"rows updated={{result.num_updated_rows}} "
+                f"inserted={{result.num_inserted_rows}}"
+            )
+        hits = table.search().with_row_id(True).limit(10).to_arrow()
+        by_id = dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+        blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
+        if blobs.to_pylist() != [b"updated", b"inserted"]:
+            raise SystemExit(blobs.to_pylist())
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_add_all_null_blob_column():
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("all_null", schema=schema)
+    table.add([{"id": 1, "image": None}, {"id": 2, "image": None}])
+    by_id = _row_ids_by_id(table)
+    blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
+    assert blobs.to_pylist() == [None, None]
+
+
+def test_create_table_nested_blob_schema_without_rows():
+    db = lancedb.connect("memory:///")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("info", pa.struct([lancedb.blob("blob")])),
+            pa.field("images", pa.list_(lancedb.blob("image"))),
+        ]
+    )
+    table = db.create_table("nested_empty", schema=schema)
+    assert table.count_rows() == 0
+
+
+def test_merge_insert_nested_blob_dicts():
+    db = lancedb.connect("memory:///")
+    info = pa.StructArray.from_arrays(
+        [
+            pa.array(["first"], type=pa.string()),
+            _blob_array("blob", [b"before"]),
+        ],
+        names=["name", "blob"],
+    )
+    data = pa.Table.from_arrays(
+        [pa.array([1], type=pa.int64()), info],
+        names=["id", "info"],
+    )
+    table = db.create_table("nested_merge", data=data)
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .execute([{"id": 1, "info": {"name": "first", "blob": b"after"}}])
+    )
+    assert result.num_updated_rows == 1
+    by_id = _row_ids_by_id(table)
+    blobs = table.fetch_blobs("info.blob", [by_id[1]])
+    assert blobs.to_pylist() == [b"after"]
+
+
+def _list_blob_table(name):
+    db = lancedb.connect("memory:///")
+    blob_field = lancedb.blob("image")
+    images = pa.ListArray.from_arrays(
+        pa.array([0, 1], type=pa.int32()), _blob_array("image", [b"before"])
+    )
+    data = pa.Table.from_arrays(
+        [pa.array([1], type=pa.int64()), images],
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), pa.field("images", pa.list_(blob_field))]
+        ),
+    )
+    return db.create_table(name, data=data)
+
+
+def test_merge_insert_list_blob_dicts():
+    table = _list_blob_table("list_merge")
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute([{"id": 1, "images": [b"one", b"two"]}, {"id": 2, "images": None}])
+    )
+    assert result.num_updated_rows == 1
+    assert result.num_inserted_rows == 1
+    hits = table.search().limit(10).to_arrow()
+    sizes = {
+        row["id"]: None if row["images"] is None else [d["size"] for d in row["images"]]
+        for row in hits.to_pylist()
+    }
+    assert sizes == {1: [3, 3], 2: None}
+
+
+def test_list_blob_column_queries_as_raw_descriptors():
+    table = _list_blob_table("list_query")
+    hits = table.search().limit(10).to_arrow()
+    element = hits.schema.field("images").type.value_type
+    assert pa.types.is_struct(element)
+    assert "_lance_row_id" not in element.names
+    with pytest.raises(ValueError, match="expected struct before segment"):
+        table.fetch_blobs("images.image", [0])
+
+
+def test_row_addressable_paths_exclude_list_children():
+    from lancedb.schema import row_addressable_blob_v2_paths
+
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("info", pa.struct([lancedb.blob("blob")])),
+            pa.field("images", pa.list_(lancedb.blob("image"))),
+        ]
+    )
+    assert blob_v2_column_paths(schema) == ["info.blob", "images.image"]
+    assert row_addressable_blob_v2_paths(schema) == ["info.blob"]
+
+
+def test_merge_insert_writes_pylance_blob_array():
+    table = _blob_table("merge_pylance", [{"id": 1, "image": b"before"}])
+    image = lance.blob_array([b"updated", b"inserted"])
+    assert type(image.type) is LanceBlobType
+    assert type(image.type) is type(lancedb.BlobType())
+    updates = pa.Table.from_arrays(
+        [pa.array([1, 2], type=pa.int64()), image], names=["id", "image"]
+    )
+
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(updates)
+    )
+
+    assert result.num_updated_rows == 1
+    assert result.num_inserted_rows == 1
+    by_id = _row_ids_by_id(table)
+    blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
+    assert blobs.to_pylist() == [b"updated", b"inserted"]
 
 
 def test_fetch_blobs_accepts_query_result():
@@ -474,6 +981,50 @@ async def test_blob_v2_hybrid_fetch_blobs_async():
     assert "_rowid" not in hits.column_names
     assert "_lance_row_id" in hits.schema.field("image").type.names
     blobs = await table.fetch_blobs("image", hits)
+    assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_typed_blob_projection_preserves_source_column():
+    db = await lancedb.connect_async("memory:///hybrid_typed_blob")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("text", pa.utf8()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            lancedb.blob("blob"),
+        ]
+    )
+    table = await db.create_table("hybrid_typed_blob", schema=schema)
+    await table.add(
+        [
+            {
+                "id": 1,
+                "text": "hello alpha",
+                "vector": [1.0, 0.0],
+                "blob": b"alpha",
+            },
+            {
+                "id": 2,
+                "text": "hello beta",
+                "vector": [0.9, 0.1],
+                "blob": b"beta",
+            },
+        ]
+    )
+    await table.create_index("text", config=FTS(with_position=False))
+
+    hits = await (
+        table.query()
+        .nearest_to([1.0, 0.0])
+        .nearest_to_text("hello")
+        .select({"blob_alias": col("blob")})
+        .limit(2)
+        .to_arrow()
+    )
+
+    assert "_lance_row_id" in hits.schema.field("blob_alias").type.names
+    blobs = await table.fetch_blobs("blob", hits)
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
 
 
