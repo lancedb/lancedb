@@ -131,7 +131,7 @@ def connect(
     host_override: str, optional
         The override url for LanceDB Cloud.
     sql_host_override: str, optional
-        The Flight SQL endpoint override. The client connects lazily when SQL
+        The remote SQL service endpoint override. The client connects lazily when SQL
         is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
@@ -455,7 +455,7 @@ async def connect_async(
     host_override: str, optional
         The override url for LanceDB Cloud.
     sql_host_override: str, optional
-        The Flight SQL endpoint override. The client connects lazily when SQL
+        The remote SQL service endpoint override. The client connects lazily when SQL
         is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other

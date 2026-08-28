@@ -28,12 +28,12 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.Session
 
-## Flight SQL
+## Remote SQL
 
-Execute SQL against a remote LanceDB database through its Flight SQL endpoint.
+Execute SQL against a remote LanceDB database through the connection.
 The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
-and namespaces available to the same deployment. The Flight SQL client is
+and namespaces available to the same deployment. The SQL client is
 initialized by the first SQL statement and retained for the lifetime of the
 remote connection:
 

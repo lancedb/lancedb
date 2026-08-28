@@ -32,14 +32,21 @@ def test_connection_serializes_sql_host_override():
 
 def test_local_connection_rejects_sql(tmp_path):
     connection = lancedb.connect(tmp_path)
-    with pytest.raises(NotImplementedError, match="Flight SQL"):
+    with pytest.raises(NotImplementedError, match="SQL"):
         connection.sql("SELECT 1")
 
 
 @pytest.mark.asyncio
 async def test_local_async_connection_rejects_sql(tmp_path):
     connection = await lancedb.connect_async(tmp_path)
-    with pytest.raises(NotImplementedError, match="Flight SQL"):
+    with pytest.raises(NotImplementedError, match="SQL"):
+        await connection.sql("SELECT 1")
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_connection_rejects_sql(tmp_path):
+    connection = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    with pytest.raises(NotImplementedError, match="SQL"):
         await connection.sql("SELECT 1")
 
 

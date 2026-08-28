@@ -799,7 +799,7 @@ class RemoteDBConnection(DBConnection):
         *,
         default_namespace_path: Optional[List[str]] = None,
     ) -> pa.Table:
-        """Execute SQL through this connection's Flight SQL client.
+        """Execute SQL through this remote connection.
 
         Unqualified tables use this connection's database and the
         ``["public"]`` namespace by default. Fully qualified table names may

@@ -173,7 +173,7 @@ impl Connection {
     ) -> PyResult<()> {
         let _ = (query, default_namespace_path);
         Err(PyNotImplementedError::new_err(
-            "Flight SQL requires the remote feature",
+            "SQL requires the remote feature",
         ))
     }
 

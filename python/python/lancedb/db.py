@@ -786,13 +786,11 @@ class DBConnection(EnforceOverrides):
         *,
         default_namespace_path: Optional[List[str]] = None,
     ) -> pa.Table:
-        """Execute SQL through a remote Flight SQL endpoint.
+        """Execute SQL against a remote database.
 
-        Local connections do not support Flight SQL.
+        Local connections do not support SQL.
         """
-        raise NotImplementedError(
-            "Flight SQL is not supported for this connection type"
-        )
+        raise NotImplementedError("SQL is not supported for this connection type")
 
 
 class LanceDBConnection(DBConnection):
@@ -2342,7 +2340,7 @@ class AsyncConnection(object):
         *,
         default_namespace_path: Optional[List[str]] = None,
     ) -> pa.Table:
-        """Execute SQL through a remote Flight SQL endpoint.
+        """Execute SQL against a remote database.
 
         The database from ``connect_async`` is used for unqualified database
         references. The namespace defaults to ``["public"]``. Local

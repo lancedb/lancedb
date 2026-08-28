@@ -1447,6 +1447,21 @@ class AsyncLanceNamespaceDBConnection:
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
 
+    async def sql(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> pa.Table:
+        """Execute SQL when supported by the underlying connection.
+
+        Namespace-backed local connections do not support SQL.
+        """
+        return await self._inner.sql(
+            query,
+            default_namespace_path=default_namespace_path,
+        )
+
     async def namespace_client(self) -> LanceNamespace:
         """Get the namespace client for this connection.
 

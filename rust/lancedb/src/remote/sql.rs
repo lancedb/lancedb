@@ -15,13 +15,14 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 use crate::error::{Error, Result};
 use crate::remote::client::{ClientConfig, TlsConfig};
 
-const DEFAULT_FLIGHT_SQL_PORT: u16 = 10025;
-const DEFAULT_FLIGHT_SQL_TLS_PORT: u16 = 10026;
+const DEFAULT_SQL_PORT: u16 = 10025;
+const DEFAULT_SQL_TLS_PORT: u16 = 10026;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 #[derive(Clone, Debug)]
-pub(super) struct FlightSqlClient {
+pub(super) struct SqlClient {
     database: String,
+    database_prefix: Option<String>,
     api_key: String,
     host_override: Option<String>,
     sql_host_override: Option<String>,
@@ -29,9 +30,10 @@ pub(super) struct FlightSqlClient {
     client: Arc<OnceCell<FlightSqlServiceClient<Channel>>>,
 }
 
-impl FlightSqlClient {
+impl SqlClient {
     pub(super) fn new(
         database: String,
+        database_prefix: Option<String>,
         api_key: String,
         host_override: Option<String>,
         sql_host_override: Option<String>,
@@ -39,6 +41,7 @@ impl FlightSqlClient {
     ) -> Self {
         Self {
             database,
+            database_prefix,
             api_key,
             host_override,
             sql_host_override,
@@ -62,7 +65,7 @@ impl FlightSqlClient {
         )? {
             Some(timeout) => tokio::time::timeout(timeout, future)
                 .await
-                .map_err(|_| flight_error(&request_id, "Flight SQL statement timed out"))?,
+                .map_err(|_| sql_error(&request_id, "SQL statement timed out"))?,
             None => future.await,
         }
     }
@@ -84,33 +87,33 @@ impl FlightSqlClient {
         let mut client = self.client(&headers, request_id).await?;
         let info = tokio::time::timeout(read_timeout, client.execute(query.to_string(), None))
             .await
-            .map_err(|_| flight_error(request_id, "Flight SQL query planning timed out"))?
-            .map_err(|err| flight_error(request_id, err))?;
+            .map_err(|_| sql_error(request_id, "SQL query planning timed out"))?
+            .map_err(|err| sql_error(request_id, err))?;
         let mut result_schema = if info.schema.is_empty() {
             None
         } else {
             Some(std::sync::Arc::new(
                 info.clone()
                     .try_decode_schema()
-                    .map_err(|err| flight_error(request_id, err))?,
+                    .map_err(|err| sql_error(request_id, err))?,
             ))
         };
 
         let mut batches = Vec::new();
         for endpoint in info.endpoint {
             let ticket = endpoint.ticket.clone().ok_or_else(|| {
-                flight_error(request_id, "Flight SQL endpoint did not include a ticket")
+                sql_error(request_id, "SQL result endpoint did not include a ticket")
             })?;
             let mut endpoint_client = self.client(&headers, request_id).await?;
             let mut stream = tokio::time::timeout(read_timeout, endpoint_client.do_get(ticket))
                 .await
-                .map_err(|_| flight_error(request_id, "Flight SQL DoGet timed out"))?
-                .map_err(|err| flight_error(request_id, err))?;
+                .map_err(|_| sql_error(request_id, "SQL result fetch timed out"))?
+                .map_err(|err| sql_error(request_id, err))?;
             loop {
                 let next = tokio::time::timeout(read_timeout, stream.try_next())
                     .await
-                    .map_err(|_| flight_error(request_id, "Flight SQL result read timed out"))?
-                    .map_err(|err| flight_error(request_id, err))?;
+                    .map_err(|_| sql_error(request_id, "SQL result read timed out"))?
+                    .map_err(|err| sql_error(request_id, err))?;
                 match next {
                     Some(batch) => batches.push(batch),
                     None => break,
@@ -167,20 +170,22 @@ impl FlightSqlClient {
         let has_api_key = headers.contains_key("x-api-key");
         if has_authorization && has_api_key {
             return Err(Error::InvalidInput {
-                message: "Flight SQL accepts either authorization or x-api-key, not both"
-                    .to_string(),
+                message: "SQL accepts either authorization or x-api-key, not both".to_string(),
             });
         }
         if !has_authorization && !has_api_key {
             if self.api_key.is_empty() {
                 return Err(Error::InvalidInput {
-                    message: "Flight SQL authentication credentials are required".to_string(),
+                    message: "SQL authentication credentials are required".to_string(),
                 });
             }
             insert_header(&mut headers, "x-api-key", &self.api_key)?;
         }
 
         insert_header(&mut headers, "database", &self.database)?;
+        if let Some(database_prefix) = &self.database_prefix {
+            insert_header(&mut headers, "x-lancedb-database-prefix", database_prefix)?;
+        }
         let namespace_path = if default_namespace_path.is_empty() {
             "public".to_string()
         } else {
@@ -196,7 +201,7 @@ impl FlightSqlClient {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FlightTarget {
+struct SqlTarget {
     uri: String,
     tls: bool,
 }
@@ -204,12 +209,12 @@ struct FlightTarget {
 fn resolve_sql_host_override(
     host_override: Option<&str>,
     sql_host_override: Option<&str>,
-) -> Result<FlightTarget> {
+) -> Result<SqlTarget> {
     if let Some(uri) = sql_host_override {
         return normalize_sql_host_override(uri);
     }
     let host_override = host_override.ok_or_else(|| Error::InvalidInput {
-        message: "sql_host_override is required when the Flight SQL endpoint cannot be derived from host_override".to_string(),
+        message: "sql_host_override is required when the SQL service endpoint cannot be derived from host_override".to_string(),
     })?;
     let parsed = url::Url::parse(host_override).map_err(|err| Error::InvalidInput {
         message: format!("Invalid host_override: {err}"),
@@ -228,15 +233,15 @@ fn resolve_sql_host_override(
             });
         }
         Some(port) => port + 1,
-        None => DEFAULT_FLIGHT_SQL_PORT,
+        None => DEFAULT_SQL_PORT,
     };
-    Ok(FlightTarget {
+    Ok(SqlTarget {
         uri: endpoint_uri("http", parsed.host_str().unwrap(), port),
         tls: false,
     })
 }
 
-fn normalize_sql_host_override(uri: &str) -> Result<FlightTarget> {
+fn normalize_sql_host_override(uri: &str) -> Result<SqlTarget> {
     let parsed = url::Url::parse(uri).map_err(|err| Error::InvalidInput {
         message: format!("Invalid sql_host_override: {err}"),
     })?;
@@ -253,16 +258,16 @@ fn normalize_sql_host_override(uri: &str) -> Result<FlightTarget> {
         }
     };
     let port = parsed.port().or(explicit_port(uri)).unwrap_or(if tls {
-        DEFAULT_FLIGHT_SQL_TLS_PORT
+        DEFAULT_SQL_TLS_PORT
     } else {
-        DEFAULT_FLIGHT_SQL_PORT
+        DEFAULT_SQL_PORT
     });
     if port == 0 {
         return Err(Error::InvalidInput {
             message: "sql_host_override port must be greater than zero".to_string(),
         });
     }
-    Ok(FlightTarget {
+    Ok(SqlTarget {
         uri: endpoint_uri(
             if tls { "https" } else { "http" },
             parsed.host_str().unwrap(),
@@ -315,7 +320,7 @@ fn endpoint_uri(scheme: &str, host: &str, port: u16) -> String {
 }
 
 async fn connect_channel(
-    target: &FlightTarget,
+    target: &SqlTarget,
     config: &ClientConfig,
     request_id: &str,
 ) -> Result<Channel> {
@@ -326,17 +331,17 @@ async fn connect_channel(
     )?
     .unwrap();
     let mut endpoint = Endpoint::from_shared(target.uri.clone())
-        .map_err(|err| flight_error(request_id, err))?
+        .map_err(|err| sql_error(request_id, err))?
         .connect_timeout(connect_timeout);
     if target.tls {
         endpoint = endpoint
             .tls_config(tls_config(config.tls_config.as_ref())?)
-            .map_err(|err| flight_error(request_id, err))?;
+            .map_err(|err| sql_error(request_id, err))?;
     }
     tokio::time::timeout(connect_timeout, endpoint.connect())
         .await
-        .map_err(|_| flight_error(request_id, "Flight SQL connection timed out"))?
-        .map_err(|err| flight_error(request_id, err))
+        .map_err(|_| sql_error(request_id, "SQL connection timed out"))?
+        .map_err(|err| sql_error(request_id, err))
 }
 
 fn tls_config(config: Option<&TlsConfig>) -> Result<ClientTlsConfig> {
@@ -344,29 +349,29 @@ fn tls_config(config: Option<&TlsConfig>) -> Result<ClientTlsConfig> {
     if let Some(config) = config {
         if !config.assert_hostname {
             return Err(Error::InvalidInput {
-                message: "Flight SQL cannot disable TLS hostname verification".to_string(),
+                message: "SQL cannot disable TLS hostname verification".to_string(),
             });
         }
         if let Some(path) = &config.ssl_ca_cert {
             let pem = fs::read(path).map_err(|err| Error::InvalidInput {
-                message: format!("Failed to read Flight SQL CA certificate {path}: {err}"),
+                message: format!("Failed to read SQL CA certificate {path}: {err}"),
             })?;
             tls = tls.ca_certificate(Certificate::from_pem(pem));
         }
         match (&config.cert_file, &config.key_file) {
             (Some(cert), Some(key)) => {
                 let cert_pem = fs::read(cert).map_err(|err| Error::InvalidInput {
-                    message: format!("Failed to read Flight SQL client certificate {cert}: {err}"),
+                    message: format!("Failed to read SQL client certificate {cert}: {err}"),
                 })?;
                 let key_pem = fs::read(key).map_err(|err| Error::InvalidInput {
-                    message: format!("Failed to read Flight SQL client key {key}: {err}"),
+                    message: format!("Failed to read SQL client key {key}: {err}"),
                 })?;
                 tls = tls.identity(Identity::from_pem(cert_pem, key_pem));
             }
             (None, None) => {}
             _ => {
                 return Err(Error::InvalidInput {
-                    message: "Flight SQL mTLS requires both cert_file and key_file".to_string(),
+                    message: "SQL mTLS requires both cert_file and key_file".to_string(),
                 });
             }
         }
@@ -402,12 +407,12 @@ fn insert_header(headers: &mut HashMap<String, String>, key: &str, value: &str) 
         });
     if !valid_key {
         return Err(Error::InvalidInput {
-            message: format!("Invalid Flight SQL metadata key: {key:?}"),
+            message: format!("Invalid SQL metadata key: {key:?}"),
         });
     }
     if !value.is_ascii() || value.bytes().any(|byte| !(0x20..=0x7e).contains(&byte)) {
         return Err(Error::InvalidInput {
-            message: format!("Flight SQL metadata must be printable ASCII: {key:?}"),
+            message: format!("SQL metadata must be printable ASCII: {key:?}"),
         });
     }
     headers.insert(key, value.to_string());
@@ -449,9 +454,9 @@ fn resolve_timeout(
     }
 }
 
-fn flight_error(request_id: &str, error: impl std::fmt::Display) -> Error {
+fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
     Error::Runtime {
-        message: format!("Flight SQL error (request_id={request_id}): {error}"),
+        message: format!("SQL error (request_id={request_id}): {error}"),
     }
 }
 
@@ -474,13 +479,13 @@ mod tests {
     use super::*;
 
     #[derive(Clone)]
-    struct TestFlightSqlService {
+    struct TestSqlService {
         query_count: Arc<AtomicUsize>,
-        headers: Arc<std::sync::Mutex<Vec<(String, String, String, String)>>>,
+        headers: Arc<std::sync::Mutex<Vec<(String, String, String, String, String)>>>,
         result: RecordBatch,
     }
 
-    impl Default for TestFlightSqlService {
+    impl Default for TestSqlService {
         fn default() -> Self {
             let schema = Arc::new(Schema::new(vec![Field::new(
                 "value",
@@ -499,7 +504,7 @@ mod tests {
     }
 
     #[tonic::async_trait]
-    impl FlightSqlService for TestFlightSqlService {
+    impl FlightSqlService for TestSqlService {
         type FlightService = Self;
 
         async fn get_flight_info_statement(
@@ -521,6 +526,7 @@ mod tests {
                 header("namespace-path"),
                 header("x-request-id"),
                 header("x-api-key"),
+                header("x-lancedb-database-prefix"),
             ));
 
             let mut info = FlightInfo::new().with_endpoint(
@@ -563,7 +569,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         drop(listener);
 
-        let service = TestFlightSqlService::default();
+        let service = TestSqlService::default();
         let query_count = service.query_count.clone();
         let headers = service.headers.clone();
         let expected = service.result.clone();
@@ -583,10 +589,11 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(ready, "Flight SQL test server did not start");
+        assert!(ready, "SQL test server did not start");
 
-        let client = FlightSqlClient::new(
+        let client = SqlClient::new(
             "analytics".to_string(),
+            Some("tenant/production".to_string()),
             "test-key".to_string(),
             None,
             Some(format!("grpc://{address}")),
@@ -618,6 +625,7 @@ mod tests {
         assert_eq!(headers[0].0, "analytics");
         assert_eq!(headers[0].1, "public");
         assert_eq!(headers[0].3, "test-key");
+        assert_eq!(headers[0].4, "tenant/production");
         assert_eq!(headers[1].1, "events$raw");
         assert_ne!(headers[0].2, headers[1].2);
         assert_ne!(headers[1].2, headers[2].2);
@@ -629,28 +637,28 @@ mod tests {
     fn normalizes_supported_uris() {
         assert_eq!(
             normalize_sql_host_override("grpc://localhost").unwrap(),
-            FlightTarget {
+            SqlTarget {
                 uri: "http://localhost:10025".to_string(),
                 tls: false,
             }
         );
         assert_eq!(
             normalize_sql_host_override("grpcs://example.com").unwrap(),
-            FlightTarget {
+            SqlTarget {
                 uri: "https://example.com:10026".to_string(),
                 tls: true,
             }
         );
         assert_eq!(
             normalize_sql_host_override("grpc://[::1]:10025").unwrap(),
-            FlightTarget {
+            SqlTarget {
                 uri: "http://[::1]:10025".to_string(),
                 tls: false,
             }
         );
         assert_eq!(
             normalize_sql_host_override("https://example.com:443").unwrap(),
-            FlightTarget {
+            SqlTarget {
                 uri: "https://example.com:443".to_string(),
                 tls: true,
             }
@@ -661,14 +669,14 @@ mod tests {
     fn derives_plaintext_endpoint_from_host_override() {
         assert_eq!(
             resolve_sql_host_override(Some("http://localhost:10024"), None).unwrap(),
-            FlightTarget {
+            SqlTarget {
                 uri: "http://localhost:10025".to_string(),
                 tls: false,
             }
         );
         assert_eq!(
             resolve_sql_host_override(Some("http://localhost:80"), None).unwrap(),
-            FlightTarget {
+            SqlTarget {
                 uri: "http://localhost:81".to_string(),
                 tls: false,
             }

@@ -325,16 +325,16 @@ pub struct CloneTableBuilder {
     request: CloneTableRequest,
 }
 
-/// Builder for executing a SQL statement through Flight SQL.
+/// Builder for executing a SQL statement against a remote database.
 #[cfg(feature = "remote")]
-pub struct FlightSqlQueryBuilder {
+pub struct SqlQueryBuilder {
     parent: Arc<dyn Database>,
     query: String,
     default_namespace_path: Vec<String>,
 }
 
 #[cfg(feature = "remote")]
-impl FlightSqlQueryBuilder {
+impl SqlQueryBuilder {
     fn new(parent: Arc<dyn Database>, query: String) -> Self {
         Self {
             parent,
@@ -447,10 +447,10 @@ impl Connection {
         &self.internal
     }
 
-    /// Execute SQL against a remote LanceDB database using Flight SQL.
+    /// Execute SQL against a remote LanceDB database.
     ///
     /// The query can reference tables in other databases with SQL dot notation.
-    /// Use [`FlightSqlQueryBuilder::default_namespace_path`] to avoid qualifying
+    /// Use [`SqlQueryBuilder::default_namespace_path`] to avoid qualifying
     /// tables in the default namespace. Local connections return
     /// [`Error::NotSupported`].
     ///
@@ -473,8 +473,8 @@ impl Connection {
     /// # }
     /// ```
     #[cfg(feature = "remote")]
-    pub fn sql(&self, query: impl Into<String>) -> FlightSqlQueryBuilder {
-        FlightSqlQueryBuilder::new(self.internal.clone(), query.into())
+    pub fn sql(&self, query: impl Into<String>) -> SqlQueryBuilder {
+        SqlQueryBuilder::new(self.internal.clone(), query.into())
     }
 
     /// Get the names of all tables in the database
@@ -936,10 +936,10 @@ impl ConnectBuilder {
         self
     }
 
-    /// Set the Flight SQL host override for a remote connection.
+    /// Set the SQL service host override for a remote connection.
     ///
-    /// The Flight SQL client is initialized lazily when the connection first
-    /// executes SQL and is retained for the connection's lifetime.
+    /// The SQL client is initialized lazily when the connection first executes
+    /// SQL and is retained for the connection's lifetime.
     #[cfg(feature = "remote")]
     pub fn sql_host_override(mut self, sql_host_override: &str) -> Self {
         self.request.options.insert(
