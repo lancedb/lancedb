@@ -4100,10 +4100,10 @@ def test_computed_column_blob_input_and_explicit_output(tmp_path):
     )
 
     table.add_columns(
-        computed={
-            "image_copy": lancedb.ComputedColumn.blob("image"),
-            "payload_copy": "image_copy",
-        }
+        computed=[
+            (lancedb.blob("image_copy"), "image"),
+            ("payload_copy", "image_copy"),
+        ]
     )
     assert table.refresh_column("image_copy").rows_filled == 2
     assert table.refresh_column("payload_copy").rows_filled == 2
@@ -4124,18 +4124,22 @@ def test_blob_output_declaration_rejects_eager_transforms(tmp_path):
     with pytest.raises(ValueError):
         table.add_columns(
             {"a": "x + 1"},
-            computed={"b": lancedb.ComputedColumn.blob("x")},
+            computed=[(lancedb.blob("b"), "x")],
         )
 
 
-def test_computed_column_validates_explicit_output():
-    assert lancedb.ComputedColumn("x + 1").output == "inferred"
-    assert lancedb.ComputedColumn.blob("image").output == "blob_v2"
+def test_computed_column_validates_declaration_mapping(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_column_mapping", [{"x": 1}])
 
-    with pytest.raises(TypeError, match="expression must be a string"):
-        lancedb.ComputedColumn(42)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="output must be"):
-        lancedb.ComputedColumn("x", output="binary")  # type: ignore[arg-type]
+    with pytest.raises(
+        TypeError, match="targets must be column names or pyarrow Fields"
+    ):
+        table.add_columns(computed={42: "x"})  # type: ignore[dict-item]
+    with pytest.raises(TypeError, match="values must be SQL expression strings"):
+        table.add_columns(computed={"copy": 42})  # type: ignore[dict-item]
+    with pytest.raises(TypeError, match="sequences must contain"):
+        table.add_columns(computed=[("copy", "x", "extra")])  # type: ignore[list-item]
 
 
 @pytest.mark.asyncio

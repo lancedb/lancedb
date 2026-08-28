@@ -55,7 +55,7 @@ use crate::{
 };
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_ipc::reader::{FileReader, StreamReader};
-use arrow_schema::{ArrowError, DataType, SchemaRef};
+use arrow_schema::{ArrowError, DataType, Schema as ArrowSchema, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion_common::DataFusionError;
@@ -3183,21 +3183,31 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.schema().await?.as_ref(),
             "schema evolution",
         )?;
-        // The server plans the declaration: expression validation, type
-        // inference and the persisted binding all happen there.
-        let entries = columns
-            .iter()
-            .map(|column| {
-                let mut entry = serde_json::json!({
-                    "name": column.name,
-                    "computed": column.expression,
-                });
-                if column.output == crate::table::computed_columns::ComputedColumnOutput::BlobV2 {
-                    entry["computed_output"] = serde_json::json!("blob_v2");
-                }
-                entry
-            })
-            .collect::<Vec<_>>();
+        // The server plans the declaration: expression validation and the
+        // persisted binding happen there. An explicit field carries its own
+        // output schema and extension metadata.
+        let entries =
+            columns
+                .iter()
+                .map(|column| -> Result<serde_json::Value> {
+                    let mut entry = serde_json::json!({ "computed": column.expression() });
+                    if let Some(field) = column.field() {
+                        let mut schema = lance_namespace::schema::arrow_schema_to_json(
+                            &ArrowSchema::new(vec![field.clone()]),
+                        )?;
+                        entry["field"] = serde_json::to_value(schema.fields.remove(0)).map_err(
+                            |error| Error::Runtime {
+                                message: format!(
+                                    "failed to serialize explicit computed output field: {error}"
+                                ),
+                            },
+                        )?;
+                    } else {
+                        entry["name"] = serde_json::json!(column.name());
+                    }
+                    Ok(entry)
+                })
+                .collect::<Result<Vec<_>>>()?;
         let mut body = serde_json::json!({ "new_columns": entries });
         self.apply_branch_body(&mut body);
         let request = self
@@ -7394,7 +7404,7 @@ mod tests {
         assert_eq!(result.version, if old_server { 0 } else { 43 });
     }
 
-    /// A declaration is sent as `{name, computed}` entries for the server to
+    /// An inferred declaration is sent as `{name, computed}` for the server to
     /// plan; the client never types the expression itself.
     #[tokio::test]
     async fn test_add_computed_columns_sends_the_expression() {
@@ -7426,7 +7436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_blob_computed_column_sends_explicit_output_semantics() {
+    async fn test_add_computed_column_sends_explicit_output_field() {
         let table = Table::new_with_handler("my_table", |request| match request.url().path() {
             "/v1/table/my_table/describe/" => simple_describe_response(),
             "/v1/table/my_table/add_columns/" => {
@@ -7435,9 +7445,29 @@ mod tests {
                 assert_eq!(
                     value["new_columns"],
                     serde_json::json!([{
-                        "name": "image_copy",
                         "computed": "image",
-                        "computed_output": "blob_v2"
+                        "field": {
+                            "metadata": {
+                                "ARROW:extension:name": "lance.blob.v2"
+                            },
+                            "name": "image_copy",
+                            "nullable": true,
+                            "type": {
+                                "type": "struct",
+                                "fields": [
+                                    {
+                                        "name": "data",
+                                        "nullable": true,
+                                        "type": { "type": "large_binary" }
+                                    },
+                                    {
+                                        "name": "uri",
+                                        "nullable": true,
+                                        "type": { "type": "utf8" }
+                                    }
+                                ]
+                            }
+                        }
                     }])
                 );
                 http::Response::builder()
@@ -7450,10 +7480,7 @@ mod tests {
 
         let result = table
             .add_columns()
-            .computed_column(crate::table::ComputedColumnDeclaration::blob(
-                "image_copy",
-                "image",
-            ))
+            .computed_field(crate::blob("image_copy", true), "image")
             .execute()
             .await
             .unwrap();

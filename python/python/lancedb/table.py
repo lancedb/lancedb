@@ -913,44 +913,23 @@ def _normalize_progress(progress):
     return progress, False
 
 
-@dataclass(frozen=True)
-class ComputedColumn:
-    """A computed-column expression with explicit output semantics.
-
-    Plain strings passed to ``Table.add_columns(computed=...)`` infer their
-    output type. Use :meth:`blob` when a ``LargeBinary`` expression should be
-    published as Blob v2.
-    """
-
-    expression: str
-    output: Literal["inferred", "blob_v2"] = "inferred"
-
-    def __post_init__(self):
-        if not isinstance(self.expression, str):
-            raise TypeError("ComputedColumn.expression must be a string")
-        if self.output not in ("inferred", "blob_v2"):
-            raise ValueError("ComputedColumn.output must be 'inferred' or 'blob_v2'")
-
-    @classmethod
-    def blob(cls, expression: str) -> ComputedColumn:
-        """Publish a ``LargeBinary`` expression result as Blob v2."""
-        return cls(expression=expression, output="blob_v2")
-
-
 def _normalize_computed_columns(
-    computed: Dict[str, str | ComputedColumn],
-) -> list[tuple[str, str, Literal["inferred", "blob_v2"]]]:
-    columns: list[tuple[str, str, Literal["inferred", "blob_v2"]]] = []
-    for name, declaration in computed.items():
-        if isinstance(declaration, str):
-            columns.append((name, declaration, "inferred"))
-        elif isinstance(declaration, ComputedColumn):
-            columns.append((name, declaration.expression, declaration.output))
-        else:
+    computed: Dict[str, str] | Sequence[tuple[str | pa.Field, str]],
+) -> list[tuple[str | pa.Field, str]]:
+    columns: list[tuple[str | pa.Field, str]] = []
+    declarations = computed.items() if isinstance(computed, dict) else computed
+    for declaration in declarations:
+        if not isinstance(declaration, (tuple, list)) or len(declaration) != 2:
             raise TypeError(
-                "computed values must be SQL expression strings or "
-                "ComputedColumn values"
+                "computed sequences must contain (column name or pyarrow Field, "
+                "SQL expression) pairs"
             )
+        field, expression = declaration
+        if not isinstance(field, (str, pa.Field)):
+            raise TypeError("computed targets must be column names or pyarrow Fields")
+        if not isinstance(expression, str):
+            raise TypeError("computed values must be SQL expression strings")
+        columns.append((field, expression))
     return columns
 
 
@@ -2183,7 +2162,7 @@ class Table(ABC):
         | pa.Schema
         | None = None,
         *,
-        computed: Dict[str, str | ComputedColumn] | None = None,
+        computed: Dict[str, str] | Sequence[tuple[str | pa.Field, str]] | None = None,
     ):
         """
         Add new columns with defined values.
@@ -2205,13 +2184,15 @@ class Table(ABC):
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
-        computed: Dict[str, str | ComputedColumn], optional
-            A map of column name to a SQL expression defining the column. The
-            column's type and inputs are derived from the expression, so no
-            data type is supplied. Use ``ComputedColumn.blob(expression)``
-            when a ``LargeBinary`` result should be stored as Blob v2. All
-            entries share mapping insertion order, including dependencies
-            between inferred and Blob outputs.
+        computed: Dict[str, str] or Sequence[Tuple[str | pa.Field, str]], optional
+            A mapping from output column names to SQL expressions derives each
+            output field from its expression. An ordered sequence may instead
+            use a pyarrow Field as a target, supplying its name, type,
+            nullability, and extension metadata; use
+            ``(lancedb.blob("name"), expression)`` for a Blob v2 output.
+            Explicit fields must be nullable and their expression result type
+            must be compatible. Mapping or sequence order is declaration and
+            dependency order.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get
@@ -4343,7 +4324,7 @@ class LanceTable(Table):
         | pa.Schema
         | None = None,
         *,
-        computed: Dict[str, str | ComputedColumn] | None = None,
+        computed: Dict[str, str] | Sequence[tuple[str | pa.Field, str]] | None = None,
     ) -> AddColumnsResult:
         return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
@@ -6291,7 +6272,7 @@ class AsyncTable:
         | pa.Schema
         | None = None,
         *,
-        computed: dict[str, str | ComputedColumn] | None = None,
+        computed: dict[str, str] | Sequence[tuple[str | pa.Field, str]] | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -6311,11 +6292,14 @@ class AsyncTable:
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
-        computed: Dict[str, str | ComputedColumn], optional
-            A map of column name to a SQL expression defining the column. The
-            column's type and inputs are derived from the expression. Use
-            ``ComputedColumn.blob(expression)`` to publish a ``LargeBinary``
-            result as Blob v2. Mapping insertion order is the declaration and
+        computed: Dict[str, str] or Sequence[Tuple[str | pa.Field, str]], optional
+            A mapping from output column names to SQL expressions derives each
+            output field from its expression. An ordered sequence may instead
+            use a pyarrow Field as a target, supplying its name, type,
+            nullability, and extension metadata; use
+            ``(lancedb.blob("name"), expression)`` for a Blob v2 output.
+            Explicit fields must be nullable and their expression result type
+            must be compatible. Mapping or sequence order is declaration and
             dependency order.
 
             Unlike ``transforms``, the expression is stored rather than

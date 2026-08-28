@@ -95,8 +95,8 @@ pub use cherry_pick::{
 };
 pub use chrono::Duration;
 pub use computed_columns::{
-    ComputedColumn, ComputedColumnDeclaration, ComputedColumnKind, ComputedColumnOutput,
-    computed_column_from_field, computed_columns,
+    ComputedColumn, ComputedColumnDeclaration, ComputedColumnKind, computed_column_from_field,
+    computed_columns,
 };
 pub use delete::DeleteResult;
 use futures::future::join_all;
@@ -751,8 +751,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Declare computed columns, each defined by a SQL expression.
     ///
     /// Where the declaration is planned depends on the backend: a local table
-    /// validates and types the expression itself, a remote one sends the text
-    /// for the server to plan.
+    /// validates and types the expression itself, while a remote one sends the
+    /// expression and any explicit output field for the server to plan.
     async fn add_computed_columns(
         &self,
         _columns: &[computed_columns::ComputedColumnDeclaration],

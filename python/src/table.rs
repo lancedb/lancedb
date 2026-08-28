@@ -13,7 +13,7 @@ use crate::{
 };
 use arrow::{
     array::{Array, LargeBinaryArray},
-    datatypes::{DataType, Schema},
+    datatypes::{DataType, Field, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
@@ -99,6 +99,12 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
 enum PredicateArg {
     Expr(PyExpr),
     Sql(String),
+}
+
+#[derive(FromPyObject)]
+pub enum ComputedColumnFieldArg {
+    Name(String),
+    Field(PyArrowType<Field>),
 }
 
 /// Statistics about a compaction operation.
@@ -1578,19 +1584,18 @@ impl Table {
 
     pub fn add_computed_columns(
         self_: PyRef<'_, Self>,
-        columns: Vec<(String, String, String)>,
+        columns: Vec<(ComputedColumnFieldArg, String)>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.add_columns();
-            for (name, expression, output) in columns {
-                let declaration = match output.as_str() {
-                    "inferred" => ComputedColumnDeclaration::inferred(name, expression),
-                    "blob_v2" => ComputedColumnDeclaration::blob(name, expression),
-                    output => {
-                        return Err(PyValueError::new_err(format!(
-                            "unsupported computed-column output '{output}'"
-                        )));
+            for (field, expression) in columns {
+                let declaration = match field {
+                    ComputedColumnFieldArg::Name(name) => {
+                        ComputedColumnDeclaration::inferred(name, expression)
+                    }
+                    ComputedColumnFieldArg::Field(PyArrowType(field)) => {
+                        ComputedColumnDeclaration::with_field(field, expression)
                     }
                 };
                 builder = builder.computed_column(declaration);

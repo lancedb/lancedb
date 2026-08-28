@@ -13,6 +13,7 @@ from typing import (
     Iterable,
     List,
     Optional,
+    Sequence,
     Union,
     Literal,
     overload,
@@ -71,7 +72,6 @@ from ..table import (
     AsyncTable,
     BlobMode,
     Branches,
-    ComputedColumn,
     IndexStatistics,
     Query,
     Table,
@@ -984,7 +984,7 @@ class RemoteTable(Table):
         | FunctionApplication
         | None = None,
         *,
-        computed: Dict[str, str | ComputedColumn] | None = None,
+        computed: Dict[str, str] | Sequence[tuple[str | pa.Field, str]] | None = None,
     ) -> AddColumnsResult:
         return LOOP.run(self._table.add_columns(transforms, computed=computed))
 

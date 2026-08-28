@@ -9,12 +9,13 @@
 //! refresh fills the rows.
 //!
 //! The rule is tagged by kind ([`ComputedColumnKind`]) because kinds differ in
-//! where the column's type and inputs come from. A SQL expression is
-//! self-describing -- both are derived from the expression, so a caller writes
-//! neither -- while a kind resolved through a registry cannot be typed without
-//! consulting it. Registered Functions use an exact remote version plus a
-//! schema-level Function binding; unknown newer kinds remain readable and fail
-//! closed before mutation.
+//! where the column's type and inputs come from. A SQL expression determines
+//! its inputs and physical result type; a caller may also supply an Arrow field
+//! when the output needs extension metadata that expressions do not carry.
+//! A kind resolved through a registry cannot be typed without consulting it.
+//! Registered Functions use an exact remote version plus a schema-level
+//! Function binding; unknown newer kinds remain readable and fail closed
+//! before mutation.
 //!
 //! [`computed_columns`] and [`computed_column_from_field`] read declarations
 //! back off a schema.
@@ -27,7 +28,9 @@ use datafusion_common::tree_node::TreeNode;
 use datafusion_physical_plan::PhysicalExpr;
 use lance::dataset::NewColumnTransform;
 use lance_arrow::FieldExt;
-use lance_core::datatypes::{BLOB_V2_DESC_FIELD, format_field_path_minimal, parse_field_path};
+use lance_core::datatypes::{
+    BLOB_V2_DESC_FIELD, BlobV2Layout, format_field_path_minimal, parse_field_path,
+};
 use lance_datafusion::planner::Planner;
 use lance_namespace::models::{JsonArrowDataType, JsonArrowField, JsonArrowSchema};
 use serde::{Deserialize, Serialize};
@@ -66,43 +69,59 @@ pub const SQL_KIND: &str = "sql";
 /// Value of [`KIND_META_KEY`] for a registered Function binding.
 pub const FUNCTION_KIND: &str = "function";
 
-/// How a SQL computed declaration chooses its stored output type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ComputedColumnOutput {
-    /// Use the expression's inferred Arrow type.
-    Inferred,
-    /// Store a materialized `LargeBinary` result as a Blob v2 column.
-    BlobV2,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ComputedColumnTarget {
+    Inferred(String),
+    Explicit(ArrowField),
 }
 
 /// One SQL computed-column declaration before it is planned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComputedColumnDeclaration {
-    /// Name of the column to declare.
-    pub name: String,
-    /// Immutable SQL expression evaluated by refresh.
-    pub expression: String,
-    /// Stored semantic type of the result.
-    pub output: ComputedColumnOutput,
+    target: ComputedColumnTarget,
+    expression: String,
 }
 
 impl ComputedColumnDeclaration {
     /// Declare a computed column whose type is inferred from its expression.
     pub fn inferred(name: impl Into<String>, expression: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
+            target: ComputedColumnTarget::Inferred(name.into()),
             expression: expression.into(),
-            output: ComputedColumnOutput::Inferred,
         }
     }
 
-    /// Declare a Blob v2 output backed by a `LargeBinary` expression.
-    pub fn blob(name: impl Into<String>, expression: impl Into<String>) -> Self {
+    /// Declare a computed column with an explicit Arrow field.
+    ///
+    /// The field is the source of truth for the output's name, type,
+    /// nullability, and extension metadata. Its semantics must accept the
+    /// expression's inferred type, and it must be nullable because declaration
+    /// commits the column before refresh fills its values.
+    pub fn with_field(field: ArrowField, expression: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
+            target: ComputedColumnTarget::Explicit(field),
             expression: expression.into(),
-            output: ComputedColumnOutput::BlobV2,
+        }
+    }
+
+    /// Name of the column to declare.
+    pub fn name(&self) -> &str {
+        match &self.target {
+            ComputedColumnTarget::Inferred(name) => name,
+            ComputedColumnTarget::Explicit(field) => field.name(),
+        }
+    }
+
+    /// Immutable SQL expression evaluated by refresh.
+    pub fn expression(&self) -> &str {
+        &self.expression
+    }
+
+    /// Explicit output field, or `None` when the expression determines it.
+    pub fn field(&self) -> Option<&ArrowField> {
+        match &self.target {
+            ComputedColumnTarget::Inferred(_) => None,
+            ComputedColumnTarget::Explicit(field) => Some(field),
         }
     }
 }
@@ -1149,15 +1168,20 @@ pub(crate) fn ensure_no_foreign_declarations<'a>(
     fields: impl IntoIterator<Item = &'a Arc<ArrowField>>,
 ) -> Result<()> {
     for field in fields {
-        if field.metadata().keys().any(|k| is_declaration_key(k)) {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "field '{}' carries computed-column metadata; declare computed columns \
-                     with add_columns().computed()",
-                    field.name()
-                ),
-            });
-        }
+        ensure_no_foreign_declaration(field)?;
+    }
+    Ok(())
+}
+
+fn ensure_no_foreign_declaration(field: &ArrowField) -> Result<()> {
+    if field.metadata().keys().any(|k| is_declaration_key(k)) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "field '{}' carries computed-column metadata; declare computed columns \
+                 with add_columns().computed()",
+                field.name()
+            ),
+        });
     }
     Ok(())
 }
@@ -1464,35 +1488,65 @@ fn plan_declarations(
     let mut fields = Vec::with_capacity(columns.len());
 
     for declaration in columns {
-        if schema.field_with_name(&declaration.name).is_ok() {
+        let name = declaration.name();
+        if schema.field_with_name(name).is_ok() {
             return Err(Error::ColumnAlreadyExists {
-                name: declaration.name.clone(),
+                name: name.to_string(),
             });
         }
 
-        let bound = bind(schema.clone(), &declaration.name, &declaration.expression)?;
+        let bound = bind(schema.clone(), name, declaration.expression())?;
 
         // Declared columns start entirely null, so nullability is a property
         // of the declaration rather than of what the expression yields.
-        let metadata = computed_column_metadata(&declaration.expression, &bound.inputs);
-        let field = match declaration.output {
-            ComputedColumnOutput::Inferred => {
-                ArrowField::new(&declaration.name, bound.data_type, true).with_metadata(metadata)
-            }
-            ComputedColumnOutput::BlobV2 => {
-                if bound.data_type != DataType::LargeBinary {
-                    return Err(Error::InvalidExpression {
-                        column: declaration.name.clone(),
+        let computed_metadata = computed_column_metadata(declaration.expression(), &bound.inputs);
+        let field = match declaration.field() {
+            None => ArrowField::new(name, bound.data_type, true).with_metadata(computed_metadata),
+            Some(field) => {
+                ensure_no_foreign_declaration(field)?;
+                if !field.is_nullable() {
+                    return Err(Error::InvalidInput {
                         message: format!(
-                            "a Blob v2 computed output requires a LargeBinary expression, got {}",
-                            bound.data_type
+                            "explicit computed output field '{}' must be nullable",
+                            field.name()
                         ),
                     });
                 }
-                let field = crate::blob::blob(&declaration.name, true);
-                let mut blob_metadata = field.metadata().clone();
-                blob_metadata.extend(metadata);
-                field.with_metadata(blob_metadata)
+                let expression_type = if field.is_blob_v2() {
+                    match field.data_type() {
+                        DataType::Struct(fields)
+                            if BlobV2Layout::classify(fields) == Some(BlobV2Layout::Logical) =>
+                        {
+                            // A Blob field stores descriptors, but refresh
+                            // publishes materialized bytes through Lance's
+                            // Blob conversion path.
+                            DataType::LargeBinary
+                        }
+                        data_type => {
+                            return Err(Error::InvalidInput {
+                                message: format!(
+                                    "explicit Blob v2 output field '{}' has unsupported logical type {}",
+                                    field.name(),
+                                    data_type
+                                ),
+                            });
+                        }
+                    }
+                } else {
+                    field.data_type().clone()
+                };
+                if expression_type != bound.data_type {
+                    return Err(Error::InvalidExpression {
+                        column: name.to_string(),
+                        message: format!(
+                            "explicit output field accepts {}, but the expression yields {}",
+                            expression_type, bound.data_type,
+                        ),
+                    });
+                }
+                let mut metadata = field.metadata().clone();
+                metadata.extend(computed_metadata);
+                field.clone().with_metadata(metadata)
             }
         };
         schema = Arc::new(ArrowSchema::new_with_metadata(
@@ -1682,6 +1736,91 @@ mod tests {
                 inputs: vec!["x".into()],
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn test_explicit_field_is_the_output_schema() {
+        let table = table_with_ints("explicit_field").await;
+        let field = ArrowField::new("copy", DataType::Int32, true)
+            .with_metadata(HashMap::from([("semantic".into(), "custom".into())]));
+
+        table
+            .add_columns()
+            .computed_field(field, "x")
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = table.schema().await.unwrap();
+        let field = schema.field_with_name("copy").unwrap();
+        assert_eq!(field.data_type(), &DataType::Int32);
+        assert_eq!(
+            field.metadata().get("semantic").map(String::as_str),
+            Some("custom")
+        );
+        assert_eq!(
+            field
+                .metadata()
+                .get(COMPUTED_COLUMN_META_KEY)
+                .map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explicit_field_must_be_nullable() {
+        let table = table_with_ints("explicit_field_nullable").await;
+        let error = table
+            .add_columns()
+            .computed_field(ArrowField::new("copy", DataType::Int32, false), "x")
+            .execute()
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, Error::InvalidInput { message } if message.contains("must be nullable"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explicit_field_cannot_supply_binding_metadata() {
+        let table = table_with_ints("explicit_field_binding").await;
+        let field =
+            ArrowField::new("copy", DataType::Int32, true).with_metadata(HashMap::from([(
+                EXPRESSION_META_KEY.to_string(),
+                "other".to_string(),
+            )]));
+        let error = table
+            .add_columns()
+            .computed_field(field, "x")
+            .execute()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::InvalidInput { message }
+                if message.contains("carries computed-column metadata")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_explicit_blob_field_requires_a_logical_blob_layout() {
+        let table = table_with_ints("explicit_blob_layout").await;
+        let metadata = crate::blob("copy", true).metadata().clone();
+        let field = ArrowField::new("copy", DataType::LargeBinary, true).with_metadata(metadata);
+        let error = table
+            .add_columns()
+            .computed_field(field, "x")
+            .execute()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::InvalidInput { message }
+                if message.contains("unsupported logical type LargeBinary")
+        ));
     }
 
     /// The binding reaches the schema only if `AllNulls` carries per-field

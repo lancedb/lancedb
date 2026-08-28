@@ -33,9 +33,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, LargeBinaryArray, RecordBatch, RecordBatchOptions,
+    Array, ArrayRef, BooleanArray, LargeBinaryArray, RecordBatch, RecordBatchOptions, StructArray,
+    new_null_array,
 };
-use arrow_schema::Schema as ArrowSchema;
+use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
 use datafusion_expr::ColumnarValue;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lance::Dataset;
@@ -374,7 +375,10 @@ fn configure_blob_inputs(
     Ok(())
 }
 
-fn blob_array_from_binary(array: &ArrayRef) -> lance_core::Result<ArrayRef> {
+fn blob_array_from_binary(
+    array: &ArrayRef,
+    target_field: &ArrowField,
+) -> lance_core::Result<ArrayRef> {
     let values = array
         .as_any()
         .downcast_ref::<LargeBinaryArray>()
@@ -392,7 +396,39 @@ fn blob_array_from_binary(array: &ArrayRef) -> lance_core::Result<ArrayRef> {
             builder.push_bytes(values.value(index))?;
         }
     }
-    builder.finish()
+    let minimal = builder.finish()?;
+    let minimal = minimal
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| lance_core::Error::internal("Blob builder returned a non-struct array"))?;
+    let DataType::Struct(target_fields) = target_field.data_type() else {
+        return Err(lance_core::Error::invalid_input(format!(
+            "Blob v2 output field '{}' has non-struct type {}",
+            target_field.name(),
+            target_field.data_type()
+        )));
+    };
+    let columns = target_fields
+        .iter()
+        .map(|field| match field.name().as_str() {
+            "data" | "uri" => minimal
+                .column_by_name(field.name())
+                .cloned()
+                .ok_or_else(|| {
+                    lance_core::Error::internal(format!("Blob builder omitted '{}'", field.name()))
+                }),
+            "position" | "size" => Ok(new_null_array(field.data_type(), minimal.len())),
+            name => Err(lance_core::Error::invalid_input(format!(
+                "Blob v2 output field '{}' has unsupported logical child '{name}'",
+                target_field.name()
+            ))),
+        })
+        .collect::<lance_core::Result<Vec<_>>>()?;
+    Ok(Arc::new(StructArray::try_new(
+        target_fields.clone(),
+        columns,
+        minimal.nulls().cloned(),
+    )?))
 }
 
 /// How many rows of one fragment would gain a value.
@@ -495,7 +531,7 @@ async fn fill_stream(
         let computed = evaluate(&bound, &evaluation_batch(&batch, &bound, Some(&keep))?)?;
         let merged = arrow_select::zip::zip(&fill, &computed, existing)?;
         let merged = if output_is_blob {
-            blob_array_from_binary(&merged)?
+            blob_array_from_binary(&merged, projected.field(0))?
         } else {
             merged
         };
@@ -507,13 +543,15 @@ async fn fill_stream(
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{Array, Int32Array, LargeBinaryArray, RecordBatch, record_batch};
+    use arrow_array::{
+        Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch, StructArray, record_batch,
+    };
+    use arrow_schema::Field as ArrowField;
     use futures::TryStreamExt;
     use lance_core::ROW_ID;
 
     use crate::connect;
     use crate::query::{ExecutableQuery, QueryBase, Select};
-    use crate::table::ComputedColumnDeclaration;
     use crate::{Error, Result, Table};
 
     async fn table_with(name: &str, values: Vec<i32>) -> Table {
@@ -564,6 +602,25 @@ mod tests {
     async fn append(table: &Table, values: Vec<i32>) {
         let batch = record_batch!(("x", Int32, values)).unwrap();
         table.add(batch).execute().await.unwrap();
+    }
+
+    #[test]
+    fn test_blob_output_matches_complete_logical_field() {
+        let values: ArrayRef = Arc::new(LargeBinaryArray::from(vec![
+            Some(b"hello".as_slice()),
+            None,
+        ]));
+        let field = ArrowField::new(
+            "image",
+            lance_core::datatypes::BLOB_V2_LOGICAL_TYPE.clone(),
+            true,
+        );
+
+        let output = super::blob_array_from_binary(&values, &field).unwrap();
+        assert_eq!(output.data_type(), field.data_type());
+        let output = output.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(output.column_by_name("position").unwrap().null_count(), 2);
+        assert_eq!(output.column_by_name("size").unwrap().null_count(), 2);
     }
 
     /// The gate's reproducer: `b = coalesce(a, 0)` refreshed before `a`
@@ -1345,7 +1402,7 @@ mod tests {
         .await;
         table
             .add_columns()
-            .computed_column(ComputedColumnDeclaration::blob("image_copy", "image"))
+            .computed_field(crate::blob("image_copy", true), "image")
             .execute()
             .await
             .unwrap();
@@ -1464,14 +1521,16 @@ mod tests {
 
         let error = table
             .add_columns()
-            .computed_column(ComputedColumnDeclaration::blob("invalid", "id + 1"))
+            .computed_field(crate::blob("invalid", true), "id + 1")
             .execute()
             .await
             .unwrap_err();
         assert!(matches!(
             error,
             Error::InvalidExpression { column, message }
-                if column == "invalid" && message.contains("requires a LargeBinary expression")
+                if column == "invalid"
+                    && message.contains("explicit output field accepts LargeBinary")
+                    && message.contains("expression yields Int32")
         ));
     }
 

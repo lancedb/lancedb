@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use arrow_schema::Field as ArrowField;
 use lance::dataset::NewColumnTransform;
 
 use super::BaseTable;
@@ -87,26 +88,31 @@ impl AddColumnsBuilder {
         self.computed_column(ComputedColumnDeclaration::inferred(name, expression))
     }
 
-    /// Add one computed-column declaration with explicit output semantics.
+    /// Add a computed column whose output schema is the supplied Arrow field.
     ///
-    /// Use [`ComputedColumnDeclaration::blob`] when a `LargeBinary` expression
-    /// should be published as Blob v2. Declarations share one ordered stream,
-    /// so a later expression may reference a column declared earlier in the
-    /// same builder.
+    /// Extension semantics such as Blob v2 come from the field metadata. The
+    /// expression's inferred type must be compatible with the field semantics.
     ///
     /// ```
     /// # use lancedb::Table;
-    /// # use lancedb::table::ComputedColumnDeclaration;
     /// # async fn declare(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// table
     ///     .add_columns()
-    ///     .computed_column(ComputedColumnDeclaration::blob("image_copy", "image"))
+    ///     .computed_field(lancedb::blob("image_copy", true), "image")
     ///     .execute()
     ///     .await?;
     /// table.refresh_column("image_copy").await?;
     /// # Ok(())
     /// # }
     /// ```
+    pub fn computed_field(self, field: ArrowField, expression: impl Into<String>) -> Self {
+        self.computed_column(ComputedColumnDeclaration::with_field(field, expression))
+    }
+
+    /// Add one pre-built computed-column declaration.
+    ///
+    /// Declarations share one ordered stream, so a later expression may
+    /// reference a column declared earlier in the same builder.
     pub fn computed_column(mut self, declaration: ComputedColumnDeclaration) -> Self {
         self.computed.push(declaration);
         self
