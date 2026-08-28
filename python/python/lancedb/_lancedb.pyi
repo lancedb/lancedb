@@ -50,6 +50,18 @@ class MetricDescription:
 def register_lancedb_metrics_recorder() -> bool: ...
 def lancedb_metrics_catalog() -> List[MetricDescription]: ...
 def snapshot_lancedb_metrics() -> List[MetricPoint]: ...
+def sql(
+    query: str,
+    *,
+    default_database: str = "lancedb",
+    default_namespace_path: Optional[List[str]] = None,
+    api_key: Optional[str] = None,
+    region: str = "us-east-1",
+    host_override: Optional[str] = None,
+    flight_sql_uri: Optional[str] = None,
+    client_config: Union[ClientConfig, Dict[str, Any], None] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+) -> pa.Table: ...
 def tokenize(
     query: str,
     *,

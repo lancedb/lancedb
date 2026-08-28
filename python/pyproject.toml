@@ -3,7 +3,6 @@ name = "lancedb"
 # version in Cargo.toml
 dynamic = ["version"]
 dependencies = [
-    "certifi",
     "deprecation>=2.1.0",
     "numpy>=1.24.0",
     "overrides>=0.7; python_version<'3.12'",

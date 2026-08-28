@@ -866,7 +866,7 @@ fn build_namespace_natively(
 }
 
 #[derive(FromPyObject)]
-pub struct PyClientConfig {
+pub(crate) struct PyClientConfig {
     user_agent: String,
     retry_config: Option<PyClientRetryConfig>,
     timeout_config: Option<PyClientTimeoutConfig>,

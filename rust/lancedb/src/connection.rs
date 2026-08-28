@@ -322,6 +322,60 @@ pub struct CloneTableBuilder {
     request: CloneTableRequest,
 }
 
+/// Builder for executing a SQL statement through Flight SQL.
+#[cfg(feature = "remote")]
+pub struct FlightSqlQueryBuilder {
+    parent: Arc<dyn Database>,
+    query: String,
+    default_namespace_path: Vec<String>,
+    flight_sql_uri: Option<String>,
+}
+
+#[cfg(feature = "remote")]
+impl FlightSqlQueryBuilder {
+    fn new(parent: Arc<dyn Database>, query: String) -> Self {
+        Self {
+            parent,
+            query,
+            default_namespace_path: vec!["public".to_string()],
+            flight_sql_uri: None,
+        }
+    }
+
+    /// Set the namespace used for unqualified table names.
+    ///
+    /// An empty path is treated as `public`, which is the SQL name for the
+    /// root Lance namespace.
+    pub fn default_namespace_path<I, S>(mut self, path: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Override the Flight SQL endpoint.
+    ///
+    /// This is required when the endpoint cannot be derived from the remote
+    /// connection's plaintext `host_override`.
+    pub fn flight_sql_uri(mut self, uri: impl Into<String>) -> Self {
+        self.flight_sql_uri = Some(uri.into());
+        self
+    }
+
+    /// Execute the statement and collect all returned Arrow record batches.
+    pub async fn execute(self) -> Result<Vec<RecordBatch>> {
+        self.parent
+            .execute_sql(
+                &self.query,
+                &self.default_namespace_path,
+                self.flight_sql_uri.as_deref(),
+            )
+            .await
+    }
+}
+
 impl CloneTableBuilder {
     fn new(parent: Arc<dyn Database>, target_table_name: String, source_uri: String) -> Self {
         Self {
@@ -403,6 +457,35 @@ impl Connection {
     /// Get access to the underlying database
     pub fn database(&self) -> &Arc<dyn Database> {
         &self.internal
+    }
+
+    /// Execute SQL against a remote LanceDB database using Flight SQL.
+    ///
+    /// The query can reference tables in other databases with SQL dot notation.
+    /// Use [`FlightSqlQueryBuilder::default_namespace_path`] to avoid qualifying
+    /// tables in the default namespace. Local connections return
+    /// [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn query() -> lancedb::Result<()> {
+    /// let db = lancedb::connect("db://analytics")
+    ///     .api_key("api-key")
+    ///     .region("us-east-1")
+    ///     .execute()
+    ///     .await?;
+    /// let batches = db
+    ///     .sql("SELECT * FROM events LIMIT 10")
+    ///     .default_namespace_path(["public"])
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "remote")]
+    pub fn sql(&self, query: impl Into<String>) -> FlightSqlQueryBuilder {
+        FlightSqlQueryBuilder::new(self.internal.clone(), query.into())
     }
 
     /// Get the names of all tables in the database

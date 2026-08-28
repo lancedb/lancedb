@@ -47,7 +47,7 @@ from .namespace import (
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
 )
-from ._sql import sql as sql
+from ._lancedb import sql as sql
 
 
 if TYPE_CHECKING:

@@ -1878,7 +1878,6 @@ wheels = [
 name = "lancedb"
 source = { editable = "." }
 dependencies = [
-    { name = "certifi" },
     { name = "deprecation" },
     { name = "lance-namespace" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1972,7 +1971,6 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'embeddings'", specifier = ">=1.28.57" },
     { name = "boto3", marker = "extra == 'tests'", specifier = ">=1.28.57" },
     { name = "botocore", marker = "extra == 'embeddings'", specifier = ">=1.31.57" },
-    { name = "certifi" },
     { name = "cohere", marker = "extra == 'embeddings'", specifier = ">=4.0" },
     { name = "colpali-engine", marker = "extra == 'embeddings'", specifier = ">=0.3.10" },
     { name = "datafusion", marker = "extra == 'tests'", specifier = ">=54,<55" },

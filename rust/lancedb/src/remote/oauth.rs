@@ -554,10 +554,10 @@ impl OAuthHeaderProvider {
 impl HeaderProvider for OAuthHeaderProvider {
     async fn get_headers(&self) -> Result<HashMap<String, String>> {
         let token = self.get_valid_token().await?;
-        Ok(HashMap::from([(
-            "authorization".to_string(),
-            format!("Bearer {token}"),
-        )]))
+        Ok(HashMap::from([
+            ("authorization".to_string(), format!("Bearer {token}")),
+            ("x-lancedb-credential-type".to_string(), "oidc".to_string()),
+        ]))
     }
 }
 

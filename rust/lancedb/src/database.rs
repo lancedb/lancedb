@@ -340,6 +340,18 @@ pub trait Database:
     async fn job_history(&self, _job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
         job_op_not_supported("job_history")
     }
+    /// Execute a SQL statement through a remote Flight SQL endpoint.
+    #[cfg(feature = "remote")]
+    async fn execute_sql(
+        &self,
+        _query: &str,
+        _default_namespace_path: &[String],
+        _flight_sql_uri: Option<&str>,
+    ) -> Result<Vec<RecordBatch>> {
+        Err(crate::error::Error::NotSupported {
+            message: "Flight SQL is not supported by this database".to_string(),
+        })
+    }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database
