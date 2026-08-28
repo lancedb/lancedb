@@ -21,7 +21,7 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 const REUSE_CONNECTION_URI: &str = "arrow-flight-reuse-connection:";
 
 #[derive(Clone, Debug)]
-pub(crate) struct FlightSqlClientConfig {
+pub(super) struct FlightSqlClientConfig {
     database: String,
     api_key: String,
     host_override: Option<String>,
@@ -29,7 +29,7 @@ pub(crate) struct FlightSqlClientConfig {
 }
 
 impl FlightSqlClientConfig {
-    pub(crate) fn new(
+    pub(super) fn new(
         database: String,
         api_key: String,
         host_override: Option<String>,
@@ -43,7 +43,7 @@ impl FlightSqlClientConfig {
         }
     }
 
-    pub(crate) async fn execute(
+    pub(super) async fn execute(
         &self,
         query: &str,
         default_namespace_path: &[String],
