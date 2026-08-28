@@ -468,6 +468,7 @@ mod tests {
     };
     use arrow_flight::{FlightEndpoint, FlightInfo, Ticket};
     use arrow_schema::{DataType, Field, Schema};
+    use prost::Message;
     use tonic::{Request, Response, Status};
 
     use super::*;
