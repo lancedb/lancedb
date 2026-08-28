@@ -201,7 +201,7 @@ fn resolve_flight_sql_uri(
         });
     }
     validate_endpoint_url(&parsed, "host_override")?;
-    let port = match parsed.port() {
+    let port = match parsed.port().or(explicit_port(host_override)) {
         Some(u16::MAX) => {
             return Err(Error::InvalidInput {
                 message: "flight_sql_uri is required when host_override uses port 65535"
@@ -232,7 +232,7 @@ fn normalize_flight_sql_uri(uri: &str) -> Result<FlightTarget> {
             });
         }
     };
-    let port = parsed.port().unwrap_or(if tls {
+    let port = parsed.port().or(explicit_port(uri)).unwrap_or(if tls {
         DEFAULT_FLIGHT_SQL_TLS_PORT
     } else {
         DEFAULT_FLIGHT_SQL_PORT
@@ -250,6 +250,16 @@ fn normalize_flight_sql_uri(uri: &str) -> Result<FlightTarget> {
         ),
         tls,
     })
+}
+
+fn explicit_port(uri: &str) -> Option<u16> {
+    let authority = uri.split_once("://")?.1.split(['/', '?', '#']).next()?;
+    let suffix = if authority.starts_with('[') {
+        authority.split_once(']')?.1.strip_prefix(':')?
+    } else {
+        authority.rsplit_once(':')?.1
+    };
+    suffix.parse().ok()
 }
 
 fn validate_endpoint_url(parsed: &url::Url, name: &str) -> Result<()> {
@@ -479,6 +489,13 @@ mod tests {
                 tls: false,
             }
         );
+        assert_eq!(
+            normalize_flight_sql_uri("https://example.com:443").unwrap(),
+            FlightTarget {
+                uri: "https://example.com:443".to_string(),
+                tls: true,
+            }
+        );
     }
 
     #[test]
@@ -487,6 +504,13 @@ mod tests {
             resolve_flight_sql_uri(Some("http://localhost:10024"), None).unwrap(),
             FlightTarget {
                 uri: "http://localhost:10025".to_string(),
+                tls: false,
+            }
+        );
+        assert_eq!(
+            resolve_flight_sql_uri(Some("http://localhost:80"), None).unwrap(),
+            FlightTarget {
+                uri: "http://localhost:81".to_string(),
                 tls: false,
             }
         );

@@ -478,6 +478,7 @@ impl Connection {
     /// let batches = db
     ///     .sql("SELECT * FROM events LIMIT 10")
     ///     .default_namespace_path(["public"])
+    ///     .flight_sql_uri("grpc+tls://sql.example.com:10026")
     ///     .execute()
     ///     .await?;
     /// # Ok(())
