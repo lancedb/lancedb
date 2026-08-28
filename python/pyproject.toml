@@ -139,7 +139,6 @@ include = [
     "python/lancedb/exceptions.py",
     "python/lancedb/background_loop.py",
     "python/lancedb/schema.py",
-    "python/lancedb/_sql.py",
     "python/lancedb/remote/__init__.py",
     "python/lancedb/remote/errors.py",
     "python/lancedb/embeddings/__init__.py",
