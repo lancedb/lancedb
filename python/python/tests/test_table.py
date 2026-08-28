@@ -4087,10 +4087,10 @@ def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
         table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
 
 
-def test_computed_blob_input_and_explicit_output(tmp_path):
+def test_computed_column_blob_input_and_explicit_output(tmp_path):
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     db = lancedb.connect(tmp_path)
-    table = db.create_table("computed_blob", schema=schema)
+    table = db.create_table("computed_column_blob", schema=schema)
     table.add(
         [
             {"id": 1, "image": b"hello"},
@@ -4118,9 +4118,9 @@ def test_computed_blob_input_and_explicit_output(tmp_path):
     assert copied.to_pylist() == [b"hello", b"", None]
 
 
-def test_computed_blob_rejects_eager_transforms(tmp_path):
+def test_blob_output_declaration_rejects_eager_transforms(tmp_path):
     db = lancedb.connect(tmp_path)
-    table = db.create_table("computed_blob_mixed", [{"x": 1}])
+    table = db.create_table("computed_column_blob_mixed", [{"x": 1}])
     with pytest.raises(ValueError):
         table.add_columns(
             {"a": "x + 1"},
