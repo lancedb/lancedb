@@ -780,6 +780,21 @@ class DBConnection(EnforceOverrides):
             "job_history is not supported for this connection type"
         )
 
+    def sql(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+        flight_sql_uri: Optional[str] = None,
+    ) -> pa.Table:
+        """Execute SQL through a remote Flight SQL endpoint.
+
+        Local connections do not support Flight SQL.
+        """
+        raise NotImplementedError(
+            "Flight SQL is not supported for this connection type"
+        )
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -2320,6 +2335,25 @@ class AsyncConnection(object):
         Lists history across all jobs when `job_id` is None.
         """
         return await self._inner.job_history(job_id)
+
+    async def sql(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+        flight_sql_uri: Optional[str] = None,
+    ) -> pa.Table:
+        """Execute SQL through a remote Flight SQL endpoint.
+
+        The database from ``connect_async`` is used for unqualified database
+        references. The namespace defaults to ``["public"]``. Local
+        connections raise ``NotImplementedError``.
+        """
+        return await self._inner.sql(
+            query,
+            default_namespace_path=default_namespace_path,
+            flight_sql_uri=flight_sql_uri,
+        )
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

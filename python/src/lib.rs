@@ -12,50 +12,6 @@ use pyo3::{
     types::{PyModule, PyModuleMethods},
     wrap_pyfunction,
 };
-#[cfg(not(feature = "remote"))]
-use pyo3::{PyAny, pyfunction};
-
-#[cfg(not(feature = "remote"))]
-#[pyfunction(name = "sql")]
-#[pyo3(signature = (
-    query,
-    *,
-    default_database="lancedb",
-    default_namespace_path=None,
-    api_key=None,
-    region="us-east-1",
-    host_override=None,
-    flight_sql_uri=None,
-    client_config=None,
-    storage_options=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn sql_unavailable(
-    query: String,
-    default_database: &str,
-    default_namespace_path: Option<Bound<'_, PyAny>>,
-    api_key: Option<String>,
-    region: &str,
-    host_override: Option<String>,
-    flight_sql_uri: Option<String>,
-    client_config: Option<Bound<'_, PyAny>>,
-    storage_options: Option<std::collections::HashMap<String, String>>,
-) -> PyResult<()> {
-    let _ = (
-        query,
-        default_database,
-        default_namespace_path,
-        api_key,
-        region,
-        host_override,
-        flight_sql_uri,
-        client_config,
-        storage_options,
-    );
-    Err(pyo3::exceptions::PyNotImplementedError::new_err(
-        "lancedb.sql requires the remote feature",
-    ))
-}
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
@@ -78,8 +34,6 @@ pub mod permutation;
 pub mod query;
 pub mod runtime;
 pub mod session;
-#[cfg(feature = "remote")]
-pub mod sql;
 pub mod table;
 pub mod util;
 
@@ -130,10 +84,6 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_namespace, m)?)?;
     m.add_function(wrap_pyfunction!(connect_namespace_client, m)?)?;
-    #[cfg(feature = "remote")]
-    m.add_function(wrap_pyfunction!(sql::sql, m)?)?;
-    #[cfg(not(feature = "remote"))]
-    m.add_function(wrap_pyfunction!(sql_unavailable, m)?)?;
     m.add_function(wrap_pyfunction!(table::tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;

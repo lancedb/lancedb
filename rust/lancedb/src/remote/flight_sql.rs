@@ -3,12 +3,14 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use arrow_flight::FlightEndpoint;
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use futures::TryStreamExt;
+use tokio::sync::{Mutex, OnceCell};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 use crate::error::{Error, Result};
@@ -20,15 +22,18 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 const REUSE_CONNECTION_URI: &str = "arrow-flight-reuse-connection:";
 
+type CachedFlightSqlClient = Arc<OnceCell<FlightSqlServiceClient<Channel>>>;
+
 #[derive(Clone, Debug)]
-pub(super) struct FlightSqlClientConfig {
+pub(super) struct FlightSqlClient {
     database: String,
     api_key: String,
     host_override: Option<String>,
     client_config: ClientConfig,
+    clients: Arc<Mutex<HashMap<String, CachedFlightSqlClient>>>,
 }
 
-impl FlightSqlClientConfig {
+impl FlightSqlClient {
     pub(super) fn new(
         database: String,
         api_key: String,
@@ -40,6 +45,7 @@ impl FlightSqlClientConfig {
             api_key,
             host_override,
             client_config,
+            clients: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -80,8 +86,7 @@ impl FlightSqlClientConfig {
         )?
         .unwrap();
 
-        let channel = connect_channel(&target, &self.client_config, request_id).await?;
-        let mut client = flight_client(channel.clone(), &headers);
+        let mut client = self.client(&target, &headers, request_id).await?;
         let info = tokio::time::timeout(read_timeout, client.execute(query.to_string(), None))
             .await
             .map_err(|_| flight_error(request_id, "Flight SQL query planning timed out"))?
@@ -101,15 +106,8 @@ impl FlightSqlClientConfig {
             let ticket = endpoint.ticket.clone().ok_or_else(|| {
                 flight_error(request_id, "Flight SQL endpoint did not include a ticket")
             })?;
-            let endpoint_channel = endpoint_channel(
-                &endpoint,
-                &target,
-                &self.client_config,
-                channel.clone(),
-                request_id,
-            )
-            .await?;
-            let mut endpoint_client = flight_client(endpoint_channel, &headers);
+            let endpoint_target = endpoint_target(&endpoint, &target)?;
+            let mut endpoint_client = self.client(&endpoint_target, &headers, request_id).await?;
             let mut stream = tokio::time::timeout(read_timeout, endpoint_client.do_get(ticket))
                 .await
                 .map_err(|_| flight_error(request_id, "Flight SQL DoGet timed out"))?
@@ -134,6 +132,37 @@ impl FlightSqlClientConfig {
             batches.push(RecordBatch::new_empty(schema));
         }
         Ok(batches)
+    }
+
+    async fn client(
+        &self,
+        target: &FlightTarget,
+        headers: &HashMap<String, String>,
+        request_id: &str,
+    ) -> Result<FlightSqlServiceClient<Channel>> {
+        let cached = {
+            let mut clients = self.clients.lock().await;
+            clients
+                .entry(target.uri.clone())
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+        let client = cached
+            .get_or_try_init(|| async {
+                let channel = connect_channel(target, &self.client_config, request_id).await?;
+                Ok::<_, Error>(FlightSqlServiceClient::new(channel))
+            })
+            .await?;
+        Ok(client_with_headers(client.clone(), headers))
+    }
+
+    #[cfg(test)]
+    async fn initialized_client_count(&self) -> usize {
+        let clients = self.clients.lock().await;
+        clients
+            .values()
+            .filter(|client| client.get().is_some())
+            .count()
     }
 
     async fn headers(
@@ -297,18 +326,12 @@ fn endpoint_uri(scheme: &str, host: &str, port: u16) -> String {
     }
 }
 
-async fn endpoint_channel(
-    endpoint: &FlightEndpoint,
-    primary: &FlightTarget,
-    config: &ClientConfig,
-    primary_channel: Channel,
-    request_id: &str,
-) -> Result<Channel> {
+fn endpoint_target(endpoint: &FlightEndpoint, primary: &FlightTarget) -> Result<FlightTarget> {
     let Some(location) = endpoint.location.first() else {
-        return Ok(primary_channel);
+        return Ok(primary.clone());
     };
     if is_reuse_connection_uri(&location.uri) {
-        return Ok(primary_channel);
+        return Ok(primary.clone());
     }
     let target = normalize_flight_sql_uri(&location.uri)?;
     if primary.tls && !target.tls {
@@ -316,7 +339,7 @@ async fn endpoint_channel(
             message: "Flight SQL endpoint attempted to downgrade TLS".to_string(),
         });
     }
-    connect_channel(&target, config, request_id).await
+    Ok(target)
 }
 
 fn is_reuse_connection_uri(uri: &str) -> bool {
@@ -383,11 +406,10 @@ fn tls_config(config: Option<&TlsConfig>) -> Result<ClientTlsConfig> {
     Ok(tls)
 }
 
-fn flight_client(
-    channel: Channel,
+fn client_with_headers(
+    mut client: FlightSqlServiceClient<Channel>,
     headers: &HashMap<String, String>,
 ) -> FlightSqlServiceClient<Channel> {
-    let mut client = FlightSqlServiceClient::new(channel);
     for (key, value) in headers {
         client.set_header(key, value);
     }
@@ -467,7 +489,87 @@ fn flight_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use arrow_flight::FlightInfo;
+    use arrow_flight::flight_service_server::FlightServiceServer;
+    use arrow_flight::sql::CommandStatementQuery;
+    use arrow_flight::sql::metadata::SqlInfo;
+    use arrow_flight::sql::server::FlightSqlService;
+    use tonic::{Request, Response, Status};
+
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct TestFlightSqlService {
+        query_count: Arc<AtomicUsize>,
+    }
+
+    #[tonic::async_trait]
+    impl FlightSqlService for TestFlightSqlService {
+        type FlightService = Self;
+
+        async fn get_flight_info_statement(
+            &self,
+            _query: CommandStatementQuery,
+            _request: Request<arrow_flight::FlightDescriptor>,
+        ) -> std::result::Result<Response<FlightInfo>, Status> {
+            self.query_count.fetch_add(1, Ordering::SeqCst);
+            Ok(Response::new(FlightInfo::default()))
+        }
+
+        async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
+    }
+
+    #[tokio::test]
+    async fn initializes_client_on_first_query_and_reuses_it() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let service = TestFlightSqlService::default();
+        let query_count = service.query_count.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(FlightServiceServer::new(service))
+                .serve_with_shutdown(address, async {
+                    let _ = shutdown_rx.await;
+                }),
+        );
+        let mut ready = false;
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(address).await.is_ok() {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ready, "Flight SQL test server did not start");
+
+        let client = FlightSqlClient::new(
+            "analytics".to_string(),
+            "test-key".to_string(),
+            None,
+            ClientConfig::default(),
+        );
+        let uri = format!("grpc://{address}");
+        assert_eq!(client.initialized_client_count().await, 0);
+
+        client
+            .execute("SELECT 1", &["public".to_string()], Some(&uri))
+            .await
+            .unwrap();
+        client
+            .execute("SELECT 2", &["public".to_string()], Some(&uri))
+            .await
+            .unwrap();
+
+        assert_eq!(client.initialized_client_count().await, 1);
+        assert_eq!(query_count.load(Ordering::SeqCst), 2);
+        let _ = shutdown_tx.send(());
+        server.await.unwrap().unwrap();
+    }
 
     #[test]
     fn normalizes_supported_uris() {

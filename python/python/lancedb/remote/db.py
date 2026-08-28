@@ -789,6 +789,28 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.job_history(job_id))
 
     @override
+    def sql(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+        flight_sql_uri: Optional[str] = None,
+    ) -> pa.Table:
+        """Execute SQL through this connection's Flight SQL client.
+
+        Unqualified tables use this connection's database and the
+        ``["public"]`` namespace by default. Fully qualified table names may
+        reference other databases available to the same deployment.
+        """
+        return LOOP.run(
+            self._conn.sql(
+                query,
+                default_namespace_path=default_namespace_path,
+                flight_sql_uri=flight_sql_uri,
+            )
+        )
+
+    @override
     def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
 

@@ -24,11 +24,13 @@ use lancedb::{
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
 };
+#[cfg(not(feature = "remote"))]
+use pyo3::exceptions::PyNotImplementedError;
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyDict, PyDictMethods, PyList, PyListMethods},
+    types::{PyDict, PyDictMethods, PyList, PyListMethods, PyModule},
 };
 
 #[pyclass]
@@ -86,6 +88,42 @@ impl Connection {
     }
 }
 
+fn default_namespace_path(path: Option<Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
+    match path {
+        Some(path) => {
+            if !path.is_instance_of::<PyList>() {
+                return Err(PyValueError::new_err(
+                    "Connection.sql default_namespace_path must be a list",
+                ));
+            }
+            path.extract::<Vec<String>>().map_err(|_| {
+                PyValueError::new_err(
+                    "Connection.sql default_namespace_path components must be strings",
+                )
+            })
+        }
+        None => Ok(vec!["public".to_string()]),
+    }
+}
+
+fn batches_to_pyarrow(
+    py: Python<'_>,
+    batches: Vec<arrow::array::RecordBatch>,
+) -> PyResult<Py<PyAny>> {
+    let pyarrow = PyModule::import(py, "pyarrow")?;
+    if batches.is_empty() {
+        return Ok(pyarrow.call_method1("table", (PyDict::new(py),))?.unbind());
+    }
+    let py_batches = PyList::empty(py);
+    for batch in batches {
+        py_batches.append(batch.to_pyarrow(py)?)?;
+    }
+    Ok(pyarrow
+        .getattr("Table")?
+        .call_method1("from_batches", (py_batches,))?
+        .unbind())
+}
+
 #[pymethods]
 impl Connection {
     fn __repr__(&self) -> String {
@@ -106,6 +144,42 @@ impl Connection {
     #[getter]
     pub fn uri(&self) -> PyResult<String> {
         self.get_inner().map(|inner| inner.uri().to_string())
+    }
+
+    #[cfg(feature = "remote")]
+    #[pyo3(signature = (query, *, default_namespace_path=None, flight_sql_uri=None))]
+    pub fn sql<'a>(
+        self_: PyRef<'a, Self>,
+        query: String,
+        default_namespace_path: Option<Bound<'_, PyAny>>,
+        flight_sql_uri: Option<String>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let default_namespace_path = default_namespace_path(default_namespace_path)?;
+        future_into_py(self_.py(), async move {
+            let mut operation = inner
+                .sql(query)
+                .default_namespace_path(default_namespace_path);
+            if let Some(uri) = flight_sql_uri {
+                operation = operation.flight_sql_uri(uri);
+            }
+            let batches = operation.execute().await.infer_error()?;
+            Python::attach(|py| batches_to_pyarrow(py, batches))
+        })
+    }
+
+    #[cfg(not(feature = "remote"))]
+    #[pyo3(signature = (query, *, default_namespace_path=None, flight_sql_uri=None))]
+    pub fn sql(
+        &self,
+        query: String,
+        default_namespace_path: Option<Bound<'_, PyAny>>,
+        flight_sql_uri: Option<String>,
+    ) -> PyResult<()> {
+        let _ = (query, default_namespace_path, flight_sql_uri);
+        Err(PyNotImplementedError::new_err(
+            "Flight SQL requires the remote feature",
+        ))
     }
 
     #[pyo3(signature = ())]

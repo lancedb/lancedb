@@ -1477,6 +1477,20 @@ mod tests {
     }
 
     #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_local_connection_rejects_sql() {
+        let directory = tempdir().unwrap();
+        let connection = connect(directory.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert!(matches!(
+            connection.sql("SELECT 1").execute().await,
+            Err(Error::NotSupported { .. })
+        ));
+    }
+
+    #[cfg(feature = "remote")]
     #[test]
     fn test_apply_env_defaults() {
         let env_key = "PATH";

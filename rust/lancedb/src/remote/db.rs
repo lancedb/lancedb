@@ -33,7 +33,7 @@ use crate::table::BaseTable;
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
 };
-use super::flight_sql::FlightSqlClientConfig;
+use super::flight_sql::FlightSqlClient;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
@@ -213,7 +213,7 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     namespace_context_provider: Option<Arc<dyn DynamicContextProvider>>,
     /// TLS configuration for mTLS support
     tls_config: Option<super::client::TlsConfig>,
-    flight_sql_config: Option<FlightSqlClientConfig>,
+    flight_sql_client: Option<FlightSqlClient>,
 }
 
 #[derive(Clone)]
@@ -282,7 +282,7 @@ impl RemoteDatabase {
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
-        let flight_sql_config = FlightSqlClientConfig::new(
+        let flight_sql_client = FlightSqlClient::new(
             parsed.db_name.clone(),
             api_key.to_string(),
             host_override.clone(),
@@ -338,7 +338,7 @@ impl RemoteDatabase {
             namespace_headers,
             namespace_context_provider,
             tls_config: client_config.tls_config,
-            flight_sql_config: Some(flight_sql_config),
+            flight_sql_client: Some(flight_sql_client),
         })
     }
 }
@@ -436,7 +436,7 @@ mod test_utils {
                 namespace_headers: HashMap::new(),
                 namespace_context_provider: None,
                 tls_config: None,
-                flight_sql_config: None,
+                flight_sql_client: None,
             }
         }
 
@@ -459,7 +459,7 @@ mod test_utils {
                 namespace_headers: config.extra_headers.clone(),
                 namespace_context_provider,
                 tls_config: config.tls_config.clone(),
-                flight_sql_config: None,
+                flight_sql_client: None,
             }
         }
     }
@@ -766,13 +766,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         default_namespace_path: &[String],
         flight_sql_uri: Option<&str>,
     ) -> Result<Vec<arrow_array::RecordBatch>> {
-        let config = self
-            .flight_sql_config
+        let client = self
+            .flight_sql_client
             .as_ref()
             .ok_or_else(|| Error::NotSupported {
                 message: "Flight SQL is unavailable for this remote database client".to_string(),
             })?;
-        config
+        client
             .execute(query, default_namespace_path, flight_sql_uri)
             .await
     }
