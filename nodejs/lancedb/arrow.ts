@@ -71,6 +71,21 @@ export type FieldLike =
       metadata?: Map<string, string>;
     };
 
+/**
+ * Create an Arrow field backed by LanceDB's JSON extension type.
+ *
+ * @param name - The field name.
+ * @param nullable - Whether the field accepts null values.
+ */
+export function makeJsonField(name: string, nullable = true): Field {
+  return new Field(
+    name,
+    new Utf8(),
+    nullable,
+    new Map([["ARROW:extension:name", "arrow.json"]]),
+  );
+}
+
 export type DataLike =
   | import("apache-arrow").Data
   | {
