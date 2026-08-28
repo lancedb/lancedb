@@ -36,6 +36,14 @@ pub(super) fn coerce_blob_expr(
     };
 
     let input_shape = match input_field.data_type() {
+        DataType::Null => {
+            let expr: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(
+                input_expr,
+                table_field.data_type().clone(),
+                None,
+            ));
+            return Ok((expr, table_field.clone()));
+        }
         DataType::Binary | DataType::LargeBinary | DataType::BinaryView => BlobInputShape::Bytes,
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => BlobInputShape::String,
         DataType::Struct(children) => {
@@ -155,7 +163,7 @@ mod tests {
     use crate::blob::blob;
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BinaryViewArray, Int32Array, Int64Array, LargeBinaryArray,
-        RecordBatch, StringArray, StringViewArray, StructArray, UInt8Array, UInt64Array,
+        NullArray, RecordBatch, StringArray, StringViewArray, StructArray, UInt8Array, UInt64Array,
     };
     use arrow_schema::Schema;
     use datafusion::prelude::SessionContext;
@@ -277,6 +285,18 @@ mod tests {
         let data = image_struct(&coerced).column_by_name("data").unwrap();
         let data: &LargeBinaryArray = data.as_any().downcast_ref().unwrap();
         assert_eq!(data.value(0), b"view");
+    }
+
+    #[tokio::test]
+    async fn null_column_coerces_to_all_null_blob_struct() {
+        let batch = batch_with_image(
+            Field::new("image", DataType::Null, true),
+            Arc::new(NullArray::new(2)),
+        );
+        let coerced = coerce(batch, &blob_table_schema()).await;
+        let image = image_struct(&coerced);
+        assert!(image.is_null(0));
+        assert!(image.is_null(1));
     }
 
     #[tokio::test]
