@@ -31,7 +31,10 @@ use crate::error::{Error, Result};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
-    db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
+    db::{
+        OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION,
+        OPT_REMOTE_SQL_HOST_OVERRIDE,
+    },
 };
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
@@ -328,7 +331,6 @@ pub struct FlightSqlQueryBuilder {
     parent: Arc<dyn Database>,
     query: String,
     default_namespace_path: Vec<String>,
-    flight_sql_uri: Option<String>,
 }
 
 #[cfg(feature = "remote")]
@@ -338,7 +340,6 @@ impl FlightSqlQueryBuilder {
             parent,
             query,
             default_namespace_path: vec!["public".to_string()],
-            flight_sql_uri: None,
         }
     }
 
@@ -355,23 +356,10 @@ impl FlightSqlQueryBuilder {
         self
     }
 
-    /// Override the Flight SQL endpoint.
-    ///
-    /// This is required when the endpoint cannot be derived from the remote
-    /// connection's plaintext `host_override`.
-    pub fn flight_sql_uri(mut self, uri: impl Into<String>) -> Self {
-        self.flight_sql_uri = Some(uri.into());
-        self
-    }
-
     /// Execute the statement and collect all returned Arrow record batches.
     pub async fn execute(self) -> Result<Vec<RecordBatch>> {
         self.parent
-            .execute_sql(
-                &self.query,
-                &self.default_namespace_path,
-                self.flight_sql_uri.as_deref(),
-            )
+            .execute_sql(&self.query, &self.default_namespace_path)
             .await
     }
 }
@@ -473,12 +461,12 @@ impl Connection {
     /// let db = lancedb::connect("db://analytics")
     ///     .api_key("api-key")
     ///     .region("us-east-1")
+    ///     .sql_host_override("grpc+tls://sql.example.com:10026")
     ///     .execute()
     ///     .await?;
     /// let batches = db
     ///     .sql("SELECT * FROM events LIMIT 10")
     ///     .default_namespace_path(["public"])
-    ///     .flight_sql_uri("grpc+tls://sql.example.com:10026")
     ///     .execute()
     ///     .await?;
     /// # Ok(())
@@ -948,6 +936,19 @@ impl ConnectBuilder {
         self
     }
 
+    /// Set the Flight SQL host override for a remote connection.
+    ///
+    /// The Flight SQL client is initialized lazily when the connection first
+    /// executes SQL and is retained for the connection's lifetime.
+    #[cfg(feature = "remote")]
+    pub fn sql_host_override(mut self, sql_host_override: &str) -> Self {
+        self.request.options.insert(
+            OPT_REMOTE_SQL_HOST_OVERRIDE.to_string(),
+            sql_host_override.to_string(),
+        );
+        self
+    }
+
     /// Set the database specific options
     ///
     /// See [crate::database::listing::ListingDatabaseOptions] for the options available for
@@ -1183,6 +1184,7 @@ impl ConnectBuilder {
             &api_key,
             &region,
             options.host_override,
+            options.sql_host_override,
             client_config,
             storage_options.into(),
             self.request.read_consistency_interval,

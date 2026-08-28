@@ -7,10 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
-use arrow_flight::FlightEndpoint;
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use futures::TryStreamExt;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::OnceCell;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 use crate::error::{Error, Result};
@@ -20,17 +19,14 @@ const DEFAULT_FLIGHT_SQL_PORT: u16 = 10025;
 const DEFAULT_FLIGHT_SQL_TLS_PORT: u16 = 10026;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
-const REUSE_CONNECTION_URI: &str = "arrow-flight-reuse-connection:";
-
-type CachedFlightSqlClient = Arc<OnceCell<FlightSqlServiceClient<Channel>>>;
-
 #[derive(Clone, Debug)]
 pub(super) struct FlightSqlClient {
     database: String,
     api_key: String,
     host_override: Option<String>,
+    sql_host_override: Option<String>,
     client_config: ClientConfig,
-    clients: Arc<Mutex<HashMap<String, CachedFlightSqlClient>>>,
+    client: Arc<OnceCell<FlightSqlServiceClient<Channel>>>,
 }
 
 impl FlightSqlClient {
@@ -38,14 +34,16 @@ impl FlightSqlClient {
         database: String,
         api_key: String,
         host_override: Option<String>,
+        sql_host_override: Option<String>,
         client_config: ClientConfig,
     ) -> Self {
         Self {
             database,
             api_key,
             host_override,
+            sql_host_override,
             client_config,
-            clients: Arc::new(Mutex::new(HashMap::new())),
+            client: Arc::new(OnceCell::new()),
         }
     }
 
@@ -53,11 +51,10 @@ impl FlightSqlClient {
         &self,
         query: &str,
         default_namespace_path: &[String],
-        flight_sql_uri: Option<&str>,
     ) -> Result<Vec<RecordBatch>> {
         validate_namespace_path(default_namespace_path)?;
         let request_id = uuid::Uuid::new_v4().to_string();
-        let future = self.execute_inner(query, default_namespace_path, flight_sql_uri, &request_id);
+        let future = self.execute_inner(query, default_namespace_path, &request_id);
         match resolve_timeout(
             self.client_config.timeout_config.timeout,
             "LANCE_CLIENT_TIMEOUT",
@@ -74,10 +71,8 @@ impl FlightSqlClient {
         &self,
         query: &str,
         default_namespace_path: &[String],
-        flight_sql_uri: Option<&str>,
         request_id: &str,
     ) -> Result<Vec<RecordBatch>> {
-        let target = resolve_flight_sql_uri(self.host_override.as_deref(), flight_sql_uri)?;
         let headers = self.headers(default_namespace_path, request_id).await?;
         let read_timeout = resolve_timeout(
             self.client_config.timeout_config.read_timeout,
@@ -86,7 +81,7 @@ impl FlightSqlClient {
         )?
         .unwrap();
 
-        let mut client = self.client(&target, &headers, request_id).await?;
+        let mut client = self.client(&headers, request_id).await?;
         let info = tokio::time::timeout(read_timeout, client.execute(query.to_string(), None))
             .await
             .map_err(|_| flight_error(request_id, "Flight SQL query planning timed out"))?
@@ -106,8 +101,7 @@ impl FlightSqlClient {
             let ticket = endpoint.ticket.clone().ok_or_else(|| {
                 flight_error(request_id, "Flight SQL endpoint did not include a ticket")
             })?;
-            let endpoint_target = endpoint_target(&endpoint, &target)?;
-            let mut endpoint_client = self.client(&endpoint_target, &headers, request_id).await?;
+            let mut endpoint_client = self.client(&headers, request_id).await?;
             let mut stream = tokio::time::timeout(read_timeout, endpoint_client.do_get(ticket))
                 .await
                 .map_err(|_| flight_error(request_id, "Flight SQL DoGet timed out"))?
@@ -136,20 +130,17 @@ impl FlightSqlClient {
 
     async fn client(
         &self,
-        target: &FlightTarget,
         headers: &HashMap<String, String>,
         request_id: &str,
     ) -> Result<FlightSqlServiceClient<Channel>> {
-        let cached = {
-            let mut clients = self.clients.lock().await;
-            clients
-                .entry(target.uri.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-        let client = cached
+        let client = self
+            .client
             .get_or_try_init(|| async {
-                let channel = connect_channel(target, &self.client_config, request_id).await?;
+                let target = resolve_sql_host_override(
+                    self.host_override.as_deref(),
+                    self.sql_host_override.as_deref(),
+                )?;
+                let channel = connect_channel(&target, &self.client_config, request_id).await?;
                 Ok::<_, Error>(FlightSqlServiceClient::new(channel))
             })
             .await?;
@@ -158,11 +149,7 @@ impl FlightSqlClient {
 
     #[cfg(test)]
     async fn initialized_client_count(&self) -> usize {
-        let clients = self.clients.lock().await;
-        clients
-            .values()
-            .filter(|client| client.get().is_some())
-            .count()
+        usize::from(self.client.get().is_some())
     }
 
     async fn headers(
@@ -214,29 +201,29 @@ struct FlightTarget {
     tls: bool,
 }
 
-fn resolve_flight_sql_uri(
+fn resolve_sql_host_override(
     host_override: Option<&str>,
-    flight_sql_uri: Option<&str>,
+    sql_host_override: Option<&str>,
 ) -> Result<FlightTarget> {
-    if let Some(uri) = flight_sql_uri {
-        return normalize_flight_sql_uri(uri);
+    if let Some(uri) = sql_host_override {
+        return normalize_sql_host_override(uri);
     }
     let host_override = host_override.ok_or_else(|| Error::InvalidInput {
-        message: "flight_sql_uri is required when the Flight SQL endpoint cannot be derived from host_override".to_string(),
+        message: "sql_host_override is required when the Flight SQL endpoint cannot be derived from host_override".to_string(),
     })?;
     let parsed = url::Url::parse(host_override).map_err(|err| Error::InvalidInput {
         message: format!("Invalid host_override: {err}"),
     })?;
     if parsed.scheme() != "http" {
         return Err(Error::InvalidInput {
-            message: "flight_sql_uri is required for TLS or non-HTTP host overrides".to_string(),
+            message: "sql_host_override is required for TLS or non-HTTP host overrides".to_string(),
         });
     }
     validate_endpoint_url(&parsed, "host_override")?;
     let port = match parsed.port().or(explicit_port(host_override)) {
         Some(u16::MAX) => {
             return Err(Error::InvalidInput {
-                message: "flight_sql_uri is required when host_override uses port 65535"
+                message: "sql_host_override is required when host_override uses port 65535"
                     .to_string(),
             });
         }
@@ -249,18 +236,19 @@ fn resolve_flight_sql_uri(
     })
 }
 
-fn normalize_flight_sql_uri(uri: &str) -> Result<FlightTarget> {
+fn normalize_sql_host_override(uri: &str) -> Result<FlightTarget> {
     let parsed = url::Url::parse(uri).map_err(|err| Error::InvalidInput {
-        message: format!("Invalid flight_sql_uri: {err}"),
+        message: format!("Invalid sql_host_override: {err}"),
     })?;
-    validate_endpoint_url(&parsed, "flight_sql_uri")?;
+    validate_endpoint_url(&parsed, "sql_host_override")?;
     let tls = match parsed.scheme().to_ascii_lowercase().as_str() {
         "grpc" | "grpc+tcp" | "http" => false,
         "grpc+tls" | "grpcs" | "https" => true,
         _ => {
             return Err(Error::InvalidInput {
-                message: "flight_sql_uri must use grpc, grpc+tcp, grpc+tls, grpcs, http, or https"
-                    .to_string(),
+                message:
+                    "sql_host_override must use grpc, grpc+tcp, grpc+tls, grpcs, http, or https"
+                        .to_string(),
             });
         }
     };
@@ -271,7 +259,7 @@ fn normalize_flight_sql_uri(uri: &str) -> Result<FlightTarget> {
     });
     if port == 0 {
         return Err(Error::InvalidInput {
-            message: "flight_sql_uri port must be greater than zero".to_string(),
+            message: "sql_host_override port must be greater than zero".to_string(),
         });
     }
     Ok(FlightTarget {
@@ -324,26 +312,6 @@ fn endpoint_uri(scheme: &str, host: &str, port: u16) -> String {
     } else {
         format!("{scheme}://{host}:{port}")
     }
-}
-
-fn endpoint_target(endpoint: &FlightEndpoint, primary: &FlightTarget) -> Result<FlightTarget> {
-    let Some(location) = endpoint.location.first() else {
-        return Ok(primary.clone());
-    };
-    if is_reuse_connection_uri(&location.uri) {
-        return Ok(primary.clone());
-    }
-    let target = normalize_flight_sql_uri(&location.uri)?;
-    if primary.tls && !target.tls {
-        return Err(Error::InvalidInput {
-            message: "Flight SQL endpoint attempted to downgrade TLS".to_string(),
-        });
-    }
-    Ok(target)
-}
-
-fn is_reuse_connection_uri(uri: &str) -> bool {
-    uri.starts_with(REUSE_CONNECTION_URI)
 }
 
 async fn connect_channel(
@@ -555,13 +523,15 @@ mod tests {
             ));
 
             let mut info = FlightInfo::new().with_endpoint(
-                FlightEndpoint::new().with_ticket(Ticket::new(
-                    TicketStatementQuery {
-                        statement_handle: query.query.clone().into(),
-                    }
-                    .as_any()
-                    .encode_to_vec(),
-                )),
+                FlightEndpoint::new()
+                    .with_ticket(Ticket::new(
+                        TicketStatementQuery {
+                            statement_handle: query.query.clone().into(),
+                        }
+                        .as_any()
+                        .encode_to_vec(),
+                    ))
+                    .with_location("grpc://127.0.0.1:1"),
             );
             if query.query != "SELECT empty" {
                 info = info.try_with_schema(self.result.schema_ref()).unwrap();
@@ -618,25 +588,21 @@ mod tests {
             "analytics".to_string(),
             "test-key".to_string(),
             None,
+            Some(format!("grpc://{address}")),
             ClientConfig::default(),
         );
-        let uri = format!("grpc://{address}");
         assert_eq!(client.initialized_client_count().await, 0);
 
         let first = client
-            .execute("SELECT 1", &["public".to_string()], Some(&uri))
+            .execute("SELECT 1", &["public".to_string()])
             .await
             .unwrap();
         let second = client
-            .execute(
-                "SELECT 2",
-                &["events".to_string(), "raw".to_string()],
-                Some(&uri),
-            )
+            .execute("SELECT 2", &["events".to_string(), "raw".to_string()])
             .await
             .unwrap();
         let empty = client
-            .execute("SELECT empty", &["public".to_string()], Some(&uri))
+            .execute("SELECT empty", &["public".to_string()])
             .await
             .unwrap();
 
@@ -661,28 +627,28 @@ mod tests {
     #[test]
     fn normalizes_supported_uris() {
         assert_eq!(
-            normalize_flight_sql_uri("grpc://localhost").unwrap(),
+            normalize_sql_host_override("grpc://localhost").unwrap(),
             FlightTarget {
                 uri: "http://localhost:10025".to_string(),
                 tls: false,
             }
         );
         assert_eq!(
-            normalize_flight_sql_uri("grpcs://example.com").unwrap(),
+            normalize_sql_host_override("grpcs://example.com").unwrap(),
             FlightTarget {
                 uri: "https://example.com:10026".to_string(),
                 tls: true,
             }
         );
         assert_eq!(
-            normalize_flight_sql_uri("grpc://[::1]:10025").unwrap(),
+            normalize_sql_host_override("grpc://[::1]:10025").unwrap(),
             FlightTarget {
                 uri: "http://[::1]:10025".to_string(),
                 tls: false,
             }
         );
         assert_eq!(
-            normalize_flight_sql_uri("https://example.com:443").unwrap(),
+            normalize_sql_host_override("https://example.com:443").unwrap(),
             FlightTarget {
                 uri: "https://example.com:443".to_string(),
                 tls: true,
@@ -693,14 +659,14 @@ mod tests {
     #[test]
     fn derives_plaintext_endpoint_from_host_override() {
         assert_eq!(
-            resolve_flight_sql_uri(Some("http://localhost:10024"), None).unwrap(),
+            resolve_sql_host_override(Some("http://localhost:10024"), None).unwrap(),
             FlightTarget {
                 uri: "http://localhost:10025".to_string(),
                 tls: false,
             }
         );
         assert_eq!(
-            resolve_flight_sql_uri(Some("http://localhost:80"), None).unwrap(),
+            resolve_sql_host_override(Some("http://localhost:80"), None).unwrap(),
             FlightTarget {
                 uri: "http://localhost:81".to_string(),
                 tls: false,
@@ -710,10 +676,10 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_or_ambiguous_endpoints() {
-        assert!(normalize_flight_sql_uri("ftp://localhost").is_err());
-        assert!(normalize_flight_sql_uri("grpc://user@localhost").is_err());
-        assert!(normalize_flight_sql_uri("grpc://localhost/path").is_err());
-        assert!(resolve_flight_sql_uri(Some("https://localhost"), None).is_err());
+        assert!(normalize_sql_host_override("ftp://localhost").is_err());
+        assert!(normalize_sql_host_override("grpc://user@localhost").is_err());
+        assert!(normalize_sql_host_override("grpc://localhost/path").is_err());
+        assert!(resolve_sql_host_override(Some("https://localhost"), None).is_err());
     }
 
     #[test]
@@ -723,12 +689,5 @@ mod tests {
         assert!(validate_namespace_path(&["events$raw".into()]).is_err());
         assert!(validate_namespace_path(&["".into()]).is_err());
         assert!(validate_namespace_path(&["café".into()]).is_err());
-    }
-
-    #[test]
-    fn accepts_reuse_connection_uri_variants() {
-        assert!(is_reuse_connection_uri("arrow-flight-reuse-connection:"));
-        assert!(is_reuse_connection_uri("arrow-flight-reuse-connection://?"));
-        assert!(!is_reuse_connection_uri("grpc://localhost:10025"));
     }
 }

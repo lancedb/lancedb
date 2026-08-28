@@ -44,6 +44,7 @@ db = lancedb.connect(
     "db://analytics",
     api_key="ldb_...",
     host_override="https://api.example.com",
+    sql_host_override="grpc+tls://sql.example.com:10026",
 )
 result = db.sql(
     """
@@ -52,7 +53,6 @@ result = db.sql(
     JOIN users.public.accounts AS accounts ON events.user_id = accounts.id
     """,
     default_namespace_path=["public"],
-    flight_sql_uri="grpc+tls://sql.example.com:10026",
 )
 ```
 

@@ -163,7 +163,6 @@ class Connection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
-        flight_sql_uri: Optional[str] = None,
     ) -> pa.Table: ...
     async def create_table(
         self,
@@ -459,6 +458,7 @@ async def connect(
     api_key: Optional[str],
     region: Optional[str],
     host_override: Optional[str],
+    sql_host_override: Optional[str],
     read_consistency_interval: Optional[float],
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]],
     storage_options: Optional[Dict[str, str]],

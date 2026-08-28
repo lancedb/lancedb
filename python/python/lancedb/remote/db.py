@@ -116,6 +116,7 @@ class RemoteDBConnection(DBConnection):
         read_timeout: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         read_consistency_interval: Optional[timedelta] = None,
+        sql_host_override: Optional[str] = None,
     ):
         """Connect to a remote LanceDB database."""
         if isinstance(client_config, dict):
@@ -161,6 +162,7 @@ class RemoteDBConnection(DBConnection):
         self.api_key = api_key
         self.region = region
         self.host_override = host_override
+        self.sql_host_override = sql_host_override
         self.storage_options = storage_options
         self.db_name = parsed.netloc
 
@@ -175,6 +177,7 @@ class RemoteDBConnection(DBConnection):
                 api_key=api_key,
                 region=region,
                 host_override=host_override,
+                sql_host_override=sql_host_override,
                 client_config=client_config,
                 storage_options=storage_options,
                 read_consistency_interval=read_consistency_interval,
@@ -193,6 +196,7 @@ class RemoteDBConnection(DBConnection):
                 "api_key": self.api_key,
                 "region": self.region,
                 "host_override": self.host_override,
+                "sql_host_override": self.sql_host_override,
                 "client_config": _client_config_to_dict(self.client_config),
                 "storage_options": self.storage_options,
             }
@@ -794,7 +798,6 @@ class RemoteDBConnection(DBConnection):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
-        flight_sql_uri: Optional[str] = None,
     ) -> pa.Table:
         """Execute SQL through this connection's Flight SQL client.
 
@@ -806,7 +809,6 @@ class RemoteDBConnection(DBConnection):
             self._conn.sql(
                 query,
                 default_namespace_path=default_namespace_path,
-                flight_sql_uri=flight_sql_uri,
             )
         )
 

@@ -147,36 +147,31 @@ impl Connection {
     }
 
     #[cfg(feature = "remote")]
-    #[pyo3(signature = (query, *, default_namespace_path=None, flight_sql_uri=None))]
+    #[pyo3(signature = (query, *, default_namespace_path=None))]
     pub fn sql<'a>(
         self_: PyRef<'a, Self>,
         query: String,
         default_namespace_path: Option<Bound<'_, PyAny>>,
-        flight_sql_uri: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
         future_into_py(self_.py(), async move {
-            let mut operation = inner
+            let operation = inner
                 .sql(query)
                 .default_namespace_path(default_namespace_path);
-            if let Some(uri) = flight_sql_uri {
-                operation = operation.flight_sql_uri(uri);
-            }
             let batches = operation.execute().await.infer_error()?;
             Python::attach(|py| batches_to_pyarrow(py, batches))
         })
     }
 
     #[cfg(not(feature = "remote"))]
-    #[pyo3(signature = (query, *, default_namespace_path=None, flight_sql_uri=None))]
+    #[pyo3(signature = (query, *, default_namespace_path=None))]
     pub fn sql(
         &self,
         query: String,
         default_namespace_path: Option<Bound<'_, PyAny>>,
-        flight_sql_uri: Option<String>,
     ) -> PyResult<()> {
-        let _ = (query, default_namespace_path, flight_sql_uri);
+        let _ = (query, default_namespace_path);
         Err(PyNotImplementedError::new_err(
             "Flight SQL requires the remote feature",
         ))
@@ -773,7 +768,7 @@ impl Connection {
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None))]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, sql_host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python<'_>,
@@ -781,6 +776,7 @@ pub fn connect(
     api_key: Option<String>,
     region: Option<String>,
     host_override: Option<String>,
+    sql_host_override: Option<String>,
     read_consistency_interval: Option<f64>,
     client_config: Option<PyClientConfig>,
     storage_options: Option<HashMap<String, String>>,
@@ -799,6 +795,9 @@ pub fn connect(
         }
         if let Some(host_override) = host_override {
             builder = builder.host_override(&host_override);
+        }
+        if let Some(sql_host_override) = sql_host_override {
+            builder = builder.sql_host_override(&sql_host_override);
         }
         if let Some(read_consistency_interval) = read_consistency_interval {
             let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);

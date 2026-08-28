@@ -346,7 +346,6 @@ pub trait Database:
         &self,
         _query: &str,
         _default_namespace_path: &[String],
-        _flight_sql_uri: Option<&str>,
     ) -> Result<Vec<RecordBatch>> {
         Err(crate::error::Error::NotSupported {
             message: "Flight SQL is not supported by this database".to_string(),

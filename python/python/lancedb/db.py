@@ -785,7 +785,6 @@ class DBConnection(EnforceOverrides):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
-        flight_sql_uri: Optional[str] = None,
     ) -> pa.Table:
         """Execute SQL through a remote Flight SQL endpoint.
 
@@ -887,6 +886,7 @@ class LanceDBConnection(DBConnection):
         async def do_connect():
             return await lancedb_connect(
                 sanitize_uri(uri),
+                None,
                 None,
                 None,
                 None,
@@ -2341,7 +2341,6 @@ class AsyncConnection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
-        flight_sql_uri: Optional[str] = None,
     ) -> pa.Table:
         """Execute SQL through a remote Flight SQL endpoint.
 
@@ -2352,7 +2351,6 @@ class AsyncConnection(object):
         return await self._inner.sql(
             query,
             default_namespace_path=default_namespace_path,
-            flight_sql_uri=flight_sql_uri,
         )
 
     async def namespace_client(self) -> LanceNamespace:
