@@ -272,9 +272,9 @@ impl DynamicContextProvider for NamespaceHeaderProviderContext {
     }
 }
 
-pub(crate) struct RemoteHostOverrides {
-    pub(crate) rest: Option<String>,
-    pub(crate) sql: Option<String>,
+pub struct RemoteHostOverrides {
+    pub rest: Option<String>,
+    pub sql: Option<String>,
 }
 
 impl RemoteDatabase {
