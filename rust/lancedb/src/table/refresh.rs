@@ -7,6 +7,16 @@
 //! therefore idempotent and does not observe input mutation -- once a row is
 //! filled, changing what the expression reads leaves the stored result alone.
 //!
+//! A column's computed inputs are filled first -- the dependency graph is
+//! walked once, each reachable column filled once in dependency order, each
+//! fill its own commit. Every fill in the pass, the requested column's
+//! included, covers only the fragments of the snapshot the pass started
+//! from: a commit may rebase over a concurrent append, and the fragment that
+//! admits carries placeholder nulls no earlier fill covered, so it waits for
+//! a later refresh rather than being read as values. Two concurrent fills of
+//! one input collide on its field in lance's conflict check, so a dependent
+//! fill can only commit over inputs that were durable when it read them.
+//!
 //! Two passes per fragment. The first scans only the unfilled live rows and
 //! evaluates the expression over them, which yields the exact fill count and
 //! decides whether the fragment is staged at all -- a fragment where nothing
@@ -19,6 +29,7 @@
 //! inputs masked to null first, so a poison value in a row nobody is filling
 //! cannot fail the refresh.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions};
@@ -41,7 +52,8 @@ use crate::{Error, Result};
 /// The result of refreshing a computed column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RefreshColumnResult {
-    /// Rows that had a value computed.
+    /// Rows that had a value computed, in the requested column only; inputs
+    /// filled on its behalf are not counted.
     #[serde(default)]
     pub rows_filled: u64,
     /// The commit version associated with the operation.
@@ -51,7 +63,79 @@ pub struct RefreshColumnResult {
 
 struct RefreshExecution {
     result: RefreshColumnResult,
+    /// The snapshot the requested column was evaluated against, after its
+    /// inputs were filled.
     source_version: u64,
+    /// The last version any fill in the pass committed, inputs included.
+    published_version: Option<u64>,
+    /// Unfilled live rows of the requested column in fragments the pass did
+    /// not cover, counted on the snapshot the result reports -- the published
+    /// one, or the source when nothing was published.
+    rows_deferred: u64,
+}
+
+/// One column's fill against one snapshot.
+struct Fill {
+    rows_filled: u64,
+    /// The dataset the commit produced, if anything was filled.
+    committed: Option<Arc<Dataset>>,
+}
+
+/// Test-only one-shot pauses before a named column's fill:
+/// `(column, reached, resume)`, one per column, consumed when hit.
+#[cfg(test)]
+type Pause = (String, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
+#[cfg(test)]
+static PAUSES_BEFORE_FILL: std::sync::Mutex<Vec<Pause>> = std::sync::Mutex::new(Vec::new());
+
+/// The SQL-computed columns `column` reads, transitively, each once, in an
+/// order that fills every column after the columns it reads.
+///
+/// Declarations are acyclic by construction: a column can only read what
+/// existed when it was declared.
+fn dependency_order(schema: &ArrowSchema, column: &str) -> Result<Vec<String>> {
+    fn visit(
+        schema: &ArrowSchema,
+        column: &str,
+        visited: &mut HashSet<String>,
+        order: &mut Vec<String>,
+    ) -> Result<()> {
+        let Some(declaration) = schema
+            .field_with_name(column)
+            .ok()
+            .and_then(computed_column_from_field)
+        else {
+            return Ok(());
+        };
+        for input in &declaration.inputs {
+            let input = super::computed_columns::root(input);
+            if visited.contains(input) {
+                continue;
+            }
+            let Some(input_declaration) = schema
+                .field_with_name(input)
+                .ok()
+                .and_then(computed_column_from_field)
+            else {
+                continue;
+            };
+            if !matches!(input_declaration.kind, ComputedColumnKind::Sql { .. }) {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "computed column '{column}' reads '{input}', which this refresh \
+                         cannot fill first; refresh '{input}' before '{column}'"
+                    ),
+                });
+            }
+            visit(schema, input, visited, order)?;
+            visited.insert(input.to_string());
+            order.push(input.to_string());
+        }
+        Ok(())
+    }
+    let mut order = Vec::new();
+    visit(schema, column, &mut HashSet::new(), &mut order)?;
+    Ok(order)
 }
 
 /// Internal implementation of the refresh logic.
@@ -70,9 +154,96 @@ async fn execute_refresh_column_with_source(
 ) -> Result<RefreshExecution> {
     table.dataset.ensure_mutable()?;
     ensure_no_lsm_write_spec(table).await?;
-    let dataset = table.dataset.get().await?;
+    let mut dataset = table.dataset.get().await?;
+    declared_expression(&dataset, column)?;
 
-    let expression = declared_expression(&dataset, column)?;
+    // The pass covers exactly these fragments. A commit below may rebase over
+    // a concurrent append, and the fragment that admits was scanned by no
+    // earlier fill, so it is excluded from every later one.
+    let eligible: HashSet<u64> = dataset
+        .get_fragments()
+        .iter()
+        .map(|f| f.id() as u64)
+        .collect();
+
+    let mut published_version = None;
+    for input in dependency_order(&ArrowSchema::from(dataset.schema()), column)? {
+        pause_before_fill(&input).await;
+        if let Some(committed) = fill_column(table, &dataset, &input, &eligible)
+            .await?
+            .committed
+        {
+            published_version = Some(committed.version().version);
+            dataset = committed;
+        }
+    }
+
+    pause_before_fill(column).await;
+    let source_version = dataset.version().version;
+    let fill = fill_column(table, &dataset, column, &eligible).await?;
+    if let Some(committed) = &fill.committed {
+        published_version = Some(committed.version().version);
+    }
+    // Counted after the commit: it may have rebased over an append, and the
+    // fragment that admits is deferred but part of the published version.
+    let terminal = fill.committed.as_ref().unwrap_or(&dataset);
+    let rows_deferred = count_deferred(terminal, column, &eligible).await?;
+    Ok(RefreshExecution {
+        result: RefreshColumnResult {
+            rows_filled: fill.rows_filled,
+            version: published_version.unwrap_or(source_version),
+        },
+        source_version,
+        published_version,
+        rows_deferred,
+    })
+}
+
+/// Unfilled live rows of `column` in `dataset`'s fragments outside `eligible`.
+async fn count_deferred(dataset: &Dataset, column: &str, eligible: &HashSet<u64>) -> Result<u64> {
+    let deferred: Vec<_> = dataset
+        .get_fragments()
+        .into_iter()
+        .filter(|fragment| !eligible.contains(&(fragment.id() as u64)))
+        .map(|fragment| fragment.metadata().clone())
+        .collect();
+    if deferred.is_empty() {
+        return Ok(0);
+    }
+    let mut scanner = dataset.scan();
+    scanner
+        .with_fragments(deferred)
+        .filter(&format!("{} IS NULL", quote_identifier(column)))?;
+    Ok(scanner.count_rows().await?)
+}
+
+#[cfg(test)]
+async fn pause_before_fill(column: &str) {
+    let pause = {
+        let mut pauses = PAUSES_BEFORE_FILL.lock().unwrap();
+        pauses
+            .iter()
+            .position(|(paused, _, _)| paused == column)
+            .map(|index| pauses.remove(index))
+    };
+    if let Some((_, reached, resume)) = pause {
+        reached.notify_one();
+        resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_before_fill(_column: &str) {}
+
+/// Fill `column`'s unfilled live rows in the `eligible` fragments as they
+/// stand in `dataset`, committing against that snapshot.
+async fn fill_column(
+    table: &NativeTable,
+    dataset: &Arc<Dataset>,
+    column: &str,
+    eligible: &HashSet<u64>,
+) -> Result<Fill> {
+    let expression = declared_expression(dataset, column)?;
     let schema = Arc::new(ArrowSchema::from(dataset.schema()));
     let bound = Arc::new(super::computed_columns::bind(schema, column, &expression)?);
     let field = dataset
@@ -91,23 +262,22 @@ async fn execute_refresh_column_with_source(
     let mut rows_filled = 0u64;
     let mut replacements = Vec::new();
     for fragment in dataset.get_fragments() {
-        let gained = count_fragment_gains(&dataset, &fragment, &bound, column).await?;
+        if !eligible.contains(&(fragment.id() as u64)) {
+            continue;
+        }
+        let gained = count_fragment_gains(dataset, &fragment, &bound, column).await?;
         if gained == 0 {
             continue;
         }
         rows_filled += gained;
-        let values = fill_stream(&dataset, &fragment, bound.clone(), column).await?;
+        let values = fill_stream(dataset, &fragment, bound.clone(), column).await?;
         replacements.push(fragment.write_columns(values, &column_schema).await?);
     }
 
     if replacements.is_empty() {
-        let source_version = dataset.version().version;
-        return Ok(RefreshExecution {
-            result: RefreshColumnResult {
-                rows_filled: 0,
-                version: source_version,
-            },
-            source_version,
+        return Ok(Fill {
+            rows_filled: 0,
+            committed: None,
         });
     }
 
@@ -125,15 +295,10 @@ async fn execute_refresh_column_with_source(
         false,
     )
     .await?;
-
-    let version = new_dataset.version().version;
-    table.dataset.update(new_dataset);
-    Ok(RefreshExecution {
-        result: RefreshColumnResult {
-            rows_filled,
-            version,
-        },
-        source_version: read_version,
+    table.dataset.update(new_dataset.clone());
+    Ok(Fill {
+        rows_filled,
+        committed: Some(Arc::new(new_dataset)),
     })
 }
 
@@ -158,10 +323,9 @@ pub(crate) async fn execute_refresh_column_async(
         Ok(crate::function::RefreshColumnResult {
             rows_assigned: execution.result.rows_filled,
             rows_failed: 0,
-            rows_remaining: 0,
+            rows_remaining: execution.rows_deferred,
             source_version: execution.source_version,
-            published_version: (execution.result.rows_filled > 0)
-                .then_some(execution.result.version),
+            published_version: execution.published_version,
         })
     })))
 }
@@ -412,6 +576,181 @@ mod tests {
     async fn append(table: &Table, values: Vec<i32>) {
         let batch = record_batch!(("x", Int32, values)).unwrap();
         table.add(batch).execute().await.unwrap();
+    }
+
+    /// The gate's reproducer: `b = coalesce(a, 0)` refreshed before `a`
+    /// must not bake zeros from `a`'s placeholder null.
+    #[tokio::test]
+    async fn test_dependent_refresh_cannot_fill_from_placeholder_null() {
+        let table = table_with("dependent_refresh_order", vec![1, 2, 3]).await;
+        table
+            .add_columns()
+            .computed("a", "x + 1")
+            .computed("b", "coalesce(a, 0)")
+            .execute()
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("b").await.unwrap();
+        assert_eq!(result.rows_filled, 3);
+        assert_eq!(read(&table, "a").await, vec![Some(2), Some(3), Some(4)]);
+        assert_eq!(
+            table.count_rows(Some("b = a".to_string())).await.unwrap(),
+            3
+        );
+        assert_eq!(table.refresh_column("a").await.unwrap().rows_filled, 0);
+
+        // Appended rows: the input is filled in the new fragment first too.
+        append(&table, vec![10]).await;
+        assert_eq!(table.refresh_column("b").await.unwrap().rows_filled, 1);
+        assert_eq!(
+            table.count_rows(Some("b = 0".to_string())).await.unwrap(),
+            0
+        );
+    }
+
+    /// The gate's reproducer: a fragment appended between the input fill and
+    /// the requested column's fill has inputs the pass never covered, so it
+    /// is left unfilled rather than read as null.
+    #[tokio::test]
+    async fn test_dependent_refresh_fences_an_append_after_input_fill() {
+        let table = table_with("dependent_refresh_append_gap", vec![1, 2, 3]).await;
+        table
+            .add_columns()
+            .computed("a_gap", "x + 1")
+            .computed("b_gap", "coalesce(a_gap, 0)")
+            .execute()
+            .await
+            .unwrap();
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        super::PAUSES_BEFORE_FILL.lock().unwrap().push((
+            "b_gap".to_string(),
+            reached.clone(),
+            resume.clone(),
+        ));
+
+        let refresh = {
+            let table = table.clone();
+            tokio::spawn(async move {
+                table
+                    .refresh_column_async("b_gap")
+                    .await
+                    .unwrap()
+                    .wait()
+                    .await
+            })
+        };
+        reached.notified().await;
+        append(&table, vec![10]).await;
+        resume.notify_one();
+        let result = refresh.await.unwrap().unwrap();
+        assert_eq!(result.rows_assigned, 3);
+        // The target commit rebased over the append: the published version
+        // holds the deferred row, and the count is taken there.
+        assert_eq!(result.rows_remaining, 1);
+
+        table.refresh_column("a_gap").await.unwrap();
+        assert_eq!(table.count_rows(Some("b_gap = 0".into())).await.unwrap(), 0);
+        assert_eq!(table.refresh_column("b_gap").await.unwrap().rows_filled, 1);
+    }
+
+    /// The gate's reproducer: an append landing between two input fills is
+    /// rebased into the second's snapshot, but the first never covered it.
+    #[tokio::test]
+    async fn test_dependent_refresh_fences_an_append_between_input_fills() {
+        let table = table_with("dependent_refresh_between_inputs", vec![1, 2, 3]).await;
+        table
+            .add_columns()
+            .computed("a_mid", "x + 1")
+            .computed("c_mid", "x + 2")
+            .computed("b_mid", "coalesce(a_mid, 0) + coalesce(c_mid, 0)")
+            .execute()
+            .await
+            .unwrap();
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        super::PAUSES_BEFORE_FILL.lock().unwrap().push((
+            "c_mid".to_string(),
+            reached.clone(),
+            resume.clone(),
+        ));
+
+        let refresh = {
+            let table = table.clone();
+            tokio::spawn(async move {
+                table
+                    .refresh_column_async("b_mid")
+                    .await
+                    .unwrap()
+                    .wait()
+                    .await
+            })
+        };
+        reached.notified().await;
+        append(&table, vec![10]).await;
+        resume.notify_one();
+        let result = refresh.await.unwrap().unwrap();
+        assert_eq!(result.rows_assigned, 3);
+        // The appended row is in the reported source version but was deferred.
+        assert_eq!(result.rows_remaining, 1);
+
+        table.refresh_column("a_mid").await.unwrap();
+        table.refresh_column("c_mid").await.unwrap();
+        assert_eq!(table.count_rows(Some("b_mid = 0".into())).await.unwrap(), 0);
+        assert_eq!(table.refresh_column("b_mid").await.unwrap().rows_filled, 1);
+        assert_eq!(
+            table.count_rows(Some("b_mid = 23".into())).await.unwrap(),
+            1
+        );
+    }
+
+    /// A dependency commit is a publication even when the requested column
+    /// itself fills nothing.
+    #[tokio::test]
+    async fn test_refresh_async_reports_a_dependency_publication() {
+        let table = table_with("refresh_async_dependency_publication", vec![1, 2, 3]).await;
+        table
+            .add_columns()
+            .computed("a", "x + 1")
+            .computed("b", "nullif(a, a)")
+            .execute()
+            .await
+            .unwrap();
+        let result = table
+            .refresh_column_async("b")
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(result.rows_assigned, 0);
+        assert_eq!(result.published_version, Some(result.source_version));
+    }
+
+    /// The gate's reproducer: a dense graph is walked once, not once per path.
+    #[tokio::test]
+    async fn test_dependency_refresh_visits_each_column_once() {
+        let table = table_with("dependency_refresh_deduplicates", vec![1]).await;
+        let mut declaration = table.add_columns();
+        for i in 0..=6 {
+            let expression = if i == 0 {
+                "x + 1".to_string()
+            } else {
+                (0..i)
+                    .map(|j| format!("a{j}"))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            };
+            declaration = declaration.computed(format!("a{i}"), expression);
+        }
+        declaration.execute().await.unwrap();
+        let order = super::dependency_order(table.schema().await.unwrap().as_ref(), "a6").unwrap();
+        assert_eq!(order, (0..6).map(|i| format!("a{i}")).collect::<Vec<_>>());
+        // One commit per column, the requested one included.
+        let before = table.version().await.unwrap();
+        table.refresh_column("a6").await.unwrap();
+        assert_eq!(table.version().await.unwrap(), before + 7);
     }
 
     #[tokio::test]
