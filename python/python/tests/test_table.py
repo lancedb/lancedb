@@ -4049,3 +4049,123 @@ def test_coerce_json_field_preserves_large_string_storage():
 
     assert coerced is not None
     assert coerced.type.storage_type == pa.large_string()
+
+
+@pytest.mark.parametrize(
+    ("source_type", "expected_type"),
+    [
+        (pa.string(), pa.string()),
+        (pa.large_string(), pa.large_string()),
+        (pa.null(), pa.string()),
+    ],
+)
+def test_coerce_json_field_without_pyarrow_json_factory(
+    monkeypatch, source_type, expected_type
+):
+    from lancedb.table import _coerce_json_field
+
+    source = pa.field("j", source_type)
+    target = pa.field(
+        "j",
+        pa.large_binary(),
+        metadata={b"ARROW:extension:name": b"lance.json"},
+    )
+
+    monkeypatch.delattr(pa, "json_")
+
+    coerced = _coerce_json_field(source, target)
+
+    assert coerced is not None
+    assert coerced.type == expected_type
+    assert coerced.metadata[b"ARROW:extension:name"] == b"arrow.json"
+
+
+def test_coerce_json_scannable_detects_metadata_only_change(monkeypatch):
+    from lancedb.scannable import to_scannable
+    from lancedb.table import _coerce_json_scannable
+
+    source = pa.table(
+        {
+            "id": pa.array([1], type=pa.int64()),
+            "j": pa.array(['{"k":1}'], type=pa.string()),
+        }
+    )
+    target_schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "j",
+                pa.large_binary(),
+                metadata={b"ARROW:extension:name": b"lance.json"},
+            ),
+        ]
+    )
+
+    monkeypatch.delattr(pa, "json_")
+
+    coerced = _coerce_json_scannable(to_scannable(source), target_schema)
+
+    field = coerced.schema.field("j")
+    assert field.type == pa.string()
+    assert field.metadata[b"ARROW:extension:name"] == b"arrow.json"
+
+    reader_field = coerced.reader().schema.field("j")
+    assert reader_field.metadata[b"ARROW:extension:name"] == b"arrow.json"
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_json_writes_without_pyarrow_json_factory(
+    mem_db_async: AsyncConnection, monkeypatch
+):
+    json_type = pa.json_()
+    schema = pa.schema(
+        [
+            pa.field("id", pa.string()),
+            pa.field("j", json_type),
+        ]
+    )
+    table = await mem_db_async.create_table(
+        "json_legacy_factory_fallback",
+        schema=schema,
+    )
+
+    initial_json = pa.ExtensionArray.from_storage(
+        json_type,
+        pa.array(['{"k": 1}'], type=json_type.storage_type),
+    )
+    initial = pa.Table.from_arrays(
+        [pa.array(["a"]), initial_json],
+        schema=schema,
+    )
+    await table.add(initial)
+
+    monkeypatch.delattr(pa, "json_")
+
+    await table.add(pa.table({"id": ["b"], "j": ['{"k": 2}']}))
+    added = await table.query().where("json_extract(j, '$.k') = '2'").to_list()
+    assert added == [{"id": "b", "j": '{"k":2}'}]
+
+    await table.add([{"id": "null", "j": None}])
+    null_rows = await table.query().where("j IS NULL").to_list()
+    assert null_rows == [{"id": "null", "j": None}]
+
+    await (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(
+            pa.table(
+                {
+                    "id": ["a", "c"],
+                    "j": ['{"k": 9}', '{"k": 3}'],
+                }
+            )
+        )
+    )
+
+    updated = await table.query().where("json_extract(j, '$.k') = '9'").to_list()
+    inserted = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
+
+    assert updated == [{"id": "a", "j": '{"k":9}'}]
+    assert inserted == [{"id": "c", "j": '{"k":3}'}]

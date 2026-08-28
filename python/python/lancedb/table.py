@@ -456,15 +456,15 @@ def _coerce_json_field(field: pa.Field, target_field: pa.Field) -> Optional[pa.F
     if _field_extension_name(field) == "arrow.json":
         return field
 
-    if not hasattr(pa, "json_"):
-        return None
-
     is_string_like = (
         pa.types.is_string(field.type)
         or pa.types.is_large_string(field.type)
         or (hasattr(pa.types, "is_string_view") and pa.types.is_string_view(field.type))
     )
-    if is_string_like or pa.types.is_null(field.type):
+    if not is_string_like and not pa.types.is_null(field.type):
+        return None
+
+    if hasattr(pa, "json_"):
         json_type = (
             pa.json_(pa.large_string())
             if pa.types.is_large_string(field.type)
@@ -477,7 +477,17 @@ def _coerce_json_field(field: pa.Field, target_field: pa.Field) -> Optional[pa.F
             metadata=field.metadata,
         )
 
-    return None
+    storage_type = (
+        pa.large_string() if pa.types.is_large_string(field.type) else pa.string()
+    )
+    metadata = dict(field.metadata or {})
+    metadata[b"ARROW:extension:name"] = b"arrow.json"
+    return pa.field(
+        field.name,
+        storage_type,
+        nullable=field.nullable,
+        metadata=metadata,
+    )
 
 
 def _coerce_json_scannable(data: Scannable, target_schema: pa.Schema) -> Scannable:
@@ -495,7 +505,7 @@ def _coerce_json_scannable(data: Scannable, target_schema: pa.Schema) -> Scannab
         )
         if coerced is not None:
             fields.append(coerced)
-            changed = changed or coerced != field
+            changed = changed or not coerced.equals(field, check_metadata=True)
         else:
             fields.append(field)
 
