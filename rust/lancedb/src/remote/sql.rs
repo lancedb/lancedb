@@ -478,10 +478,19 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug)]
+    struct CapturedHeaders {
+        database: String,
+        namespace_path: String,
+        request_id: String,
+        api_key: String,
+        database_prefix: String,
+    }
+
     #[derive(Clone)]
     struct TestSqlService {
         query_count: Arc<AtomicUsize>,
-        headers: Arc<std::sync::Mutex<Vec<(String, String, String, String, String)>>>,
+        headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
         result: RecordBatch,
     }
 
@@ -521,13 +530,13 @@ mod tests {
                     .unwrap()
                     .to_string()
             };
-            self.headers.lock().unwrap().push((
-                header("database"),
-                header("namespace-path"),
-                header("x-request-id"),
-                header("x-api-key"),
-                header("x-lancedb-database-prefix"),
-            ));
+            self.headers.lock().unwrap().push(CapturedHeaders {
+                database: header("database"),
+                namespace_path: header("namespace-path"),
+                request_id: header("x-request-id"),
+                api_key: header("x-api-key"),
+                database_prefix: header("x-lancedb-database-prefix"),
+            });
 
             let mut info = FlightInfo::new().with_endpoint(
                 FlightEndpoint::new()
@@ -621,14 +630,16 @@ mod tests {
         assert_eq!(empty.len(), 1);
         assert_eq!(empty[0].schema(), expected.schema());
         assert_eq!(empty[0].num_rows(), 0);
-        let headers = headers.lock().unwrap();
-        assert_eq!(headers[0].0, "analytics");
-        assert_eq!(headers[0].1, "public");
-        assert_eq!(headers[0].3, "test-key");
-        assert_eq!(headers[0].4, "tenant/production");
-        assert_eq!(headers[1].1, "events$raw");
-        assert_ne!(headers[0].2, headers[1].2);
-        assert_ne!(headers[1].2, headers[2].2);
+        {
+            let headers = headers.lock().unwrap();
+            assert_eq!(headers[0].database, "analytics");
+            assert_eq!(headers[0].namespace_path, "public");
+            assert_eq!(headers[0].api_key, "test-key");
+            assert_eq!(headers[0].database_prefix, "tenant/production");
+            assert_eq!(headers[1].namespace_path, "events$raw");
+            assert_ne!(headers[0].request_id, headers[1].request_id);
+            assert_ne!(headers[1].request_id, headers[2].request_id);
+        }
         let _ = shutdown_tx.send(());
         server.await.unwrap().unwrap();
     }
