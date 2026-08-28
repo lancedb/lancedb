@@ -1338,51 +1338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_materializes_top_level_blob_input() {
-        let tmp = tempfile::tempdir().unwrap();
-        let table = create_blob_table(
-            tmp.path(),
-            blob_batch(vec![1, 2, 3], vec![Some(b"hello"), Some(b""), None]),
-        )
-        .await;
-        table
-            .add_columns()
-            .computed("payload_copy", "image")
-            .execute()
-            .await
-            .unwrap();
-
-        let result = table.refresh_column("payload_copy").await.unwrap();
-        assert_eq!(result.rows_filled, 2);
-        let batches = table
-            .query()
-            .select(Select::columns(&["payload_copy"]))
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        let payloads = batches[0]
-            .column_by_name("payload_copy")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .unwrap();
-        assert_eq!(payloads.value(0), b"hello");
-        assert_eq!(payloads.value(1), b"");
-        assert!(payloads.is_null(2));
-        assert_eq!(
-            table
-                .count_rows(Some("payload_copy IS NULL".to_string()))
-                .await
-                .unwrap(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn test_refresh_publishes_explicit_blob_output() {
+    async fn test_refresh_inherits_and_publishes_blob_output() {
         use arrow_array::UInt64Array;
         use lance_arrow::{
             BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY, BLOB_INLINE_SIZE_THRESHOLD_META_KEY,
@@ -1402,7 +1358,7 @@ mod tests {
         .await;
         table
             .add_columns()
-            .computed_field(crate::blob("image_copy", true), "image")
+            .computed("image_copy", "image")
             .execute()
             .await
             .unwrap();
@@ -1515,28 +1471,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_explicit_blob_output_requires_large_binary_expression() {
-        let tmp = tempfile::tempdir().unwrap();
-        let table = create_blob_table(tmp.path(), blob_batch(vec![1], vec![Some(b"hello")])).await;
-
-        let error = table
-            .add_columns()
-            .computed_field(crate::blob("invalid", true), "id + 1")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::InvalidExpression { column, message }
-                if column == "invalid"
-                    && message.contains("explicit output field accepts LargeBinary")
-                    && message.contains("expression yields Int32")
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_refresh_materializes_nested_struct_blob_input() {
-        use arrow_array::{Int32Array, StructArray};
+    async fn test_refresh_inherits_nested_struct_blob_input() {
+        use arrow_array::{Int32Array, StructArray, UInt64Array};
         use arrow_schema::{DataType, Field, Fields, Schema};
 
         let tmp = tempfile::tempdir().unwrap();
@@ -1574,21 +1510,27 @@ mod tests {
                 .rows_filled,
             1
         );
+        assert_eq!(
+            table.blob_columns().await.unwrap(),
+            vec!["metadata.image".to_string(), "payload_copy".to_string()]
+        );
         let batches = table
             .query()
-            .select(Select::columns(&["payload_copy"]))
+            .with_row_id()
             .execute()
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
-        let payloads = batches[0]
-            .column_by_name("payload_copy")
+        let row_ids = batches[0]
+            .column_by_name(ROW_ID)
             .unwrap()
             .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .unwrap();
+            .downcast_ref::<UInt64Array>()
+            .unwrap()
+            .values();
+        let payloads = table.fetch_blobs("payload_copy", row_ids).await.unwrap();
         assert_eq!(payloads.value(0), b"nested");
         assert!(payloads.is_null(1));
     }
@@ -1655,8 +1597,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_materializes_external_blob_input() {
-        use arrow_array::{Int32Array, StringArray};
+    async fn test_refresh_inherits_external_blob_input() {
+        use arrow_array::{Int32Array, StringArray, UInt64Array};
         use arrow_schema::{DataType, Field, Schema};
 
         let tmp = tempfile::tempdir().unwrap();
@@ -1713,19 +1655,21 @@ mod tests {
         );
         let batches = table
             .query()
-            .select(Select::columns(&["payload_copy"]))
+            .with_row_id()
             .execute()
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
-        let payloads = batches[0]
-            .column_by_name("payload_copy")
+        let row_ids = batches[0]
+            .column_by_name(ROW_ID)
             .unwrap()
             .as_any()
-            .downcast_ref::<LargeBinaryArray>()
-            .unwrap();
+            .downcast_ref::<UInt64Array>()
+            .unwrap()
+            .values();
+        let payloads = table.fetch_blobs("payload_copy", row_ids).await.unwrap();
         assert_eq!(payloads.value(0), payload);
     }
 }

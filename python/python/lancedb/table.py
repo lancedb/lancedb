@@ -913,26 +913,6 @@ def _normalize_progress(progress):
     return progress, False
 
 
-def _normalize_computed_columns(
-    computed: Dict[str, str] | Sequence[tuple[str | pa.Field, str]],
-) -> list[tuple[str | pa.Field, str]]:
-    columns: list[tuple[str | pa.Field, str]] = []
-    declarations = computed.items() if isinstance(computed, dict) else computed
-    for declaration in declarations:
-        if not isinstance(declaration, (tuple, list)) or len(declaration) != 2:
-            raise TypeError(
-                "computed sequences must contain (column name or pyarrow Field, "
-                "SQL expression) pairs"
-            )
-        field, expression = declaration
-        if not isinstance(field, (str, pa.Field)):
-            raise TypeError("computed targets must be column names or pyarrow Fields")
-        if not isinstance(expression, str):
-            raise TypeError("computed values must be SQL expression strings")
-        columns.append((field, expression))
-    return columns
-
-
 class Table(ABC):
     """
     A Table is a collection of Records in a LanceDB Database.
@@ -2162,7 +2142,7 @@ class Table(ABC):
         | pa.Schema
         | None = None,
         *,
-        computed: Dict[str, str] | Sequence[tuple[str | pa.Field, str]] | None = None,
+        computed: Dict[str, str] | None = None,
     ):
         """
         Add new columns with defined values.
@@ -2184,15 +2164,12 @@ class Table(ABC):
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
-        computed: Dict[str, str] or Sequence[Tuple[str | pa.Field, str]], optional
+        computed: Dict[str, str], optional
             A mapping from output column names to SQL expressions derives each
-            output field from its expression. An ordered sequence may instead
-            use a pyarrow Field as a target, supplying its name, type,
-            nullability, and extension metadata; use
-            ``(lancedb.blob("name"), expression)`` for a Blob v2 output.
-            Explicit fields must be nullable and their expression result type
-            must be compatible. Mapping or sequence order is declaration and
-            dependency order.
+            output field from its expression. A direct projection of a Blob v2
+            field inherits Blob v2 semantics; other expressions derive their
+            ordinary Arrow type. Mapping order is declaration and dependency
+            order.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get
@@ -4324,7 +4301,7 @@ class LanceTable(Table):
         | pa.Schema
         | None = None,
         *,
-        computed: Dict[str, str] | Sequence[tuple[str | pa.Field, str]] | None = None,
+        computed: Dict[str, str] | None = None,
     ) -> AddColumnsResult:
         return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
@@ -6272,7 +6249,7 @@ class AsyncTable:
         | pa.Schema
         | None = None,
         *,
-        computed: dict[str, str] | Sequence[tuple[str | pa.Field, str]] | None = None,
+        computed: dict[str, str] | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -6292,15 +6269,12 @@ class AsyncTable:
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
-        computed: Dict[str, str] or Sequence[Tuple[str | pa.Field, str]], optional
+        computed: Dict[str, str], optional
             A mapping from output column names to SQL expressions derives each
-            output field from its expression. An ordered sequence may instead
-            use a pyarrow Field as a target, supplying its name, type,
-            nullability, and extension metadata; use
-            ``(lancedb.blob("name"), expression)`` for a Blob v2 output.
-            Explicit fields must be nullable and their expression result type
-            must be compatible. Mapping or sequence order is declaration and
-            dependency order.
+            output field from its expression. A direct projection of a Blob v2
+            field inherits Blob v2 semantics; other expressions derive their
+            ordinary Arrow type. Mapping order is declaration and dependency
+            order.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get
@@ -6358,9 +6332,7 @@ class AsyncTable:
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
                 )
-            return await self._inner.add_computed_columns(
-                _normalize_computed_columns(computed)
-            )
+            return await self._inner.add_computed_columns(list(computed.items()))
         if transforms is None:
             raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):

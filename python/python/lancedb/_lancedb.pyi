@@ -352,8 +352,7 @@ class Table:
     async def delete(self, filter: Union[str, PyExpr]) -> DeleteResult: ...
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
     async def add_computed_columns(
-        self,
-        columns: list[tuple[str | pa.Field, str]],
+        self, columns: list[tuple[str, str]]
     ) -> AddColumnsResult: ...
     async def add_function_columns(
         self, application_json: str, output_name: Optional[str]

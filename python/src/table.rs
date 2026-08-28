@@ -13,16 +13,15 @@ use crate::{
 };
 use arrow::{
     array::{Array, LargeBinaryArray},
-    datatypes::{DataType, Field, Schema},
+    datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::blob::{BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, ComputedColumnDeclaration, Duration, FieldMetadataUpdate,
-    FtsToken as LanceDbFtsToken, NewColumnTransform, OptimizeAction, OptimizeOptions, Ref,
-    Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -99,12 +98,6 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
 enum PredicateArg {
     Expr(PyExpr),
     Sql(String),
-}
-
-#[derive(FromPyObject)]
-pub enum ComputedColumnFieldArg {
-    Name(String),
-    Field(PyArrowType<Field>),
 }
 
 /// Statistics about a compaction operation.
@@ -1584,21 +1577,13 @@ impl Table {
 
     pub fn add_computed_columns(
         self_: PyRef<'_, Self>,
-        columns: Vec<(ComputedColumnFieldArg, String)>,
+        columns: Vec<(String, String)>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.add_columns();
-            for (field, expression) in columns {
-                let declaration = match field {
-                    ComputedColumnFieldArg::Name(name) => {
-                        ComputedColumnDeclaration::inferred(name, expression)
-                    }
-                    ComputedColumnFieldArg::Field(PyArrowType(field)) => {
-                        ComputedColumnDeclaration::with_field(field, expression)
-                    }
-                };
-                builder = builder.computed_column(declaration);
+            for (name, expression) in columns {
+                builder = builder.computed(name, expression);
             }
             let result = builder.execute().await.infer_error()?;
             Ok(AddColumnsResult::from(result))

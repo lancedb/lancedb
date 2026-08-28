@@ -5,11 +5,9 @@
 
 use std::sync::Arc;
 
-use arrow_schema::Field as ArrowField;
 use lance::dataset::NewColumnTransform;
 
 use super::BaseTable;
-use super::computed_columns::ComputedColumnDeclaration;
 use super::schema_evolution::AddColumnsResult;
 use crate::function::FunctionApplication;
 use crate::{Error, Result};
@@ -18,7 +16,7 @@ use crate::{Error, Result};
 pub struct AddColumnsBuilder {
     parent: Arc<dyn BaseTable>,
     transform: Option<NewColumnTransform>,
-    computed: Vec<ComputedColumnDeclaration>,
+    computed: Vec<(String, String)>,
     function: Option<(FunctionApplication, Option<String>)>,
     read_columns: Option<Vec<String>>,
 }
@@ -84,37 +82,8 @@ impl AddColumnsBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn computed(self, name: impl Into<String>, expression: impl Into<String>) -> Self {
-        self.computed_column(ComputedColumnDeclaration::inferred(name, expression))
-    }
-
-    /// Add a computed column whose output schema is the supplied Arrow field.
-    ///
-    /// Extension semantics such as Blob v2 come from the field metadata. The
-    /// expression's inferred type must be compatible with the field semantics.
-    ///
-    /// ```
-    /// # use lancedb::Table;
-    /// # async fn declare(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
-    /// table
-    ///     .add_columns()
-    ///     .computed_field(lancedb::blob("image_copy", true), "image")
-    ///     .execute()
-    ///     .await?;
-    /// table.refresh_column("image_copy").await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn computed_field(self, field: ArrowField, expression: impl Into<String>) -> Self {
-        self.computed_column(ComputedColumnDeclaration::with_field(field, expression))
-    }
-
-    /// Add one pre-built computed-column declaration.
-    ///
-    /// Declarations share one ordered stream, so a later expression may
-    /// reference a column declared earlier in the same builder.
-    pub fn computed_column(mut self, declaration: ComputedColumnDeclaration) -> Self {
-        self.computed.push(declaration);
+    pub fn computed(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
+        self.computed.push((name.into(), expression.into()));
         self
     }
 

@@ -124,7 +124,7 @@ pub(crate) async fn execute_add_columns(
 /// declaration metadata.
 pub(crate) async fn execute_declare(
     table: &NativeTable,
-    columns: &[computed_columns::ComputedColumnDeclaration],
+    columns: &[(String, String)],
 ) -> Result<AddColumnsResult> {
     use lance::dataset::mem_wal::DatasetMemWalExt;
 

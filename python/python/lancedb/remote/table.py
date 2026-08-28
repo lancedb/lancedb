@@ -13,7 +13,6 @@ from typing import (
     Iterable,
     List,
     Optional,
-    Sequence,
     Union,
     Literal,
     overload,
@@ -984,7 +983,7 @@ class RemoteTable(Table):
         | FunctionApplication
         | None = None,
         *,
-        computed: Dict[str, str] | Sequence[tuple[str | pa.Field, str]] | None = None,
+        computed: Dict[str, str] | None = None,
     ) -> AddColumnsResult:
         return LOOP.run(self._table.add_columns(transforms, computed=computed))
 

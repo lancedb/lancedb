@@ -95,8 +95,7 @@ pub use cherry_pick::{
 };
 pub use chrono::Duration;
 pub use computed_columns::{
-    ComputedColumn, ComputedColumnDeclaration, ComputedColumnKind, computed_column_from_field,
-    computed_columns,
+    ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
 use futures::future::join_all;
@@ -752,10 +751,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ///
     /// Where the declaration is planned depends on the backend: a local table
     /// validates and types the expression itself, while a remote one sends the
-    /// expression and any explicit output field for the server to plan.
+    /// expression for the server to plan.
     async fn add_computed_columns(
         &self,
-        _columns: &[computed_columns::ComputedColumnDeclaration],
+        _columns: &[(String, String)],
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
             message: "computed columns are not supported on this table type".into(),
@@ -3524,10 +3523,7 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
-    async fn add_computed_columns(
-        &self,
-        columns: &[computed_columns::ComputedColumnDeclaration],
-    ) -> Result<AddColumnsResult> {
+    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
         let result = schema_evolution::execute_declare(self, columns).await?;
         self.bump_freshness();
         Ok(result)
