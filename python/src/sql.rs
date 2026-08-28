@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use arrow::pyarrow::ToPyArrow;
 use pyo3::exceptions::PyValueError;
-use pyo3::types::{PyAnyMethods, PyList, PyListMethods, PyModule};
+use pyo3::types::{PyAnyMethods, PyDict, PyList, PyListMethods, PyModule};
 use pyo3::{Bound, Py, PyAny, PyResult, Python, pyfunction};
 
 use crate::connection::PyClientConfig;
@@ -46,7 +46,7 @@ pub fn sql(
     region: &str,
     host_override: Option<String>,
     flight_sql_uri: Option<String>,
-    client_config: Option<PyClientConfig>,
+    client_config: Option<Bound<'_, PyAny>>,
     storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<Py<PyAny>> {
     validate_database(default_database)?;
@@ -66,7 +66,10 @@ pub fn sql(
         None => vec!["public".to_string()],
     };
 
-    let rust_client_config: Option<lancedb::remote::ClientConfig> = client_config.map(Into::into);
+    let rust_client_config: Option<lancedb::remote::ClientConfig> = client_config
+        .map(|config| normalize_client_config(py, config))
+        .transpose()?
+        .map(Into::into);
     let mut resolved_api_key = api_key.or_else(|| std::env::var("LANCEDB_API_KEY").ok());
     if resolved_api_key.is_none()
         && rust_client_config.as_ref().is_some_and(|config| {
@@ -123,6 +126,17 @@ pub fn sql(
         .getattr("Table")?
         .call_method1("from_batches", (py_batches,))?
         .unbind())
+}
+
+fn normalize_client_config(py: Python<'_>, config: Bound<'_, PyAny>) -> PyResult<PyClientConfig> {
+    if config.is_instance_of::<PyDict>() {
+        let kwargs = config.cast::<PyDict>()?;
+        return PyModule::import(py, "lancedb.remote")?
+            .getattr("ClientConfig")?
+            .call((), Some(kwargs))?
+            .extract();
+    }
+    config.extract()
 }
 
 fn validate_database(database: &str) -> PyResult<()> {

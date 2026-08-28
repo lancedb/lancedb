@@ -86,6 +86,15 @@ impl FlightSqlClientConfig {
             .await
             .map_err(|_| flight_error(request_id, "Flight SQL query planning timed out"))?
             .map_err(|err| flight_error(request_id, err))?;
+        let result_schema = if info.schema.is_empty() {
+            None
+        } else {
+            Some(std::sync::Arc::new(
+                info.clone()
+                    .try_decode_schema()
+                    .map_err(|err| flight_error(request_id, err))?,
+            ))
+        };
 
         let mut batches = Vec::new();
         for endpoint in info.endpoint {
@@ -115,6 +124,11 @@ impl FlightSqlClientConfig {
                     None => break,
                 }
             }
+        }
+        if batches.is_empty()
+            && let Some(schema) = result_schema
+        {
+            batches.push(RecordBatch::new_empty(schema));
         }
         Ok(batches)
     }

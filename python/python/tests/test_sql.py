@@ -30,6 +30,17 @@ def test_sql_requires_namespace_path_list(default_namespace_path):
         lancedb.sql("SELECT 1", default_namespace_path=default_namespace_path)
 
 
+def test_sql_normalizes_client_config_dict():
+    with pytest.raises(ValueError, match="flight_sql_uri"):
+        lancedb.sql(
+            "SELECT 1",
+            api_key="test-key",
+            host_override="http://localhost:10024",
+            flight_sql_uri="invalid://localhost",
+            client_config={"timeout_config": {"connect_timeout": 1}},
+        )
+
+
 @pytest.mark.parametrize(
     "default_namespace_path",
     [[""], ["café"], ["pub\tlic"], ["events$raw"]],
