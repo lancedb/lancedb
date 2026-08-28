@@ -20,25 +20,6 @@ fn job_result(name: &str) -> Value {
     serde_json::from_str::<Value>(&fixture(name)).expect("remote Job fixture")["result"].clone()
 }
 
-fn assert_no_secret_values(value: &Value) {
-    match value {
-        Value::Object(values) => {
-            for (key, value) in values {
-                assert!(
-                    !matches!(
-                        key.as_str(),
-                        "secret_value" | "secret_values" | "resolved_secret" | "resolved_secrets"
-                    ),
-                    "client canonical value must not model resolved secret material"
-                );
-                assert_no_secret_values(value);
-            }
-        }
-        Value::Array(values) => values.iter().for_each(assert_no_secret_values),
-        _ => {}
-    }
-}
-
 #[test]
 fn function_version_job_result_matches_shared_canonical_golden() {
     let result = job_result("remote_function_job.json");
@@ -47,7 +28,6 @@ fn function_version_job_result_matches_shared_canonical_golden() {
     assert_eq!(version.name(), "embed");
     assert_eq!(version.version(), "fv_01K3EXACT");
     assert_eq!(version.runtime_digest(), "sha256:runtime");
-    assert_eq!(version.required_secrets(), &["HF_TOKEN"]);
     assert_eq!(
         version.to_canonical_json().expect("canonical JSON"),
         fixture("remote_function_version.canonical.json").trim()
@@ -84,7 +64,6 @@ fn application_and_binding_match_shared_remote_goldens() {
 
     let binding = FunctionBinding::from_json(&fixture("remote_function_binding.json"))
         .expect("binding fixture");
-    assert_eq!(binding.revision(), 3);
     assert_eq!(binding.function().version, "fv_01K3TEXT");
     assert_eq!(binding.outputs()[0].output_ordinal, 0);
     assert_eq!(binding.outputs()[1].output_ordinal, 1);
@@ -162,22 +141,4 @@ fn floating_point_application_literals_are_rejected_consistently() {
             .to_string()
             .contains("floating-point Function literals")
     );
-}
-
-#[test]
-fn canonical_client_values_contain_secret_names_only() {
-    let result = job_result("remote_function_job.json");
-    let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
-    let canonical: Value = serde_json::from_str(
-        &version
-            .to_canonical_json()
-            .expect("canonical FunctionVersion"),
-    )
-    .expect("canonical JSON");
-
-    assert_eq!(
-        canonical["required_secrets"],
-        serde_json::json!(["HF_TOKEN"])
-    );
-    assert_no_secret_values(&canonical);
 }

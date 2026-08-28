@@ -13,7 +13,7 @@
 //! self-describing -- both are derived from the expression, so a caller writes
 //! neither -- while a kind resolved through a registry cannot be typed without
 //! consulting it. Registered Functions use an exact remote version plus a
-//! schema-level grouped binding; unknown newer kinds remain readable and fail
+//! schema-level Function binding; unknown newer kinds remain readable and fail
 //! closed before mutation.
 //!
 //! [`computed_columns`] and [`computed_column_from_field`] read declarations
@@ -22,7 +22,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, Field as ArrowField, Fields, Schema as ArrowSchema, SchemaRef};
 use datafusion_common::tree_node::TreeNode;
 use datafusion_physical_plan::PhysicalExpr;
 use lance::dataset::NewColumnTransform;
@@ -46,16 +46,16 @@ pub const EXPRESSION_META_KEY: &str = "computed_column.expression";
 /// Field metadata key holding the column's inputs, as a JSON array of names.
 pub const INPUTS_META_KEY: &str = "computed_column.inputs";
 
-/// Field metadata key holding the grouped Function binding identity.
+/// Field metadata key holding the Function binding identity.
 pub const FUNCTION_BINDING_ID_META_KEY: &str = "computed_column.function.binding_id";
 
 /// Field metadata key holding this sibling's ordered Function output ordinal.
 pub const FUNCTION_OUTPUT_ORDINAL_META_KEY: &str = "computed_column.function.output_ordinal";
 
-/// Schema metadata key holding all immutable grouped Function bindings.
+/// Schema metadata key holding all immutable Function bindings.
 pub const FUNCTION_BINDINGS_META_KEY: &str = "lancedb::function_bindings";
 
-/// Version of the schema-level grouped Function binding envelope.
+/// Version of the schema-level Function binding envelope.
 pub const FUNCTION_BINDINGS_VERSION: u32 = 1;
 
 /// Value of [`KIND_META_KEY`] for a column defined by a SQL expression.
@@ -81,7 +81,7 @@ pub enum ComputedColumnKind {
         /// The expression.
         expression: String,
     },
-    /// One physical output in an immutable grouped registered-Function
+    /// One physical output in an immutable registered-Function
     /// binding. The full binding lives in schema metadata.
     Function {
         /// Shared immutable binding identity.
@@ -159,7 +159,7 @@ struct FunctionBindingEnvelope {
     bindings: Vec<Value>,
 }
 
-/// Encode immutable grouped bindings for schema-level persistence.
+/// Encode immutable Function bindings for schema-level persistence.
 pub fn function_bindings_metadata(bindings: &[FunctionBinding]) -> Result<String> {
     let bindings = bindings
         .iter()
@@ -177,7 +177,7 @@ pub fn function_bindings_metadata(bindings: &[FunctionBinding]) -> Result<String
     })
 }
 
-/// Decode known grouped Function bindings without rewriting their raw schema
+/// Decode known Function bindings without rewriting their raw schema
 /// metadata. Unknown envelope versions fail closed.
 pub fn function_bindings(schema: &ArrowSchema) -> Result<Vec<FunctionBinding>> {
     let Some(envelope) = function_binding_envelope(schema)? else {
@@ -238,21 +238,15 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
                 message: format!("duplicate Function binding '{}'", binding.binding_id()),
             });
         }
-        if binding.revision() == 0 || binding.outputs().is_empty() {
+        if binding.outputs().is_empty() {
             return Err(Error::InvalidInput {
-                message: format!(
-                    "Function binding '{}' has no immutable revision or outputs",
-                    binding.binding_id()
-                ),
+                message: format!("Function binding '{}' has no outputs", binding.binding_id()),
             });
         }
-        if binding.function().name.is_empty()
-            || binding.function().version.is_empty()
-            || binding.group_id().is_empty()
-        {
+        if binding.function().name.is_empty() || binding.function().version.is_empty() {
             return Err(Error::InvalidInput {
                 message: format!(
-                    "Function binding '{}' has no exact version or group identity",
+                    "Function binding '{}' has no exact version",
                     binding.binding_id()
                 ),
             });
@@ -493,9 +487,7 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
         value,
         &[
             "binding_id",
-            "revision",
             "function",
-            "group_id",
             "inputs",
             "outputs",
             "input_schema",
@@ -586,6 +578,25 @@ fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
     }
 }
 
+/// `fixed_size_list<item, size>` -> (`item`, `size`); the comma must sit outside
+/// any nested `<...>`.
+fn split_fixed_size_list(raw: &str) -> Option<(&str, i32)> {
+    let inner = raw.strip_prefix("fixed_size_list<")?.strip_suffix('>')?;
+    let mut depth = 0_u32;
+    let mut separator = None;
+    for (index, byte) in inner.bytes().enumerate() {
+        match byte {
+            b'<' => depth += 1,
+            b'>' => depth = depth.checked_sub(1)?,
+            b',' if depth == 0 => separator = Some(index),
+            _ => {}
+        }
+    }
+    let (item, size) = inner.split_at(separator?);
+    let size: i32 = size[1..].trim().parse().ok()?;
+    (size > 0).then_some((item.trim(), size))
+}
+
 fn parse_output_arrow_type(raw: &str) -> Result<JsonArrowDataType> {
     fn parse(raw: &str) -> Result<JsonArrowDataType> {
         let raw = raw.trim();
@@ -616,6 +627,16 @@ fn parse_output_arrow_type(raw: &str) -> Result<JsonArrowDataType> {
                 false,
                 parse(inner)?,
             )]);
+            return Ok(data_type);
+        }
+        if let Some((inner, size)) = split_fixed_size_list(raw) {
+            let mut data_type = JsonArrowDataType::new("fixed_size_list".to_string());
+            data_type.fields = Some(vec![JsonArrowField::new(
+                "item".to_string(),
+                false,
+                parse(inner)?,
+            )]);
+            data_type.length = Some(i64::from(size));
             return Ok(data_type);
         }
         let normalized = match raw {
@@ -757,12 +778,9 @@ pub(crate) fn plan_function_application(
             message: "Function application contains fields from a newer contract".into(),
         });
     }
-    if application.function().name.is_empty()
-        || application.function().version.is_empty()
-        || application.group_id().is_empty()
-    {
+    if application.function().name.is_empty() || application.function().version.is_empty() {
         return Err(invalid_function(
-            "Function application requires an exact version and group identity",
+            "Function application requires an exact version",
         ));
     }
 
@@ -1255,6 +1273,11 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
 /// refresh time: that the expression parses, that every column it reads
 /// exists, and that the target name is free. A declaration that survives this
 /// is one a refresh can always act on.
+///
+/// Each accepted column joins the schema the next one resolves against, so a
+/// batch may declare `a` and then `b = a + 1` in one commit. Refresh order
+/// then matters, and refresh enforces it: `b` is refused while `a` still has
+/// unfilled rows.
 pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Vec<ArrowField>> {
     if columns.is_empty() {
         return Err(Error::InvalidInput {
@@ -1262,11 +1285,11 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
         });
     }
 
+    let mut schema = schema;
     let mut fields = Vec::with_capacity(columns.len());
-    let mut declared: Vec<&str> = Vec::with_capacity(columns.len());
 
     for (name, expression) in columns {
-        if schema.field_with_name(name).is_ok() || declared.contains(&name.as_str()) {
+        if schema.field_with_name(name).is_ok() {
             return Err(Error::ColumnAlreadyExists { name: name.clone() });
         }
 
@@ -1274,14 +1297,48 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
 
         // Declared columns start entirely null, so nullability is a property
         // of the declaration rather than of what the expression yields.
-        fields.push(
-            ArrowField::new(name, bound.data_type, true)
-                .with_metadata(computed_column_metadata(expression, &bound.inputs)),
-        );
-        declared.push(name);
+        let field = ArrowField::new(name, bound.data_type, true)
+            .with_metadata(computed_column_metadata(expression, &bound.inputs));
+        schema = Arc::new(ArrowSchema::new_with_metadata(
+            schema
+                .fields()
+                .iter()
+                .cloned()
+                .chain(std::iter::once(Arc::new(field.clone())))
+                .collect::<Fields>(),
+            schema.metadata().clone(),
+        ));
+        fields.push(field);
     }
 
     Ok(fields)
+}
+
+/// Run the schema-level checks of
+/// [`AddColumnsBuilder::computed`](super::AddColumnsBuilder::computed) against
+/// `schema` without committing: the Function-binding guard and the planning of
+/// every declaration. For callers that stage declarations behind other work
+/// and need those rejections before any of it lands.
+///
+/// Only the schema is consulted. Declaring also refuses a table with an LSM
+/// write spec or retained SSTables; that is table state, checked at commit.
+///
+/// ```
+/// # use std::sync::Arc;
+/// # use arrow_schema::{DataType, Field, Schema};
+/// use lancedb::table::computed_columns::validate_declarations;
+///
+/// let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+/// let declarations = vec![
+///     ("a".to_string(), "x + 1".to_string()),
+///     ("b".to_string(), "a * 2".to_string()),
+/// ];
+/// assert!(validate_declarations(schema.clone(), &declarations).is_ok());
+/// assert!(validate_declarations(schema, &[("c".into(), "random()".into())]).is_err());
+/// ```
+pub fn validate_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<()> {
+    ensure_no_function_bindings_for_mutation(schema.as_ref(), "schema evolution")?;
+    plan(schema, columns).map(drop)
 }
 
 /// Build the transform that declares `columns` against `schema`.
@@ -1322,6 +1379,48 @@ pub(super) async fn add_foreign_kind(table: &crate::Table, name: &str, kind: &st
 
 #[cfg(test)]
 mod tests {
+    /// The gate's reproducer: the validator applies the same schema-level
+    /// guard declaring does, so a staging caller is refused before it commits
+    /// anything else.
+    #[test]
+    fn test_validate_declarations_matches_schema_admission_barriers() {
+        let schema = Arc::new(ArrowSchema::new_with_metadata(
+            vec![ArrowField::new("x", DataType::Int32, true)],
+            HashMap::from([(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                "not valid binding metadata".to_string(),
+            )]),
+        ));
+        let declarations = vec![("a".to_string(), "x + 1".to_string())];
+        assert!(super::validate_declarations(schema, &declarations).is_err());
+    }
+
+    #[test]
+    fn output_arrow_type_grammar_matches_the_shared_golden() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/arrow_types.json"
+        ))
+        .unwrap();
+        let valid = golden["valid"].as_array().unwrap().iter();
+        for case in valid.chain(golden["server_only"].as_array().unwrap()) {
+            let raw = case["arrow_type"].as_str().unwrap();
+            let parsed = super::parse_output_arrow_type(raw)
+                .unwrap_or_else(|error| panic!("{raw}: {error}"));
+            assert_eq!(
+                serde_json::to_value(&parsed).unwrap(),
+                case["json"],
+                "{raw}"
+            );
+        }
+        for raw in golden["invalid"].as_array().unwrap() {
+            let raw = raw.as_str().unwrap();
+            assert!(
+                super::parse_output_arrow_type(raw).is_err(),
+                "{raw:?} should be rejected"
+            );
+        }
+    }
+
     use arrow_array::record_batch;
     use arrow_schema::DataType;
     use futures::TryStreamExt;
@@ -1536,6 +1635,40 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, Error::ColumnAlreadyExists { name } if name == "dup"));
         assert!(declared(&table).await.is_empty());
+    }
+
+    /// A batch may build on itself: one commit, and the later entry's inputs
+    /// name the earlier one.
+    #[tokio::test]
+    async fn test_a_declaration_may_read_one_declared_before_it() {
+        let table = table_with_ints("chain").await;
+        let before = table.version().await.unwrap();
+        add_computed(
+            &table,
+            &[("a".into(), "x + 1".into()), ("b".into(), "a * 2".into())],
+        )
+        .await
+        .unwrap();
+        assert_eq!(table.version().await.unwrap(), before + 1);
+        let declared = declared(&table).await;
+        assert_eq!(declared[1].name, "b");
+        assert_eq!(declared[1].inputs, vec!["a".to_string()]);
+
+        // Order is the dependency order; reading ahead is still unknown.
+        let err = add_computed(
+            &table,
+            &[("c".into(), "d + 1".into()), ("d".into(), "x + 1".into())],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidExpression { column, .. } if column == "c"));
+        assert!(
+            validate_declarations(
+                table.schema().await.unwrap(),
+                &[("e".into(), "random()".into())]
+            )
+            .is_err()
+        );
     }
 
     /// A column added by an ordinary transform is materialized, not bound, so
@@ -2206,7 +2339,6 @@ mod tests {
                     {{"name":"normalized_text","arrow_type":"utf8","nullable":false}},
                     {{"name":"token_count","arrow_type":"int64","nullable":false}}
                 ]}},
-                "group_id":"fg_exact",
                 "columns":{columns}
             }}"#
         ))
@@ -2387,8 +2519,7 @@ mod tests {
             r#"{
                 "function":{"name":"f","version":"fv"},
                 "inputs":[{"parameter":"title","kind":"future_source","value":{"path":"title"}}],
-                "output":{"kind":"scalar","arrow_type":"int64","nullable":false},
-                "group_id":"fg"
+                "output":{"kind":"scalar","arrow_type":"int64","nullable":false}
             }"#,
         )
         .unwrap();
@@ -2401,7 +2532,6 @@ mod tests {
                 "function":{"name":"f","version":"fv"},
                 "inputs":[],
                 "output":{"kind":"scalar","arrow_type":"int64","nullable":false},
-                "group_id":"fg",
                 "future_declaration":{"mode":"managed"}
             }"#,
         )
@@ -2415,8 +2545,7 @@ mod tests {
             r#"{
                 "function":{"name":"f","version":"fv"},
                 "inputs":[],
-                "output":{"kind":"scalar","arrow_type":"int64","nullable":false,"assignment":"cell_flag"},
-                "group_id":"fg"
+                "output":{"kind":"scalar","arrow_type":"int64","nullable":false,"assignment":"cell_flag"}
             }"#,
         )
         .unwrap();

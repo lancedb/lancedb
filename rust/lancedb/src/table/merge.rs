@@ -220,9 +220,32 @@ impl MergeInsertBuilder {
     ///
     /// Returns version and statistics about the merge operation including the number of rows
     /// inserted, updated, and deleted.
-    pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeResult> {
+    pub async fn execute(
+        mut self,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<MergeResult> {
+        self.canonicalize_filters()?;
         self.table.clone().merge_insert(self, new_data).await
     }
+
+    pub(crate) fn canonicalize_filters(&mut self) -> Result<()> {
+        self.when_matched_update_all_filt =
+            canonicalize_merge_filter(self.when_matched_update_all_filt.take())?;
+        self.when_not_matched_by_source_delete_filt =
+            canonicalize_merge_filter(self.when_not_matched_by_source_delete_filt.take())?;
+        Ok(())
+    }
+}
+
+fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<MergeFilter>> {
+    filter
+        .map(|filter| match filter {
+            MergeFilter::Sql(predicate) => {
+                crate::expr::canonicalize_sql_predicate(&predicate).map(MergeFilter::Sql)
+            }
+            filter @ MergeFilter::Expr(_) => Ok(filter),
+        })
+        .transpose()
 }
 
 /// Internal implementation of the merge insert logic
@@ -230,9 +253,10 @@ impl MergeInsertBuilder {
 /// This logic was moved from NativeTable::merge_insert to keep table.rs clean.
 pub(crate) async fn execute_merge_insert(
     table: &NativeTable,
-    params: MergeInsertBuilder,
+    mut params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
+    params.canonicalize_filters()?;
     super::computed_columns::ensure_no_function_bindings_for_mutation(
         table.schema().await?.as_ref(),
         "merge_insert",
@@ -1054,6 +1078,44 @@ mod lsm_tests {
             rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    #[tokio::test]
+    async fn query_snapshot_preserves_lsm_read_semantics() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let snapshot = table.query_snapshot().await.unwrap();
+        let rows = collect_id_value(snapshot.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_snapshot_preserves_time_travel_lsm_guard() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4]).await;
+
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        let direct_error = table.query().execute().await.err().unwrap();
+        assert!(matches!(direct_error, Error::NotSupported { .. }));
+
+        let snapshot = table.query_snapshot().await.unwrap();
+        let snapshot_error = snapshot.query().execute().await.err().unwrap();
+        assert!(matches!(snapshot_error, Error::NotSupported { .. }));
     }
 
     #[tokio::test]

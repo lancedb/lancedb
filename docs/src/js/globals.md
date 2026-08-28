@@ -18,6 +18,7 @@
 
 ## Classes
 
+- [AutoQuery](classes/AutoQuery.md)
 - [BooleanQuery](classes/BooleanQuery.md)
 - [BoostQuery](classes/BoostQuery.md)
 - [BranchContents](classes/BranchContents.md)
@@ -100,6 +101,8 @@
 - [JobInfo](interfaces/JobInfo.md)
 - [ListNamespacesOptions](interfaces/ListNamespacesOptions.md)
 - [ListNamespacesResponse](interfaces/ListNamespacesResponse.md)
+- [ListTablesOptions](interfaces/ListTablesOptions.md)
+- [ListTablesResponse](interfaces/ListTablesResponse.md)
 - [LsmStats](interfaces/LsmStats.md)
 - [LsmWriteSpec](interfaces/LsmWriteSpec.md)
 - [MaterializedViewDefinition](interfaces/MaterializedViewDefinition.md)

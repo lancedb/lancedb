@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, FieldRef};
+use arrow_schema::{DataType, Field, FieldRef, Fields};
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::ScalarValue;
 use datafusion_common::config::ConfigOptions;
@@ -35,8 +35,17 @@ pub(super) fn coerce_blob_expr(
         });
     };
 
-    let input_struct_children = match input_field.data_type() {
-        DataType::Binary | DataType::LargeBinary | DataType::BinaryView => None,
+    let input_shape = match input_field.data_type() {
+        DataType::Null => {
+            let expr: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(
+                input_expr,
+                table_field.data_type().clone(),
+                None,
+            ));
+            return Ok((expr, table_field.clone()));
+        }
+        DataType::Binary | DataType::LargeBinary | DataType::BinaryView => BlobInputShape::Bytes,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => BlobInputShape::String,
         DataType::Struct(children) => {
             if !children
                 .iter()
@@ -49,13 +58,15 @@ pub(super) fn coerce_blob_expr(
                     ),
                 });
             }
-            Some(children)
+            BlobInputShape::Struct(children)
         }
         other => {
             return Err(Error::InvalidInput {
                 message: format!(
                     "cannot coerce column '{}' with type {} into a blob v2 struct. \
-                     expected Binary, LargeBinary, BinaryView, or a Struct with a 'data' or 'uri' child",
+                     expected binary bytes (Binary, LargeBinary, BinaryView), \
+                     strings (Utf8, LargeUtf8, Utf8View), \
+                     or a Struct with a 'data' or 'uri' child",
                     table_field.name(),
                     other,
                 ),
@@ -69,9 +80,8 @@ pub(super) fn coerce_blob_expr(
             declared.name().as_str(),
         ))));
 
-        let value: Arc<dyn PhysicalExpr> = match input_struct_children {
-            // Raw binary lands in `data` and everything else is a typed null.
-            None => {
+        let value: Arc<dyn PhysicalExpr> = match &input_shape {
+            BlobInputShape::Bytes => {
                 if declared.name() == "data" {
                     Arc::new(CastExpr::new(
                         input_expr.clone(),
@@ -82,30 +92,43 @@ pub(super) fn coerce_blob_expr(
                     typed_null(declared.data_type())?
                 }
             }
-            Some(children) => match children.iter().find(|c| c.name() == declared.name()) {
-                Some(child) => {
-                    let field_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
-                        &format!("get_field({})", declared.name()),
-                        get_field(),
-                        vec![
-                            input_expr.clone(),
-                            Arc::new(Literal::new(ScalarValue::from(declared.name().as_str()))),
-                        ],
-                        Arc::new(child.as_ref().clone()),
-                        config.clone(),
-                    ));
-                    if child.data_type() == declared.data_type() {
-                        field_expr
-                    } else {
-                        Arc::new(CastExpr::new(
-                            field_expr,
-                            declared.data_type().clone(),
-                            None,
-                        ))
-                    }
+            BlobInputShape::String => {
+                if declared.name() == "uri" {
+                    Arc::new(CastExpr::new(
+                        input_expr.clone(),
+                        declared.data_type().clone(),
+                        None,
+                    ))
+                } else {
+                    typed_null(declared.data_type())?
                 }
-                None => typed_null(declared.data_type())?,
-            },
+            }
+            BlobInputShape::Struct(children) => {
+                match children.iter().find(|c| c.name() == declared.name()) {
+                    Some(child) => {
+                        let field_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                            &format!("get_field({})", declared.name()),
+                            get_field(),
+                            vec![
+                                input_expr.clone(),
+                                Arc::new(Literal::new(ScalarValue::from(declared.name().as_str()))),
+                            ],
+                            Arc::new(child.as_ref().clone()),
+                            config.clone(),
+                        ));
+                        if child.data_type() == declared.data_type() {
+                            field_expr
+                        } else {
+                            Arc::new(CastExpr::new(
+                                field_expr,
+                                declared.data_type().clone(),
+                                None,
+                            ))
+                        }
+                    }
+                    None => typed_null(declared.data_type())?,
+                }
+            }
         };
         ns_args.push(value);
     }
@@ -118,6 +141,12 @@ pub(super) fn coerce_blob_expr(
         config.clone(),
     ));
     Ok((expr, table_field.clone()))
+}
+
+enum BlobInputShape<'a> {
+    Bytes,
+    String,
+    Struct(&'a Fields),
 }
 
 fn typed_null(data_type: &DataType) -> Result<Arc<dyn PhysicalExpr>> {
@@ -134,7 +163,7 @@ mod tests {
     use crate::blob::blob;
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BinaryViewArray, Int32Array, Int64Array, LargeBinaryArray,
-        RecordBatch, StringArray, StructArray, UInt8Array, UInt64Array,
+        NullArray, RecordBatch, StringArray, StringViewArray, StructArray, UInt8Array, UInt64Array,
     };
     use arrow_schema::Schema;
     use datafusion::prelude::SessionContext;
@@ -256,6 +285,18 @@ mod tests {
         let data = image_struct(&coerced).column_by_name("data").unwrap();
         let data: &LargeBinaryArray = data.as_any().downcast_ref().unwrap();
         assert_eq!(data.value(0), b"view");
+    }
+
+    #[tokio::test]
+    async fn null_column_coerces_to_all_null_blob_struct() {
+        let batch = batch_with_image(
+            Field::new("image", DataType::Null, true),
+            Arc::new(NullArray::new(2)),
+        );
+        let coerced = coerce(batch, &blob_table_schema()).await;
+        let image = image_struct(&coerced);
+        assert!(image.is_null(0));
+        assert!(image.is_null(1));
     }
 
     #[tokio::test]
@@ -436,12 +477,76 @@ mod tests {
     #[tokio::test]
     async fn unsupported_input_type_is_rejected_with_column_name() {
         let batch = batch_with_image(
-            Field::new("image", DataType::Utf8, true),
-            Arc::new(StringArray::from(vec!["not bytes"])),
+            Field::new("image", DataType::Int64, true),
+            Arc::new(Int64Array::from(vec![42])),
         );
         let err = coerce_err(batch, &blob_table_schema()).await;
         assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
         assert!(err.to_string().contains("image"));
+    }
+
+    #[tokio::test]
+    async fn utf8_string_coerces_to_uri_child() {
+        let batch = batch_with_image(
+            Field::new("image", DataType::Utf8, true),
+            Arc::new(StringArray::from(vec![Some("s3://bucket/key"), None])),
+        );
+        let coerced = coerce(batch, &blob_table_schema()).await;
+        let image = image_struct(&coerced);
+        let uri: &StringArray = image
+            .column_by_name("uri")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(uri.value(0), "s3://bucket/key");
+        assert!(image.column_by_name("data").unwrap().is_null(0));
+        assert!(uri.is_null(1));
+    }
+
+    #[tokio::test]
+    async fn large_utf8_string_coerces_into_four_child_blob_layout() {
+        use arrow_array::LargeStringArray;
+
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            wide_blob_field("image"),
+        ]);
+        let batch = batch_with_image(
+            Field::new("image", DataType::LargeUtf8, true),
+            Arc::new(LargeStringArray::from(vec!["file:///tmp/blob.bin"])),
+        );
+        let coerced = coerce(batch, &table_schema).await;
+        let image = image_struct(&coerced);
+        assert_eq!(image.num_columns(), 4);
+        let uri: &StringArray = image
+            .column_by_name("uri")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(uri.value(0), "file:///tmp/blob.bin");
+        assert!(image.column_by_name("data").unwrap().is_null(0));
+        assert!(image.column_by_name("position").unwrap().is_null(0));
+        assert!(image.column_by_name("size").unwrap().is_null(0));
+    }
+
+    #[tokio::test]
+    async fn utf8_view_string_coerces_to_uri_child() {
+        let batch = batch_with_image(
+            Field::new("image", DataType::Utf8View, true),
+            Arc::new(StringViewArray::from(vec![Some("s3://bucket/view-key")])),
+        );
+        let coerced = coerce(batch, &blob_table_schema()).await;
+        let image = image_struct(&coerced);
+        let uri: &StringArray = image
+            .column_by_name("uri")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(uri.value(0), "s3://bucket/view-key");
+        assert!(image.column_by_name("data").unwrap().is_null(0));
     }
 
     #[tokio::test]

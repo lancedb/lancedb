@@ -3,7 +3,7 @@
   "job_type": "refresh_function_columns",
   "job_state": "DONE",
   "creation_ms": 1787270400001,
-  "spec": {"table": "documents", "binding_revision": 3},
+  "spec": {"table": "documents", "binding_id": "fb_01K3TEXT"},
   "result": {
     "rows_assigned": 999998800,
     "rows_failed": 0,

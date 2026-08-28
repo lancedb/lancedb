@@ -5,7 +5,6 @@ import {
   Data as ArrowData,
   Table as ArrowTable,
   Binary,
-  Bool,
   BufferType,
   DataType,
   DateUnit,
@@ -18,12 +17,7 @@ import {
   FixedSizeList,
   Float,
   Float32,
-  Float64,
   Int,
-  Int8,
-  Int16,
-  Int32,
-  Int64,
   LargeBinary,
   List,
   Null,
@@ -36,17 +30,16 @@ import {
   Struct,
   Timestamp,
   Type,
-  Uint8,
-  Uint16,
-  Uint32,
   Utf8,
   Vector,
   makeVector as arrowMakeVector,
+  util as arrowUtil,
   vectorFromArray as badVectorFromArray,
   makeBuilder,
   makeData,
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
+import { typedArrayToArrowType } from "./arrow_type";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import {
   EmbeddingFunctionConfig,
@@ -59,14 +52,7 @@ import {
   sanitizeTable,
   sanitizeType,
 } from "./sanitize";
-
-/**
- * Check if a field name indicates a vector column.
- */
-function nameSuggestsVectorColumn(fieldName: string): boolean {
-  const nameLower = fieldName.toLowerCase();
-  return nameLower.includes("vector") || nameLower.includes("embedding");
-}
+import { inferSchema } from "./schema";
 
 export * from "apache-arrow";
 export type SchemaLike =
@@ -86,8 +72,7 @@ export type FieldLike =
     };
 
 export type DataLike =
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  | import("apache-arrow").Data<Struct<any>>
+  | import("apache-arrow").Data
   | {
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
       type: any;
@@ -96,6 +81,7 @@ export type DataLike =
       stride: number;
       nullable: boolean;
       children: DataLike[];
+      dictionary?: { data: readonly DataLike[] };
       get nullCount(): number;
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
       values: Buffers<any>[BufferType.DATA];
@@ -459,110 +445,6 @@ export function makeArrowTable(
   return new ArrowTable(inferredSchema, finalColumns);
 }
 
-function inferSchema(
-  data: Array<Record<string, unknown>>,
-  schema: Schema | undefined,
-  opts: MakeArrowTableOptions,
-): Schema {
-  // We will collect all fields we see in the data.
-  const pathTree = new PathTree<DataType>();
-
-  for (const [rowI, row] of data.entries()) {
-    for (const [path, value] of rowPathsAndValues(row)) {
-      if (!pathTree.has(path)) {
-        // First time seeing this field.
-        if (schema !== undefined) {
-          const field = getFieldForPath(schema, path);
-          if (field === undefined) {
-            throw new Error(
-              `Found field not in schema: ${path.join(".")} at row ${rowI}`,
-            );
-          } else {
-            pathTree.set(path, field.type);
-          }
-        } else {
-          const inferredType = inferType(value, path, opts);
-          if (inferredType === undefined) {
-            throw new Error(`Failed to infer data type for field ${path.join(
-              ".",
-            )} at row ${rowI}. \
-                             Consider providing an explicit schema.`);
-          }
-          pathTree.set(path, inferredType);
-        }
-      } else if (schema === undefined) {
-        const currentType = pathTree.get(path);
-        const newType = inferType(value, path, opts);
-        if (currentType !== newType) {
-          new Error(`Failed to infer schema for data. Previously inferred type \
-                     ${currentType} but found ${newType} at row ${rowI}. Consider \
-                     providing an explicit schema.`);
-        }
-      }
-    }
-  }
-
-  if (schema === undefined) {
-    function fieldsFromPathTree(pathTree: PathTree<DataType>): Field[] {
-      const fields = [];
-      for (const [name, value] of pathTree.map.entries()) {
-        if (value instanceof PathTree) {
-          const children = fieldsFromPathTree(value);
-          fields.push(new Field(name, new Struct(children), true));
-        } else {
-          fields.push(new Field(name, value, true));
-        }
-      }
-      return fields;
-    }
-    const fields = fieldsFromPathTree(pathTree);
-    return new Schema(fields);
-  } else {
-    function takeMatchingFields(
-      fields: Field[],
-      pathTree: PathTree<DataType>,
-    ): Field[] {
-      const outFields = [];
-      for (const field of fields) {
-        if (pathTree.map.has(field.name)) {
-          const value = pathTree.get([field.name]);
-          if (value instanceof PathTree) {
-            const struct = field.type as Struct;
-            const children = takeMatchingFields(struct.children, value);
-            outFields.push(
-              new Field(field.name, new Struct(children), field.nullable),
-            );
-          } else {
-            outFields.push(
-              new Field(field.name, value as DataType, field.nullable),
-            );
-          }
-        }
-      }
-      return outFields;
-    }
-    const fields = takeMatchingFields(schema.fields, pathTree);
-    return new Schema(fields);
-  }
-}
-
-function* rowPathsAndValues(
-  row: Record<string, unknown>,
-  basePath: string[] = [],
-): Generator<[string[], unknown]> {
-  for (const [key, value] of Object.entries(row)) {
-    if (isObject(value)) {
-      yield* rowPathsAndValues(value, [...basePath, key]);
-    } else {
-      // Skip undefined values - they should be treated the same as missing fields
-      // for embedding function purposes
-      if (value !== undefined) {
-        yield [[...basePath, key], value];
-      }
-    }
-  }
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === "object" &&
@@ -577,146 +459,19 @@ function isObject(value: unknown): value is Record<string, unknown> {
   );
 }
 
-function getFieldForPath(schema: Schema, path: string[]): Field | undefined {
-  let current: Field | Schema = schema;
+function valueAtPath(datum: Record<string, unknown>, path: string[]): unknown {
+  let current: unknown = datum;
   for (const key of path) {
-    if (current instanceof Schema) {
-      const field: Field | undefined = current.fields.find(
-        (f) => f.name === key,
-      );
-      if (field === undefined) {
-        return undefined;
-      }
-      current = field;
-    } else if (current instanceof Field && DataType.isStruct(current.type)) {
-      const struct: Struct = current.type;
-      const field = struct.children.find((f) => f.name === key);
-      if (field === undefined) {
-        return undefined;
-      }
-      current = field;
+    if (current == null) {
+      return null;
+    }
+    if (isObject(current) && (Object.hasOwn(current, key) || key in current)) {
+      current = current[key];
     } else {
       return undefined;
     }
   }
-  if (current instanceof Field) {
-    return current;
-  } else {
-    return undefined;
-  }
-}
-
-/**
- * Try to infer which Arrow type to use for a given value.
- *
- * May return undefined if the type cannot be inferred.
- */
-function inferType(
-  value: unknown,
-  path: string[],
-  opts: MakeArrowTableOptions,
-): DataType | undefined {
-  if (typeof value === "bigint") {
-    return new Int64();
-  } else if (typeof value === "number") {
-    // Even if it's an integer, it's safer to assume Float64. Users can
-    // always provide an explicit schema or use BigInt if they mean integer.
-    return new Float64();
-  } else if (typeof value === "string") {
-    if (opts.dictionaryEncodeStrings) {
-      return new Dictionary(new Utf8(), new Int32());
-    } else {
-      return new Utf8();
-    }
-  } else if (typeof value === "boolean") {
-    return new Bool();
-  } else if (value instanceof Buffer) {
-    return new Binary();
-  } else if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-    const info = typedArrayToArrowType(value);
-    if (info !== undefined) {
-      const child = new Field("item", info.elementType, true);
-      return new FixedSizeList(info.length, child);
-    }
-    return undefined;
-  } else if (Array.isArray(value)) {
-    if (value.length === 0) {
-      return undefined; // Without any values we can't infer the type
-    }
-    if (path.length === 1 && Object.hasOwn(opts.vectorColumns, path[0])) {
-      const floatType = sanitizeType(opts.vectorColumns[path[0]].type);
-      return new FixedSizeList(
-        value.length,
-        new Field("item", floatType, true),
-      );
-    }
-    const valueType = inferType(value[0], path, opts);
-    if (valueType === undefined) {
-      return undefined;
-    }
-    // Try to automatically detect embedding columns.
-    if (nameSuggestsVectorColumn(path[path.length - 1])) {
-      // Check if value is a Uint8Array for integer vector type determination
-      if (value instanceof Uint8Array) {
-        // For integer vectors, we default to Uint8 (matching Python implementation)
-        const child = new Field("item", new Uint8(), true);
-        return new FixedSizeList(value.length, child);
-      } else {
-        // For float vectors, we default to Float32
-        const child = new Field("item", new Float32(), true);
-        return new FixedSizeList(value.length, child);
-      }
-    } else {
-      const child = new Field("item", valueType, true);
-      return new List(child);
-    }
-  } else {
-    // TODO: timestamp
-    return undefined;
-  }
-}
-
-class PathTree<V> {
-  map: Map<string, V | PathTree<V>>;
-
-  constructor(entries?: [string[], V][]) {
-    this.map = new Map();
-    if (entries !== undefined) {
-      for (const [path, value] of entries) {
-        this.set(path, value);
-      }
-    }
-  }
-  has(path: string[]): boolean {
-    let ref: PathTree<V> = this;
-    for (const part of path) {
-      if (!(ref instanceof PathTree) || !ref.map.has(part)) {
-        return false;
-      }
-      ref = ref.map.get(part) as PathTree<V>;
-    }
-    return true;
-  }
-  get(path: string[]): V | undefined {
-    let ref: PathTree<V> = this;
-    for (const part of path) {
-      if (!(ref instanceof PathTree) || !ref.map.has(part)) {
-        return undefined;
-      }
-      ref = ref.map.get(part) as PathTree<V>;
-    }
-    return ref as V;
-  }
-  set(path: string[], value: V): void {
-    let ref: PathTree<V> = this;
-    for (const part of path.slice(0, path.length - 1)) {
-      if (!ref.map.has(part)) {
-        ref.map.set(part, new PathTree<V>());
-      }
-      ref = ref.map.get(part) as PathTree<V>;
-    }
-    ref.map.set(path[path.length - 1], value);
-  }
+  return current;
 }
 
 function transposeData(
@@ -724,37 +479,26 @@ function transposeData(
   field: Field,
   path: string[] = [],
 ): Vector {
+  const valuesPath = [...path, field.name];
+  const values = data.map((datum) => valueAtPath(datum, valuesPath));
   if (field.type instanceof Struct) {
     const childFields = field.type.children;
-    const fullPath = [...path, field.name];
     const childVectors = childFields.map((child) => {
-      return transposeData(data, child, fullPath);
+      return transposeData(data, child, valuesPath);
     });
+    const nullCount = values.filter((value) => value === null).length;
     const structData = makeData({
       type: field.type,
+      length: values.length,
+      nullCount,
+      nullBitmap:
+        nullCount > 0
+          ? arrowUtil.packBools(values.map((value) => value !== null))
+          : undefined,
       children: childVectors as unknown as ArrowData<DataType>[],
     });
     return arrowMakeVector(structData);
   } else {
-    const valuesPath = [...path, field.name];
-    const values = data.map((datum) => {
-      let current: unknown = datum;
-      for (const key of valuesPath) {
-        if (current == null) {
-          return null;
-        }
-
-        if (
-          isObject(current) &&
-          (Object.hasOwn(current, key) || key in current)
-        ) {
-          current = current[key];
-        } else {
-          return null;
-        }
-      }
-      return current;
-    });
     return makeVector(values, field.type, undefined, field.nullable);
   }
 }
@@ -795,32 +539,6 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
     listBuilder.append(list);
   }
   return listBuilder.finish().toVector();
-}
-
-/**
- * Map a JS TypedArray instance to the corresponding Arrow element DataType
- * and its length. Returns undefined if the value is not a recognized TypedArray.
- */
-function typedArrayToArrowType(
-  value: ArrayBufferView,
-): { elementType: DataType; length: number } | undefined {
-  if (value instanceof Float32Array)
-    return { elementType: new Float32(), length: value.length };
-  if (value instanceof Float64Array)
-    return { elementType: new Float64(), length: value.length };
-  if (value instanceof Uint8Array)
-    return { elementType: new Uint8(), length: value.length };
-  if (value instanceof Uint16Array)
-    return { elementType: new Uint16(), length: value.length };
-  if (value instanceof Uint32Array)
-    return { elementType: new Uint32(), length: value.length };
-  if (value instanceof Int8Array)
-    return { elementType: new Int8(), length: value.length };
-  if (value instanceof Int16Array)
-    return { elementType: new Int16(), length: value.length };
-  if (value instanceof Int32Array)
-    return { elementType: new Int32(), length: value.length };
-  return undefined;
 }
 
 /** Helper function to convert an Array of JS values to an Arrow Vector */
@@ -1462,8 +1180,12 @@ export function ensureNestedFieldsExist(
           completeRow[field.name] = row[field.name];
         }
       } else {
-        // Field is missing from the data - set to null
-        completeRow[field.name] = null;
+        // Keep a missing struct valid while filling each of its children with
+        // null. This is distinct from an explicitly null struct value.
+        completeRow[field.name] =
+          field.type.constructor.name === "Struct"
+            ? ensureStructFieldsExist({}, field.type as Struct)
+            : null;
       }
     }
 
@@ -1498,8 +1220,12 @@ function ensureStructFieldsExist(
         completeStruct[childField.name] = data[childField.name];
       }
     } else {
-      // Field is missing - set to null
-      completeStruct[childField.name] = null;
+      // Keep a missing struct valid while filling each of its children with
+      // null. This is distinct from an explicitly null struct value.
+      completeStruct[childField.name] =
+        childField.type.constructor.name === "Struct"
+          ? ensureStructFieldsExist({}, childField.type as Struct)
+          : null;
     }
   }
 

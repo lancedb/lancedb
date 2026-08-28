@@ -27,6 +27,8 @@ use std::sync::Arc;
 
 use arrow_array::Array;
 use arrow_schema::{DataType, Schema as ArrowSchema};
+use datafusion::common::{DataFusionError, ToDFSchema};
+use datafusion::prelude::SessionContext;
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
@@ -298,7 +300,7 @@ async fn build_read_context(
     for shard_id in shard_ids {
         let manifest_store =
             ShardManifestStore::new(store.clone(), &base_path, shard_id, scan_batch_size);
-        if let Some(manifest) = manifest_store.read_latest().await? {
+        if let Some(manifest) = manifest_store.latest().await? {
             snapshots.push(snapshot_from_manifest(shard_id, &manifest, &exclude));
         }
     }
@@ -391,7 +393,21 @@ fn base_scanner(
     }
     if let Some(filter) = &query.base.filter {
         scanner = match filter {
-            QueryFilter::Sql(sql) => scanner.filter(sql)?,
+            QueryFilter::Sql(sql) => {
+                // Parse here instead of inside `LsmScanner::filter` so the typed
+                // DataFusion `FieldNotFound` error is still available for the
+                // same nested-field enrichment used by the ordinary scanner.
+                let schema = ArrowSchema::from(dataset.schema());
+                let df_schema = schema.clone().to_dfschema().map_err(|error| {
+                    enrich_filter_error(error, &schema, "Failed to create DFSchema")
+                })?;
+                let expr = SessionContext::new()
+                    .parse_sql_expr(sql, &df_schema)
+                    .map_err(|error| {
+                        enrich_filter_error(error, &schema, "Failed to parse filter expression")
+                    })?;
+                scanner.filter_expr(expr)
+            }
             QueryFilter::Datafusion(expr) => scanner.filter_expr(expr.clone()),
             QueryFilter::Substrait(_) => {
                 return Err(Error::NotSupported {
@@ -401,6 +417,12 @@ fn base_scanner(
         };
     }
     Ok(scanner)
+}
+
+fn enrich_filter_error(error: DataFusionError, schema: &ArrowSchema, context: &str) -> Error {
+    super::field_not_found_diagnostic(&error, schema).unwrap_or_else(|| Error::InvalidInput {
+        message: format!("{context}: {error}"),
+    })
 }
 
 /// Plain scan: filter / projection / limit over base ∪ SSTables ∪ in-memory.

@@ -5,72 +5,33 @@ use std::sync::Arc;
 
 use crate::runtime::future_into_py;
 use pyo3::{Bound, PyAny, PyRef, PyResult, pyclass, pymethods};
+use serde::Serialize;
 
 use crate::error::PythonErrorExt;
 
 #[pyclass]
 pub struct Job {
-    inner: Arc<lancedb::Job>,
-}
-
-/// Python bridge for a typed remote Function registration job.
-///
-/// The public Python layer decodes the canonical JSON returned by `wait`
-/// into its immutable `FunctionVersion` model.
-#[pyclass]
-pub struct FunctionJob {
-    inner: Arc<lancedb::Job<lancedb::function::FunctionVersion>>,
-}
-
-impl FunctionJob {
-    pub(crate) fn new(inner: lancedb::Job<lancedb::function::FunctionVersion>) -> Self {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
+    inner: Arc<lancedb::Job<std::result::Result<Option<String>, String>>>,
 }
 
 impl Job {
     pub(crate) fn new(inner: lancedb::Job) -> Self {
         Self {
-            inner: Arc::new(inner),
+            inner: Arc::new(inner.map(|()| Ok(None))),
         }
     }
-}
 
-#[pymethods]
-impl FunctionJob {
-    #[getter]
-    pub fn id(&self) -> Option<String> {
-        self.inner.id().map(str::to_string)
-    }
-
-    pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
-        future_into_py(
-            self_.py(),
-            async move { inner.status().await.infer_error() },
-        )
-    }
-
-    pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
-        future_into_py(self_.py(), async move {
-            inner
-                .wait()
-                .await
-                .infer_error()?
-                .to_canonical_json()
-                .infer_error()
-        })
-    }
-
-    pub fn cancel(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
-        future_into_py(self_.py(), async move {
-            inner.cancel().await.infer_error()?;
-            Ok(())
-        })
+    pub(crate) fn new_typed<T>(inner: lancedb::Job<T>) -> Self
+    where
+        T: Clone + Serialize + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(inner.map(|result| {
+                serde_json::to_string(&result)
+                    .map(Some)
+                    .map_err(|error| format!("failed to serialize typed job result: {error}"))
+            })),
+        }
     }
 }
 
@@ -92,8 +53,10 @@ impl Job {
     pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            inner.wait().await.infer_error()?;
-            Ok(None::<()>)
+            let result = inner.wait().await.infer_error()?;
+            result
+                .map_err(|message| lancedb::Error::Runtime { message })
+                .infer_error()
         })
     }
 

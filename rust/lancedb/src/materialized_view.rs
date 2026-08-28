@@ -37,6 +37,13 @@ pub use refresh::{RefreshMaterializedViewResult, RefreshMode};
 /// Schema metadata key holding the view definition, as kind-tagged JSON.
 pub const DEFINITION_META_KEY: &str = "mv.definition";
 
+/// Schema metadata key holding the view's incarnation: a token minted at each
+/// physical creation of a view table, so a view dropped and recreated under
+/// the same name and definition is still told apart from the one a caller
+/// captured. A view whose metadata was replaced wholesale, or one declared
+/// before tokens existed, carries none until its next refresh mints one.
+pub const INCARNATION_META_KEY: &str = "mv.incarnation";
+
 /// Schema metadata key holding the source table version the view was last
 /// refreshed to. Absent until the first refresh.
 pub const SOURCE_VERSION_META_KEY: &str = "mv.source_version";
@@ -163,6 +170,15 @@ pub(crate) fn plan(
     filter: Option<&str>,
     limit: Option<u64>,
 ) -> Result<(MaterializedViewDefinition, Vec<ArrowField>, Lineage)> {
+    let filter = filter
+        .map(crate::expr::canonicalize_sql_predicate)
+        .transpose()
+        .map_err(|err| match err {
+            Error::InvalidInput { message } => Error::InvalidInput {
+                message: format!("invalid view filter: {message}"),
+            },
+            err => err,
+        })?;
     let projections: Vec<(String, String)> = if projections.is_empty() {
         source_schema
             .fields()
@@ -267,7 +283,7 @@ pub(crate) fn plan(
         declared.push(output);
     }
 
-    if let Some(filter) = filter {
+    if let Some(filter) = filter.as_deref() {
         let expr = planner
             .parse_filter(filter)
             .map_err(|e| Error::InvalidInput {
@@ -307,7 +323,7 @@ pub(crate) fn plan(
             .into_iter()
             .map(|(output, expression)| ViewProjection { output, expression })
             .collect(),
-        filter: filter.map(String::from),
+        filter,
         limit,
         inputs,
     };
@@ -612,8 +628,17 @@ impl PreparedDeclaration {
     pub async fn create(self, name: &str) -> Result<MaterializedView> {
         let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
             vec![];
+        // Minted here, not at preparation: a declaration can be cloned and
+        // create more than one physical table, and each needs its own token.
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let mut metadata = self.schema.metadata().clone();
+        metadata.insert(INCARNATION_META_KEY.to_string(), incarnation.clone());
+        let schema = Arc::new(ArrowSchema::new_with_metadata(
+            self.schema.fields().clone(),
+            metadata,
+        ));
         let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
-            Box::new(arrow_array::RecordBatchIterator::new(empty, self.schema));
+            Box::new(arrow_array::RecordBatchIterator::new(empty, schema));
         let mut request = CreateTableRequest::new(name.to_string(), Box::new(reader));
         let write_params = request
             .write_options
@@ -648,6 +673,7 @@ impl PreparedDeclaration {
         Ok(MaterializedView {
             table,
             definition: self.definition,
+            incarnation: Some(incarnation),
         })
     }
 }
@@ -878,6 +904,7 @@ impl CreateMaterializedViewBuilder {
 pub struct MaterializedView {
     table: Table,
     definition: MaterializedViewDefinition,
+    incarnation: Option<String>,
 }
 
 impl MaterializedView {
@@ -893,8 +920,13 @@ impl MaterializedView {
             });
         }
         let schema = table.schema().await?;
+        let incarnation = schema.metadata().get(INCARNATION_META_KEY).cloned();
         match materialized_view_kind(schema.metadata())? {
-            Some(MaterializedViewKind::Select(definition)) => Ok(Self { table, definition }),
+            Some(MaterializedViewKind::Select(definition)) => Ok(Self {
+                table,
+                definition,
+                incarnation,
+            }),
             Some(MaterializedViewKind::Unrecognized { kind }) => Err(Error::NotSupported {
                 message: format!(
                     "materialized view '{}' is defined by '{kind}', which this version of \
@@ -923,6 +955,13 @@ impl MaterializedView {
         &self.definition
     }
 
+    /// The view's incarnation token as of when this handle was opened; see
+    /// [`RefreshMaterializedViewBuilder::expect_incarnation`]. `None` for a
+    /// view that has none yet (see [`INCARNATION_META_KEY`]).
+    pub fn incarnation(&self) -> Option<&str> {
+        self.incarnation.as_deref()
+    }
+
     /// Recompute the view from its source.
     ///
     /// By default the refresh is incremental when the source's changes can be
@@ -943,6 +982,7 @@ impl MaterializedView {
             view: self.clone(),
             full: false,
             source_version: None,
+            expected_incarnation: None,
         }
     }
 }
@@ -952,6 +992,7 @@ pub struct RefreshMaterializedViewBuilder {
     view: MaterializedView,
     full: bool,
     source_version: Option<u64>,
+    expected_incarnation: Option<String>,
 }
 
 impl RefreshMaterializedViewBuilder {
@@ -967,8 +1008,28 @@ impl RefreshMaterializedViewBuilder {
         self
     }
 
+    /// Refresh only if the view is still the incarnation that minted `token`
+    /// (see [`MaterializedView::incarnation`]): a refresh requested against
+    /// one declaration must not land in a view dropped and recreated since,
+    /// even under the same name and definition.
+    ///
+    /// Best effort. The token is read from the latest stored manifest before
+    /// planning and again immediately before every commit, but it is not part
+    /// of the commit's own condition, so a recreation that lands between that
+    /// final read and the commit is not caught.
+    pub fn expect_incarnation(mut self, token: impl Into<String>) -> Self {
+        self.expected_incarnation = Some(token.into());
+        self
+    }
+
     pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
-        refresh::execute_refresh(&self.view.table, self.full, self.source_version).await
+        refresh::execute_refresh(
+            &self.view.table,
+            self.full,
+            self.source_version,
+            self.expected_incarnation.as_deref(),
+        )
+        .await
     }
 }
 

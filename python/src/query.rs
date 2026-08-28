@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,8 +17,8 @@ use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
 use arrow::pyarrow::ToPyArrow;
 use lancedb::index::scalar::{
-    BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
-    Operator, PhraseQuery,
+    BooleanQuery, BoostQuery, DocumentGranularity, FtsQuery, FullTextSearchQuery, MatchQuery,
+    MultiMatchQuery, Occur, Operator, PhraseQuery,
 };
 use lancedb::query::AnalyzePlanDistributedMetrics;
 use lancedb::query::QueryBase;
@@ -76,8 +77,16 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
                 let max_expansions = ob.getattr("max_expansions")?.extract()?;
                 let operator = ob.getattr("operator")?.extract::<String>()?;
                 let prefix_length = ob.getattr("prefix_length")?.extract()?;
+                let document_granularity = ob
+                    .getattr("document_granularity")?
+                    .extract::<Option<String>>()?
+                    .map(|value| {
+                        DocumentGranularity::try_from(value.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))
+                    })
+                    .transpose()?;
 
-                Ok(Self(
+                let mut query =
                     MatchQuery::new(query)
                         .with_column(Some(column))
                         .with_boost(boost)
@@ -86,21 +95,32 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
                         .with_operator(Operator::try_from(operator.as_str()).map_err(|e| {
                             PyValueError::new_err(format!("Invalid operator: {}", e))
                         })?)
-                        .with_prefix_length(prefix_length)
-                        .into(),
-                ))
+                        .with_prefix_length(prefix_length);
+                if let Some(document_granularity) = document_granularity {
+                    query = query.with_document_granularity(document_granularity);
+                }
+                Ok(Self(query.into()))
             }
             "PhraseQuery" => {
                 let query = ob.getattr("query")?.extract()?;
                 let column = ob.getattr("column")?.extract()?;
                 let slop = ob.getattr("slop")?.extract()?;
+                let document_granularity = ob
+                    .getattr("document_granularity")?
+                    .extract::<Option<String>>()?
+                    .map(|value| {
+                        DocumentGranularity::try_from(value.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))
+                    })
+                    .transpose()?;
 
-                Ok(Self(
-                    PhraseQuery::new(query)
-                        .with_column(Some(column))
-                        .with_slop(slop)
-                        .into(),
-                ))
+                let mut query = PhraseQuery::new(query)
+                    .with_column(Some(column))
+                    .with_slop(slop);
+                if let Some(document_granularity) = document_granularity {
+                    query = query.with_document_granularity(document_granularity);
+                }
+                Ok(Self(query.into()))
             }
             "BoostQuery" => {
                 let positive: Self = ob.getattr("positive")?.extract()?;
@@ -167,6 +187,13 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 kwargs.set_item("max_expansions", query.max_expansions)?;
                 kwargs.set_item::<_, &str>("operator", query.operator.into())?;
                 kwargs.set_item("prefix_length", query.prefix_length)?;
+                if let Some(document_granularity) = query.document_granularity {
+                    let value = match document_granularity {
+                        DocumentGranularity::Row => "row",
+                        DocumentGranularity::ListElement => "list_element",
+                    };
+                    kwargs.set_item("document_granularity", value)?;
+                }
                 namespace
                     .getattr(intern!(py, "MatchQuery"))?
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
@@ -174,6 +201,13 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             FtsQuery::Phrase(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("slop", query.slop)?;
+                if let Some(document_granularity) = query.document_granularity {
+                    let value = match document_granularity {
+                        DocumentGranularity::Row => "row",
+                        DocumentGranularity::ListElement => "list_element",
+                    };
+                    kwargs.set_item("document_granularity", value)?;
+                }
                 namespace
                     .getattr(intern!(py, "PhraseQuery"))?
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
@@ -292,6 +326,7 @@ pub struct PyQueryRequest {
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
+    pub select_source_columns: Option<HashMap<String, String>>,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
     pub use_lsm: Option<bool>,
@@ -322,6 +357,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 full_text_search: query_request
                     .full_text_search
                     .map(|fts| PyLanceDB(fts.query)),
+                select_source_columns: PySelect::source_columns(&query_request.select),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
@@ -347,6 +383,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 offset: vector_query.base.offset,
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
+                select_source_columns: PySelect::source_columns(&vector_query.base.select),
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
                 with_row_id: Some(vector_query.base.with_row_id),
@@ -378,6 +415,25 @@ impl From<AnyQuery> for PyQueryRequest {
 // Python representation of query selection
 #[derive(Clone)]
 pub struct PySelect(Select);
+
+impl PySelect {
+    fn source_columns(select: &Select) -> Option<HashMap<String, String>> {
+        match select {
+            Select::Expr(pairs) => Some(
+                pairs
+                    .iter()
+                    .filter_map(|(output, expr)| match expr {
+                        lancedb::expr::DfExpr::Column(column) if column.relation.is_none() => {
+                            Some((output.clone(), column.name.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+}
 
 impl<'py> IntoPyObject<'py> for PySelect {
     type Target = PyAny;

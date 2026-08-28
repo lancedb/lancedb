@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Canonical values exchanged with the Enterprise Function service.
+//! Canonical Function values exchanged with the Enterprise service, plus the
+//! backend-neutral terminal result of a computed-column refresh.
 //!
 //! This module contains client/wire values only. Catalog persistence,
-//! environment bake, secret resolution, and execution are owned by Sophon.
+//! environment bake, and execution are owned by Sophon.
 
 use std::collections::BTreeMap;
 
@@ -185,6 +186,9 @@ pub struct PythonEnvironmentSpec {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
+    /// Conda channels in priority order; conda environments only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -194,9 +198,6 @@ pub struct PythonEnvironmentSpec {
 }
 
 /// Reproducible Python runtime definition understood by Sophon.
-///
-/// `env` contains non-secret values. Secret values have no client model;
-/// [`FunctionVersion::required_secrets`] contains names only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PythonRuntimeSpec {
@@ -238,7 +239,7 @@ impl PythonRuntimeSpec {
         }
     }
 
-    /// Non-secret environment variables, or `None` for an unknown kind.
+    /// Environment variables, or `None` for an unknown kind.
     pub fn env(&self) -> Option<&BTreeMap<String, String>> {
         match self {
             Self::Python { env, .. } => Some(env),
@@ -323,8 +324,6 @@ pub struct FunctionVersion {
     runtime: PythonRuntimeSpec,
     runtime_digest: String,
     environment_digest: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    required_secrets: Vec<String>,
     created_at: String,
 }
 
@@ -355,11 +354,6 @@ impl FunctionVersion {
 
     pub fn environment_digest(&self) -> &str {
         &self.environment_digest
-    }
-
-    /// Required secret names. Resolved values exist only inside Sophon.
-    pub fn required_secrets(&self) -> &[String] {
-        &self.required_secrets
     }
 
     pub fn created_at(&self) -> &str {
@@ -403,18 +397,12 @@ pub struct FunctionArtifactRequest {
 }
 
 /// Stable request envelope for remote immutable Function registration.
-///
-/// Secret values deliberately have no field in this model. The only secret
-/// material the client may send is the ordered set of names Sophon resolves
-/// inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required_secrets: Vec<String>,
 }
 
 impl_json!(FunctionRegistrationRequest);
@@ -445,7 +433,6 @@ pub struct FunctionApplication {
     function: FunctionVersionRef,
     inputs: Vec<ApplicationInput>,
     output: FunctionOutput,
-    group_id: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     columns: BTreeMap<String, String>,
     #[serde(default, flatten, skip_serializing)]
@@ -465,10 +452,6 @@ impl FunctionApplication {
 
     pub fn output(&self) -> &FunctionOutput {
         &self.output
-    }
-
-    pub fn group_id(&self) -> &str {
-        &self.group_id
     }
 
     pub fn columns(&self) -> &BTreeMap<String, String> {
@@ -512,7 +495,7 @@ pub struct InputBinding {
     pub nullable: bool,
 }
 
-/// Ordered result-field to table-field mapping for a grouped binding.
+/// Ordered result-field to table-field mapping for a Function binding.
 ///
 /// Assignment state is not part of the Slice 1 client contract. During the
 /// NULL transition there is no public Lance cell-flag identifier to persist.
@@ -526,20 +509,18 @@ pub struct OutputMapping {
     pub nullable: bool,
 }
 
-/// Immutable grouped binding persisted by the Enterprise table service.
+/// Immutable Function binding persisted by the Enterprise table service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionBinding {
     binding_id: String,
-    revision: u64,
     function: FunctionVersionRef,
-    group_id: String,
     inputs: Vec<InputBinding>,
     outputs: Vec<OutputMapping>,
     /// Exact Arrow schema presented to the Function, encoded with the Lance
     /// Namespace Arrow JSON representation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     input_schema: Option<Value>,
-    /// Exact physical Arrow schema of the grouped table outputs.
+    /// Exact physical Arrow schema of the binding's table outputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_schema: Option<Value>,
 }
@@ -549,16 +530,8 @@ impl FunctionBinding {
         &self.binding_id
     }
 
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
     pub fn function(&self) -> &FunctionVersionRef {
         &self.function
-    }
-
-    pub fn group_id(&self) -> &str {
-        &self.group_id
     }
 
     pub fn inputs(&self) -> &[InputBinding] {
@@ -580,13 +553,22 @@ impl FunctionBinding {
 
 impl_json!(FunctionBinding);
 
-/// Stable terminal result of a remote Function-column refresh Job.
+/// Stable terminal result of an expression-backed or Function-backed column
+/// refresh [`crate::Job`].
+///
+/// Local refresh jobs produce this value in process. LanceDB Cloud and
+/// Enterprise decode the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
+    /// Rows assigned a value by this refresh.
     pub rows_assigned: u64,
+    /// Rows whose computation failed.
     pub rows_failed: u64,
+    /// Rows that still need a value when the job completes.
     pub rows_remaining: u64,
+    /// Exact table version the refresh read.
     pub source_version: u64,
+    /// Table version made visible by the refresh, when one was published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_version: Option<u64>,
 }
@@ -604,3 +586,26 @@ impl RefreshColumnResult {
 }
 
 impl_json!(RefreshColumnResult);
+
+#[cfg(test)]
+mod conda_environment_tests {
+    use super::PythonEnvironmentSpec;
+
+    #[test]
+    fn conda_channels_round_trip_and_pip_stays_bare() {
+        let conda: PythonEnvironmentSpec = serde_json::from_str(
+            r#"{"kind":"conda","packages":["numpy"],"channels":["conda-forge"]}"#,
+        )
+        .unwrap();
+        assert_eq!(conda.channels, ["conda-forge"]);
+        assert!(
+            serde_json::to_string(&conda)
+                .unwrap()
+                .contains(r#""channels":["conda-forge"]"#)
+        );
+
+        let pip: PythonEnvironmentSpec =
+            serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
+        assert!(!serde_json::to_string(&pip).unwrap().contains("channels"));
+    }
+}

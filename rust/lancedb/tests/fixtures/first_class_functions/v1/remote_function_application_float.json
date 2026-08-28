@@ -3,6 +3,5 @@
   "inputs": [
     {"parameter": "threshold", "kind": "literal", "value": 1e-7}
   ],
-  "output": {"kind": "scalar", "arrow_type": "bool", "nullable": false},
-  "group_id": "fg_01K3FLOAT"
+  "output": {"kind": "scalar", "arrow_type": "bool", "nullable": false}
 }
