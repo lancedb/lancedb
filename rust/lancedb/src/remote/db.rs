@@ -278,7 +278,7 @@ pub(crate) struct RemoteHostOverrides {
 }
 
 impl RemoteDatabase {
-    pub fn try_new(
+    pub(crate) fn try_new(
         uri: &str,
         api_key: &str,
         region: &str,
