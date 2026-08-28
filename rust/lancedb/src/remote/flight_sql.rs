@@ -263,7 +263,8 @@ fn validate_endpoint_url(parsed: &url::Url, name: &str) -> Result<()> {
             message: format!("{name} must not include user information"),
         });
     }
-    if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+    if !matches!(parsed.path(), "" | "/") || parsed.query().is_some() || parsed.fragment().is_some()
+    {
         return Err(Error::InvalidInput {
             message: format!("{name} must not include a path, query, or fragment"),
         });
@@ -273,6 +274,10 @@ fn validate_endpoint_url(parsed: &url::Url, name: &str) -> Result<()> {
 
 fn endpoint_uri(scheme: &str, host: &str, port: u16) -> String {
     if host.contains(':') {
+        let host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
         format!("{scheme}://[{host}]:{port}")
     } else {
         format!("{scheme}://{host}:{port}")
@@ -461,6 +466,13 @@ mod tests {
             FlightTarget {
                 uri: "https://example.com:10026".to_string(),
                 tls: true,
+            }
+        );
+        assert_eq!(
+            normalize_flight_sql_uri("grpc://[::1]:10025").unwrap(),
+            FlightTarget {
+                uri: "http://[::1]:10025".to_string(),
+                tls: false,
             }
         );
     }
