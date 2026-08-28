@@ -3180,8 +3180,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.schema().await?.as_ref(),
             "schema evolution",
         )?;
-        // The server plans the declaration: expression validation, type
-        // inference and the persisted binding all happen there.
+        // The server plans the declaration against its table schema, including
+        // Blob v2 semantics inherited by a direct field projection.
         let entries = columns
             .iter()
             .map(
@@ -7388,8 +7388,8 @@ mod tests {
         assert_eq!(result.version, if old_server { 0 } else { 43 });
     }
 
-    /// A declaration is sent as `{name, computed}` entries for the server to
-    /// plan; the client never types the expression itself.
+    /// A declaration is sent as `{name, computed}` for the server to plan; the
+    /// client never types the expression itself.
     #[tokio::test]
     async fn test_add_computed_columns_sends_the_expression() {
         let table = Table::new_with_handler("my_table", |request| match request.url().path() {

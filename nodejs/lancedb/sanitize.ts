@@ -94,17 +94,24 @@ export function sanitizeMetadata(
   if (metadataLike === undefined || metadataLike === null) {
     return undefined;
   }
-  if (!(metadataLike instanceof Map)) {
+
+  let entries: IterableIterator<[unknown, unknown]>;
+  try {
+    entries = Map.prototype.entries.call(metadataLike);
+  } catch {
     throw Error("Expected metadata, if present, to be a Map<string, string>");
   }
-  for (const item of metadataLike) {
-    if (typeof item[0] !== "string" || typeof item[1] !== "string") {
+
+  const metadata = new Map<string, string>();
+  for (const [key, value] of entries) {
+    if (typeof key !== "string" || typeof value !== "string") {
       throw Error(
         "Expected metadata, if present, to be a Map<string, string> but it had non-string keys or values",
       );
     }
+    metadata.set(key, value);
   }
-  return metadataLike as Map<string, string>;
+  return metadata;
 }
 
 export function sanitizeInt(typeLike: object) {

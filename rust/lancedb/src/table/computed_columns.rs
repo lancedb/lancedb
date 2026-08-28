@@ -9,29 +9,35 @@
 //! refresh fills the rows.
 //!
 //! The rule is tagged by kind ([`ComputedColumnKind`]) because kinds differ in
-//! where the column's type and inputs come from. A SQL expression is
-//! self-describing -- both are derived from the expression, so a caller writes
-//! neither -- while a kind resolved through a registry cannot be typed without
-//! consulting it. Registered Functions use an exact remote version plus a
-//! schema-level Function binding; unknown newer kinds remain readable and fail
-//! closed before mutation.
+//! where the column's type and inputs come from. A SQL expression determines
+//! its inputs and physical result type. A direct projection of a Blob v2 field
+//! also inherits that field's semantic type while execution continues to use
+//! `LargeBinary`. A kind resolved through a registry cannot be typed without
+//! consulting it.
+//! Registered Functions use an exact remote version plus a schema-level
+//! Function binding; unknown newer kinds remain readable and fail closed
+//! before mutation.
 //!
 //! [`computed_columns`] and [`computed_column_from_field`] read declarations
 //! back off a schema.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef};
-use datafusion_common::tree_node::TreeNode;
+use arrow_schema::{DataType, Field as ArrowField, Fields, Schema as ArrowSchema, SchemaRef};
+use datafusion_common::{ScalarValue, tree_node::TreeNode};
+use datafusion_expr::Expr;
 use datafusion_physical_plan::PhysicalExpr;
 use lance::dataset::NewColumnTransform;
+use lance_arrow::FieldExt;
+use lance_core::datatypes::{BLOB_V2_DESC_FIELD, format_field_path_minimal, parse_field_path};
 use lance_datafusion::planner::Planner;
 use lance_namespace::models::{JsonArrowDataType, JsonArrowField, JsonArrowSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::function::{FunctionApplication, FunctionBinding};
+use crate::utils::resolve_arrow_field_path;
 use crate::{Error, Result};
 
 /// Field metadata key marking a column as computed. The value is `"true"`.
@@ -1106,15 +1112,20 @@ pub(crate) fn ensure_no_foreign_declarations<'a>(
     fields: impl IntoIterator<Item = &'a Arc<ArrowField>>,
 ) -> Result<()> {
     for field in fields {
-        if field.metadata().keys().any(|k| is_declaration_key(k)) {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "field '{}' carries computed-column metadata; declare computed columns \
-                     with add_columns().computed()",
-                    field.name()
-                ),
-            });
-        }
+        ensure_no_foreign_declaration(field)?;
+    }
+    Ok(())
+}
+
+fn ensure_no_foreign_declaration(field: &ArrowField) -> Result<()> {
+    if field.metadata().keys().any(|k| is_declaration_key(k)) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "field '{}' carries computed-column metadata; declare computed columns \
+                 with add_columns().computed()",
+                field.name()
+            ),
+        });
     }
     Ok(())
 }
@@ -1162,15 +1173,154 @@ pub(crate) struct BoundExpression {
     /// The columns the expression names, as written; nested inputs keep
     /// their dotted path.
     pub inputs: Vec<String>,
-    /// The top-level columns evaluation reads, in [`Self::read_schema`]
-    /// order. A nested input appears through its root.
+    /// The top-level columns evaluation reads, in physical-expression order.
+    /// A nested input appears through its root.
     pub roots: Vec<String>,
-    /// The projected schema evaluation runs against.
-    pub read_schema: SchemaRef,
     /// The compiled expression.
     pub physical: Arc<dyn PhysicalExpr>,
     /// The type the expression yields.
     pub data_type: DataType,
+    /// Blob v2 leaves the scan must materialize as `LargeBinary`.
+    pub blob_paths: Vec<String>,
+    /// A directly projected Blob v2 field whose semantics the output inherits.
+    projected_blob_field: Option<ArrowField>,
+}
+
+fn is_direct_field_projection(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(_) => true,
+        Expr::ScalarFunction(function)
+            if function.name() == "get_field" && function.args.len() == 2 =>
+        {
+            is_direct_field_projection(&function.args[0])
+                && matches!(
+                    &function.args[1],
+                    Expr::Literal(ScalarValue::Utf8(Some(_)), _)
+                )
+        }
+        _ => false,
+    }
+}
+
+fn projected_blob_field(schema: &ArrowSchema, expr: &Expr) -> Result<Option<ArrowField>> {
+    if !is_direct_field_projection(expr) {
+        return Ok(None);
+    }
+    let paths = Planner::column_names_in_expr(expr);
+    let [path] = paths.as_slice() else {
+        return Ok(None);
+    };
+    let (_, field) = resolve_arrow_field_path(schema, path)?;
+    Ok(field.is_blob_v2().then_some(field))
+}
+
+fn collect_blob_paths(field: &ArrowField, parent: &[String], paths: &mut Vec<Vec<String>>) {
+    let mut path = parent.to_vec();
+    path.push(field.name().clone());
+    if field.is_blob_v2() {
+        paths.push(path);
+        return;
+    }
+    match field.data_type() {
+        DataType::Struct(children) => {
+            for child in children {
+                collect_blob_paths(child, &path, paths);
+            }
+        }
+        DataType::List(child)
+        | DataType::LargeList(child)
+        | DataType::FixedSizeList(child, _)
+        | DataType::Map(child, _) => collect_blob_paths(child, &path, paths),
+        _ => {}
+    }
+}
+
+fn schema_blob_paths(schema: &ArrowSchema) -> Vec<Vec<String>> {
+    let mut paths = Vec::new();
+    for field in schema.fields() {
+        collect_blob_paths(field, &[], &mut paths);
+    }
+    paths
+}
+
+fn transform_blob_field(
+    field: &ArrowField,
+    parent: &[String],
+    materialized: &HashSet<Vec<String>>,
+) -> ArrowField {
+    let mut path = parent.to_vec();
+    path.push(field.name().clone());
+    if field.is_blob_v2() {
+        if materialized.contains(&path) {
+            return ArrowField::new(field.name(), DataType::LargeBinary, field.is_nullable());
+        }
+        return ArrowField::new(
+            field.name(),
+            BLOB_V2_DESC_FIELD.data_type().clone(),
+            field.is_nullable(),
+        )
+        .with_metadata(BLOB_V2_DESC_FIELD.metadata().clone());
+    }
+
+    let data_type = match field.data_type() {
+        DataType::Struct(children) => DataType::Struct(
+            children
+                .iter()
+                .map(|child| Arc::new(transform_blob_field(child, &path, materialized)))
+                .collect(),
+        ),
+        DataType::List(child) => {
+            DataType::List(Arc::new(transform_blob_field(child, &path, materialized)))
+        }
+        DataType::LargeList(child) => {
+            DataType::LargeList(Arc::new(transform_blob_field(child, &path, materialized)))
+        }
+        DataType::FixedSizeList(child, size) => DataType::FixedSizeList(
+            Arc::new(transform_blob_field(child, &path, materialized)),
+            *size,
+        ),
+        DataType::Map(child, sorted) => DataType::Map(
+            Arc::new(transform_blob_field(child, &path, materialized)),
+            *sorted,
+        ),
+        _ => return field.clone(),
+    };
+    ArrowField::new(field.name(), data_type, field.is_nullable())
+        .with_metadata(field.metadata().clone())
+}
+
+fn blob_runtime_schema(schema: &ArrowSchema, materialized: &HashSet<Vec<String>>) -> SchemaRef {
+    Arc::new(ArrowSchema::new_with_metadata(
+        schema
+            .fields()
+            .iter()
+            .map(|field| Arc::new(transform_blob_field(field, &[], materialized)))
+            .collect::<Fields>(),
+        schema.metadata().clone(),
+    ))
+}
+
+fn referenced_blob_paths(schema: &ArrowSchema, inputs: &[String]) -> Result<Vec<Vec<String>>> {
+    let input_paths = inputs
+        .iter()
+        .map(|input| {
+            parse_field_path(input).map_err(|error| Error::InvalidInput {
+                message: format!("invalid computed-column input path '{input}': {error}"),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(schema_blob_paths(schema)
+        .into_iter()
+        .filter(|blob_path| {
+            input_paths.iter().any(|input_path| {
+                input_path.len() <= blob_path.len()
+                    && input_path
+                        .iter()
+                        .zip(blob_path)
+                        .all(|(input, blob)| input == blob)
+            })
+        })
+        .collect())
 }
 
 /// Parse, resolve and compile `expression` against `schema`.
@@ -1185,10 +1335,18 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
         message,
     };
 
-    let planner = Planner::new(schema.clone());
+    // Blob v2 is a semantic type whose runtime expression ABI is
+    // `LargeBinary`. Parse against that ABI first so a direct Blob reference
+    // is not mistaken for its storage descriptor struct.
+    let all_blob_paths = schema_blob_paths(schema.as_ref())
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let parsing_schema = blob_runtime_schema(schema.as_ref(), &all_blob_paths);
+    let planner = Planner::new(parsing_schema);
     let parsed = planner
         .parse_expr(expression)
         .map_err(|e| invalid(e.to_string()))?;
+    let projected_blob_field = projected_blob_field(schema.as_ref(), &parsed)?;
 
     // A declaration is evaluated more than once -- staging and writing are
     // separate passes, and a refresh years later replays the same text -- so
@@ -1218,13 +1376,19 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
     inputs.sort();
     inputs.dedup();
 
+    let blob_paths = referenced_blob_paths(schema.as_ref(), &inputs)?;
+    let runtime_schema = blob_runtime_schema(
+        schema.as_ref(),
+        &blob_paths.iter().cloned().collect::<HashSet<_>>(),
+    );
+
     // A nested input is recorded by its path but read through its root
     // column; Schema::index_of resolves top-level names only. Resolved here
     // rather than left to the planner so an unknown column names itself in
     // the error instead of surfacing as a plan failure.
     let mut indices = Vec::with_capacity(inputs.len());
     for input in &inputs {
-        let index = schema
+        let index = runtime_schema
             .index_of(root(input))
             .map_err(|_| invalid(format!("unknown column '{input}'")))?;
         if !indices.contains(&index) {
@@ -1237,7 +1401,7 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
     // compiles the expression has to be built on the projected schema
     // evaluation will actually read.
     let read_schema = Arc::new(
-        schema
+        runtime_schema
             .project(&indices)
             .map_err(|e| invalid(e.to_string()))?,
     );
@@ -1247,7 +1411,8 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
         .map(|field| field.name().clone())
         .collect();
 
-    let optimized = planner
+    let runtime_planner = Planner::new(runtime_schema);
+    let optimized = runtime_planner
         .optimize_expr(parsed)
         .map_err(|e| invalid(e.to_string()))?;
     let physical = Planner::new(read_schema.clone())
@@ -1260,9 +1425,16 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
     Ok(BoundExpression {
         inputs,
         roots,
-        read_schema,
         physical,
         data_type,
+        blob_paths: blob_paths
+            .iter()
+            .map(|path| {
+                let segments = path.iter().map(String::as_str).collect::<Vec<_>>();
+                format_field_path_minimal(&segments)
+            })
+            .collect(),
+        projected_blob_field,
     })
 }
 
@@ -1273,33 +1445,89 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
 /// refresh time: that the expression parses, that every column it reads
 /// exists, and that the target name is free. A declaration that survives this
 /// is one a refresh can always act on.
-pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Vec<ArrowField>> {
+///
+/// Each accepted column joins the schema the next one resolves against, so a
+/// batch may declare `a` and then `b = a + 1` in one commit. Refresh order
+/// then matters, and refresh enforces it: `b` is refused while `a` still has
+/// unfilled rows.
+fn plan_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<Vec<ArrowField>> {
     if columns.is_empty() {
         return Err(Error::InvalidInput {
             message: "at least one computed column is required".into(),
         });
     }
 
+    let mut schema = schema;
     let mut fields = Vec::with_capacity(columns.len());
-    let mut declared: Vec<&str> = Vec::with_capacity(columns.len());
 
     for (name, expression) in columns {
-        if schema.field_with_name(name).is_ok() || declared.contains(&name.as_str()) {
-            return Err(Error::ColumnAlreadyExists { name: name.clone() });
+        if schema.field_with_name(name).is_ok() {
+            return Err(Error::ColumnAlreadyExists {
+                name: name.to_string(),
+            });
         }
 
         let bound = bind(schema.clone(), name, expression)?;
 
         // Declared columns start entirely null, so nullability is a property
         // of the declaration rather than of what the expression yields.
-        fields.push(
-            ArrowField::new(name, bound.data_type, true)
-                .with_metadata(computed_column_metadata(expression, &bound.inputs)),
-        );
-        declared.push(name);
+        let computed_metadata = computed_column_metadata(expression, &bound.inputs);
+        let field = match bound.projected_blob_field {
+            Some(source) => {
+                let mut metadata = source.metadata().clone();
+                metadata.retain(|key, _| !is_declaration_key(key));
+                metadata.extend(computed_metadata);
+                source
+                    .with_name(name)
+                    .with_nullable(true)
+                    .with_metadata(metadata)
+            }
+            None => ArrowField::new(name, bound.data_type, true).with_metadata(computed_metadata),
+        };
+        schema = Arc::new(ArrowSchema::new_with_metadata(
+            schema
+                .fields()
+                .iter()
+                .cloned()
+                .chain(std::iter::once(Arc::new(field.clone())))
+                .collect::<Fields>(),
+            schema.metadata().clone(),
+        ));
+        fields.push(field);
     }
 
     Ok(fields)
+}
+
+pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Vec<ArrowField>> {
+    plan_declarations(schema, columns)
+}
+
+/// Run the schema-level checks of
+/// [`AddColumnsBuilder::computed`](super::AddColumnsBuilder::computed) against
+/// `schema` without committing: the Function-binding guard and the planning of
+/// every declaration. For callers that stage declarations behind other work
+/// and need those rejections before any of it lands.
+///
+/// Only the schema is consulted. Declaring also refuses a table with an LSM
+/// write spec or retained SSTables; that is table state, checked at commit.
+///
+/// ```
+/// # use std::sync::Arc;
+/// # use arrow_schema::{DataType, Field, Schema};
+/// use lancedb::table::computed_columns::validate_declarations;
+///
+/// let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+/// let declarations = vec![
+///     ("a".to_string(), "x + 1".to_string()),
+///     ("b".to_string(), "a * 2".to_string()),
+/// ];
+/// assert!(validate_declarations(schema.clone(), &declarations).is_ok());
+/// assert!(validate_declarations(schema, &[("c".into(), "random()".into())]).is_err());
+/// ```
+pub fn validate_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<()> {
+    ensure_no_function_bindings_for_mutation(schema.as_ref(), "schema evolution")?;
+    plan(schema, columns).map(drop)
 }
 
 /// Build the transform that declares `columns` against `schema`.
@@ -1313,7 +1541,7 @@ pub(crate) fn declare(
     schema: SchemaRef,
     columns: &[(String, String)],
 ) -> Result<NewColumnTransform> {
-    let fields = plan(schema, columns)?;
+    let fields = plan_declarations(schema, columns)?;
     Ok(NewColumnTransform::AllNulls(Arc::new(ArrowSchema::new(
         fields,
     ))))
@@ -1340,6 +1568,22 @@ pub(super) async fn add_foreign_kind(table: &crate::Table, name: &str, kind: &st
 
 #[cfg(test)]
 mod tests {
+    /// The gate's reproducer: the validator applies the same schema-level
+    /// guard declaring does, so a staging caller is refused before it commits
+    /// anything else.
+    #[test]
+    fn test_validate_declarations_matches_schema_admission_barriers() {
+        let schema = Arc::new(ArrowSchema::new_with_metadata(
+            vec![ArrowField::new("x", DataType::Int32, true)],
+            HashMap::from([(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                "not valid binding metadata".to_string(),
+            )]),
+        ));
+        let declarations = vec![("a".to_string(), "x + 1".to_string())];
+        assert!(super::validate_declarations(schema, &declarations).is_err());
+    }
+
     #[test]
     fn output_arrow_type_grammar_matches_the_shared_golden() {
         let golden: serde_json::Value = serde_json::from_str(include_str!(
@@ -1421,6 +1665,44 @@ mod tests {
                 inputs: vec!["x".into()],
             }]
         );
+    }
+
+    #[test]
+    fn test_direct_blob_projection_inherits_semantics() {
+        let schema = Arc::new(ArrowSchema::new(vec![crate::blob("image", false)]));
+        let fields = plan(
+            schema,
+            &[
+                ("first".to_string(), "image".to_string()),
+                ("second".to_string(), "first".to_string()),
+            ],
+        )
+        .unwrap();
+
+        for field in &fields {
+            assert!(field.is_blob_v2());
+            assert!(field.is_nullable());
+        }
+        assert_eq!(
+            fields[1]
+                .metadata()
+                .get(EXPRESSION_META_KEY)
+                .map(String::as_str),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn test_blob_expression_transformation_does_not_inherit_semantics() {
+        let schema = Arc::new(ArrowSchema::new(vec![crate::blob("image", true)]));
+        let fields = plan(
+            schema,
+            &[("payload".to_string(), "coalesce(image, image)".to_string())],
+        )
+        .unwrap();
+
+        assert!(!fields[0].is_blob_v2());
+        assert_eq!(fields[0].data_type(), &DataType::LargeBinary);
     }
 
     /// The binding reaches the schema only if `AllNulls` carries per-field
@@ -1580,6 +1862,40 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, Error::ColumnAlreadyExists { name } if name == "dup"));
         assert!(declared(&table).await.is_empty());
+    }
+
+    /// A batch may build on itself: one commit, and the later entry's inputs
+    /// name the earlier one.
+    #[tokio::test]
+    async fn test_a_declaration_may_read_one_declared_before_it() {
+        let table = table_with_ints("chain").await;
+        let before = table.version().await.unwrap();
+        add_computed(
+            &table,
+            &[("a".into(), "x + 1".into()), ("b".into(), "a * 2".into())],
+        )
+        .await
+        .unwrap();
+        assert_eq!(table.version().await.unwrap(), before + 1);
+        let declared = declared(&table).await;
+        assert_eq!(declared[1].name, "b");
+        assert_eq!(declared[1].inputs, vec!["a".to_string()]);
+
+        // Order is the dependency order; reading ahead is still unknown.
+        let err = add_computed(
+            &table,
+            &[("c".into(), "d + 1".into()), ("d".into(), "x + 1".into())],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidExpression { column, .. } if column == "c"));
+        assert!(
+            validate_declarations(
+                table.schema().await.unwrap(),
+                &[("e".into(), "random()".into())]
+            )
+            .is_err()
+        );
     }
 
     /// A column added by an ordinary transform is materialized, not bound, so

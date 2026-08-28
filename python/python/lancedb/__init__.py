@@ -6,7 +6,7 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any, List, Iterable
+from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
 
 __version__ = importlib.metadata.version("lancedb")
 
@@ -20,7 +20,7 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
-from .schema import blob, vector, BlobType
+from .schema import blob, vector
 from .job import AsyncJob, Job
 from .functions import (
     FunctionArtifactRequest as FunctionArtifactRequest,
@@ -47,6 +47,19 @@ from .namespace import (
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
 )
+
+
+if TYPE_CHECKING:
+    from lance.blob import BlobType as BlobType
+
+
+def __getattr__(name: str):
+    if name == "BlobType":
+        from .schema import BlobType
+
+        globals()["BlobType"] = BlobType
+        return BlobType
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _check_s3_bucket_with_dots(
