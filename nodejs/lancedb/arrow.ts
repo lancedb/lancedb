@@ -76,6 +76,15 @@ export type FieldLike =
  *
  * @param name - The field name.
  * @param nullable - Whether the field accepts null values.
+ * @example
+ * ```ts
+ * import { connect, makeJsonField } from "@lancedb/lancedb";
+ * import { Schema } from "apache-arrow";
+ *
+ * const schema = new Schema([makeJsonField("metadata")]);
+ * const db = await connect("/path/to/database");
+ * await db.createTable("items", [{ metadata: '{"source":"api"}' }], { schema });
+ * ```
  */
 export function makeJsonField(name: string, nullable = true): Field {
   return new Field(
