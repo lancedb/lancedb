@@ -30,7 +30,7 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyDict, PyDictMethods, PyList, PyListMethods, PyModule},
+    types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule},
 };
 
 #[pyclass]
@@ -88,7 +88,7 @@ impl Connection {
     }
 }
 
-fn default_namespace_path(path: Option<Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
+fn parse_default_namespace_path(path: Option<Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
     match path {
         Some(path) => {
             if !path.is_instance_of::<PyList>() {
@@ -155,7 +155,7 @@ impl Connection {
         flight_sql_uri: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        let default_namespace_path = default_namespace_path(default_namespace_path)?;
+        let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
         future_into_py(self_.py(), async move {
             let mut operation = inner
                 .sql(query)
