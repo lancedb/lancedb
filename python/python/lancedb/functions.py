@@ -51,6 +51,7 @@ from pydantic import (
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
+_PositiveUInt32 = conint(strict=True, gt=0, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
 
 
@@ -228,6 +229,12 @@ class PythonEnvironmentSpec(_RemoteValue):
     image: Optional[str] = None
 
 
+class FunctionResourceRequirements(_RemoteValue):
+    """Immutable resources required every time a Function version executes."""
+
+    num_gpus: _PositiveUInt32
+
+
 class PythonRuntimeSpec(_RemoteValue):
     """Remote runtime definition with environment values.
 
@@ -239,6 +246,7 @@ class PythonRuntimeSpec(_RemoteValue):
     python_version: Optional[str] = None
     environment: Optional[PythonEnvironmentSpec] = None
     env: Optional[Mapping[str, str]] = None
+    resources: Optional[FunctionResourceRequirements] = None
 
     @model_validator(mode="after")
     def _validate_runtime_kind(self):
@@ -247,18 +255,30 @@ class PythonRuntimeSpec(_RemoteValue):
                 raise ValueError("python runtime requires python_version")
             if self.environment is None:
                 raise ValueError("python runtime requires environment")
+            if self.resources is not None:
+                raise ValueError(
+                    "python runtime with resources requires kind='python_v2'"
+                )
+        elif self.kind == "python_v2":
+            if self.python_version is None:
+                raise ValueError("python_v2 runtime requires python_version")
+            if self.environment is None:
+                raise ValueError("python_v2 runtime requires environment")
+            if self.resources is None:
+                raise ValueError("python_v2 runtime requires resources")
         else:
             object.__setattr__(self, "python_version", None)
             object.__setattr__(self, "environment", None)
             object.__setattr__(self, "env", None)
+            object.__setattr__(self, "resources", None)
         return self
 
 
 class FunctionVersion(_RemoteValue):
     """An exact immutable Function version returned by Enterprise.
 
-    Scheduling resources, priority, concurrency, and retry policy belong to
-    the submitting Job and are not part of this identity.
+    Required execution resources are part of this identity. Priority,
+    concurrency, and retry policy belong to the submitting Job.
     """
 
     name: str
@@ -910,12 +930,18 @@ class UdfDefinition:
         pip: tuple[str, ...],
         env: Mapping[str, str],
         python_version: Optional[str],
+        num_gpus: Optional[int],
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
     ):
         function_name = name or function.__name__
         if not _FUNCTION_NAME.fullmatch(function_name):
             raise ValueError(f"invalid Function name: {function_name!r}")
+        resources = (
+            FunctionResourceRequirements(num_gpus=num_gpus)
+            if num_gpus is not None
+            else None
+        )
         if pip and conda:
             raise ValueError("a Function environment is pip or conda, not both")
         if conda_channels and not conda:
@@ -939,11 +965,12 @@ class UdfDefinition:
         source = _package_source(function)
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
         runtime = PythonRuntimeSpec(
-            kind="python",
+            kind="python_v2" if num_gpus is not None else "python",
             python_version=python_version
             or f"{sys.version_info.major}.{sys.version_info.minor}",
             environment=environment_spec,
             env=environment,
+            resources=resources,
         )
         self._function = function
         self._request = FunctionRegistrationRequest(
@@ -989,6 +1016,7 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    num_gpus: Optional[int] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
@@ -1003,6 +1031,7 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    num_gpus: Optional[int] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ):
@@ -1035,6 +1064,10 @@ def udf(
         Environment variables included in the Function definition.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
+    num_gpus : int, optional
+        Number of whole NVIDIA GPUs required for every remote execution. Must
+        be greater than zero. The requirement is part of the immutable
+        Function version.
 
     The packaged artifact is a snapshot: the function source plus exactly
     the module-level names it references (modules as imports, importable
@@ -1070,6 +1103,7 @@ def udf(
             pip=tuple(pip),
             env={} if env is None else env,
             python_version=python_version,
+            num_gpus=num_gpus,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
         )
@@ -1089,6 +1123,7 @@ __all__ = [
     "FunctionOutput",
     "FunctionParameter",
     "FunctionRegistrationRequest",
+    "FunctionResourceRequirements",
     "FunctionResultField",
     "FunctionSignature",
     "FunctionVersion",

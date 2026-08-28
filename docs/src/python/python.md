@@ -68,6 +68,8 @@ listing a storage directory.
 
 ::: lancedb.functions.PythonEnvironmentSpec
 
+::: lancedb.functions.FunctionResourceRequirements
+
 ::: lancedb.functions.udf
 
 ::: lancedb.functions.UdfDefinition

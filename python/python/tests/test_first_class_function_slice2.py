@@ -89,6 +89,30 @@ def test_udf_conda_environment():
         udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
 
 
+def test_udf_gpu_requirement_uses_resource_aware_runtime():
+    @udf(pip=["cupy-cuda12x"], num_gpus=1)
+    def double_on_gpu(value: int) -> int:
+        return value * 2
+
+    request = json.loads(double_on_gpu.registration_request.to_canonical_json())
+    assert request["runtime"]["kind"] == "python_v2"
+    assert request["runtime"]["resources"] == {"num_gpus": 1}
+
+    @udf(pip=["pyarrow"])
+    def cpu_function(value: int) -> int:
+        return value
+
+    cpu_runtime = json.loads(cpu_function.registration_request.to_canonical_json())[
+        "runtime"
+    ]
+    assert cpu_runtime["kind"] == "python"
+    assert "resources" not in cpu_runtime
+
+    for invalid in [0, -1, 1.5, True]:
+        with pytest.raises(ValueError):
+            udf(name="invalid_gpu", num_gpus=invalid)(lambda value: value)
+
+
 def test_udf_packages_attribute_access_and_body_imports():
     @udf
     def word_norm(body: str) -> float:

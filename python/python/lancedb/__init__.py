@@ -27,6 +27,7 @@ from .functions import (
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
     FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionResourceRequirements as FunctionResourceRequirements,
     FunctionVersion as FunctionVersion,
     PythonRuntimeSpec as PythonRuntimeSpec,
     RefreshColumnResult as RefreshColumnResult,
