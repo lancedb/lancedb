@@ -31,10 +31,10 @@ is also an [asynchronous API client](#connections-asynchronous).
 ## Flight SQL
 
 Execute SQL against a remote LanceDB database through its Flight SQL endpoint.
-Unqualified tables use the `database="lancedb"` and `namespace_path="public"`
-defaults. Override either default without constructing a `db://` URI; fully
-qualified references can still query other databases and namespaces available
-to the same deployment:
+Unqualified tables use the `default_database="lancedb"` and
+`default_namespace_path=["public"]` defaults. Override either default without
+constructing a `db://` URI; fully qualified references can still query other
+databases and namespaces available to the same deployment:
 
 ```python
 import lancedb
@@ -45,8 +45,8 @@ result = lancedb.sql(
     FROM analytics.public.events AS events
     JOIN users.public.accounts AS accounts ON events.user_id = accounts.id
     """,
-    database="analytics",
-    namespace_path="public",
+    default_database="analytics",
+    default_namespace_path=["public"],
     api_key="ldb_...",
     flight_sql_uri="grpc+tls://sql.example.com:10026",
 )

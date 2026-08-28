@@ -64,12 +64,12 @@ def test_sql_resolves_database_with_connect(monkeypatch):
     monkeypatch.setattr(sql_module, "RemoteDBConnection", FakeRemoteConnection)
     execute_args = {}
 
-    def execute(query, resolved_connection, uri, namespace_path):
+    def execute(query, resolved_connection, uri, default_namespace_path):
         execute_args.update(
             query=query,
             connection=resolved_connection,
             uri=uri,
-            namespace_path=namespace_path,
+            default_namespace_path=default_namespace_path,
         )
         return expected
 
@@ -77,8 +77,8 @@ def test_sql_resolves_database_with_connect(monkeypatch):
 
     actual = lancedb.sql(
         "SELECT 1",
-        database="analytics",
-        namespace_path="events$raw",
+        default_database="analytics",
+        default_namespace_path=["events", "raw"],
         api_key="test-key",
         region="us-east-2",
         host_override="http://localhost:10024",
@@ -99,7 +99,7 @@ def test_sql_resolves_database_with_connect(monkeypatch):
         "query": "SELECT 1",
         "connection": connection,
         "uri": "grpc://localhost:10025",
-        "namespace_path": "events$raw",
+        "default_namespace_path": "events$raw",
     }
     assert connection.closed
 
@@ -112,8 +112,8 @@ def test_sql_uses_default_database_and_namespace(monkeypatch):
         observed["database_uri"] = database
         return connection
 
-    def execute(query, resolved_connection, uri, namespace_path):
-        observed["namespace_path"] = namespace_path
+    def execute(query, resolved_connection, uri, default_namespace_path):
+        observed["default_namespace_path"] = default_namespace_path
         return pa.table({"value": [1]})
 
     monkeypatch.setattr(lancedb, "connect", connect)
@@ -124,7 +124,7 @@ def test_sql_uses_default_database_and_namespace(monkeypatch):
 
     assert observed == {
         "database_uri": "db://lancedb",
-        "namespace_path": "public",
+        "default_namespace_path": "public",
     }
     assert connection.closed
 
@@ -182,26 +182,44 @@ def test_sql_preserves_environment_api_key_for_metadata_provider(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "database",
+    "default_database",
     ["", "db://analytics", "analytics/tenant1", "user@analytics", "analytics:1234"],
 )
-def test_sql_rejects_invalid_database_name(monkeypatch, database):
+def test_sql_rejects_invalid_database_name(monkeypatch, default_database):
     def connect(*args, **kwargs):
         pytest.fail("invalid database must be rejected before connecting")
 
     monkeypatch.setattr(lancedb, "connect", connect)
     with pytest.raises(ValueError, match="database"):
-        lancedb.sql("SELECT 1", database=database)
+        lancedb.sql("SELECT 1", default_database=default_database)
 
 
-@pytest.mark.parametrize("namespace_path", ["", "café", "pub\tlic"])
-def test_sql_rejects_invalid_namespace_path(monkeypatch, namespace_path):
+@pytest.mark.parametrize(
+    "default_namespace_path",
+    ["public", [""], ["café"], ["pub\tlic"], ["events$raw"], [1]],
+)
+def test_sql_rejects_invalid_namespace_path(monkeypatch, default_namespace_path):
     def connect(*args, **kwargs):
         pytest.fail("invalid namespace must be rejected before connecting")
 
     monkeypatch.setattr(lancedb, "connect", connect)
     with pytest.raises(ValueError, match="namespace_path"):
-        lancedb.sql("SELECT 1", namespace_path=namespace_path)
+        lancedb.sql("SELECT 1", default_namespace_path=default_namespace_path)
+
+
+@pytest.mark.parametrize(
+    ("default_namespace_path", "expected"),
+    [
+        (None, "public"),
+        ([], "public"),
+        (["public"], "public"),
+        (["events", "raw"], "events$raw"),
+    ],
+)
+def test_serialize_default_namespace_path(default_namespace_path, expected):
+    assert (
+        sql_module._serialize_default_namespace_path(default_namespace_path) == expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -348,7 +366,7 @@ def test_execute_flight_sql_fetches_all_endpoints(monkeypatch):
     )
 
     result = sql_module._execute_flight_sql(
-        "SELECT 1", connection, None, namespace_path="events$raw"
+        "SELECT 1", connection, None, default_namespace_path="events$raw"
     )
 
     assert result == pa.concat_tables([first, second])

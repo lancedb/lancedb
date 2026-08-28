@@ -4,7 +4,7 @@
 import os
 from pathlib import Path
 import time
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 import uuid
 
@@ -191,7 +191,7 @@ def _flight_call_options(
     flight: Any,
     request_id: str,
     *,
-    namespace_path: str = "public",
+    default_namespace_path: str = "public",
     streaming: bool = False,
     deadline: Optional[float] = None,
 ) -> Any:
@@ -245,7 +245,7 @@ def _flight_call_options(
     add_headers(
         {
             "database": connection.db_name,
-            "namespace-path": namespace_path,
+            "namespace-path": default_namespace_path,
             "x-request-id": request_id,
         }
     )
@@ -284,7 +284,7 @@ def _read_endpoint(
     request_id: str,
     primary_uri: str,
     deadline: Optional[float],
-    namespace_path: str = "public",
+    default_namespace_path: str = "public",
 ) -> pa.Table:
     locations = list(endpoint.locations)
     location_uri = _location_uri(locations[0]) if locations else None
@@ -307,7 +307,7 @@ def _read_endpoint(
             connection,
             flight,
             request_id,
-            namespace_path=namespace_path,
+            default_namespace_path=default_namespace_path,
             streaming=True,
             deadline=deadline,
         )
@@ -321,7 +321,7 @@ def _execute_flight_sql(
     query: str,
     connection: RemoteDBConnection,
     flight_sql_uri: Optional[str],
-    namespace_path: str = "public",
+    default_namespace_path: str = "public",
 ) -> pa.Table:
     flight = _flight_module()
     request_id = str(uuid.uuid4())
@@ -347,7 +347,7 @@ def _execute_flight_sql(
                 connection,
                 flight,
                 request_id,
-                namespace_path=namespace_path,
+                default_namespace_path=default_namespace_path,
                 deadline=deadline,
             ),
         )
@@ -363,7 +363,7 @@ def _execute_flight_sql(
                 request_id,
                 resolved_uri,
                 deadline,
-                namespace_path,
+                default_namespace_path,
             )
             for endpoint in info.endpoints
         ]
@@ -381,22 +381,24 @@ def _execute_flight_sql(
         client.close()
 
 
-def _database_uri(database: str) -> str:
-    if not isinstance(database, str) or not database:
-        raise ValueError("lancedb.sql database must be a non-empty database name")
+def _database_uri(default_database: str) -> str:
+    if not isinstance(default_database, str) or not default_database:
+        raise ValueError(
+            "lancedb.sql default_database must be a non-empty database name"
+        )
     try:
-        database.encode("ascii")
+        default_database.encode("ascii")
     except UnicodeEncodeError as err:
-        raise ValueError("lancedb.sql database must be ASCII") from err
+        raise ValueError("lancedb.sql default_database must be ASCII") from err
 
-    database_uri = f"db://{database}"
+    database_uri = f"db://{default_database}"
     parsed = urlparse(database_uri)
     try:
         database_port = parsed.port
     except ValueError as err:
         raise ValueError(f"Invalid database name: {err}") from err
     if (
-        parsed.netloc != database
+        parsed.netloc != default_database
         or parsed.username is not None
         or parsed.password is not None
         or database_port is not None
@@ -406,20 +408,41 @@ def _database_uri(database: str) -> str:
         or parsed.fragment
     ):
         raise ValueError(
-            "lancedb.sql database must be a database name, not a URI or path"
+            "lancedb.sql default_database must be a database name, not a URI or path"
         )
     return database_uri
 
 
-def _validate_namespace_path(namespace_path: str) -> None:
-    if not isinstance(namespace_path, str) or not namespace_path:
-        raise ValueError("lancedb.sql namespace_path must be a non-empty string")
-    try:
-        encoded = namespace_path.encode("ascii")
-    except UnicodeEncodeError as err:
-        raise ValueError("lancedb.sql namespace_path must be ASCII") from err
-    if any(byte < 0x20 or byte > 0x7E for byte in encoded):
-        raise ValueError("lancedb.sql namespace_path must be printable ASCII")
+def _serialize_default_namespace_path(
+    default_namespace_path: Optional[List[str]],
+) -> str:
+    if default_namespace_path is None:
+        default_namespace_path = ["public"]
+    if not isinstance(default_namespace_path, list):
+        raise ValueError("lancedb.sql default_namespace_path must be a list")
+
+    for component in default_namespace_path:
+        if not isinstance(component, str) or not component:
+            raise ValueError(
+                "lancedb.sql default_namespace_path components must be "
+                "non-empty strings"
+            )
+        try:
+            encoded = component.encode("ascii")
+        except UnicodeEncodeError as err:
+            raise ValueError(
+                "lancedb.sql default_namespace_path components must be ASCII"
+            ) from err
+        if any(byte < 0x20 or byte > 0x7E for byte in encoded):
+            raise ValueError(
+                "lancedb.sql default_namespace_path components must be printable ASCII"
+            )
+        if "$" in component:
+            raise ValueError(
+                "lancedb.sql default_namespace_path components must not contain '$'"
+            )
+
+    return "$".join(default_namespace_path) or "public"
 
 
 def _normalize_client_config(
@@ -444,8 +467,8 @@ def _has_configured_credentials(client_config: Optional[ClientConfig]) -> bool:
 def sql(
     query: str,
     *,
-    database: str = "lancedb",
-    namespace_path: str = "public",
+    default_database: str = "lancedb",
+    default_namespace_path: Optional[List[str]] = None,
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
@@ -464,12 +487,12 @@ def sql(
     ----------
     query: str
         The SQL statement to execute.
-    database: str, default "lancedb"
+    default_database: str, default "lancedb"
         The default SQL database. It is resolved internally as
-        ``db://<database>`` through :func:`lancedb.connect`.
-    namespace_path: str, default "public"
-        The default SQL namespace for unqualified table names. Nested namespace
-        paths use Sophon's ``$``-joined SQL representation.
+        ``db://<default_database>`` through :func:`lancedb.connect`.
+    default_namespace_path: List[str], default ["public"]
+        The default SQL namespace path for unqualified table names. An empty
+        list selects the root namespace, exposed as ``public`` in SQL.
     api_key: str, optional
         The API key used for the LanceDB connection and Flight SQL authentication.
         Can be set with the ``LANCEDB_API_KEY`` environment variable.
@@ -506,16 +529,18 @@ def sql(
     >>> import lancedb
     >>> result = lancedb.sql(  # doctest: +SKIP
     ...     "SELECT * FROM events LIMIT 10",
-    ...     database="analytics",
-    ...     namespace_path="public",
+    ...     default_database="analytics",
+    ...     default_namespace_path=["public"],
     ...     api_key="ldb_...",
     ...     flight_sql_uri="grpc+tls://sql.example.com:10026",
     ... )
     """
     import lancedb
 
-    database_uri = _database_uri(database)
-    _validate_namespace_path(namespace_path)
+    database_uri = _database_uri(default_database)
+    serialized_namespace_path = _serialize_default_namespace_path(
+        default_namespace_path
+    )
     resolved_client_config = _normalize_client_config(client_config)
     connection_api_key = api_key or os.environ.get("LANCEDB_API_KEY")
     if connection_api_key is None and _has_configured_credentials(
@@ -539,7 +564,7 @@ def sql(
             query,
             connection,
             flight_sql_uri,
-            namespace_path,
+            serialized_namespace_path,
         )
     finally:
         LOOP.run(connection.close())
