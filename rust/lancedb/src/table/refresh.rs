@@ -29,9 +29,12 @@
 //! inputs masked to null first, so a poison value in a row nobody is filling
 //! cannot fail the refresh.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, LargeBinaryArray, RecordBatch, RecordBatchOptions,
+};
 use arrow_schema::Schema as ArrowSchema;
 use datafusion_expr::ColumnarValue;
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -40,7 +43,7 @@ use lance::dataset::WriteDestination;
 use lance::dataset::fragment::FileFragment;
 use lance::dataset::transaction::Operation;
 use lance_core::ROW_ID;
-use lance_core::datatypes::Schema as LanceSchema;
+use lance_core::datatypes::{BlobHandling, Schema as LanceSchema};
 use serde::{Deserialize, Serialize};
 
 use super::computed_columns::{BoundExpression, ComputedColumnKind, computed_column_from_field};
@@ -104,6 +107,7 @@ async fn execute_refresh_column_with_source(
         fields: vec![field.clone()],
         metadata: Default::default(),
     };
+    let output_is_blob = field.is_blob_v2();
 
     let mut rows_filled = 0u64;
     let mut replacements = Vec::new();
@@ -113,7 +117,8 @@ async fn execute_refresh_column_with_source(
             continue;
         }
         rows_filled += gained;
-        let values = fill_stream(&dataset, &fragment, bound.clone(), column).await?;
+        let values =
+            fill_stream(&dataset, &fragment, bound.clone(), column, output_is_blob).await?;
         replacements.push(fragment.write_columns(values, &column_schema).await?);
     }
 
@@ -294,12 +299,15 @@ fn evaluation_batch(
     mask_out: Option<&BooleanArray>,
 ) -> lance_core::Result<RecordBatch> {
     let mut columns = Vec::with_capacity(bound.roots.len());
+    let mut fields = Vec::with_capacity(bound.roots.len());
     for name in &bound.roots {
-        let column = batch.column_by_name(name).ok_or_else(|| {
+        let index = batch.schema_ref().index_of(name).map_err(|_| {
             lance_core::Error::invalid_input(format!(
                 "refreshing a computed column read no {name} column"
             ))
         })?;
+        let column = batch.column(index);
+        fields.push(batch.schema_ref().field(index).clone());
         // Rows outside the mask must not reach the expression: a value in a
         // deleted or already-filled row can be one it would choke on.
         columns.push(match mask_out {
@@ -308,7 +316,7 @@ fn evaluation_batch(
         });
     }
     Ok(RecordBatch::try_new_with_options(
-        bound.read_schema.clone(),
+        Arc::new(ArrowSchema::new(fields)),
         columns,
         &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
     )?)
@@ -329,6 +337,64 @@ fn evaluate(bound: &BoundExpression, batch: &RecordBatch) -> lance_core::Result<
     }
 }
 
+fn materialized_blob_ids(schema: &LanceSchema, paths: &[String]) -> Result<HashSet<u32>> {
+    paths
+        .iter()
+        .map(|path| {
+            let field = schema
+                .resolve(path)
+                .and_then(|fields| fields.last().copied())
+                .ok_or_else(|| Error::InvalidInput {
+                    message: format!("computed Blob input '{path}' no longer exists"),
+                })?;
+            if !field.is_blob_v2() {
+                return Err(Error::InvalidInput {
+                    message: format!("computed Blob input '{path}' is no longer Blob v2"),
+                });
+            }
+            u32::try_from(field.id).map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "computed Blob input '{path}' has invalid field id {}",
+                    field.id
+                ),
+            })
+        })
+        .collect()
+}
+
+fn configure_blob_inputs(
+    scanner: &mut lance::dataset::scanner::Scanner,
+    schema: &LanceSchema,
+    bound: &BoundExpression,
+    extra_blob_id: Option<u32>,
+) -> Result<()> {
+    let mut ids = materialized_blob_ids(schema, &bound.blob_paths)?;
+    ids.extend(extra_blob_id);
+    scanner.blob_handling(BlobHandling::SomeBlobsBinary(ids));
+    Ok(())
+}
+
+fn blob_array_from_binary(array: &ArrayRef) -> lance_core::Result<ArrayRef> {
+    let values = array
+        .as_any()
+        .downcast_ref::<LargeBinaryArray>()
+        .ok_or_else(|| {
+            lance_core::Error::invalid_input(format!(
+                "a Blob v2 computed output produced {}, expected LargeBinary",
+                array.data_type()
+            ))
+        })?;
+    let mut builder = lance::blob::BlobArrayBuilder::new(values.len());
+    for index in 0..values.len() {
+        if values.is_null(index) {
+            builder.push_null()?;
+        } else {
+            builder.push_bytes(values.value(index))?;
+        }
+    }
+    builder.finish()
+}
+
 /// How many rows of one fragment would gain a value.
 ///
 /// Scans only the unfilled live rows -- deleted rows never reach the
@@ -347,6 +413,7 @@ async fn count_fragment_gains(
         .with_row_id()
         .filter(&format!("{} IS NULL", quote_identifier(column)))?
         .project(&bound.roots)?;
+    configure_blob_inputs(&mut scanner, dataset.schema(), bound, None)?;
 
     let mut gained = 0u64;
     let mut batches = scanner.try_into_stream().await?;
@@ -368,6 +435,7 @@ async fn fill_stream(
     fragment: &FileFragment,
     bound: Arc<BoundExpression>,
     column: &str,
+    output_is_blob: bool,
 ) -> Result<impl Stream<Item = lance_core::Result<RecordBatch>> + Send + use<>> {
     let mut projection: Vec<String> = bound.roots.clone();
     projection.push(column.to_string());
@@ -377,6 +445,20 @@ async fn fill_stream(
         .with_row_id()
         .include_deleted_rows()
         .project(&projection)?;
+    let output_blob_id = output_is_blob
+        .then(|| {
+            dataset
+                .schema()
+                .field(column)
+                .and_then(|field| u32::try_from(field.id).ok())
+        })
+        .flatten();
+    configure_blob_inputs(
+        &mut scanner,
+        dataset.schema(),
+        bound.as_ref(),
+        output_blob_id,
+    )?;
 
     let projected = Arc::new(ArrowSchema::new(vec![
         ArrowSchema::from(dataset.schema())
@@ -412,6 +494,11 @@ async fn fill_stream(
 
         let computed = evaluate(&bound, &evaluation_batch(&batch, &bound, Some(&keep))?)?;
         let merged = arrow_select::zip::zip(&fill, &computed, existing)?;
+        let merged = if output_is_blob {
+            blob_array_from_binary(&merged)?
+        } else {
+            merged
+        };
         Ok(RecordBatch::try_new(projected.clone(), vec![merged])?)
     }))
 }
@@ -420,8 +507,9 @@ async fn fill_stream(
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{Int32Array, record_batch};
+    use arrow_array::{Array, Int32Array, LargeBinaryArray, RecordBatch, record_batch};
     use futures::TryStreamExt;
+    use lance_core::ROW_ID;
 
     use crate::connect;
     use crate::query::{ExecutableQuery, QueryBase, Select};
@@ -1163,5 +1251,421 @@ mod tests {
 
         let err = table.refresh_column("embedding").await.unwrap_err();
         assert!(matches!(err, Error::NotSupported { message } if message.contains("udf")));
+    }
+
+    fn blob_batch(ids: Vec<i32>, payloads: Vec<Option<&[u8]>>) -> RecordBatch {
+        use arrow_array::Int32Array;
+        use arrow_schema::{Field, Schema};
+
+        let mut builder = lance::blob::BlobArrayBuilder::new(payloads.len());
+        for payload in payloads {
+            match payload {
+                Some(payload) => builder.push_bytes(payload).unwrap(),
+                None => builder.push_null().unwrap(),
+            }
+        }
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", arrow_schema::DataType::Int32, false),
+                crate::blob("image", true),
+            ])),
+            vec![Arc::new(Int32Array::from(ids)), builder.finish().unwrap()],
+        )
+        .unwrap()
+    }
+
+    async fn create_blob_table(path: &std::path::Path, batch: RecordBatch) -> Table {
+        let conn = connect(path.to_str().unwrap()).execute().await.unwrap();
+        conn.create_table("blobs", batch).execute().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_refresh_materializes_top_level_blob_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let table = create_blob_table(
+            tmp.path(),
+            blob_batch(vec![1, 2, 3], vec![Some(b"hello"), Some(b""), None]),
+        )
+        .await;
+        table
+            .add_columns()
+            .computed("payload_copy", "image")
+            .execute()
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("payload_copy").await.unwrap();
+        assert_eq!(result.rows_filled, 2);
+        let batches = table
+            .query()
+            .select(Select::columns(&["payload_copy"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let payloads = batches[0]
+            .column_by_name("payload_copy")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .unwrap();
+        assert_eq!(payloads.value(0), b"hello");
+        assert_eq!(payloads.value(1), b"");
+        assert!(payloads.is_null(2));
+        assert_eq!(
+            table
+                .count_rows(Some("payload_copy IS NULL".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_refresh_publishes_explicit_blob_output() {
+        use arrow_array::UInt64Array;
+        use lance_arrow::{
+            BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY, BLOB_INLINE_SIZE_THRESHOLD_META_KEY,
+        };
+        use lance_core::datatypes::BlobKind;
+
+        use crate::table::schema_evolution::FieldMetadataUpdate;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let table = create_blob_table(
+            tmp.path(),
+            blob_batch(
+                vec![1, 2, 3, 4],
+                vec![Some(b"hello"), Some(b"ab"), Some(b""), None],
+            ),
+        )
+        .await;
+        table
+            .add_columns()
+            .computed_blob("image_copy", "image")
+            .execute()
+            .await
+            .unwrap();
+        table
+            .update_field_metadata(&[FieldMetadataUpdate::new("image_copy")
+                .set(BLOB_INLINE_SIZE_THRESHOLD_META_KEY, "1")
+                .set(BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY, "4")])
+            .await
+            .unwrap();
+
+        let first_refresh = table.refresh_column("image_copy").await.unwrap();
+        assert_eq!(first_refresh.rows_filled, 3);
+        assert_eq!(
+            table.blob_columns().await.unwrap(),
+            vec!["image".to_string(), "image_copy".to_string()]
+        );
+
+        let batches = table
+            .query()
+            .with_row_id()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert!(
+            batch
+                .column_by_name("image_copy")
+                .unwrap()
+                .as_any()
+                .is::<arrow_array::StructArray>()
+        );
+        let row_ids = batch
+            .column_by_name(ROW_ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        let original = table.fetch_blobs("image", &row_ids).await.unwrap();
+        let copied = table.fetch_blobs("image_copy", &row_ids).await.unwrap();
+        assert_eq!(original, copied);
+        let ids = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let files = table
+            .fetch_blob_files("image_copy", &row_ids)
+            .await
+            .unwrap();
+        let mut layouts = ids
+            .values()
+            .iter()
+            .copied()
+            .zip(files)
+            .map(|(id, file)| (id, file.and_then(|file| file.kind())))
+            .collect::<Vec<_>>();
+        layouts.sort_by_key(|(id, _)| *id);
+        assert_eq!(
+            layouts,
+            vec![
+                (1, Some(BlobKind::Dedicated)),
+                (2, Some(BlobKind::Packed)),
+                (3, Some(BlobKind::Inline)),
+                (4, None),
+            ]
+        );
+
+        table
+            .add(blob_batch(vec![5], vec![Some(b"appended")]))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .optimize(crate::table::OptimizeAction::Compact {
+                options: crate::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .refresh_column("image_copy")
+                .await
+                .unwrap()
+                .rows_filled,
+            1
+        );
+        assert_eq!(
+            table
+                .refresh_column("image_copy")
+                .await
+                .unwrap()
+                .rows_filled,
+            0
+        );
+
+        table.checkout(first_refresh.version).await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
+        assert_eq!(
+            table.blob_columns().await.unwrap(),
+            vec!["image".to_string(), "image_copy".to_string()]
+        );
+        table.checkout_latest().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_explicit_blob_output_requires_large_binary_expression() {
+        let tmp = tempfile::tempdir().unwrap();
+        let table = create_blob_table(tmp.path(), blob_batch(vec![1], vec![Some(b"hello")])).await;
+
+        let error = table
+            .add_columns()
+            .computed_blob("invalid", "id + 1")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidExpression { column, message }
+                if column == "invalid" && message.contains("requires a LargeBinary expression")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_materializes_nested_struct_blob_input() {
+        use arrow_array::{Int32Array, StructArray};
+        use arrow_schema::{DataType, Field, Fields, Schema};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut blob_builder = lance::blob::BlobArrayBuilder::new(2);
+        blob_builder.push_bytes(b"nested").unwrap();
+        blob_builder.push_null().unwrap();
+        let blob_field = crate::blob("image", true);
+        let metadata_fields = Fields::from(vec![blob_field.clone()]);
+        let metadata = StructArray::new(
+            metadata_fields.clone(),
+            vec![blob_builder.finish().unwrap()],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("metadata", DataType::Struct(metadata_fields), true),
+            ])),
+            vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(metadata)],
+        )
+        .unwrap();
+        let table = create_blob_table(tmp.path(), batch).await;
+        table
+            .add_columns()
+            .computed("payload_copy", "metadata.image")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            table
+                .refresh_column("payload_copy")
+                .await
+                .unwrap()
+                .rows_filled,
+            1
+        );
+        let batches = table
+            .query()
+            .select(Select::columns(&["payload_copy"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let payloads = batches[0]
+            .column_by_name("payload_copy")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .unwrap();
+        assert_eq!(payloads.value(0), b"nested");
+        assert!(payloads.is_null(1));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_preserves_list_shape_when_materializing_blob_input() {
+        use arrow_array::{Int32Array, ListArray};
+        use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut blob_builder = lance::blob::BlobArrayBuilder::new(3);
+        blob_builder.push_bytes(b"a").unwrap();
+        blob_builder.push_bytes(b"bb").unwrap();
+        blob_builder.push_null().unwrap();
+        let item = Arc::new(crate::blob("item", true));
+        let images = ListArray::new(
+            item.clone(),
+            OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])),
+            blob_builder.finish().unwrap(),
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("images", DataType::List(item), true),
+            ])),
+            vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(images)],
+        )
+        .unwrap();
+        let table = create_blob_table(tmp.path(), batch).await;
+        table
+            .add_columns()
+            .computed("image_payloads", "images")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            table
+                .refresh_column("image_payloads")
+                .await
+                .unwrap()
+                .rows_filled,
+            2
+        );
+        let batches = table
+            .query()
+            .select(Select::columns(&["image_payloads"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let output = batches[0]
+            .column_by_name("image_payloads")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        assert_eq!(output.value_offsets(), &[0, 2, 3]);
+        assert!(output.values().as_any().is::<LargeBinaryArray>());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_materializes_external_blob_input() {
+        use arrow_array::{Int32Array, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = b"external-payload";
+        let path = tmp.path().join("payload.bin");
+        std::fs::write(&path, payload).unwrap();
+        let uri = url::Url::from_file_path(path).unwrap().to_string();
+        let conn = connect(tmp.path().join("db").to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_empty_table(
+                "external",
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    crate::blob("image", true),
+                ])),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("image", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![Some(uri)])),
+            ],
+        )
+        .unwrap();
+        table
+            .add(batch)
+            .allow_external_blob_outside_bases(true)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .add_columns()
+            .computed("payload_copy", "image")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            table
+                .refresh_column("payload_copy")
+                .await
+                .unwrap()
+                .rows_filled,
+            1
+        );
+        let batches = table
+            .query()
+            .select(Select::columns(&["payload_copy"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let payloads = batches[0]
+            .column_by_name("payload_copy")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .unwrap();
+        assert_eq!(payloads.value(0), payload);
     }
 }

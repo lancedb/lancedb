@@ -976,8 +976,13 @@ class RemoteTable(Table):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        computed_blobs: Dict[str, str] | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+        return LOOP.run(
+            self._table.add_columns(
+                transforms, computed=computed, computed_blobs=computed_blobs
+            )
+        )
 
     def refresh_column(self, column: str):
         return LOOP.run(self._table.refresh_column(column))

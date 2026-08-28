@@ -8,6 +8,7 @@ use std::sync::Arc;
 use lance::dataset::NewColumnTransform;
 
 use super::BaseTable;
+use super::computed_columns::ComputedColumnDeclaration;
 use super::schema_evolution::AddColumnsResult;
 use crate::function::FunctionApplication;
 use crate::{Error, Result};
@@ -16,7 +17,7 @@ use crate::{Error, Result};
 pub struct AddColumnsBuilder {
     parent: Arc<dyn BaseTable>,
     transform: Option<NewColumnTransform>,
-    computed: Vec<(String, String)>,
+    computed: Vec<ComputedColumnDeclaration>,
     function: Option<(FunctionApplication, Option<String>)>,
     read_columns: Option<Vec<String>>,
 }
@@ -83,7 +84,34 @@ impl AddColumnsBuilder {
     /// # }
     /// ```
     pub fn computed(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
-        self.computed.push((name.into(), expression.into()));
+        self.computed
+            .push(ComputedColumnDeclaration::inferred(name, expression));
+        self
+    }
+
+    /// Add a Blob v2 column defined by a `LargeBinary` expression and filled
+    /// by a later refresh.
+    ///
+    /// Blob inputs in the expression are materialized as their payload bytes.
+    /// The expression result is wrapped back into the Blob v2 logical type
+    /// before publication, so queries and [`Table::blob_columns`](super::Table::blob_columns)
+    /// continue to recognize the output as a Blob column.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn declare(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table
+    ///     .add_columns()
+    ///     .computed_blob("image_copy", "image")
+    ///     .execute()
+    ///     .await?;
+    /// table.refresh_column("image_copy").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn computed_blob(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
+        self.computed
+            .push(ComputedColumnDeclaration::blob(name, expression));
         self
     }
 

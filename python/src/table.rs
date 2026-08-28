@@ -1575,15 +1575,20 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (columns, blob_columns=None))]
     pub fn add_computed_columns(
         self_: PyRef<'_, Self>,
         columns: Vec<(String, String)>,
+        blob_columns: Option<Vec<(String, String)>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.add_columns();
             for (name, expression) in columns {
                 builder = builder.computed(name, expression);
+            }
+            for (name, expression) in blob_columns.unwrap_or_default() {
+                builder = builder.computed_blob(name, expression);
             }
             let result = builder.execute().await.infer_error()?;
             Ok(AddColumnsResult::from(result))

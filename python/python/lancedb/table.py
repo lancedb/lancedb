@@ -2143,6 +2143,7 @@ class Table(ABC):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        computed_blobs: Dict[str, str] | None = None,
     ):
         """
         Add new columns with defined values.
@@ -2184,6 +2185,12 @@ class Table(ABC):
             server, and the refresh runs as a server job -- see
             [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
             Cannot be combined with ``transforms``.
+        computed_blobs: Dict[str, str], optional
+            A map of Blob v2 output column names to SQL expressions returning
+            ``LargeBinary`` payload bytes. Blob inputs named by an expression
+            are materialized as bytes, and refresh stores the result as Blob
+            v2 so ``blob_columns()`` and Blob read APIs continue to recognize
+            it. Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -4300,8 +4307,13 @@ class LanceTable(Table):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        computed_blobs: Dict[str, str] | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+        return LOOP.run(
+            self._table.add_columns(
+                transforms, computed=computed, computed_blobs=computed_blobs
+            )
+        )
 
     def refresh_column(self, column: str) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows. See
@@ -6248,6 +6260,7 @@ class AsyncTable:
         | None = None,
         *,
         computed: dict[str, str] | None = None,
+        computed_blobs: dict[str, str] | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -6283,6 +6296,11 @@ class AsyncTable:
 
             On LanceDB Cloud and Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
+        computed_blobs: Dict[str, str], optional
+            A map of Blob v2 output column names to SQL expressions returning
+            ``LargeBinary`` payload bytes. Blob inputs are materialized as
+            payload bytes during refresh. Cannot be combined with
+            ``transforms``.
 
         Returns
         -------
@@ -6306,7 +6324,7 @@ class AsyncTable:
             function_output_name, function_application = next(iter(transforms.items()))
 
         if function_application is not None:
-            if computed:
+            if computed or computed_blobs:
                 raise ValueError(
                     "add_columns cannot mix a Function application with SQL "
                     "computed columns"
@@ -6322,12 +6340,15 @@ class AsyncTable:
             {isinstance(f, pa.Field) for f in transforms}
         ):
             transforms = pa.schema(transforms)
-        if computed:
+        if computed or computed_blobs:
             if transforms:
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
                 )
-            return await self._inner.add_computed_columns(list(computed.items()))
+            return await self._inner.add_computed_columns(
+                list((computed or {}).items()),
+                list((computed_blobs or {}).items()),
+            )
         if transforms is None:
             raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):

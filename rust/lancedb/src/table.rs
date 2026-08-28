@@ -754,7 +754,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// for the server to plan.
     async fn add_computed_columns(
         &self,
-        _columns: &[(String, String)],
+        _columns: &[computed_columns::ComputedColumnDeclaration],
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
             message: "computed columns are not supported on this table type".into(),
@@ -3523,7 +3523,10 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
-    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
+    async fn add_computed_columns(
+        &self,
+        columns: &[computed_columns::ComputedColumnDeclaration],
+    ) -> Result<AddColumnsResult> {
         let result = schema_evolution::execute_declare(self, columns).await?;
         self.bump_freshness();
         Ok(result)

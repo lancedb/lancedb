@@ -3174,7 +3174,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
-    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
+    async fn add_computed_columns(
+        &self,
+        columns: &[crate::table::computed_columns::ComputedColumnDeclaration],
+    ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
         crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
             self.schema().await?.as_ref(),
@@ -3184,13 +3187,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // inference and the persisted binding all happen there.
         let entries = columns
             .iter()
-            .map(
-                |(name, expression)| lance_namespace::models::AddColumnsEntry {
-                    name: name.clone(),
-                    computed: Some(Some(expression.clone())),
-                    ..Default::default()
-                },
-            )
+            .map(|column| {
+                let mut entry = serde_json::json!({
+                    "name": column.name,
+                    "computed": column.expression,
+                });
+                if column.output == crate::table::computed_columns::ComputedColumnOutput::BlobV2 {
+                    entry["computed_output"] = serde_json::json!("blob_v2");
+                }
+                entry
+            })
             .collect::<Vec<_>>();
         let mut body = serde_json::json!({ "new_columns": entries });
         self.apply_branch_body(&mut body);
@@ -7417,6 +7423,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.version, 7);
+    }
+
+    #[tokio::test]
+    async fn test_add_blob_computed_column_sends_explicit_output_semantics() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => simple_describe_response(),
+            "/v1/table/my_table/add_columns/" => {
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(
+                    value["new_columns"],
+                    serde_json::json!([{
+                        "name": "image_copy",
+                        "computed": "image",
+                        "computed_output": "blob_v2"
+                    }])
+                );
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 8}"#.to_string())
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
+        });
+
+        let result = table
+            .add_columns()
+            .computed_blob("image_copy", "image")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 8);
     }
 
     #[tokio::test]

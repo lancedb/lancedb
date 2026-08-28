@@ -4087,6 +4087,42 @@ def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
         table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
 
 
+def test_computed_blob_input_and_explicit_output(tmp_path):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_blob", schema=schema)
+    table.add(
+        [
+            {"id": 1, "image": b"hello"},
+            {"id": 2, "image": b""},
+            {"id": 3, "image": None},
+        ]
+    )
+
+    table.add_columns(
+        computed={"payload_copy": "image"},
+        computed_blobs={"image_copy": "image"},
+    )
+    assert table.refresh_column("payload_copy").rows_filled == 2
+    assert table.refresh_column("image_copy").rows_filled == 2
+
+    values = table.to_arrow()["payload_copy"].combine_chunks().to_pylist()
+    assert values == [b"hello", b"", None]
+    assert table.blob_columns() == ["image", "image_copy"]
+
+    hits = table.search().with_row_id(True).limit(10).to_arrow()
+    rows = sorted(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+    copied = table.fetch_blobs("image_copy", [row_id for _, row_id in rows])
+    assert copied.to_pylist() == [b"hello", b"", None]
+
+
+def test_computed_blob_rejects_eager_transforms(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_blob_mixed", [{"x": 1}])
+    with pytest.raises(ValueError):
+        table.add_columns({"a": "x + 1"}, computed_blobs={"b": "x"})
+
+
 @pytest.mark.asyncio
 async def test_computed_column_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
