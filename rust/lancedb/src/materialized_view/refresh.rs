@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
 use arrow_array::{RecordBatch, RecordBatchOptions, UInt64Array};
-use arrow_schema::{Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::ScalarValue;
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::PhysicalExpr;
@@ -475,12 +475,16 @@ async fn incremental(
         }
     }
 
+    let before_columns: Vec<&str> = evaluator
+        .read_schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect();
+    let before_schema = Arc::new(base.schema().project(&before_columns)?);
     for ids in updated_ids.chunks(8192) {
         let before = base
-            .take_rows(
-                ids,
-                ProjectionRequest::Schema(Arc::new(base.schema().clone())),
-            )
+            .take_rows(ids, ProjectionRequest::Schema(before_schema.clone()))
             .await?;
         if !accumulate(
             &mut weights,
@@ -498,8 +502,12 @@ async fn incremental(
         .iter()
         .filter_map(|(row, weight)| (*weight < 0).then_some((row.clone(), (-*weight) as usize)))
         .collect();
-    if !removals.is_empty() && view_ds.count_rows(None).await? > VIEW_RECONCILIATION_ROW_CAP {
-        return Ok(None);
+    if !removals.is_empty() {
+        let view_rows = view_ds.count_rows(None).await?;
+        let schema = ArrowSchema::from(view_ds.schema());
+        if view_reconciliation_exceeds_budget(&schema, view_rows) {
+            return Ok(None);
+        }
     }
     let Some(evicted_ids) = select_view_rows(view_ds, &mut removals).await? else {
         return Ok(None);
@@ -1154,9 +1162,55 @@ fn delta_byte_rebuild_cap() -> usize {
     128 * 1024 * 1024
 }
 
-/// Exact bag subtraction decodes the view row-wise. Past this size the
-/// columnar rebuild is the bounded-cost path.
-const VIEW_RECONCILIATION_ROW_CAP: usize = 4 * 1024 * 1024;
+/// Exact bag subtraction decodes and hashes view values row-wise. Past this
+/// estimated decoded-value budget the columnar rebuild is the bounded path.
+const VIEW_RECONCILIATION_BYTE_CAP: usize = 128 * 1024 * 1024;
+
+fn view_reconciliation_exceeds_budget(schema: &ArrowSchema, rows: usize) -> bool {
+    let row_bytes = schema.fields().iter().fold(0usize, |total, field| {
+        total.saturating_add(
+            std::mem::size_of::<ScalarValue>()
+                .saturating_add(estimated_value_width(field.data_type())),
+        )
+    });
+    rows.saturating_mul(row_bytes) > VIEW_RECONCILIATION_BYTE_CAP
+}
+
+fn estimated_value_width(data_type: &DataType) -> usize {
+    if let Some(width) = data_type.primitive_width() {
+        return width;
+    }
+    match data_type {
+        DataType::Null => 0,
+        DataType::Boolean => 1,
+        DataType::FixedSizeBinary(width) => (*width).max(0) as usize,
+        DataType::FixedSizeList(child, len) => {
+            ((*len).max(0) as usize).saturating_mul(estimated_value_width(child.data_type()))
+        }
+        DataType::Struct(fields) => fields.iter().fold(0usize, |total, field| {
+            total.saturating_add(estimated_value_width(field.data_type()))
+        }),
+        DataType::Union(fields, _) => fields
+            .iter()
+            .map(|(_, field)| estimated_value_width(field.data_type()))
+            .max()
+            .unwrap_or_default(),
+        DataType::Dictionary(_, values) => estimated_value_width(values),
+        DataType::RunEndEncoded(_, values) => estimated_value_width(values.data_type()),
+        DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Utf8View
+        | DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::List(_)
+        | DataType::ListView(_)
+        | DataType::LargeList(_)
+        | DataType::LargeListView(_)
+        | DataType::Map(_, _) => 256,
+        _ => 64,
+    }
+}
 
 /// View row ids per staged eviction: the delete predicate carries one
 /// literal per id, so a whole delta at once is unbounded. Each chunk costs a
@@ -1456,6 +1510,24 @@ mod tests {
         let mut evaluated_bytes = 0;
 
         assert!(!accumulate(&mut weights, &batch, 1, &mut evaluated_bytes, 1,).unwrap());
+    }
+
+    #[test]
+    fn wide_views_use_the_columnar_rebuild_path() {
+        let item = Arc::new(arrow_schema::Field::new("item", DataType::Float32, true));
+        let wide = ArrowSchema::new(vec![arrow_schema::Field::new(
+            "vector",
+            DataType::FixedSizeList(item, 768),
+            true,
+        )]);
+        let narrow = ArrowSchema::new(vec![arrow_schema::Field::new(
+            "value",
+            DataType::Int32,
+            true,
+        )]);
+
+        assert!(view_reconciliation_exceeds_budget(&wide, 1_000_000));
+        assert!(!view_reconciliation_exceeds_budget(&narrow, 1_000));
     }
 
     #[tokio::test]
