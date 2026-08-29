@@ -22,6 +22,7 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 
 use crate::error::{Error, Result};
 use crate::remote::client::{ClientConfig, TlsConfig};
+use crate::remote::retry::ResolvedRetryConfig;
 use crate::sql::{Query, QueryDescription, QueryHandle};
 
 const DEFAULT_SQL_PORT: u16 = 10025;
@@ -52,7 +53,7 @@ impl std::fmt::Debug for SqlClient {
             .field("api_key", &"<redacted>")
             .field("host_override", &self.host_override)
             .field("sql_host_override", &self.sql_host_override)
-            .field("client_config", &self.client_config)
+            .field("client_config", &"<redacted>")
             .field("initialized", &self.client.get().is_some())
             .finish()
     }
@@ -153,6 +154,8 @@ impl SqlClient {
             Some(DEFAULT_READ_TIMEOUT),
         )?
         .unwrap();
+        let retry_config = ResolvedRetryConfig::try_from(self.client_config.retry_config.clone())?;
+        let mut retry_count = 0_u8;
         loop {
             let started = Instant::now();
             let request_id = uuid::Uuid::new_v4().to_string();
@@ -163,16 +166,20 @@ impl SqlClient {
                 tokio::time::timeout(read_timeout, client.poll_flight_info(descriptor.clone()))
                     .await;
             let poll_info = match result {
-                Err(_) => continue,
+                Err(_) if retry_count < retry_config.read_retries => {
+                    retry_count += 1;
+                    tokio::time::sleep(poll_retry_delay(&retry_config, retry_count)).await;
+                    continue;
+                }
+                Err(_) => return Err(sql_error(&request_id, "SQL query poll timed out")),
                 Ok(Err(FlightError::Tonic(status)))
                     if matches!(
                         status.code(),
                         tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
-                    ) =>
+                    ) && retry_count < retry_config.read_retries =>
                 {
-                    if let Some(delay) = MIN_POLL_INTERVAL.checked_sub(started.elapsed()) {
-                        tokio::time::sleep(delay).await;
-                    }
+                    retry_count += 1;
+                    tokio::time::sleep(poll_retry_delay(&retry_config, retry_count)).await;
                     continue;
                 }
                 Ok(Err(error)) => return Err(sql_error(&request_id, error)),
@@ -350,6 +357,7 @@ struct RemoteQuery {
     client: SqlClient,
     default_namespace_path: Vec<String>,
     state: Mutex<PollInfo>,
+    poll_gate: Mutex<()>,
     state_changed: Notify,
     result: OnceCell<Vec<RecordBatch>>,
 }
@@ -366,6 +374,7 @@ impl RemoteQuery {
             client,
             default_namespace_path,
             state: Mutex::new(poll_info),
+            poll_gate: Mutex::new(()),
             state_changed: Notify::new(),
             result: OnceCell::new(),
         }
@@ -406,6 +415,10 @@ impl RemoteQuery {
                     message: "Completed SQL query did not include result information".to_string(),
                 });
             };
+            let _poll_guard = self.poll_gate.lock().await;
+            if self.state.lock().await.flight_descriptor.as_ref() != Some(&descriptor) {
+                continue;
+            }
             let updated = self
                 .client
                 .poll_continuation(descriptor.clone(), &self.default_namespace_path)
@@ -432,13 +445,28 @@ impl QueryHandle for RemoteQuery {
 
     async fn describe(&self) -> Result<QueryDescription> {
         let state = self.state.lock().await.clone();
-        let state = if let Some(descriptor) = state.flight_descriptor.clone()
-            && let Some(updated) = self
-                .client
-                .poll_status(descriptor.clone(), &self.default_namespace_path)
-                .await?
-        {
-            self.update_state(&descriptor, updated).await
+        let state = if let Some(descriptor) = state.flight_descriptor.clone() {
+            match tokio::time::timeout(STATUS_POLL_TIMEOUT, async {
+                let _poll_guard = self.poll_gate.lock().await;
+                let latest = self.state.lock().await.clone();
+                if latest.flight_descriptor.as_ref() != Some(&descriptor) {
+                    return Ok::<PollInfo, Error>(latest);
+                }
+                if let Some(updated) = self
+                    .client
+                    .poll_status(descriptor.clone(), &self.default_namespace_path)
+                    .await?
+                {
+                    Ok(self.update_state(&descriptor, updated).await)
+                } else {
+                    Ok(latest)
+                }
+            })
+            .await
+            {
+                Ok(updated) => updated?,
+                Err(_) => state,
+            }
         } else {
             state
         };
@@ -483,11 +511,16 @@ impl QueryHandle for RemoteQuery {
             }
 
             tokio::select! {
-                updated = self.client.poll_continuation(
-                    descriptor.clone(),
-                    &self.default_namespace_path,
-                ) => {
-                    self.update_state(&descriptor, updated?).await;
+                poll_guard = self.poll_gate.lock() => {
+                    let _poll_guard = poll_guard;
+                    if self.state.lock().await.flight_descriptor.as_ref() != Some(&descriptor) {
+                        continue;
+                    }
+                    let updated = self.client.poll_continuation(
+                        descriptor.clone(),
+                        &self.default_namespace_path,
+                    ).await?;
+                    self.update_state(&descriptor, updated).await;
                 }
                 _ = notified => {}
             }
@@ -771,6 +804,13 @@ fn validate_namespace_path(path: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn poll_retry_delay(config: &ResolvedRetryConfig, retry_count: u8) -> Duration {
+    let exponent = i32::from(retry_count.saturating_sub(1).min(16));
+    let backoff = config.backoff_factor * 2.0_f32.powi(exponent);
+    let jitter = rand::random::<f32>() * config.backoff_jitter;
+    Duration::from_secs_f32((backoff + jitter).clamp(MIN_POLL_INTERVAL.as_secs_f32(), 60.0))
+}
+
 fn resolve_timeout(
     configured: Option<Duration>,
     env_name: &str,
@@ -829,6 +869,7 @@ mod tests {
         query_count: Arc<AtomicUsize>,
         do_get_count: Arc<AtomicUsize>,
         cancel_count: Arc<AtomicUsize>,
+        first_continuation_count: Arc<AtomicUsize>,
         transient_poll_failures: Arc<AtomicUsize>,
         headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
         result: RecordBatch,
@@ -848,6 +889,7 @@ mod tests {
                 query_count: Arc::new(AtomicUsize::new(0)),
                 do_get_count: Arc::new(AtomicUsize::new(0)),
                 cancel_count: Arc::new(AtomicUsize::new(0)),
+                first_continuation_count: Arc::new(AtomicUsize::new(0)),
                 transient_poll_failures: Arc::new(AtomicUsize::new(0)),
                 headers: Arc::new(std::sync::Mutex::new(Vec::new())),
                 result,
@@ -923,6 +965,9 @@ mod tests {
                     .next()
                     .and_then(|stage| stage.parse().ok())
                     .ok_or_else(|| Status::invalid_argument("invalid continuation"))?;
+                if stage == 1 {
+                    self.first_continuation_count.fetch_add(1, Ordering::SeqCst);
+                }
                 let query = parts
                     .next()
                     .ok_or_else(|| Status::invalid_argument("invalid continuation"))?;
@@ -931,9 +976,13 @@ mod tests {
             if query == "SELECT slow" && stage > 0 {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            if query == "SELECT retry"
-                && stage == 1
-                && self.transient_poll_failures.fetch_add(1, Ordering::SeqCst) == 0
+            if query == "SELECT no info" && stage == 1 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if stage == 1
+                && (query == "SELECT fail"
+                    || (query == "SELECT retry"
+                        && self.transient_poll_failures.fetch_add(1, Ordering::SeqCst) == 0))
             {
                 return Err(Status::unavailable("transient polling failure"));
             }
@@ -1031,6 +1080,7 @@ mod tests {
         let query_count = service.query_count.clone();
         let do_get_count = service.do_get_count.clone();
         let cancel_count = service.cancel_count.clone();
+        let first_continuation_count = service.first_continuation_count.clone();
         let headers = service.headers.clone();
         let expected = service.result.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1051,16 +1101,24 @@ mod tests {
         }
         assert!(ready, "SQL test server did not start");
 
+        let mut client_config = ClientConfig::default();
+        client_config.retry_config.read_retries = Some(1);
+        client_config.retry_config.backoff_factor = Some(0.0);
+        client_config.retry_config.backoff_jitter = Some(0.0);
+        client_config
+            .extra_headers
+            .insert("x-static-secret".to_string(), "static-secret".to_string());
         let client = SqlClient::new(
             "analytics".to_string(),
             Some("tenant/production".to_string()),
             "test-key".to_string(),
             None,
             Some(format!("grpc://{address}")),
-            ClientConfig::default(),
+            client_config,
         );
         assert_eq!(client.initialized_client_count().await, 0);
         assert!(!format!("{client:?}").contains("test-key"));
+        assert!(!format!("{client:?}").contains("static-secret"));
 
         let first = client
             .submit("SELECT 1", &["public".to_string()])
@@ -1108,14 +1166,29 @@ mod tests {
         result_task.abort();
         let _ = result_task.await;
 
-        let no_info = client
-            .submit("SELECT no info", &["public".to_string()])
-            .await
-            .unwrap();
+        let no_info = Arc::new(
+            client
+                .submit("SELECT no info", &["public".to_string()])
+                .await
+                .unwrap(),
+        );
+        let continuation_count_before = first_continuation_count.load(Ordering::SeqCst);
+        let no_info_result_task = {
+            let no_info = no_info.clone();
+            tokio::spawn(async move { no_info.result().await })
+        };
+        tokio::time::sleep(Duration::from_millis(10)).await;
         tokio::time::timeout(Duration::from_secs(1), no_info.cancel())
             .await
             .expect("cancellation should wait for cancellable query information")
             .unwrap();
+        no_info_result_task.abort();
+        let _ = no_info_result_task.await;
+        assert_eq!(
+            first_continuation_count.load(Ordering::SeqCst),
+            continuation_count_before + 1,
+            "result and cancel must share one continuation poll",
+        );
 
         let retried = client
             .submit("SELECT retry", &["public".to_string()])
@@ -1123,8 +1196,14 @@ mod tests {
             .unwrap();
         assert_eq!(retried.result().await.unwrap(), vec![expected.clone()]);
 
+        let failed = client
+            .submit("SELECT fail", &["public".to_string()])
+            .await
+            .unwrap();
+        assert!(failed.result().await.is_err());
+
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 6);
+        assert_eq!(query_count.load(Ordering::SeqCst), 7);
         assert_eq!(do_get_count.load(Ordering::SeqCst), 3);
         assert_eq!(cancel_count.load(Ordering::SeqCst), 3);
         assert_eq!(first_result, vec![expected.clone()]);
