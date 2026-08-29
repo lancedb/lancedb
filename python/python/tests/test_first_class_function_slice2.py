@@ -19,7 +19,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.functions import UdfDefinition, udf
+from lancedb.functions import PythonRuntimeSpec, UdfDefinition, udf
 
 THRESHOLD = 20
 _CACHE = None
@@ -89,14 +89,21 @@ def test_udf_conda_environment():
         udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
 
 
-def test_udf_gpu_requirement_uses_resource_aware_runtime():
-    @udf(pip=["cupy-cuda12x"], num_gpus=1)
+def test_udf_gpu_requirement_uses_gpu_runtime():
+    @udf(pip=["cupy-cuda12x"], gpu=1)
     def double_on_gpu(value: int) -> int:
         return value * 2
 
     request = json.loads(double_on_gpu.registration_request.to_canonical_json())
     assert request["runtime"]["kind"] == "python_v2"
-    assert request["runtime"]["resources"] == {"num_gpus": 1}
+    assert request["runtime"]["gpu"] == "1"
+
+    @udf(pip=["cupy-cuda12x"], gpu="H100:8")
+    def double_on_h100(value: int) -> int:
+        return value * 2
+
+    h100_request = json.loads(double_on_h100.registration_request.to_canonical_json())
+    assert h100_request["runtime"]["gpu"] == "H100:8"
 
     @udf(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
@@ -106,11 +113,40 @@ def test_udf_gpu_requirement_uses_resource_aware_runtime():
         "runtime"
     ]
     assert cpu_runtime["kind"] == "python"
-    assert "resources" not in cpu_runtime
+    assert "gpu" not in cpu_runtime
 
-    for invalid in [0, -1, 1.5, True]:
+    def identity(value: int) -> int:
+        return value
+
+    for invalid in [0, -1, 1.5, True, "", "0", "01", " 1"]:
         with pytest.raises(ValueError):
-            udf(name="invalid_gpu", num_gpus=invalid)(lambda value: value)
+            udf(name="invalid_gpu", gpu=invalid)(identity)
+
+    base_runtime = {
+        "kind": "python_v2",
+        "python_version": "3.12",
+        "environment": {"kind": "pip"},
+    }
+    for requirement in ["H100", "H100:8"]:
+        runtime = PythonRuntimeSpec.model_validate({**base_runtime, "gpu": requirement})
+        assert runtime.gpu == requirement
+    for invalid in [1, 0, "", "0", "01", " 1"]:
+        with pytest.raises(ValueError):
+            PythonRuntimeSpec.model_validate({**base_runtime, "gpu": invalid})
+
+
+def test_unknown_runtime_discards_payload_before_known_field_validation():
+    for payload in [
+        {"kind": "python_v3", "gpu": {"model": "H100"}},
+        {"kind": "python_v3", "resources": []},
+        {
+            "kind": "python_v3",
+            "environment": {"kind": []},
+            "python_version": 3.15,
+        },
+    ]:
+        runtime = PythonRuntimeSpec.model_validate(payload)
+        assert runtime.to_canonical_json() == '{"kind":"python_v3"}'
 
 
 def test_udf_packages_attribute_access_and_body_imports():
