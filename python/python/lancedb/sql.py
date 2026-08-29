@@ -23,7 +23,7 @@ class AsyncQuery:
 
     @property
     def id(self) -> str:
-        """The stable, opaque identifier for this query."""
+        """The stable identifier scoped to the connection that submitted it."""
         return self._inner.id
 
     async def describe(self) -> QueryDescription:
@@ -47,7 +47,7 @@ class Query:
 
     @property
     def id(self) -> str:
-        """The stable, opaque identifier for this query."""
+        """The stable identifier scoped to the connection that submitted it."""
         return self._inner.id
 
     def describe(self) -> QueryDescription:

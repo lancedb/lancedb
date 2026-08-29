@@ -13,9 +13,8 @@ use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
     CancelFlightInfoRequest, CancelStatus, FlightClient, FlightDescriptor, FlightInfo, PollInfo,
 };
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::TryStreamExt;
+use moka::future::Cache;
 use prost::Message;
 use tokio::sync::{Mutex, Notify, OnceCell};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
@@ -31,10 +30,16 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const QUERY_CACHE_CAPACITY: u64 = 10_000;
 const QUERY_ID_PREFIX: &str = "lq1_";
 
 #[derive(Clone)]
 pub(super) struct SqlClient {
+    inner: Arc<SqlClientInner>,
+    queries: Cache<String, Arc<RemoteQuery>>,
+}
+
+struct SqlClientInner {
     database: String,
     database_prefix: Option<String>,
     api_key: String,
@@ -48,13 +53,13 @@ impl std::fmt::Debug for SqlClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("SqlClient")
-            .field("database", &self.database)
-            .field("database_prefix", &self.database_prefix)
+            .field("database", &self.inner.database)
+            .field("database_prefix", &self.inner.database_prefix)
             .field("api_key", &"<redacted>")
-            .field("host_override", &self.host_override)
-            .field("sql_host_override", &self.sql_host_override)
+            .field("host_override", &self.inner.host_override)
+            .field("sql_host_override", &self.inner.sql_host_override)
             .field("client_config", &"<redacted>")
-            .field("initialized", &self.client.get().is_some())
+            .field("initialized", &self.inner.client.get().is_some())
             .finish()
     }
 }
@@ -69,13 +74,16 @@ impl SqlClient {
         client_config: ClientConfig,
     ) -> Self {
         Self {
-            database,
-            database_prefix,
-            api_key,
-            host_override,
-            sql_host_override,
-            client_config,
-            client: Arc::new(OnceCell::new()),
+            inner: Arc::new(SqlClientInner {
+                database,
+                database_prefix,
+                api_key,
+                host_override,
+                sql_host_override,
+                client_config,
+                client: Arc::new(OnceCell::new()),
+            }),
+            queries: Cache::builder().max_capacity(QUERY_CACHE_CAPACITY).build(),
         }
     }
 
@@ -90,22 +98,36 @@ impl SqlClient {
             transaction_id: None,
         };
         let descriptor = FlightDescriptor::new_cmd(command.as_any().encode_to_vec());
-        let poll_info = self.poll(descriptor, default_namespace_path).await?;
-        let query_id = encode_query_id(&poll_info, default_namespace_path);
-        Ok(Query::new(RemoteQuery::new(
-            query_id,
-            self.clone(),
+        let poll_info = self.inner.poll(descriptor, default_namespace_path).await?;
+        let query_id = format!("{QUERY_ID_PREFIX}{}", uuid::Uuid::new_v4().simple());
+        let query = Arc::new(RemoteQuery::new(
+            query_id.clone(),
+            self.inner.clone(),
             default_namespace_path.to_vec(),
             poll_info,
-        )))
+        ));
+        self.queries.insert(query_id, query.clone()).await;
+        Ok(Query::new(query))
     }
 
     pub(super) async fn describe(&self, query_id: &str) -> Result<QueryDescription> {
-        RemoteQuery::decode(query_id, self.clone())?
-            .describe()
+        let query = self
+            .queries
+            .get(query_id)
             .await
+            .ok_or_else(|| Error::InvalidInput {
+                message: "Unknown or expired SQL query id for this connection".to_string(),
+            })?;
+        query.describe().await
     }
 
+    #[cfg(test)]
+    async fn initialized_client_count(&self) -> usize {
+        usize::from(self.inner.client.get().is_some())
+    }
+}
+
+impl SqlClientInner {
     async fn poll(
         &self,
         descriptor: FlightDescriptor,
@@ -294,11 +316,6 @@ impl SqlClient {
         client_with_headers(base.clone(), &headers)
     }
 
-    #[cfg(test)]
-    async fn initialized_client_count(&self) -> usize {
-        usize::from(self.client.get().is_some())
-    }
-
     async fn headers(
         &self,
         default_namespace_path: &[String],
@@ -344,17 +361,9 @@ impl SqlClient {
     }
 }
 
-#[derive(Clone, PartialEq, Message)]
-struct EncodedQueryId {
-    #[prost(message, optional, tag = "1")]
-    poll_info: Option<PollInfo>,
-    #[prost(string, repeated, tag = "2")]
-    default_namespace_path: Vec<String>,
-}
-
 struct RemoteQuery {
     id: String,
-    client: SqlClient,
+    client: Arc<SqlClientInner>,
     default_namespace_path: Vec<String>,
     state: Mutex<PollInfo>,
     poll_gate: Mutex<()>,
@@ -365,7 +374,7 @@ struct RemoteQuery {
 impl RemoteQuery {
     fn new(
         id: String,
-        client: SqlClient,
+        client: Arc<SqlClientInner>,
         default_namespace_path: Vec<String>,
         poll_info: PollInfo,
     ) -> Self {
@@ -378,33 +387,6 @@ impl RemoteQuery {
             state_changed: Notify::new(),
             result: OnceCell::new(),
         }
-    }
-
-    fn decode(id: &str, client: SqlClient) -> Result<Self> {
-        let encoded = id
-            .strip_prefix(QUERY_ID_PREFIX)
-            .ok_or_else(|| Error::InvalidInput {
-                message: "Invalid SQL query id".to_string(),
-            })?;
-        let bytes = URL_SAFE_NO_PAD
-            .decode(encoded)
-            .map_err(|_| Error::InvalidInput {
-                message: "Invalid SQL query id".to_string(),
-            })?;
-        let decoded =
-            EncodedQueryId::decode(bytes.as_slice()).map_err(|_| Error::InvalidInput {
-                message: "Invalid SQL query id".to_string(),
-            })?;
-        let poll_info = decoded.poll_info.ok_or_else(|| Error::InvalidInput {
-            message: "Invalid SQL query id".to_string(),
-        })?;
-        validate_namespace_path(&decoded.default_namespace_path)?;
-        Ok(Self::new(
-            id.to_string(),
-            client,
-            decoded.default_namespace_path,
-            poll_info,
-        ))
     }
 
     async fn poll_until_finished(&self) -> Result<FlightInfo> {
@@ -526,17 +508,6 @@ impl QueryHandle for RemoteQuery {
             }
         }
     }
-}
-
-fn encode_query_id(poll_info: &PollInfo, default_namespace_path: &[String]) -> String {
-    let mut resumable_poll_info = poll_info.clone();
-    resumable_poll_info.info = None;
-    let encoded = EncodedQueryId {
-        poll_info: Some(resumable_poll_info),
-        default_namespace_path: default_namespace_path.to_vec(),
-    }
-    .encode_to_vec();
-    format!("{QUERY_ID_PREFIX}{}", URL_SAFE_NO_PAD.encode(encoded))
 }
 
 fn query_description(id: &str, poll_info: &PollInfo) -> Result<QueryDescription> {
@@ -1121,17 +1092,27 @@ mod tests {
         assert!(!format!("{client:?}").contains("static-secret"));
 
         let first = client
-            .submit("SELECT 1", &["public".to_string()])
+            .submit("SELECT 'super-secret'", &["public".to_string()])
             .await
             .unwrap();
-        assert!(first.id().starts_with(QUERY_ID_PREFIX));
-        let decoded = RemoteQuery::decode(first.id(), client.clone()).unwrap();
-        assert!(decoded.state.lock().await.info.is_none());
+        let id_suffix = first.id().strip_prefix(QUERY_ID_PREFIX).unwrap();
+        assert_eq!(id_suffix.len(), 32);
+        assert!(id_suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(!first.id().contains("super-secret"));
         let first_description = client.describe(first.id()).await.unwrap();
         assert_eq!(first_description.status, "finished");
         assert_eq!(first_description.progress, Some(1.0));
         let first_result = first.result().await.unwrap();
         let first_result_again = first.result().await.unwrap();
+
+        let staged = client
+            .submit("SELECT no info", &["public".to_string()])
+            .await
+            .unwrap();
+        let staged_running = client.describe(staged.id()).await.unwrap();
+        assert_eq!(staged_running.status, "running");
+        let staged_finished = client.describe(staged.id()).await.unwrap();
+        assert_eq!(staged_finished.status, "finished");
 
         let empty = client
             .submit("SELECT empty", &["public".to_string()])
@@ -1203,7 +1184,7 @@ mod tests {
         assert!(failed.result().await.is_err());
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 7);
+        assert_eq!(query_count.load(Ordering::SeqCst), 8);
         assert_eq!(do_get_count.load(Ordering::SeqCst), 3);
         assert_eq!(cancel_count.load(Ordering::SeqCst), 3);
         assert_eq!(first_result, vec![expected.clone()]);

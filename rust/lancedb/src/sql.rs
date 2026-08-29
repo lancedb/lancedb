@@ -14,7 +14,7 @@ use crate::Result;
 /// A point-in-time description of a submitted SQL query.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryDescription {
-    /// The stable, opaque identifier returned when the query was submitted.
+    /// The stable, connection-scoped identifier assigned when the query was submitted.
     pub id: String,
     /// The lifecycle state: `running` or `finished`.
     pub status: String,
@@ -36,6 +36,8 @@ pub(crate) trait QueryHandle: Send + Sync {
 ///
 /// The handle can be inspected, awaited for its Arrow result, or cancelled.
 /// Dropping it does not cancel the server-side query.
+/// Identifier lookup is scoped to the connection that submitted the query and
+/// is not a durable resume mechanism.
 pub struct Query {
     handle: Arc<dyn QueryHandle>,
 }
@@ -51,13 +53,11 @@ impl std::fmt::Debug for Query {
 
 impl Query {
     #[cfg(feature = "remote")]
-    pub(crate) fn new(handle: impl QueryHandle + 'static) -> Self {
-        Self {
-            handle: Arc::new(handle),
-        }
+    pub(crate) fn new(handle: Arc<dyn QueryHandle>) -> Self {
+        Self { handle }
     }
 
-    /// Return the stable, opaque identifier for this query.
+    /// Return the stable, connection-scoped identifier for this query.
     pub fn id(&self) -> &str {
         self.handle.id()
     }

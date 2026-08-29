@@ -796,7 +796,7 @@ class DBConnection(EnforceOverrides):
         raise NotImplementedError("SQL is not supported for this connection type")
 
     def describe_query(self, query_id: str) -> QueryDescription:
-        """Describe a submitted SQL query by its opaque id."""
+        """Describe a submitted SQL query by its connection-scoped id."""
         raise NotImplementedError("SQL is not supported for this connection type")
 
 
@@ -2361,7 +2361,7 @@ class AsyncConnection(object):
         )
 
     async def describe_query(self, query_id: str) -> QueryDescription:
-        """Describe a submitted SQL query by its opaque id."""
+        """Describe a submitted SQL query by its connection-scoped id."""
         return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:

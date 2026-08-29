@@ -818,7 +818,7 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def describe_query(self, query_id: str) -> QueryDescription:
-        """Describe a submitted SQL query by its opaque id."""
+        """Describe a submitted SQL query by its connection-scoped id."""
         return LOOP.run(
             self._conn.describe_query(
                 query_id,

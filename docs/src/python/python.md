@@ -36,7 +36,8 @@ unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. Submission returns a query
 handle immediately; use it to inspect progress, await the Arrow result, or
 cancel the query. The SQL client is initialized by the first submitted query
-and retained for the lifetime of the remote connection:
+and retained for the lifetime of the remote connection. Query ids are random,
+connection-scoped references rather than encoded SQL or durable resume tokens:
 
 ```python
 import lancedb
