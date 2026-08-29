@@ -5763,6 +5763,13 @@ mod tests {
         assert!(index_bytes > 0);
         assert_eq!(with_index, data_only + index_bytes);
 
+        // Release builds reject unstable overlay datasets unless explicitly opted in.
+        if !lance_table::feature_flags::can_read_dataset(
+            lance_table::feature_flags::FLAG_UNSTABLE_DATA_OVERLAY_FILES,
+        ) {
+            return;
+        }
+
         // Commit an overlay file supplying new `foo` values for the first three
         // rows of fragment 0. There is no high-level API that writes overlays
         // yet, so write the overlay's data file and commit the `DataOverlay`

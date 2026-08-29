@@ -1462,9 +1462,7 @@ fn plan_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<
 
     for (name, expression) in columns {
         if schema.field_with_name(name).is_ok() {
-            return Err(Error::ColumnAlreadyExists {
-                name: name.to_string(),
-            });
+            return Err(Error::ColumnAlreadyExists { name: name.clone() });
         }
 
         let bound = bind(schema.clone(), name, expression)?;
