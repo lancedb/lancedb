@@ -401,9 +401,8 @@ async fn incremental(
     if version_gap > MAX_TRANSACTION_WALK {
         return Ok(None);
     }
-    let transactions = match delta.list_transactions().await {
-        Ok(transactions) => transactions,
-        Err(_) => return Ok(None),
+    let Ok(transactions) = delta.list_transactions().await else {
+        return Ok(None);
     };
     if transactions.len() != version_gap as usize
         || transactions
