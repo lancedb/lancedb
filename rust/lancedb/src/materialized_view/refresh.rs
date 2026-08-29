@@ -411,6 +411,9 @@ async fn incremental(
     {
         return Ok(None);
     }
+    let has_updated_rows = transactions
+        .iter()
+        .any(|transaction| matches!(transaction.operation, Operation::Update { .. }));
 
     let mut deleted = delta.get_deleted_row_ids().await?;
     while let Some(batch) = deleted.try_next().await? {
@@ -420,21 +423,69 @@ async fn incremental(
     }
 
     let mut inserted = delta.get_inserted_rows().await?;
-    let mut updated = delta.get_updated_rows().await?;
     if definition.limit.is_some() {
         while let Some(batch) = inserted.try_next().await? {
             if batch.num_rows() > 0 {
                 return Ok(None);
             }
         }
-        while let Some(batch) = updated.try_next().await? {
-            if batch.num_rows() > 0 {
-                return Ok(None);
+        if has_updated_rows {
+            let mut updated = delta.get_updated_rows().await?;
+            while let Some(batch) = updated.try_next().await? {
+                if batch.num_rows() > 0 {
+                    return Ok(None);
+                }
             }
         }
     }
 
     let evaluator = DeltaEvaluator::new(source_ds, definition, view_ds)?;
+    if !has_updated_rows {
+        let output_schema = evaluator.output_schema.clone();
+        let evaluator = Arc::new(evaluator);
+        let rows_written = Arc::new(AtomicU64::new(0));
+        let counted = rows_written.clone();
+        let mapped = inserted.map(move |batch| {
+            let batch = batch.map_err(|error| DataFusionError::External(Box::new(error)))?;
+            let batch = evaluator
+                .evaluate(&batch)
+                .map_err(|error| DataFusionError::External(Box::new(error)))?;
+            counted.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+            Ok(batch)
+        });
+        let stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(output_schema, mapped));
+        let new_fragments = stage_addition_stream(view_ds, stream).await?;
+        let rows_written = rows_written.load(Ordering::Relaxed);
+        let appended = if rows_written == 0 {
+            view_ds.clone()
+        } else {
+            publish(
+                view_ds,
+                None,
+                new_fragments,
+                Some(refresh_filter()),
+                expected_incarnation,
+            )
+            .await?
+        };
+        let version = stamp_watermark(
+            view_native,
+            appended,
+            source_version,
+            source_ts,
+            None,
+            expected_incarnation,
+        )
+        .await?;
+        return Ok(Some(RefreshMaterializedViewResult {
+            mode: RefreshMode::Incremental,
+            rows_written,
+            source_version,
+            version,
+        }));
+    }
+
     let cap = delta_rebuild_cap();
     let byte_cap = delta_byte_rebuild_cap();
     let mut evaluated_rows = 0usize;
@@ -458,6 +509,7 @@ async fn incremental(
     }
 
     let mut updated_ids = Vec::new();
+    let mut updated = delta.get_updated_rows().await?;
     while let Some(batch) = updated.try_next().await? {
         evaluated_rows = evaluated_rows.saturating_add(batch.num_rows().saturating_mul(2));
         if evaluated_rows > cap {
@@ -702,7 +754,7 @@ fn accumulate(
     byte_cap: usize,
 ) -> Result<bool> {
     for row in 0..batch.num_rows() {
-        let key = batch
+        let mut key = batch
             .columns()
             .iter()
             .map(|column| {
@@ -711,6 +763,7 @@ fn accumulate(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        key.iter_mut().for_each(ScalarValue::compact);
         *evaluated_bytes = (*evaluated_bytes).saturating_add(ScalarValue::size_of_vec(&key));
         if *evaluated_bytes > byte_cap {
             return Ok(false);
@@ -799,6 +852,13 @@ async fn stage_additions(view: &Dataset, batch: Option<RecordBatch>) -> Result<V
         schema,
         futures::stream::iter([Ok(batch)]),
     ));
+    stage_addition_stream(view, stream).await
+}
+
+async fn stage_addition_stream(
+    view: &Dataset,
+    stream: SendableRecordBatchStream,
+) -> Result<Vec<Fragment>> {
     let transaction = InsertBuilder::new(WriteDestination::Dataset(Arc::new(view.clone())))
         .with_params(&WriteParams {
             mode: WriteMode::Append,
@@ -1170,8 +1230,8 @@ fn delta_byte_rebuild_cap() -> usize {
 }
 
 /// Exact bag subtraction decodes and hashes view values row-wise. Past this
-/// estimated decoded-value budget the columnar rebuild is the bounded path.
-const VIEW_RECONCILIATION_BYTE_CAP: usize = 128 * 1024 * 1024;
+/// estimated scan-work budget the columnar rebuild is the cheaper path.
+const VIEW_RECONCILIATION_SCAN_BYTE_CAP: usize = 128 * 1024 * 1024;
 
 fn view_reconciliation_exceeds_budget(schema: &ArrowSchema, rows: usize) -> bool {
     let row_bytes = schema.fields().iter().fold(0usize, |total, field| {
@@ -1180,7 +1240,7 @@ fn view_reconciliation_exceeds_budget(schema: &ArrowSchema, rows: usize) -> bool
                 .saturating_add(estimated_value_width(field.data_type())),
         )
     });
-    rows.saturating_mul(row_bytes) > VIEW_RECONCILIATION_BYTE_CAP
+    rows.saturating_mul(row_bytes) > VIEW_RECONCILIATION_SCAN_BYTE_CAP
 }
 
 fn estimated_value_width(data_type: &DataType) -> usize {
@@ -1424,7 +1484,8 @@ mod tests {
             })
             .unwrap_or(0)
     }
-    use arrow_array::{Float64Array, Int32Array, record_batch};
+    use arrow_array::types::Float32Type;
+    use arrow_array::{ArrayRef, FixedSizeListArray, Float64Array, Int32Array, record_batch};
     use futures::TryStreamExt;
     use lance::dataset::NewColumnTransform;
     use lance_file::version::LanceFileVersion;
@@ -1679,6 +1740,66 @@ mod tests {
         assert_eq!(result.mode, RefreshMode::Incremental);
         assert_eq!(result.rows_written, 1);
         assert_eq!(read(view.table(), "twice").await, vec![2, 4, 10]);
+    }
+
+    #[tokio::test]
+    async fn test_vector_append_streams_without_bag_encoding() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let vectors = |value| {
+            Arc::new(
+                FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                    [Some(vec![Some(value); 768])],
+                    768,
+                ),
+            ) as ArrayRef
+        };
+        let batch = RecordBatch::try_from_iter([
+            ("id", Arc::new(Int32Array::from(vec![1])) as ArrayRef),
+            ("vector", vectors(1.0)),
+        ])
+        .unwrap();
+        let source = conn
+            .create_table("vector_src", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("vector_view", "vector_src")
+            .select([("vector", "vector")])
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+
+        source
+            .add(
+                RecordBatch::try_from_iter([
+                    ("id", Arc::new(Int32Array::from(vec![2])) as ArrayRef),
+                    ("vector", vectors(2.0)),
+                ])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.rows_written, 1);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
+
+        source
+            .update()
+            .column("id", "id + 10")
+            .only_if("id = 1")
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.rows_written, 0);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
     }
 
     #[tokio::test]
