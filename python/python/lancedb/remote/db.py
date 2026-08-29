@@ -25,6 +25,8 @@ from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
+from ..sql import Query as SqlQuery
+from ..sql import QueryDescription
 from ..materialized_view import MaterializedView, SelectArg
 
 if TYPE_CHECKING:
@@ -793,22 +795,33 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.job_history(job_id))
 
     @override
-    def sql(
+    def submit_query(
         self,
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
-    ) -> pa.Table:
-        """Execute SQL through this remote connection.
+    ) -> SqlQuery:
+        """Submit SQL through this remote connection.
 
         Unqualified tables use this connection's database and the
         ``["public"]`` namespace by default. Fully qualified table names may
         reference other databases available to the same deployment.
         """
+        return SqlQuery(
+            LOOP.run(
+                self._conn.submit_query(
+                    query,
+                    default_namespace_path=default_namespace_path,
+                )
+            )
+        )
+
+    @override
+    def describe_query(self, query_id: str) -> QueryDescription:
+        """Describe a submitted SQL query by its opaque id."""
         return LOOP.run(
-            self._conn.sql(
-                query,
-                default_namespace_path=default_namespace_path,
+            self._conn.describe_query(
+                query_id,
             )
         )
 

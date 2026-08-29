@@ -50,6 +50,8 @@ from lancedb._lancedb import (
 from lancedb.background_loop import LOOP
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.job import AsyncJob, Job
+from lancedb.sql import AsyncQuery as AsyncSqlQuery
+from lancedb.sql import QueryDescription
 from lance_namespace import (
     LanceNamespace,
     connect as namespace_connect,
@@ -1447,20 +1449,24 @@ class AsyncLanceNamespaceDBConnection:
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
 
-    async def sql(
+    async def submit_query(
         self,
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
-    ) -> pa.Table:
-        """Execute SQL when supported by the underlying connection.
+    ) -> AsyncSqlQuery:
+        """Submit SQL when supported by the underlying connection.
 
         Namespace-backed local connections do not support SQL.
         """
-        return await self._inner.sql(
+        return await self._inner.submit_query(
             query,
             default_namespace_path=default_namespace_path,
         )
+
+    async def describe_query(self, query_id: str) -> QueryDescription:
+        """Describe a submitted SQL query when supported."""
+        return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the namespace client for this connection.

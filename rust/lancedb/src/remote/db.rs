@@ -768,18 +768,28 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .map_err(Into::into)
     }
 
-    async fn execute_sql(
+    async fn submit_query(
         &self,
         query: &str,
         default_namespace_path: &[String],
-    ) -> Result<Vec<arrow_array::RecordBatch>> {
+    ) -> Result<crate::sql::Query> {
         let client = self
             .sql_client
             .as_ref()
             .ok_or_else(|| Error::NotSupported {
                 message: "SQL is unavailable for this remote database client".to_string(),
             })?;
-        client.execute(query, default_namespace_path).await
+        client.submit(query, default_namespace_path).await
+    }
+
+    async fn describe_query(&self, query_id: &str) -> Result<crate::sql::QueryDescription> {
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".to_string(),
+            })?;
+        client.describe(query_id).await
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {

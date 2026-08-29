@@ -47,6 +47,9 @@ from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
 from .job import AsyncJob, Job, _typed_job
+from .sql import AsyncQuery as AsyncSqlQuery
+from .sql import Query as SqlQuery
+from .sql import QueryDescription
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
@@ -780,16 +783,20 @@ class DBConnection(EnforceOverrides):
             "job_history is not supported for this connection type"
         )
 
-    def sql(
+    def submit_query(
         self,
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
-    ) -> pa.Table:
-        """Execute SQL against a remote database.
+    ) -> SqlQuery:
+        """Submit SQL to a remote database.
 
         Local connections do not support SQL.
         """
+        raise NotImplementedError("SQL is not supported for this connection type")
+
+    def describe_query(self, query_id: str) -> QueryDescription:
+        """Describe a submitted SQL query by its opaque id."""
         raise NotImplementedError("SQL is not supported for this connection type")
 
 
@@ -2334,22 +2341,28 @@ class AsyncConnection(object):
         """
         return await self._inner.job_history(job_id)
 
-    async def sql(
+    async def submit_query(
         self,
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
-    ) -> pa.Table:
-        """Execute SQL against a remote database.
+    ) -> AsyncSqlQuery:
+        """Submit SQL to a remote database.
 
         The database from ``connect_async`` is used for unqualified database
         references. The namespace defaults to ``["public"]``. Local
         connections raise ``NotImplementedError``.
         """
-        return await self._inner.sql(
-            query,
-            default_namespace_path=default_namespace_path,
+        return AsyncSqlQuery(
+            await self._inner.submit_query(
+                query,
+                default_namespace_path=default_namespace_path,
+            )
         )
+
+    async def describe_query(self, query_id: str) -> QueryDescription:
+        """Describe a submitted SQL query by its opaque id."""
+        return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

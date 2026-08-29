@@ -22,6 +22,9 @@ from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector
 from .job import AsyncJob, Job
+from .sql import AsyncQuery as AsyncSqlQuery
+from .sql import Query as SqlQuery
+from .sql import QueryDescription
 from .functions import (
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
@@ -567,6 +570,7 @@ __all__ = [
     "connect_namespace_async",
     "AsyncConnection",
     "AsyncJob",
+    "AsyncSqlQuery",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
     "FtsToken",
@@ -581,6 +585,8 @@ __all__ = [
     "vector",
     "DBConnection",
     "Job",
+    "QueryDescription",
+    "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
     "LsmWriteSpec",

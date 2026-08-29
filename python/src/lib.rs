@@ -34,6 +34,7 @@ pub mod permutation;
 pub mod query;
 pub mod runtime;
 pub mod session;
+pub mod sql;
 pub mod table;
 pub mod util;
 
@@ -50,6 +51,8 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::job::JobInfo>()?;
     m.add_class::<crate::job::JobDescription>()?;
     m.add_class::<crate::job::JobFailureInfo>()?;
+    m.add_class::<crate::sql::Query>()?;
+    m.add_class::<crate::sql::QueryDescription>()?;
     m.add_class::<PyBlobFile>()?;
     m.add_class::<IndexConfig>()?;
     m.add_class::<Query>()?;

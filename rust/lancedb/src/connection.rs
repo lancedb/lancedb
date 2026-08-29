@@ -325,16 +325,14 @@ pub struct CloneTableBuilder {
     request: CloneTableRequest,
 }
 
-/// Builder for executing a SQL statement against a remote database.
-#[cfg(feature = "remote")]
-pub struct SqlQueryBuilder {
+/// Builder for submitting a SQL statement to a remote database.
+pub struct SubmitQueryBuilder {
     parent: Arc<dyn Database>,
     query: String,
     default_namespace_path: Vec<String>,
 }
 
-#[cfg(feature = "remote")]
-impl SqlQueryBuilder {
+impl SubmitQueryBuilder {
     fn new(parent: Arc<dyn Database>, query: String) -> Self {
         Self {
             parent,
@@ -356,10 +354,10 @@ impl SqlQueryBuilder {
         self
     }
 
-    /// Execute the statement and collect all returned Arrow record batches.
-    pub async fn execute(self) -> Result<Vec<RecordBatch>> {
+    /// Submit the statement and return its asynchronous query handle.
+    pub async fn execute(self) -> Result<crate::sql::Query> {
         self.parent
-            .execute_sql(&self.query, &self.default_namespace_path)
+            .submit_query(&self.query, &self.default_namespace_path)
             .await
     }
 }
@@ -447,10 +445,10 @@ impl Connection {
         &self.internal
     }
 
-    /// Execute SQL against a remote LanceDB database.
+    /// Submit SQL to a remote LanceDB database.
     ///
     /// The query can reference tables in other databases with SQL dot notation.
-    /// Use [`SqlQueryBuilder::default_namespace_path`] to avoid qualifying
+    /// Use [`SubmitQueryBuilder::default_namespace_path`] to avoid qualifying
     /// tables in the default namespace. Local connections return
     /// [`Error::NotSupported`].
     ///
@@ -464,17 +462,29 @@ impl Connection {
     ///     .sql_host_override("grpc+tls://sql.example.com:10026")
     ///     .execute()
     ///     .await?;
-    /// let batches = db
-    ///     .sql("SELECT * FROM events LIMIT 10")
+    /// let query = db
+    ///     .submit_query("SELECT * FROM events LIMIT 10")
     ///     .default_namespace_path(["public"])
     ///     .execute()
     ///     .await?;
+    /// println!("query id: {}", query.id());
+    /// let batches = query.result().await?;
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "remote")]
-    pub fn sql(&self, query: impl Into<String>) -> SqlQueryBuilder {
-        SqlQueryBuilder::new(self.internal.clone(), query.into())
+    pub fn submit_query(&self, query: impl Into<String>) -> SubmitQueryBuilder {
+        SubmitQueryBuilder::new(self.internal.clone(), query.into())
+    }
+
+    /// Describe a submitted SQL query by its opaque id.
+    ///
+    /// This performs one bounded status poll. Local connections return
+    /// [`Error::NotSupported`].
+    pub async fn describe_query(
+        &self,
+        query_id: impl AsRef<str>,
+    ) -> Result<crate::sql::QueryDescription> {
+        self.internal.describe_query(query_id.as_ref()).await
     }
 
     /// Get the names of all tables in the database
@@ -1482,16 +1492,19 @@ mod tests {
         assert_eq!(tc.connection.uri(), tc.uri);
     }
 
-    #[cfg(feature = "remote")]
     #[tokio::test]
-    async fn test_local_connection_rejects_sql() {
+    async fn test_local_connection_rejects_sql_queries() {
         let directory = tempdir().unwrap();
         let connection = connect(directory.path().to_str().unwrap())
             .execute()
             .await
             .unwrap();
         assert!(matches!(
-            connection.sql("SELECT 1").execute().await,
+            connection.submit_query("SELECT 1").execute().await,
+            Err(Error::NotSupported { .. })
+        ));
+        assert!(matches!(
+            connection.describe_query("query-id").await,
             Err(Error::NotSupported { .. })
         ));
     }

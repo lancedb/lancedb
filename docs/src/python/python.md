@@ -30,12 +30,13 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ## Remote SQL
 
-Execute SQL against a remote LanceDB database through the connection.
+Submit SQL against a remote LanceDB database through the connection.
 The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
-and namespaces available to the same deployment. The SQL client is
-initialized by the first SQL statement and retained for the lifetime of the
-remote connection:
+and namespaces available to the same deployment. Submission returns a query
+handle immediately; use it to inspect progress, await the Arrow result, or
+cancel the query. The SQL client is initialized by the first submitted query
+and retained for the lifetime of the remote connection:
 
 ```python
 import lancedb
@@ -46,7 +47,7 @@ db = lancedb.connect(
     host_override="https://api.example.com",
     sql_host_override="grpc+tls://sql.example.com:10026",
 )
-result = db.sql(
+query = db.submit_query(
     """
     SELECT events.id, accounts.name
     FROM analytics.public.events AS events
@@ -54,6 +55,15 @@ result = db.sql(
     """,
     default_namespace_path=["public"],
 )
+print(query.id)
+print(query.describe().status)
+result = query.result()
+
+# The async connection exposes the same lifecycle without blocking:
+# query = await db.submit_query("SELECT * FROM events")
+# description = await db.describe_query(query.id)
+# result = await query.result()
+# await query.cancel()
 ```
 
 ## Namespaces (Synchronous)
@@ -129,6 +139,12 @@ listing a storage directory.
 ::: lancedb.job.Job
 
 ::: lancedb.job.AsyncJob
+
+::: lancedb.sql.Query
+
+::: lancedb.sql.AsyncQuery
+
+::: lancedb.sql.QueryDescription
 
 ## Materialized Views (Synchronous)
 

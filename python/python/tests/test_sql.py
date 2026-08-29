@@ -19,7 +19,9 @@ def remote_connection(sql_host_override=None):
 def test_sql_is_connection_scoped():
     assert not hasattr(lancedb, "sql")
     assert not hasattr(_lancedb, "sql")
-    assert hasattr(remote_connection(), "sql")
+    assert not hasattr(remote_connection(), "sql")
+    assert hasattr(remote_connection(), "submit_query")
+    assert hasattr(remote_connection(), "describe_query")
 
 
 def test_connection_serializes_sql_host_override():
@@ -33,46 +35,52 @@ def test_connection_serializes_sql_host_override():
 def test_local_connection_rejects_sql(tmp_path):
     connection = lancedb.connect(tmp_path)
     with pytest.raises(NotImplementedError, match="SQL"):
-        connection.sql("SELECT 1")
+        connection.submit_query("SELECT 1")
+    with pytest.raises(NotImplementedError, match="SQL"):
+        connection.describe_query("query-id")
 
 
 @pytest.mark.asyncio
 async def test_local_async_connection_rejects_sql(tmp_path):
     connection = await lancedb.connect_async(tmp_path)
     with pytest.raises(NotImplementedError, match="SQL"):
-        await connection.sql("SELECT 1")
+        await connection.submit_query("SELECT 1")
+    with pytest.raises(NotImplementedError, match="SQL"):
+        await connection.describe_query("query-id")
 
 
 @pytest.mark.asyncio
 async def test_async_namespace_connection_rejects_sql(tmp_path):
     connection = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
     with pytest.raises(NotImplementedError, match="SQL"):
-        await connection.sql("SELECT 1")
+        await connection.submit_query("SELECT 1")
+    with pytest.raises(NotImplementedError, match="SQL"):
+        await connection.describe_query("query-id")
 
 
 @pytest.mark.parametrize(
     "default_namespace_path",
     ["public", ("public",), [1]],
 )
-def test_sql_requires_namespace_path_list(default_namespace_path):
+def test_submit_query_requires_namespace_path_list(default_namespace_path):
     with pytest.raises(ValueError, match="default_namespace_path"):
-        remote_connection().sql(
+        remote_connection().submit_query(
             "SELECT 1", default_namespace_path=default_namespace_path
         )
 
 
-def test_sql_rejects_invalid_endpoint():
+def test_submit_query_rejects_invalid_endpoint():
     connection = remote_connection(sql_host_override="invalid://localhost")
     with pytest.raises(ValueError, match="sql_host_override"):
-        connection.sql("SELECT 1")
+        connection.submit_query("SELECT 1")
 
 
 @pytest.mark.parametrize(
     "default_namespace_path",
     [[""], ["café"], ["pub\tlic"], ["events$raw"]],
 )
-def test_sql_rejects_invalid_namespace_components(default_namespace_path):
+def test_submit_query_rejects_invalid_namespace_components(default_namespace_path):
     with pytest.raises(ValueError, match="default_namespace_path"):
-        remote_connection().sql(
+        remote_connection().submit_query(
             "SELECT 1", default_namespace_path=default_namespace_path
         )

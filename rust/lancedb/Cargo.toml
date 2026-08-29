@@ -22,6 +22,8 @@ arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-ipc.workspace = true
 arrow-flight = { workspace = true, optional = true }
+base64 = { version = "0.22", optional = true }
+prost = { version = "0.14", optional = true }
 chrono = { workspace = true }
 datafusion-catalog.workspace = true
 datafusion-common.workspace = true
@@ -98,7 +100,6 @@ semver = { workspace = true }
 [dev-dependencies]
 anyhow = "1"
 lance-testing = { workspace = true }
-prost = "0.14"
 tempfile = { workspace = true }
 random_word = { version = "0.4.3", features = ["en"] }
 roaring = "0.11.4"
@@ -149,6 +150,8 @@ huggingface = [
 dynamodb = ["lance/dynamodb", "aws"]
 remote = [
     "dep:arrow-flight",
+    "dep:base64",
+    "dep:prost",
     "dep:reqwest",
     "dep:http",
     "dep:tonic",
