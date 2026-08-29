@@ -481,7 +481,14 @@ async fn incremental(
         .iter()
         .map(|field| field.name().as_str())
         .collect();
-    let before_schema = Arc::new(base.schema().project(&before_columns)?);
+    let before_schema = if before_columns.is_empty() {
+        match base.schema().fields.first() {
+            Some(field) => Arc::new(base.schema().project(&[field.name.as_str()])?),
+            None => Arc::new(base.schema().clone()),
+        }
+    } else {
+        Arc::new(base.schema().project(&before_columns)?)
+    };
     for ids in updated_ids.chunks(8192) {
         let before = base
             .take_rows(ids, ProjectionRequest::Schema(before_schema.clone()))
