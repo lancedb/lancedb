@@ -52,11 +52,6 @@ pub const SOURCE_VERSION_META_KEY: &str = "mv.source_version";
 /// in milliseconds since the epoch.
 pub const REFRESHED_AT_MS_META_KEY: &str = "mv.refreshed_at_ms";
 
-/// Column recording which source row produced each view row: the source's
-/// stable `_rowid` at refresh time, which is why sources must keep stable
-/// row ids.
-pub const SOURCE_ROW_ID_COLUMN: &str = "__source_row_id";
-
 /// Field metadata namespace for declarations about schema structure, such as
 /// an unenforced primary key.
 const SCHEMA_DECLARATION_META_PREFIX: &str = "lance-schema:";
@@ -183,9 +178,6 @@ pub(crate) fn plan(
         source_schema
             .fields()
             .iter()
-            // A source that is itself a view carries its own provenance
-            // column; the new view records its own, not a copy.
-            .filter(|f| f.name() != SOURCE_ROW_ID_COLUMN)
             .map(|f| (f.name().clone(), quote_identifier(f.name())))
             .collect()
     } else {
@@ -214,7 +206,7 @@ pub(crate) fn plan(
                 name: output.clone(),
             });
         }
-        if output == SOURCE_ROW_ID_COLUMN || output == ROW_ID {
+        if output == ROW_ID {
             return Err(Error::InvalidInput {
                 message: format!("view column name '{output}' is reserved"),
             });
@@ -594,8 +586,8 @@ fn project_schema(schema: &ArrowSchema, columns: &[String]) -> SchemaRef {
 }
 
 /// A validated view declaration, ready to become a table: the projected
-/// fields plus [`SOURCE_ROW_ID_COLUMN`], definition stamped in metadata.
-/// Produced only by [`prepare_declaration`].
+/// fields with the definition stamped in metadata. Produced only by
+/// [`prepare_declaration`].
 #[derive(Clone)]
 pub struct PreparedDeclaration {
     schema: SchemaRef,
@@ -777,18 +769,13 @@ pub async fn prepare_declaration(
     .await?;
     let source_schema = resolved.schema().await?;
     let source_metadata = source_schema.metadata().clone();
-    let (definition, mut fields, lineage) = plan(
+    let (definition, fields, lineage) = plan(
         source_schema.clone(),
         resolved.name(),
         projections,
         filter,
         limit,
     )?;
-    fields.push(ArrowField::new(
-        SOURCE_ROW_ID_COLUMN,
-        DataType::UInt64,
-        false,
-    ));
     // Only column-describing metadata comes along: structural declarations
     // describe how a table is written, and a view is written by refresh alone.
     let mut metadata: HashMap<String, String> = HashMap::new();
@@ -883,8 +870,8 @@ impl CreateMaterializedViewBuilder {
     }
 
     /// Create the view: an empty table carrying the definition; refresh
-    /// computes the rows. The source must keep stable row ids -- they hold
-    /// provenance across compaction, and cannot be enabled later.
+    /// computes the rows. The source must keep stable row ids so DatasetDelta
+    /// can retrieve update before-images; they cannot be enabled later.
     pub async fn execute(self) -> Result<MaterializedView> {
         ensure_local(&self.connection)?;
         let source = self.connection.open_table(&self.source).execute().await?;
@@ -1192,13 +1179,7 @@ mod tests {
             schema.field_with_name("next_age").unwrap().data_type(),
             &DataType::Int32
         );
-        assert_eq!(
-            schema
-                .field_with_name(SOURCE_ROW_ID_COLUMN)
-                .unwrap()
-                .data_type(),
-            &DataType::UInt64
-        );
+        assert_eq!(schema.fields().len(), 2);
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
     }
 
@@ -1250,9 +1231,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reserved_output_name_is_rejected() {
-        let err = declare_err(|b| b.select([(SOURCE_ROW_ID_COLUMN, "age")])).await;
+    async fn test_virtual_row_id_output_name_is_rejected() {
+        let err = declare_err(|b| b.select([(ROW_ID, "age")])).await;
         assert!(matches!(err, Error::InvalidInput { message } if message.contains("reserved")));
+    }
+
+    #[tokio::test]
+    async fn test_legacy_provenance_name_is_available_to_users() {
+        let conn = people_db().await;
+        let view = conn
+            .create_materialized_view("named", "people")
+            .select([("__source_row_id", "age")])
+            .execute()
+            .await
+            .unwrap();
+        assert!(
+            view.table()
+                .schema()
+                .await
+                .unwrap()
+                .field_with_name("__source_row_id")
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -1266,9 +1266,9 @@ mod tests {
         assert!(matches!(err, Error::TableNotFound { .. }));
     }
 
-    /// Provenance has to survive source compactions and updates, and stable
-    /// row ids cannot be enabled after a table exists -- so the requirement
-    /// is checked at the last moment the caller can still act on it.
+    /// DatasetDelta needs stable identities across source compactions and
+    /// updates, and stable row ids cannot be enabled after a table exists --
+    /// so the requirement is checked at the last actionable moment.
     #[tokio::test]
     async fn test_source_without_stable_row_ids_is_refused() {
         let conn = connect("memory://").execute().await.unwrap();
@@ -2029,7 +2029,7 @@ mod tests {
         let view = prepared.create("v").await.unwrap();
         let schema = view.table().schema().await.unwrap();
         let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert_eq!(names, ["id", "double", SOURCE_ROW_ID_COLUMN]);
+        assert_eq!(names, ["id", "double"]);
         assert!(schema.metadata().contains_key(DEFINITION_META_KEY));
 
         // The same call rejects a source without stable row ids, so an
