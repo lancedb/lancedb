@@ -51,8 +51,31 @@ from pydantic import (
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
-_PositiveUInt32 = conint(strict=True, gt=0, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
+
+
+def _validate_gpu_wire_requirement(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("runtime.gpu must be a string")
+    if not value or value != value.strip():
+        raise ValueError("runtime.gpu must be non-empty and trimmed")
+    if value.isascii() and value.isdigit():
+        count = int(value)
+        if not 0 < count <= 2**32 - 1 or str(count) != value:
+            raise ValueError(
+                "a numeric runtime.gpu must be a canonical positive uint32"
+            )
+    return value
+
+
+def _normalize_gpu_requirement(value: Optional[int | str]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        if not 0 < value <= 2**32 - 1:
+            raise ValueError("gpu must be a whole number greater than zero")
+        return str(value)
+    return _validate_gpu_wire_requirement(value)
 
 
 class _FrozenDict(dict):
@@ -229,12 +252,6 @@ class PythonEnvironmentSpec(_RemoteValue):
     image: Optional[str] = None
 
 
-class FunctionResourceRequirements(_RemoteValue):
-    """Immutable resources required every time a Function version executes."""
-
-    num_gpus: _PositiveUInt32
-
-
 class PythonRuntimeSpec(_RemoteValue):
     """Remote runtime definition with environment values.
 
@@ -246,7 +263,23 @@ class PythonRuntimeSpec(_RemoteValue):
     python_version: Optional[str] = None
     environment: Optional[PythonEnvironmentSpec] = None
     env: Optional[Mapping[str, str]] = None
-    resources: Optional[FunctionResourceRequirements] = None
+    gpu: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_unknown_runtime_payload(cls, value):
+        if isinstance(value, Mapping):
+            kind = value.get("kind")
+            if isinstance(kind, str) and kind not in {"python", "python_v2"}:
+                return {"kind": kind}
+        return value
+
+    @field_validator("gpu", mode="before")
+    @classmethod
+    def _validate_gpu_requirement(cls, value):
+        if value is None:
+            return None
+        return _validate_gpu_wire_requirement(value)
 
     @model_validator(mode="after")
     def _validate_runtime_kind(self):
@@ -255,30 +288,28 @@ class PythonRuntimeSpec(_RemoteValue):
                 raise ValueError("python runtime requires python_version")
             if self.environment is None:
                 raise ValueError("python runtime requires environment")
-            if self.resources is not None:
-                raise ValueError(
-                    "python runtime with resources requires kind='python_v2'"
-                )
+            if self.gpu is not None:
+                raise ValueError("python runtime with gpu requires kind='python_v2'")
         elif self.kind == "python_v2":
             if self.python_version is None:
                 raise ValueError("python_v2 runtime requires python_version")
             if self.environment is None:
                 raise ValueError("python_v2 runtime requires environment")
-            if self.resources is None:
-                raise ValueError("python_v2 runtime requires resources")
+            if self.gpu is None:
+                raise ValueError("python_v2 runtime requires gpu")
         else:
             object.__setattr__(self, "python_version", None)
             object.__setattr__(self, "environment", None)
             object.__setattr__(self, "env", None)
-            object.__setattr__(self, "resources", None)
+            object.__setattr__(self, "gpu", None)
         return self
 
 
 class FunctionVersion(_RemoteValue):
     """An exact immutable Function version returned by Enterprise.
 
-    Required execution resources are part of this identity. Priority,
-    concurrency, and retry policy belong to the submitting Job.
+    The GPU requirement is part of this identity. CPU and memory sizing,
+    priority, concurrency, and retry policy belong to the execution platform.
     """
 
     name: str
@@ -930,18 +961,13 @@ class UdfDefinition:
         pip: tuple[str, ...],
         env: Mapping[str, str],
         python_version: Optional[str],
-        num_gpus: Optional[int],
+        gpu: Optional[int | str] = None,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
     ):
         function_name = name or function.__name__
         if not _FUNCTION_NAME.fullmatch(function_name):
             raise ValueError(f"invalid Function name: {function_name!r}")
-        resources = (
-            FunctionResourceRequirements(num_gpus=num_gpus)
-            if num_gpus is not None
-            else None
-        )
         if pip and conda:
             raise ValueError("a Function environment is pip or conda, not both")
         if conda_channels and not conda:
@@ -964,13 +990,14 @@ class UdfDefinition:
         signature = _infer_signature(function, input_schema, output_schema)
         source = _package_source(function)
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
+        gpu_requirement = _normalize_gpu_requirement(gpu)
         runtime = PythonRuntimeSpec(
-            kind="python_v2" if num_gpus is not None else "python",
+            kind="python_v2" if gpu_requirement is not None else "python",
             python_version=python_version
             or f"{sys.version_info.major}.{sys.version_info.minor}",
             environment=environment_spec,
             env=environment,
-            resources=resources,
+            gpu=gpu_requirement,
         )
         self._function = function
         self._request = FunctionRegistrationRequest(
@@ -1016,7 +1043,7 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
-    num_gpus: Optional[int] = None,
+    gpu: Optional[int | str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
@@ -1031,7 +1058,7 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
-    num_gpus: Optional[int] = None,
+    gpu: Optional[int | str] = None,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ):
@@ -1064,10 +1091,11 @@ def udf(
         Environment variables included in the Function definition.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
-    num_gpus : int, optional
-        Number of whole NVIDIA GPUs required for every remote execution. Must
-        be greater than zero. The requirement is part of the immutable
-        Function version.
+    gpu : int or str, optional
+        GPU requirement for every remote execution. A positive integer
+        requests that many compatible NVIDIA GPUs. A string can select a
+        platform-supported model and count, such as ``"H100:8"``. The
+        requirement is part of the immutable Function version.
 
     The packaged artifact is a snapshot: the function source plus exactly
     the module-level names it references (modules as imports, importable
@@ -1092,6 +1120,11 @@ def udf(
     ...     return value * 2
     >>> score(1.5)
     3.0
+    >>> @udf(pip=["cupy-cuda12x"], gpu="H100:8")
+    ... def gpu_score(value: int) -> int:
+    ...     return value * 2
+    >>> gpu_score.registration_request.runtime.gpu
+    'H100:8'
     """
 
     def decorate(target: Callable[..., Any]) -> UdfDefinition:
@@ -1103,7 +1136,7 @@ def udf(
             pip=tuple(pip),
             env={} if env is None else env,
             python_version=python_version,
-            num_gpus=num_gpus,
+            gpu=gpu,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
         )
@@ -1123,7 +1156,6 @@ __all__ = [
     "FunctionOutput",
     "FunctionParameter",
     "FunctionRegistrationRequest",
-    "FunctionResourceRequirements",
     "FunctionResultField",
     "FunctionSignature",
     "FunctionVersion",
