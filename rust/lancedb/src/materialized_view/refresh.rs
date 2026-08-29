@@ -31,12 +31,14 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::{col, lit};
 use futures::{StreamExt, TryStreamExt};
+use lance::Dataset;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::transaction::{Operation, Transaction};
 use lance::dataset::write::delete::DeleteBuilder;
 use lance::dataset::write::merge_insert::inserted_rows::{FilterType, KeyExistenceFilter};
-use lance::dataset::{CommitBuilder, InsertBuilder, WriteDestination, WriteMode, WriteParams};
-use lance::{Dataset, ProjectionRequest};
+use lance::dataset::{
+    CommitBuilder, InsertBuilder, ProjectionRequest, WriteDestination, WriteMode, WriteParams,
+};
 use lance_core::{ROW_ID, WILDCARD};
 use lance_datafusion::planner::Planner;
 use lance_file::version::ConcreteFileVersion;
@@ -384,6 +386,12 @@ async fn incremental(
     definition: &MaterializedViewDefinition,
     expected_incarnation: Option<&str>,
 ) -> Result<Option<RefreshMaterializedViewResult>> {
+    let base_inputs = super::project_schema(&ArrowSchema::from(base.schema()), &definition.inputs);
+    let current_inputs =
+        super::project_schema(&ArrowSchema::from(source_ds.schema()), &definition.inputs);
+    if base_inputs != current_inputs {
+        return Ok(None);
+    }
     let delta = source_ds
         .delta()
         .with_begin_version(base.version().version)
@@ -1259,7 +1267,7 @@ mod tests {
             })
             .unwrap_or(0)
     }
-    use arrow_array::{Int32Array, record_batch};
+    use arrow_array::{Float64Array, Int32Array, record_batch};
     use futures::TryStreamExt;
     use lance::dataset::NewColumnTransform;
     use lance_file::version::LanceFileVersion;
@@ -1598,6 +1606,66 @@ mod tests {
         assert_eq!(left.mode, RefreshMode::Incremental);
         assert_eq!(left.rows_written, 0);
         assert_eq!(read(view.table(), "x").await, vec![30]);
+    }
+
+    #[tokio::test]
+    async fn test_update_reconciles_null_and_float_keys() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("value", Float64, [Some(f64::NAN), None, Some(-0.0)])
+        )
+        .unwrap();
+        let source = conn
+            .create_table("float_src", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("float_view", "float_src")
+            .select([("value", "value")])
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+
+        for (id, value) in [(1, "1.0"), (2, "2.0"), (3, "0.0")] {
+            source
+                .update()
+                .column("value", value)
+                .only_if(format!("id = {id}"))
+                .execute()
+                .await
+                .unwrap();
+        }
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.rows_written, 3);
+
+        let batches = view
+            .table()
+            .query()
+            .select(Select::columns(&["value"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut values: Vec<f64> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch["value"]
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .iter()
+                    .flatten()
+            })
+            .collect();
+        values.sort_by(f64::total_cmp);
+        assert_eq!(values, vec![0.0, 1.0, 2.0]);
     }
 
     /// Legacy storage cannot serve DatasetDelta row streams, so it rebuilds
