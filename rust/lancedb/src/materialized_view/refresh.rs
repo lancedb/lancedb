@@ -486,7 +486,7 @@ async fn incremental(
         }));
     }
 
-    let cap = delta_rebuild_cap();
+    let cap = delta_rebuild_cap(view_ds.uri());
     let byte_cap = delta_byte_rebuild_cap();
     let mut evaluated_rows = 0usize;
     let mut evaluated_bytes = 0usize;
@@ -1211,9 +1211,9 @@ fn refresh_filter() -> KeyExistenceFilter {
 
 /// Delta rows past this fall back to the streamed rebuild, whose memory
 /// does not grow with the delta.
-fn delta_rebuild_cap() -> usize {
+fn delta_rebuild_cap(_view_uri: &str) -> usize {
     #[cfg(test)]
-    if let Some(cap) = tests::delta_cap_override() {
+    if let Some(cap) = tests::delta_cap_override(_view_uri) {
         return cap;
     }
     4 * 1024 * 1024
@@ -1439,9 +1439,13 @@ mod tests {
 
     /// The rendezvous below is one global pair, so the cases that use it run
     /// one at a time rather than trading each other's signals.
-    pub(super) static DELTA_CAP: StdMutex<Option<usize>> = StdMutex::new(None);
-    pub(super) fn delta_cap_override() -> Option<usize> {
-        *DELTA_CAP.lock().unwrap()
+    pub(super) static DELTA_CAP: StdMutex<Option<(String, usize)>> = StdMutex::new(None);
+    pub(super) fn delta_cap_override(view_uri: &str) -> Option<usize> {
+        DELTA_CAP
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|(target, cap)| (target == view_uri).then_some(*cap))
     }
 
     pub(super) static DRIFT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -2456,11 +2460,26 @@ mod tests {
     #[tokio::test]
     async fn test_only_bag_deltas_are_subject_to_the_row_cap() {
         let (conn, source) = db_with_source((1..=20).collect()).await;
-        let view = doubled_view(&conn).await;
+        let view = conn
+            .create_materialized_view("bag_cap", "src")
+            .select([("x", "x"), ("twice", "x * 2")])
+            .execute()
+            .await
+            .unwrap();
         view.refresh().execute().await.unwrap();
+        let view_uri = view
+            .table()
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .uri()
+            .to_string();
 
         append(&source, (21..=30).collect()).await;
-        *tests::DELTA_CAP.lock().unwrap() = Some(4);
+        *tests::DELTA_CAP.lock().unwrap() = Some((view_uri.clone(), 4));
         let result = view.refresh().execute().await;
         *tests::DELTA_CAP.lock().unwrap() = None;
         let result = result.unwrap();
@@ -2478,7 +2497,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        *tests::DELTA_CAP.lock().unwrap() = Some(4);
+        *tests::DELTA_CAP.lock().unwrap() = Some((view_uri, 4));
         let result = view.refresh().execute().await;
         *tests::DELTA_CAP.lock().unwrap() = None;
         assert_eq!(result.unwrap().mode, RefreshMode::Rebuild);
