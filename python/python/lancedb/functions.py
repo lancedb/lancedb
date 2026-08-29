@@ -502,31 +502,85 @@ _GRAMMAR_PRIMITIVES = (
 
 
 def _canonical_arrow_type(data_type: pa.DataType) -> str:
-    """The server's V1 Function type grammar. Anything outside it is rejected
-    here rather than at registration."""
+    """The compact Function grammar, or canonical exact JSON for nested types."""
+    grammar = _grammar_arrow_type(data_type)
+    if grammar is not None:
+        return grammar
+    exact = _exact_arrow_type(data_type)
+    return json.dumps(exact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _grammar_arrow_type(data_type: pa.DataType) -> Optional[str]:
     for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
             return name
     if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
+        item = _grammar_list_item(data_type)
+        if item is None:
+            return None
         prefix = "list" if pa.types.is_list(data_type) else "large_list"
-        return f"{prefix}<{_canonical_list_item(data_type)}>"
+        return f"{prefix}<{item}>"
     if pa.types.is_fixed_size_list(data_type) and data_type.list_size > 0:
-        return (
-            f"fixed_size_list<{_canonical_list_item(data_type)}, {data_type.list_size}>"
-        )
-    raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
+        item = _grammar_list_item(data_type)
+        if item is not None:
+            return f"fixed_size_list<{item}, {data_type.list_size}>"
+    return None
 
 
-def _canonical_list_item(data_type: pa.DataType) -> str:
+def _grammar_list_item(data_type: pa.DataType) -> Optional[str]:
     """The grammar names only the item type; it always means a non-nullable
-    child called `item`, so any other child metadata cannot be represented."""
+    child called `item`, so other child properties require exact JSON."""
     child = data_type.value_field
     if child.name != "item" or child.nullable or child.metadata:
+        return None
+    return _grammar_arrow_type(child.type)
+
+
+def _exact_arrow_field(field: pa.Field) -> dict[str, Any]:
+    if field.metadata:
         raise TypeError(
-            "unsupported Arrow type for Function signature: list items must be a "
-            f"non-nullable field named 'item', got {child}"
+            "unsupported Arrow type for Function signature: nested field metadata "
+            f"is not supported, got {field}"
         )
-    return _canonical_arrow_type(child.type)
+    return {
+        "name": field.name,
+        "nullable": field.nullable,
+        "type": _exact_arrow_type(field.type),
+    }
+
+
+def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
+    for candidate, name in _GRAMMAR_PRIMITIVES:
+        if data_type == candidate:
+            return {"type": name}
+    if pa.types.is_struct(data_type):
+        return {
+            "type": "struct",
+            "fields": [_exact_arrow_field(field) for field in data_type],
+        }
+    if (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    ):
+        value: dict[str, Any] = {
+            "type": (
+                "list"
+                if pa.types.is_list(data_type)
+                else "large_list"
+                if pa.types.is_large_list(data_type)
+                else "fixed_size_list"
+            ),
+            "fields": [_exact_arrow_field(data_type.value_field)],
+        }
+        if pa.types.is_fixed_size_list(data_type):
+            if data_type.list_size <= 0:
+                raise TypeError(
+                    f"unsupported Arrow type for Function signature: {data_type}"
+                )
+            value["length"] = data_type.list_size
+        return value
+    raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
 
 
 def _list_of(item: pa.DataType) -> pa.DataType:

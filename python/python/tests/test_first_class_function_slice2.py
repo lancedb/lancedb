@@ -168,7 +168,7 @@ def test_udf_resolves_module_globals_before_builtins(tmp_path):
         udf(module.uses_callable_shadow)
 
 
-def test_canonical_arrow_type_is_exactly_the_grammar():
+def test_canonical_arrow_type_prefers_the_compact_grammar():
     from lancedb.functions import _GRAMMAR_PRIMITIVES, _canonical_arrow_type
 
     golden = json.loads(
@@ -188,7 +188,6 @@ def test_canonical_arrow_type_is_exactly_the_grammar():
         pa.large_binary(),
         pa.binary(4),
         pa.duration("s"),
-        pa.struct([pa.field("a", pa.int32())]),
         pa.list_(pa.float32(), 0),
         pa.list_(pa.timestamp("us")),
     ]:
@@ -378,12 +377,23 @@ def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
         udf(raw_fact)
 
 
-def test_canonical_arrow_type_rejects_unrepresentable_list_children():
+def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
     from lancedb.functions import _canonical_arrow_type
 
+    nullable = pa.list_(pa.float32())
+    assert json.loads(_canonical_arrow_type(nullable)) == {
+        "type": "list",
+        "fields": [
+            {
+                "name": "item",
+                "nullable": True,
+                "type": {"type": "float32"},
+            }
+        ],
+    }
+    named = pa.list_(pa.field("custom", pa.float32(), nullable=False))
+    assert json.loads(_canonical_arrow_type(named))["fields"][0]["name"] == "custom"
     for outside in [
-        pa.list_(pa.float32()),  # pyarrow default: nullable child
-        pa.list_(pa.field("custom", pa.float32(), nullable=False)),
         pa.list_(pa.field("item", pa.float32(), nullable=False, metadata={"k": "v"})),
         pa.list_(pa.field("item", pa.float32(), nullable=False), 0),
     ]:
@@ -480,6 +490,105 @@ def test_explicit_arrow_schema_is_deterministic():
     assert signature.inputs[0].nullable is True
     assert signature.output.arrow_type == "fixed_size_list<float32, 3>"
     assert signature.output.nullable is False
+
+
+def test_nested_struct_output_uses_canonical_exact_json():
+    token = pa.struct(
+        [
+            pa.field("position", pa.int32(), nullable=False),
+            pa.field("value", pa.string(), nullable=False),
+            pa.field("length", pa.int32(), nullable=False),
+        ]
+    )
+    analysis = pa.struct(
+        [
+            pa.field("normalized_text", pa.string(), nullable=False),
+            pa.field("has_content", pa.bool_(), nullable=False),
+            pa.field(
+                "metrics",
+                pa.struct(
+                    [
+                        pa.field("character_count", pa.int64(), nullable=False),
+                        pa.field("word_count", pa.int32(), nullable=False),
+                        pa.field("average_word_length", pa.float64(), nullable=False),
+                    ]
+                ),
+                nullable=False,
+            ),
+            pa.field(
+                "diagnostics",
+                pa.struct(
+                    [
+                        pa.field("status", pa.string(), nullable=False),
+                        pa.field(
+                            "normalization",
+                            pa.struct(
+                                [
+                                    pa.field("changed", pa.bool_(), nullable=False),
+                                    pa.field(
+                                        "original_length", pa.int64(), nullable=False
+                                    ),
+                                ]
+                            ),
+                            nullable=False,
+                        ),
+                    ]
+                ),
+                nullable=False,
+            ),
+            pa.field(
+                "token_preview",
+                pa.list_(pa.field("item", token, nullable=False)),
+                nullable=False,
+            ),
+        ]
+    )
+
+    @udf(
+        input_schema=pa.schema([pa.field("text", pa.string(), nullable=False)]),
+        output_schema=pa.field("analysis", analysis, nullable=False),
+    )
+    def analyze(text):
+        return {"normalized_text": text}
+
+    output = analyze.registration_request.signature.output
+    assert output.kind == "named_struct"
+    assert [field.name for field in output.fields] == [
+        "normalized_text",
+        "has_content",
+        "metrics",
+        "diagnostics",
+        "token_preview",
+    ]
+    metrics = json.loads(output.fields[2].arrow_type)
+    assert metrics == {
+        "type": "struct",
+        "fields": [
+            {
+                "name": "character_count",
+                "nullable": False,
+                "type": {"type": "int64"},
+            },
+            {
+                "name": "word_count",
+                "nullable": False,
+                "type": {"type": "int32"},
+            },
+            {
+                "name": "average_word_length",
+                "nullable": False,
+                "type": {"type": "float64"},
+            },
+        ],
+    }
+    preview = json.loads(output.fields[4].arrow_type)
+    assert preview["type"] == "list"
+    assert preview["fields"][0]["type"]["type"] == "struct"
+    assert [field["name"] for field in preview["fields"][0]["type"]["fields"]] == [
+        "position",
+        "value",
+        "length",
+    ]
 
 
 def test_annotation_and_explicit_schema_validation_fail_closed():
