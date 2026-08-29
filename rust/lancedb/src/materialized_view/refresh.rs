@@ -2451,10 +2451,10 @@ mod tests {
         );
     }
 
-    /// Past the eviction cap the refresh falls back to the streamed rebuild,
-    /// and the result is identical either way.
+    /// Appends stream without a bag, while updates past the bag cap fall back
+    /// to the streamed rebuild. Both produce the same result.
     #[tokio::test]
-    async fn test_oversized_delta_falls_back_to_rebuild() {
+    async fn test_only_bag_deltas_are_subject_to_the_row_cap() {
         let (conn, source) = db_with_source((1..=20).collect()).await;
         let view = doubled_view(&conn).await;
         view.refresh().execute().await.unwrap();
@@ -2466,16 +2466,30 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(
             result.mode,
-            RefreshMode::Rebuild,
-            "ten inserted rows, cap of four"
+            RefreshMode::Incremental,
+            "streamed inserts do not occupy the bag"
         );
         assert_eq!(read(view.table(), "x").await, (1..=30).collect::<Vec<_>>());
 
-        // Under the cap the same shape stays incremental.
+        source
+            .update()
+            .column("x", "x + 100")
+            .only_if("x <= 3")
+            .execute()
+            .await
+            .unwrap();
+        *tests::DELTA_CAP.lock().unwrap() = Some(4);
+        let result = view.refresh().execute().await;
+        *tests::DELTA_CAP.lock().unwrap() = None;
+        assert_eq!(result.unwrap().mode, RefreshMode::Rebuild);
+
         append(&source, vec![31]).await;
         let result = view.refresh().execute().await.unwrap();
         assert_eq!(result.mode, RefreshMode::Incremental);
-        assert_eq!(read(view.table(), "x").await, (1..=31).collect::<Vec<_>>());
+        let mut expected = (4..=31).collect::<Vec<_>>();
+        expected.extend([101, 102, 103]);
+        expected.sort();
+        assert_eq!(read(view.table(), "x").await, expected);
     }
 
     /// A cap of zero is a view that holds nothing, not a view without a cap.
