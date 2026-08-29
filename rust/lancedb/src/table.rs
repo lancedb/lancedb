@@ -5764,10 +5764,9 @@ mod tests {
         assert_eq!(with_index, data_only + index_bytes);
 
         // Release builds reject unstable overlay datasets unless explicitly opted in.
-        if !cfg!(debug_assertions)
-            && std::env::var_os(lance_table::feature_flags::ENABLE_UNSTABLE_DATA_OVERLAY_FILES_ENV)
-                .is_none()
-        {
+        if !lance_table::feature_flags::can_read_dataset(
+            lance_table::feature_flags::FLAG_UNSTABLE_DATA_OVERLAY_FILES,
+        ) {
             return;
         }
 
