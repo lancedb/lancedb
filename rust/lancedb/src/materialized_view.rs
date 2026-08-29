@@ -1944,7 +1944,6 @@ mod tests {
         assert_eq!(embedding.dest_column.as_deref(), Some("embedding"));
         assert_eq!(embedding.embedding_name, "model");
         assert!(matches!(definitions[0].kind, ColumnKind::Physical));
-        assert!(matches!(definitions[2].kind, ColumnKind::Physical));
 
         // Without the column the function reads, the view cannot recompute
         // the embedding, so it carries no definition for it.

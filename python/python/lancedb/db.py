@@ -533,9 +533,9 @@ class DBConnection(EnforceOverrides):
         ``table_names``. Local databases only.
 
         The source table must have stable row ids (create it with the
-        ``new_table_enable_stable_row_ids`` storage option): they keep the
-        view's provenance valid across source compactions, and cannot be
-        enabled after a table exists.
+        ``new_table_enable_stable_row_ids`` storage option): DatasetDelta uses
+        them to retrieve update before-images, and they cannot be enabled
+        after a table exists.
 
         Parameters
         ----------

@@ -2357,17 +2357,19 @@ mod tests {
         let result = view.refresh().execute().await.unwrap();
         assert_eq!(result.rows_written, 3);
 
-        // The cap counts already-held rows, so only one appended row lands.
+        // A changed capped view rebuilds because rows previously skipped at
+        // the cap are outside the incremental watermark.
         append(&source, vec![4, 5, 6]).await;
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.mode, RefreshMode::Incremental);
-        assert_eq!(result.rows_written, 1);
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 4);
         assert_eq!(view.table().count_rows(None).await.unwrap(), 4);
 
-        // At the cap, later appends only move the watermark.
+        // Further row changes rebuild for the same reason.
         append(&source, vec![7]).await;
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.rows_written, 0);
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 4);
         assert_eq!(
             view.refresh().execute().await.unwrap().mode,
             RefreshMode::NoOp
