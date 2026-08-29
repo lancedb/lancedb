@@ -70,9 +70,9 @@ pub enum RefreshMode {
 pub struct RefreshMaterializedViewResult {
     /// How the view was brought up to date.
     pub mode: RefreshMode,
-    /// Rows written to the view: everything on a rebuild, and on an
-    /// incremental refresh both the rows added and the rows recomputed in
-    /// place of ones the source changed.
+    /// Rows appended to the view: everything on a rebuild, and the net
+    /// positive bag-delta rows on an incremental refresh. Rows removed by
+    /// deletion vectors are not included.
     pub rows_written: u64,
     /// The source table version the view now reflects.
     pub source_version: u64,
