@@ -47,9 +47,8 @@ jobs:
         version: 11.1.1
     - uses: actions/setup-node@v6
       with:
-        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
-        # in October. The library itself still supports Node >= 18
-        # (see test matrix below).
+        # Build on a supported LTS; the matrix job below covers every
+        # Node version the library claims to support.
         node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
@@ -84,7 +83,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        node-version: [ "18", "20" ]
+        node-version: [ "22", "24", "26" ]
     runs-on: "ubuntu-22.04"
     defaults:
       run:
@@ -101,9 +100,9 @@ jobs:
     - uses: actions/setup-node@v6
       name: Setup Node.js 24 for build
       with:
-        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
-        # in October. Build/install runs on Node 24; tests run on the
-        # matrix version below using direct jest invocation.
+        # Build and install once on a fixed version so the generated docs
+        # are identical across matrix legs; the tests below then run on each
+        # supported Node version.
         node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
@@ -152,9 +151,9 @@ jobs:
         S3_TEST: "1"
         # Newer @smithy/core uses dynamic ESM imports.
         NODE_OPTIONS: "--experimental-vm-modules"
-      # Invoke jest directly because pnpm 11 itself requires Node 22+
-      # while the matrix tests on older Node versions.
-      run: npx jest --verbose
+      # Invoke the installed jest binary directly; the pnpm shim is set up
+      # against the build-phase Node, not the version selected above.
+      run: node_modules/.bin/jest --verbose
     - name: Test examples
       working-directory: ./
       env:
@@ -164,7 +163,7 @@ jobs:
       run: |
         python ci/mock_openai.py &
         cd nodejs/examples
-        npx jest --testEnvironment jest-environment-node-single-context --verbose
+        node_modules/.bin/jest --testEnvironment jest-environment-node-single-context --verbose
   macos:
     timeout-minutes: 30
     # macos-15 ships a newer linker; the older macos-14 linker fails to insert
@@ -185,8 +184,7 @@ jobs:
         version: 11.1.1
     - uses: actions/setup-node@v6
       with:
-        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
-        # in October.
+        # pnpm 11 requires Node >= 22.13.
         node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
