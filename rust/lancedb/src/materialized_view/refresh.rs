@@ -397,18 +397,42 @@ async fn incremental(
         .with_begin_version(base.version().version)
         .with_end_version(source_version)
         .build()?;
-    if delta
-        .list_transactions()
-        .await?
-        .iter()
-        .any(|transaction| delta_operation_requires_rebuild(&transaction.operation))
+    let version_gap = source_version.saturating_sub(base.version().version);
+    if version_gap > MAX_TRANSACTION_WALK {
+        return Ok(None);
+    }
+    let transactions = match delta.list_transactions().await {
+        Ok(transactions) => transactions,
+        Err(_) => return Ok(None),
+    };
+    if transactions.len() != version_gap as usize
+        || transactions
+            .iter()
+            .any(|transaction| delta_operation_requires_rebuild(&transaction.operation))
     {
         return Ok(None);
     }
 
     let mut deleted = delta.get_deleted_row_ids().await?;
-    if deleted.try_next().await?.is_some() {
-        return Ok(None);
+    while let Some(batch) = deleted.try_next().await? {
+        if batch.num_rows() > 0 {
+            return Ok(None);
+        }
+    }
+
+    let mut inserted = delta.get_inserted_rows().await?;
+    let mut updated = delta.get_updated_rows().await?;
+    if definition.limit.is_some() {
+        while let Some(batch) = inserted.try_next().await? {
+            if batch.num_rows() > 0 {
+                return Ok(None);
+            }
+        }
+        while let Some(batch) = updated.try_next().await? {
+            if batch.num_rows() > 0 {
+                return Ok(None);
+            }
+        }
     }
 
     let evaluator = DeltaEvaluator::new(source_ds, definition, view_ds)?;
@@ -418,7 +442,6 @@ async fn incremental(
     let mut evaluated_bytes = 0usize;
     let mut weights = HashMap::new();
 
-    let mut inserted = delta.get_inserted_rows().await?;
     while let Some(batch) = inserted.try_next().await? {
         evaluated_rows = evaluated_rows.saturating_add(batch.num_rows());
         if evaluated_rows > cap {
@@ -436,7 +459,6 @@ async fn incremental(
     }
 
     let mut updated_ids = Vec::new();
-    let mut updated = delta.get_updated_rows().await?;
     while let Some(batch) = updated.try_next().await? {
         evaluated_rows = evaluated_rows.saturating_add(batch.num_rows().saturating_mul(2));
         if evaluated_rows > cap {
@@ -472,15 +494,14 @@ async fn incremental(
         }
     }
 
-    if definition.limit.is_some() && evaluated_rows > 0 {
-        return Ok(None);
-    }
-
     weights.retain(|_, weight| *weight != 0);
     let mut removals: HashMap<Vec<ScalarValue>, usize> = weights
         .iter()
         .filter_map(|(row, weight)| (*weight < 0).then_some((row.clone(), (-*weight) as usize)))
         .collect();
+    if !removals.is_empty() && view_ds.count_rows(None).await? > VIEW_RECONCILIATION_ROW_CAP {
+        return Ok(None);
+    }
     let Some(evicted_ids) = select_view_rows(view_ds, &mut removals).await? else {
         return Ok(None);
     };
@@ -532,7 +553,24 @@ async fn incremental(
 }
 
 fn delta_operation_requires_rebuild(operation: &Operation) -> bool {
-    matches!(operation, Operation::DataOverlay { .. })
+    match operation {
+        Operation::Append { .. }
+        | Operation::CreateIndex { .. }
+        | Operation::Delete { .. }
+        | Operation::Merge { .. }
+        | Operation::Project { .. }
+        | Operation::ReserveFragments { .. }
+        | Operation::Rewrite { .. }
+        | Operation::Update { .. }
+        | Operation::UpdateBases { .. }
+        | Operation::UpdateConfig { .. }
+        | Operation::UpdateMemWalState { .. } => false,
+        Operation::Clone { .. }
+        | Operation::DataOverlay { .. }
+        | Operation::DataReplacement { .. }
+        | Operation::Overwrite { .. }
+        | Operation::Restore { .. } => true,
+    }
 }
 
 struct DeltaEvaluator {
@@ -615,7 +653,10 @@ impl DeltaEvaluator {
                 .map_err(|error| Error::Runtime {
                     message: format!("failed to evaluate materialized-view delta filter: {error}"),
                 })?;
-            input = arrow_select::filter::filter_record_batch(&input, mask.as_boolean())?;
+            let mask = mask.as_boolean_opt().ok_or_else(|| Error::Runtime {
+                message: "materialized-view delta filter did not produce booleans".into(),
+            })?;
+            input = arrow_select::filter::filter_record_batch(&input, mask)?;
         }
         let columns = self
             .projections
@@ -1104,11 +1145,19 @@ fn delta_rebuild_cap() -> usize {
     4 * 1024 * 1024
 }
 
+/// Version gap beyond which reading every transaction is more expensive than
+/// rebuilding and more likely to encounter cleaned history.
+const MAX_TRANSACTION_WALK: u64 = 512;
+
 /// Bound the encoded output values held while consolidating a delta. The
 /// positive batch and hash table temporarily duplicate some of this memory.
 fn delta_byte_rebuild_cap() -> usize {
     128 * 1024 * 1024
 }
+
+/// Exact bag subtraction decodes the view row-wise. Past this size the
+/// columnar rebuild is the bounded-cost path.
+const VIEW_RECONCILIATION_ROW_CAP: usize = 4 * 1024 * 1024;
 
 /// View row ids per staged eviction: the delete predicate carries one
 /// literal per id, so a whole delta at once is unbounded. Each chunk costs a
@@ -1389,9 +1438,12 @@ mod tests {
     }
 
     #[test]
-    fn data_overlays_require_rebuild() {
+    fn operations_invisible_to_row_deltas_require_rebuild() {
         assert!(delta_operation_requires_rebuild(&Operation::DataOverlay {
             groups: Vec::new(),
+        }));
+        assert!(delta_operation_requires_rebuild(&Operation::Restore {
+            version: 1,
         }));
         assert!(!delta_operation_requires_rebuild(&Operation::Append {
             fragments: Vec::new(),
@@ -1801,6 +1853,22 @@ mod tests {
         let result = view.refresh().execute().await.unwrap();
         assert_eq!(result.mode, RefreshMode::Rebuild);
         assert_eq!(read(view.table(), "twice").await, vec![6, 8]);
+    }
+
+    #[tokio::test]
+    async fn test_restore_rebuilds_rows_hidden_from_the_delta_streams() {
+        let (_conn, source, view) = refreshed_doubled(vec![1, 2, 3]).await;
+        let original_version = source.version().await.unwrap();
+
+        source.delete("x = 2").await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(read(view.table(), "twice").await, vec![2, 6]);
+
+        source.checkout(original_version).await.unwrap();
+        source.restore().await.unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(read(view.table(), "twice").await, vec![2, 4, 6]);
     }
 
     /// merge_insert's by-source arm removes rows, which rebuilds until the
