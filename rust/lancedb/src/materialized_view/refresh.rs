@@ -447,9 +447,8 @@ async fn incremental(
         .iter()
         .filter_map(|(row, weight)| (*weight < 0).then_some((row.clone(), (-*weight) as usize)))
         .collect();
-    let evicted_ids = match select_view_rows(view_ds, &mut removals).await? {
-        Some(ids) => ids,
-        None => return Ok(None),
+    let Some(evicted_ids) = select_view_rows(view_ds, &mut removals).await? else {
+        return Ok(None);
     };
     let mut eviction = Eviction::new(view_ds, EVICTION_CHUNK);
     eviction.push_slice(&evicted_ids).await?;
@@ -734,7 +733,6 @@ async fn rebuild(
         definition,
         RowScope {
             limit: definition.limit,
-            ..Default::default()
         },
         schema,
         rows_written.clone(),
