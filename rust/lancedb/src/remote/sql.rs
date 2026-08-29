@@ -4,9 +4,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arrow_array::RecordBatch;
+use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
@@ -16,7 +17,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::TryStreamExt;
 use prost::Message;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{Mutex, Notify, OnceCell};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 use crate::error::{Error, Result};
@@ -28,9 +29,10 @@ const DEFAULT_SQL_TLS_PORT: u16 = 10026;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
+const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const QUERY_ID_PREFIX: &str = "lq1_";
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(super) struct SqlClient {
     database: String,
     database_prefix: Option<String>,
@@ -39,6 +41,21 @@ pub(super) struct SqlClient {
     sql_host_override: Option<String>,
     client_config: ClientConfig,
     client: Arc<OnceCell<FlightServiceClient<Channel>>>,
+}
+
+impl std::fmt::Debug for SqlClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SqlClient")
+            .field("database", &self.database)
+            .field("database_prefix", &self.database_prefix)
+            .field("api_key", &"<redacted>")
+            .field("host_override", &self.host_override)
+            .field("sql_host_override", &self.sql_host_override)
+            .field("client_config", &self.client_config)
+            .field("initialized", &self.client.get().is_some())
+            .finish()
+    }
 }
 
 impl SqlClient {
@@ -122,6 +139,49 @@ impl SqlClient {
         match tokio::time::timeout(STATUS_POLL_TIMEOUT, client.poll_flight_info(descriptor)).await {
             Ok(result) => result.map(Some).map_err(|err| sql_error(&request_id, err)),
             Err(_) => Ok(None),
+        }
+    }
+
+    async fn poll_continuation(
+        &self,
+        descriptor: FlightDescriptor,
+        default_namespace_path: &[String],
+    ) -> Result<PollInfo> {
+        let read_timeout = resolve_timeout(
+            self.client_config.timeout_config.read_timeout,
+            "LANCE_CLIENT_READ_TIMEOUT",
+            Some(DEFAULT_READ_TIMEOUT),
+        )?
+        .unwrap();
+        loop {
+            let started = Instant::now();
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let mut client = self
+                .client_with_headers(default_namespace_path, &request_id)
+                .await?;
+            let result =
+                tokio::time::timeout(read_timeout, client.poll_flight_info(descriptor.clone()))
+                    .await;
+            let poll_info = match result {
+                Err(_) => continue,
+                Ok(Err(FlightError::Tonic(status)))
+                    if matches!(
+                        status.code(),
+                        tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
+                    ) =>
+                {
+                    if let Some(delay) = MIN_POLL_INTERVAL.checked_sub(started.elapsed()) {
+                        tokio::time::sleep(delay).await;
+                    }
+                    continue;
+                }
+                Ok(Err(error)) => return Err(sql_error(&request_id, error)),
+                Ok(Ok(poll_info)) => poll_info,
+            };
+            if let Some(delay) = MIN_POLL_INTERVAL.checked_sub(started.elapsed()) {
+                tokio::time::sleep(delay).await;
+            }
+            return Ok(poll_info);
         }
     }
 
@@ -290,6 +350,7 @@ struct RemoteQuery {
     client: SqlClient,
     default_namespace_path: Vec<String>,
     state: Mutex<PollInfo>,
+    state_changed: Notify,
     result: OnceCell<Vec<RecordBatch>>,
 }
 
@@ -305,6 +366,7 @@ impl RemoteQuery {
             client,
             default_namespace_path,
             state: Mutex::new(poll_info),
+            state_changed: Notify::new(),
             result: OnceCell::new(),
         }
     }
@@ -337,18 +399,28 @@ impl RemoteQuery {
     }
 
     async fn poll_until_finished(&self) -> Result<FlightInfo> {
-        let mut state = self.state.lock().await;
         loop {
-            let Some(descriptor) = state.flight_descriptor.clone() else {
-                return state.info.clone().ok_or_else(|| Error::Runtime {
+            let state = self.state.lock().await.clone();
+            let Some(descriptor) = state.flight_descriptor else {
+                return state.info.ok_or_else(|| Error::Runtime {
                     message: "Completed SQL query did not include result information".to_string(),
                 });
             };
-            *state = self
+            let updated = self
                 .client
-                .poll(descriptor, &self.default_namespace_path)
+                .poll_continuation(descriptor.clone(), &self.default_namespace_path)
                 .await?;
+            self.update_state(&descriptor, updated).await;
         }
+    }
+
+    async fn update_state(&self, descriptor: &FlightDescriptor, updated: PollInfo) -> PollInfo {
+        let mut state = self.state.lock().await;
+        if state.flight_descriptor.as_ref() == Some(descriptor) {
+            *state = updated;
+            self.state_changed.notify_waiters();
+        }
+        state.clone()
     }
 }
 
@@ -359,15 +431,17 @@ impl QueryHandle for RemoteQuery {
     }
 
     async fn describe(&self) -> Result<QueryDescription> {
-        let mut state = self.state.lock().await;
-        if let Some(descriptor) = state.flight_descriptor.clone()
+        let state = self.state.lock().await.clone();
+        let state = if let Some(descriptor) = state.flight_descriptor.clone()
             && let Some(updated) = self
                 .client
-                .poll_status(descriptor, &self.default_namespace_path)
+                .poll_status(descriptor.clone(), &self.default_namespace_path)
                 .await?
         {
-            *state = updated;
-        }
+            self.update_state(&descriptor, updated).await
+        } else {
+            state
+        };
         query_description(&self.id, &state)
     }
 
@@ -385,46 +459,47 @@ impl QueryHandle for RemoteQuery {
     }
 
     async fn cancel(&self) -> Result<()> {
-        let mut state = self.state.lock().await;
-        if state.flight_descriptor.is_none() {
-            return Ok(());
-        }
-        if state.info.is_none()
-            && let Some(updated) = self
-                .client
-                .poll_status(
-                    state.flight_descriptor.clone().unwrap(),
+        loop {
+            let notified = self.state_changed.notified();
+            let state = self.state.lock().await.clone();
+            let Some(descriptor) = state.flight_descriptor else {
+                return Ok(());
+            };
+            if let Some(info) = state.info {
+                return match self
+                    .client
+                    .cancel(info, &self.default_namespace_path)
+                    .await?
+                {
+                    CancelStatus::Cancelled | CancelStatus::Cancelling => Ok(()),
+                    CancelStatus::NotCancellable => Err(Error::NotSupported {
+                        message: "The SQL query is not cancellable".to_string(),
+                    }),
+                    CancelStatus::Unspecified => Err(Error::Runtime {
+                        message: "The SQL service returned an unspecified cancellation status"
+                            .to_string(),
+                    }),
+                };
+            }
+
+            tokio::select! {
+                updated = self.client.poll_continuation(
+                    descriptor.clone(),
                     &self.default_namespace_path,
-                )
-                .await?
-        {
-            *state = updated;
-        }
-        if state.flight_descriptor.is_none() {
-            return Ok(());
-        }
-        let info = state.info.clone().ok_or_else(|| Error::NotSupported {
-            message: "The SQL service has not provided cancellable query information".to_string(),
-        })?;
-        match self
-            .client
-            .cancel(info, &self.default_namespace_path)
-            .await?
-        {
-            CancelStatus::Cancelled | CancelStatus::Cancelling => Ok(()),
-            CancelStatus::NotCancellable => Err(Error::NotSupported {
-                message: "The SQL query is not cancellable".to_string(),
-            }),
-            CancelStatus::Unspecified => Err(Error::Runtime {
-                message: "The SQL service returned an unspecified cancellation status".to_string(),
-            }),
+                ) => {
+                    self.update_state(&descriptor, updated?).await;
+                }
+                _ = notified => {}
+            }
         }
     }
 }
 
 fn encode_query_id(poll_info: &PollInfo, default_namespace_path: &[String]) -> String {
+    let mut resumable_poll_info = poll_info.clone();
+    resumable_poll_info.info = None;
     let encoded = EncodedQueryId {
-        poll_info: Some(poll_info.clone()),
+        poll_info: Some(resumable_poll_info),
         default_namespace_path: default_namespace_path.to_vec(),
     }
     .encode_to_vec();
@@ -754,6 +829,7 @@ mod tests {
         query_count: Arc<AtomicUsize>,
         do_get_count: Arc<AtomicUsize>,
         cancel_count: Arc<AtomicUsize>,
+        transient_poll_failures: Arc<AtomicUsize>,
         headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
         result: RecordBatch,
     }
@@ -772,6 +848,7 @@ mod tests {
                 query_count: Arc::new(AtomicUsize::new(0)),
                 do_get_count: Arc::new(AtomicUsize::new(0)),
                 cancel_count: Arc::new(AtomicUsize::new(0)),
+                transient_poll_failures: Arc::new(AtomicUsize::new(0)),
                 headers: Arc::new(std::sync::Mutex::new(Vec::new())),
                 result,
             }
@@ -832,16 +909,38 @@ mod tests {
             let command = Any::decode(request.get_ref().cmd.as_ref())
                 .ok()
                 .and_then(|any| any.unpack::<CommandStatementQuery>().ok().flatten());
-            let (query, complete) = if let Some(command) = command {
+            let (query, stage) = if let Some(command) = command {
                 self.query_count.fetch_add(1, Ordering::SeqCst);
-                (command.query, false)
+                (command.query, 0_u8)
             } else {
                 let continuation = std::str::from_utf8(request.get_ref().cmd.as_ref())
                     .map_err(|_| Status::invalid_argument("invalid continuation"))?;
-                let query = continuation
-                    .strip_prefix("poll:")
+                let mut parts = continuation.splitn(3, ':');
+                if parts.next() != Some("poll") {
+                    return Err(Status::invalid_argument("invalid continuation"));
+                }
+                let stage = parts
+                    .next()
+                    .and_then(|stage| stage.parse().ok())
                     .ok_or_else(|| Status::invalid_argument("invalid continuation"))?;
-                (query.to_string(), true)
+                let query = parts
+                    .next()
+                    .ok_or_else(|| Status::invalid_argument("invalid continuation"))?;
+                (query.to_string(), stage)
+            };
+            if query == "SELECT slow" && stage > 0 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            if query == "SELECT retry"
+                && stage == 1
+                && self.transient_poll_failures.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                return Err(Status::unavailable("transient polling failure"));
+            }
+            let complete = if query == "SELECT no info" {
+                stage >= 2
+            } else {
+                stage >= 1
             };
 
             let mut info = FlightInfo::new().with_endpoint(
@@ -853,9 +952,9 @@ mod tests {
                 info = info.try_with_schema(self.result.schema_ref()).unwrap();
             }
             Ok(Response::new(PollInfo {
-                info: Some(info),
+                info: (query != "SELECT no info" || stage > 0).then_some(info),
                 flight_descriptor: (!complete)
-                    .then(|| FlightDescriptor::new_cmd(format!("poll:{query}"))),
+                    .then(|| FlightDescriptor::new_cmd(format!("poll:{}:{query}", stage + 1))),
                 progress: Some(if complete { 1.0 } else { 0.25 }),
                 expiration_time: None,
             }))
@@ -961,12 +1060,15 @@ mod tests {
             ClientConfig::default(),
         );
         assert_eq!(client.initialized_client_count().await, 0);
+        assert!(!format!("{client:?}").contains("test-key"));
 
         let first = client
             .submit("SELECT 1", &["public".to_string()])
             .await
             .unwrap();
         assert!(first.id().starts_with(QUERY_ID_PREFIX));
+        let decoded = RemoteQuery::decode(first.id(), client.clone()).unwrap();
+        assert!(decoded.state.lock().await.info.is_none());
         let first_description = client.describe(first.id()).await.unwrap();
         assert_eq!(first_description.status, "finished");
         assert_eq!(first_description.progress, Some(1.0));
@@ -988,10 +1090,43 @@ mod tests {
             .unwrap();
         cancelled.cancel().await.unwrap();
 
+        let slow = Arc::new(
+            client
+                .submit("SELECT slow", &["public".to_string()])
+                .await
+                .unwrap(),
+        );
+        let result_task = {
+            let slow = slow.clone();
+            tokio::spawn(async move { slow.result().await })
+        };
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::time::timeout(Duration::from_millis(150), slow.cancel())
+            .await
+            .expect("cancellation must not wait for result polling")
+            .unwrap();
+        result_task.abort();
+        let _ = result_task.await;
+
+        let no_info = client
+            .submit("SELECT no info", &["public".to_string()])
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), no_info.cancel())
+            .await
+            .expect("cancellation should wait for cancellable query information")
+            .unwrap();
+
+        let retried = client
+            .submit("SELECT retry", &["public".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(retried.result().await.unwrap(), vec![expected.clone()]);
+
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 3);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 2);
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 1);
+        assert_eq!(query_count.load(Ordering::SeqCst), 6);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 3);
+        assert_eq!(cancel_count.load(Ordering::SeqCst), 3);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
         assert_eq!(empty_result.len(), 1);

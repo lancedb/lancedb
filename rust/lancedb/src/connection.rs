@@ -455,13 +455,7 @@ impl Connection {
     /// # Example
     ///
     /// ```no_run
-    /// # async fn query() -> lancedb::Result<()> {
-    /// let db = lancedb::connect("db://analytics")
-    ///     .api_key("api-key")
-    ///     .region("us-east-1")
-    ///     .sql_host_override("grpc+tls://sql.example.com:10026")
-    ///     .execute()
-    ///     .await?;
+    /// # async fn query(db: &lancedb::Connection) -> lancedb::Result<()> {
     /// let query = db
     ///     .submit_query("SELECT * FROM events LIMIT 10")
     ///     .default_namespace_path(["public"])

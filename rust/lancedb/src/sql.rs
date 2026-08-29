@@ -50,6 +50,7 @@ impl std::fmt::Debug for Query {
 }
 
 impl Query {
+    #[cfg(feature = "remote")]
     pub(crate) fn new(handle: impl QueryHandle + 'static) -> Self {
         Self {
             handle: Arc::new(handle),

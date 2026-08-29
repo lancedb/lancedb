@@ -13,7 +13,11 @@ use crate::{
     runtime::future_into_py,
     table::Table,
 };
-use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
+use arrow::{
+    datatypes::Schema,
+    ffi_stream::ArrowArrayStreamReader,
+    pyarrow::{FromPyArrow, ToPyArrow},
+};
 use lancedb::{
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
@@ -775,9 +779,12 @@ pub fn connect(
         if let Some(host_override) = host_override {
             builder = builder.host_override(&host_override);
         }
+        #[cfg(feature = "remote")]
         if let Some(sql_host_override) = sql_host_override {
             builder = builder.sql_host_override(&sql_host_override);
         }
+        #[cfg(not(feature = "remote"))]
+        let _ = sql_host_override;
         if let Some(read_consistency_interval) = read_consistency_interval {
             let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
             builder = builder.read_consistency_interval(read_consistency_interval);

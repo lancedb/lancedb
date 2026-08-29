@@ -7,7 +7,7 @@ use arrow::pyarrow::ToPyArrow;
 use chrono::{DateTime, Utc};
 use pyo3::{
     Bound, Py, PyAny, PyRef, PyResult, Python, pyclass, pymethods,
-    types::{PyDict, PyList, PyListMethods, PyModule, PyModuleMethods},
+    types::{PyAnyMethods, PyDict, PyList, PyListMethods, PyModule},
 };
 
 use crate::error::PythonErrorExt;

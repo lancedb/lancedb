@@ -17,7 +17,8 @@ def remote_connection(sql_host_override=None):
 
 
 def test_sql_is_connection_scoped():
-    assert not hasattr(lancedb, "sql")
+    assert hasattr(lancedb, "sql")
+    assert not callable(lancedb.sql)
     assert not hasattr(_lancedb, "sql")
     assert not hasattr(remote_connection(), "sql")
     assert hasattr(remote_connection(), "submit_query")
