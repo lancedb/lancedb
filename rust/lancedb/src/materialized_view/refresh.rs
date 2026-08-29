@@ -328,7 +328,7 @@ fn validate_inputs(source: &Dataset, definition: &MaterializedViewDefinition) ->
 }
 
 /// Reject MemWAL/LSM state on a refresh participant: un-compacted tiers are
-/// invisible to the fragment-planned refresh scan. An active write spec and
+/// invisible to DatasetDelta and the rebuild scan. An active write spec and
 /// retained rows both disqualify; shard directories on storage are the
 /// durable evidence of the latter.
 pub(crate) async fn ensure_no_mem_wal(dataset: &Dataset, role: &str, name: &str) -> Result<()> {
@@ -397,6 +397,14 @@ async fn incremental(
         .with_begin_version(base.version().version)
         .with_end_version(source_version)
         .build()?;
+    if delta
+        .list_transactions()
+        .await?
+        .iter()
+        .any(|transaction| delta_operation_requires_rebuild(&transaction.operation))
+    {
+        return Ok(None);
+    }
 
     let mut deleted = delta.get_deleted_row_ids().await?;
     if deleted.try_next().await?.is_some() {
@@ -405,7 +413,9 @@ async fn incremental(
 
     let evaluator = DeltaEvaluator::new(source_ds, definition, view_ds)?;
     let cap = delta_rebuild_cap();
+    let byte_cap = delta_byte_rebuild_cap();
     let mut evaluated_rows = 0usize;
+    let mut evaluated_bytes = 0usize;
     let mut weights = HashMap::new();
 
     let mut inserted = delta.get_inserted_rows().await?;
@@ -414,7 +424,15 @@ async fn incremental(
         if evaluated_rows > cap {
             return Ok(None);
         }
-        accumulate(&mut weights, &evaluator.evaluate(&batch)?, 1)?;
+        if !accumulate(
+            &mut weights,
+            &evaluator.evaluate(&batch)?,
+            1,
+            &mut evaluated_bytes,
+            byte_cap,
+        )? {
+            return Ok(None);
+        }
     }
 
     let mut updated_ids = Vec::new();
@@ -425,7 +443,15 @@ async fn incremental(
             return Ok(None);
         }
         updated_ids.extend(row_ids_of(&batch)?.values().iter().copied());
-        accumulate(&mut weights, &evaluator.evaluate(&batch)?, 1)?;
+        if !accumulate(
+            &mut weights,
+            &evaluator.evaluate(&batch)?,
+            1,
+            &mut evaluated_bytes,
+            byte_cap,
+        )? {
+            return Ok(None);
+        }
     }
 
     for ids in updated_ids.chunks(8192) {
@@ -435,7 +461,15 @@ async fn incremental(
                 ProjectionRequest::Schema(Arc::new(base.schema().clone())),
             )
             .await?;
-        accumulate(&mut weights, &evaluator.evaluate(&before)?, -1)?;
+        if !accumulate(
+            &mut weights,
+            &evaluator.evaluate(&before)?,
+            -1,
+            &mut evaluated_bytes,
+            byte_cap,
+        )? {
+            return Ok(None);
+        }
     }
 
     if definition.limit.is_some() && evaluated_rows > 0 {
@@ -495,6 +529,10 @@ async fn incremental(
     )
     .await?;
     Ok(Some(result))
+}
+
+fn delta_operation_requires_rebuild(operation: &Operation) -> bool {
+    matches!(operation, Operation::DataOverlay { .. })
 }
 
 struct DeltaEvaluator {
@@ -605,7 +643,9 @@ fn accumulate(
     weights: &mut HashMap<Vec<ScalarValue>, i64>,
     batch: &RecordBatch,
     sign: i64,
-) -> Result<()> {
+    evaluated_bytes: &mut usize,
+    byte_cap: usize,
+) -> Result<bool> {
     for row in 0..batch.num_rows() {
         let key = batch
             .columns()
@@ -616,9 +656,13 @@ fn accumulate(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        *evaluated_bytes = (*evaluated_bytes).saturating_add(ScalarValue::size_of_vec(&key));
+        if *evaluated_bytes > byte_cap {
+            return Ok(false);
+        }
         *weights.entry(key).or_default() += sign;
     }
-    Ok(())
+    Ok(true)
 }
 
 fn positive_batch(
@@ -1060,6 +1104,12 @@ fn delta_rebuild_cap() -> usize {
     4 * 1024 * 1024
 }
 
+/// Bound the encoded output values held while consolidating a delta. The
+/// positive batch and hash table temporarily duplicate some of this memory.
+fn delta_byte_rebuild_cap() -> usize {
+    128 * 1024 * 1024
+}
+
 /// View row ids per staged eviction: the delete predicate carries one
 /// literal per id, so a whole delta at once is unbounded. Each chunk costs a
 /// pass over the view's virtual row id, which is why it is not smaller.
@@ -1336,6 +1386,25 @@ mod tests {
     async fn append(table: &Table, values: Vec<i32>) {
         let batch = record_batch!(("x", Int32, values)).unwrap();
         table.add(batch).execute().await.unwrap();
+    }
+
+    #[test]
+    fn data_overlays_require_rebuild() {
+        assert!(delta_operation_requires_rebuild(&Operation::DataOverlay {
+            groups: Vec::new(),
+        }));
+        assert!(!delta_operation_requires_rebuild(&Operation::Append {
+            fragments: Vec::new(),
+        }));
+    }
+
+    #[test]
+    fn bag_delta_respects_the_byte_budget() {
+        let batch = record_batch!(("x", Int32, [1])).unwrap();
+        let mut weights = HashMap::new();
+        let mut evaluated_bytes = 0;
+
+        assert!(!accumulate(&mut weights, &batch, 1, &mut evaluated_bytes, 1,).unwrap());
     }
 
     #[tokio::test]
