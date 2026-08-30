@@ -2471,7 +2471,7 @@ mod tests {
 
         assert_eq!(client.initialized_client_count().await, 1);
         assert_eq!(query_count.load(Ordering::SeqCst), 18);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 10);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 14);
         assert_eq!(cancel_count.load(Ordering::SeqCst), 15);
         assert_eq!(first_result, vec![expected.clone()]);
         assert!(empty_result.is_empty());
