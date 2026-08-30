@@ -778,7 +778,7 @@ pub(crate) fn plan_function_application(
     application: &FunctionApplication,
     output_name: Option<&str>,
 ) -> Result<FunctionDeclarationPlan> {
-    ensure_no_function_bindings_for_mutation(schema, "Function binding declaration")?;
+    ensure_supported_function_metadata(schema)?;
     if application.has_unknown_fields() {
         return Err(Error::NotSupported {
             message: "Function application contains fields from a newer contract".into(),
@@ -2661,9 +2661,21 @@ mod tests {
                 output_ordinal: 1,
             } if binding_id == "fb_01K3TEXT"
         ));
-        let err = plan_function_application(&reopened, &named_struct_application("{}"), None)
-            .unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
+        let plan = plan_function_application(
+            &reopened,
+            &named_struct_application(
+                r#"{"normalized_text":"secondary_text","token_count":"secondary_token_count"}"#,
+            ),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.outputs
+                .iter()
+                .map(|output| output.output_name.as_str())
+                .collect::<Vec<_>>(),
+            ["secondary_text", "secondary_token_count"]
+        );
     }
 
     #[test]
