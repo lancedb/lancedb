@@ -50,6 +50,11 @@ struct SqlClientInner {
     client: Arc<OnceCell<FlightServiceClient<Channel>>>,
 }
 
+enum CancelOutcome {
+    Status(CancelStatus),
+    NotFound(String),
+}
+
 impl std::fmt::Debug for SqlClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -275,7 +280,7 @@ impl SqlClientInner {
         &self,
         info: FlightInfo,
         default_namespace_path: &[String],
-    ) -> Result<CancelStatus> {
+    ) -> Result<CancelOutcome> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let read_timeout = resolve_timeout(
             self.client_config.timeout_config.read_timeout,
@@ -291,9 +296,16 @@ impl SqlClientInner {
             client.cancel_flight_info(CancelFlightInfoRequest::new(info)),
         )
         .await
-        .map_err(|_| sql_error(&request_id, "SQL query cancellation timed out"))?
-        .map_err(|err| sql_error(&request_id, err))?;
+        .map_err(|_| sql_error(&request_id, "SQL query cancellation timed out"))?;
+        let result = match result {
+            Ok(result) => result,
+            Err(FlightError::Tonic(status)) if status.code() == tonic::Code::NotFound => {
+                return Ok(CancelOutcome::NotFound(request_id));
+            }
+            Err(error) => return Err(sql_error(&request_id, error)),
+        };
         CancelStatus::try_from(result.status)
+            .map(CancelOutcome::Status)
             .map_err(|_| sql_error(&request_id, "SQL query returned an invalid cancel status"))
     }
 
@@ -487,6 +499,7 @@ struct RemoteQuery {
 enum QueryLifecycle {
     Running,
     Ready,
+    Cancelling,
     Completed,
     Cancelled,
 }
@@ -563,9 +576,36 @@ impl RemoteQuery {
         true
     }
 
+    fn mark_cancelling(&self) {
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        if matches!(*lifecycle, QueryLifecycle::Running | QueryLifecycle::Ready) {
+            *lifecycle = QueryLifecycle::Cancelling;
+            drop(lifecycle);
+            self.cancelled.notify_waiters();
+            self.state_changed.notify_waiters();
+        }
+    }
+
+    async fn restore_after_rejected_cancellation(&self) {
+        let running = self.state.lock().await.flight_descriptor.is_some();
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        if *lifecycle == QueryLifecycle::Cancelling {
+            *lifecycle = if running {
+                QueryLifecycle::Running
+            } else {
+                QueryLifecycle::Ready
+            };
+            drop(lifecycle);
+            self.state_changed.notify_waiters();
+        }
+    }
+
     fn mark_result_completed(&self) -> Result<()> {
         let mut lifecycle = self.lifecycle.lock().unwrap();
-        if *lifecycle == QueryLifecycle::Cancelled {
+        if matches!(
+            *lifecycle,
+            QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
+        ) {
             return Err(self.cancelled_error());
         }
         *lifecycle = QueryLifecycle::Completed;
@@ -576,8 +616,11 @@ impl RemoteQuery {
         *self.lifecycle.lock().unwrap()
     }
 
-    fn is_cancelled(&self) -> bool {
-        self.lifecycle() == QueryLifecycle::Cancelled
+    fn is_cancellation_requested(&self) -> bool {
+        matches!(
+            self.lifecycle(),
+            QueryLifecycle::Cancelling | QueryLifecycle::Cancelled
+        )
     }
 
     fn cancelled_error(&self) -> Error {
@@ -594,12 +637,12 @@ impl RemoteQuery {
         self.touch();
         loop {
             let cancelled = self.cancelled.notified();
-            if self.is_cancelled() {
+            if self.is_cancellation_requested() {
                 return Err(self.cancelled_error());
             }
             let state = self.state.lock().await.clone();
             let Some(descriptor) = state.flight_descriptor else {
-                if self.is_cancelled() {
+                if self.is_cancellation_requested() {
                     return Err(self.cancelled_error());
                 }
                 return state.info.ok_or_else(|| Error::Runtime {
@@ -615,7 +658,7 @@ impl RemoteQuery {
                 continue;
             }
             let cancelled = self.cancelled.notified();
-            if self.is_cancelled() {
+            if self.is_cancellation_requested() {
                 return Err(self.cancelled_error());
             }
             let updated = tokio::select! {
@@ -625,7 +668,9 @@ impl RemoteQuery {
                     descriptor.clone(),
                     &self.default_namespace_path,
                 ) => match result {
-                    Err(_) if self.is_cancelled() => return Err(self.cancelled_error()),
+                    Err(_) if self.is_cancellation_requested() => {
+                        return Err(self.cancelled_error());
+                    }
                     result => result?,
                 },
             };
@@ -656,7 +701,7 @@ impl RemoteQuery {
 impl RemoteQuery {
     async fn describe(&self) -> Result<QueryDescription> {
         self.touch();
-        if self.is_cancelled() {
+        if self.is_cancellation_requested() {
             let state = self.state.lock().await.clone();
             return query_description(&self.id, &state, self.lifecycle());
         }
@@ -683,7 +728,7 @@ impl RemoteQuery {
                 latest
             } else {
                 let cancelled = self.cancelled.notified();
-                if self.is_cancelled() {
+                if self.is_cancellation_requested() {
                     return query_description(&self.id, &latest, self.lifecycle());
                 }
                 let updated = tokio::select! {
@@ -697,7 +742,7 @@ impl RemoteQuery {
                         descriptor.clone(),
                         &self.default_namespace_path,
                     ) => match result {
-                        Err(_) if self.is_cancelled() => return query_description(
+                        Err(_) if self.is_cancellation_requested() => return query_description(
                             &self.id,
                             &latest,
                             self.lifecycle(),
@@ -730,19 +775,54 @@ impl RemoteQuery {
             let notified = self.state_changed.notified();
             let state = self.state.lock().await.clone();
             if let Some(info) = state.info {
-                return match self
-                    .client
-                    .cancel(info, &self.default_namespace_path)
-                    .await?
-                {
+                let outcome = match self.client.cancel(info, &self.default_namespace_path).await {
+                    Ok(outcome) => outcome,
+                    Err(_)
+                        if matches!(
+                            self.lifecycle(),
+                            QueryLifecycle::Cancelled | QueryLifecycle::Completed
+                        ) =>
+                    {
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
+                if matches!(
+                    self.lifecycle(),
+                    QueryLifecycle::Cancelled | QueryLifecycle::Completed
+                ) {
+                    return Ok(());
+                }
+                let status = match outcome {
+                    CancelOutcome::Status(status) => status,
+                    CancelOutcome::NotFound(_)
+                        if self.lifecycle() == QueryLifecycle::Cancelling =>
+                    {
+                        self.mark_cancelled();
+                        return Ok(());
+                    }
+                    CancelOutcome::NotFound(request_id) => {
+                        return Err(sql_error(
+                            &request_id,
+                            "SQL query cancellation target was not found",
+                        ));
+                    }
+                };
+                return match status {
                     CancelStatus::Cancelled => {
                         self.mark_cancelled();
                         Ok(())
                     }
-                    CancelStatus::Cancelling => Ok(()),
-                    CancelStatus::NotCancellable => Err(Error::NotSupported {
-                        message: "The SQL query is not cancellable".to_string(),
-                    }),
+                    CancelStatus::Cancelling => {
+                        self.mark_cancelling();
+                        Ok(())
+                    }
+                    CancelStatus::NotCancellable => {
+                        self.restore_after_rejected_cancellation().await;
+                        Err(Error::NotSupported {
+                            message: "The SQL query is not cancellable".to_string(),
+                        })
+                    }
                     CancelStatus::Unspecified => Err(Error::Runtime {
                         message: "The SQL service returned an unspecified cancellation status"
                             .to_string(),
@@ -802,7 +882,7 @@ impl QueryHandle for RemoteQueryHandle {
             .get_or_try_init(|| async {
                 let info = self.query.poll_until_finished().await?;
                 let cancelled = self.query.cancelled.notified();
-                if self.query.is_cancelled() {
+                if self.query.is_cancellation_requested() {
                     return Err(self.query.cancelled_error());
                 }
                 let batches = tokio::select! {
@@ -812,7 +892,7 @@ impl QueryHandle for RemoteQueryHandle {
                         info,
                         &self.query.default_namespace_path,
                     ) => match result {
-                        Err(_) if self.query.is_cancelled() => {
+                        Err(_) if self.query.is_cancellation_requested() => {
                             return Err(self.query.cancelled_error());
                         }
                         result => result?,
@@ -839,12 +919,13 @@ fn query_description(
     let expires_at = query_expiration(poll_info)?;
     Ok(QueryDescription {
         id: id.to_string(),
-        status: if lifecycle == QueryLifecycle::Cancelled {
-            "cancelled"
-        } else if poll_info.flight_descriptor.is_some() {
-            "running"
-        } else {
-            "finished"
+        status: match lifecycle {
+            QueryLifecycle::Cancelling => "cancelling",
+            QueryLifecycle::Cancelled => "cancelled",
+            QueryLifecycle::Running if poll_info.flight_descriptor.is_some() => "running",
+            QueryLifecycle::Running | QueryLifecycle::Ready | QueryLifecycle::Completed => {
+                "finished"
+            }
         }
         .to_string(),
         progress: poll_info.progress,
@@ -1188,6 +1269,7 @@ mod tests {
         query_count: Arc<AtomicUsize>,
         do_get_count: Arc<AtomicUsize>,
         cancel_count: Arc<AtomicUsize>,
+        cancelling_response_count: Arc<AtomicUsize>,
         first_continuation_count: Arc<AtomicUsize>,
         transient_poll_failures: Arc<AtomicUsize>,
         headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
@@ -1208,6 +1290,7 @@ mod tests {
                 query_count: Arc::new(AtomicUsize::new(0)),
                 do_get_count: Arc::new(AtomicUsize::new(0)),
                 cancel_count: Arc::new(AtomicUsize::new(0)),
+                cancelling_response_count: Arc::new(AtomicUsize::new(0)),
                 first_continuation_count: Arc::new(AtomicUsize::new(0)),
                 transient_poll_failures: Arc::new(AtomicUsize::new(0)),
                 headers: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1292,7 +1375,7 @@ mod tests {
                     .ok_or_else(|| Status::invalid_argument("invalid continuation"))?;
                 (query.to_string(), stage)
             };
-            if query == "SELECT slow" && stage > 0 {
+            if (query == "SELECT slow" || query == "SELECT cancelling") && stage > 0 {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
             if query == "SELECT no info" && stage == 1 {
@@ -1373,10 +1456,34 @@ mod tests {
                 return Err(Status::invalid_argument("unexpected action"));
             }
             self.cancel_count.fetch_add(1, Ordering::SeqCst);
+            let cancel_request = CancelFlightInfoRequest::decode(request.get_ref().body.clone())
+                .map_err(|_| Status::invalid_argument("invalid cancellation request"))?;
+            let query = cancel_request
+                .info
+                .and_then(|info| info.endpoint.into_iter().next())
+                .and_then(|endpoint| endpoint.ticket)
+                .and_then(|ticket| String::from_utf8(ticket.ticket.to_vec()).ok())
+                .ok_or_else(|| Status::invalid_argument("cancellation request had no ticket"))?;
+            if query == "SELECT cancel race" {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            let status = if query == "SELECT cancelling" {
+                if self
+                    .cancelling_response_count
+                    .fetch_add(1, Ordering::SeqCst)
+                    == 0
+                {
+                    CancelStatus::Cancelling
+                } else {
+                    return Err(Status::not_found("query cancellation completed"));
+                }
+            } else if query == "SELECT cancel race" {
+                CancelStatus::NotCancellable
+            } else {
+                CancelStatus::Cancelled
+            };
             let response = arrow_flight::Result {
-                body: CancelFlightInfoResult::new(CancelStatus::Cancelled)
-                    .encode_to_vec()
-                    .into(),
+                body: CancelFlightInfoResult::new(status).encode_to_vec().into(),
             };
             Ok(Response::new(Box::pin(futures::stream::iter([Ok(
                 response,
@@ -1553,6 +1660,52 @@ mod tests {
             slow_get.result().await,
             Err(Error::JobCancelled { .. })
         ));
+
+        let cancelling = Arc::new(
+            client
+                .submit("SELECT cancelling", &["public".to_string()])
+                .await
+                .unwrap(),
+        );
+        let cancelling_result_task = {
+            let cancelling = cancelling.clone();
+            tokio::spawn(async move { cancelling.result().await })
+        };
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        cancelling.cancel().await.unwrap();
+        assert_eq!(cancelling.describe().await.unwrap().status, "cancelling");
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_millis(150), cancelling_result_task)
+                .await
+                .expect("an accepted cancellation must wake result polling")
+                .unwrap(),
+            Err(Error::JobCancelled { .. })
+        ));
+        cancelling.cancel().await.unwrap();
+        assert_eq!(cancelling.describe().await.unwrap().status, "cancelled");
+
+        let cancel_race = Arc::new(
+            client
+                .submit("SELECT cancel race", &["public".to_string()])
+                .await
+                .unwrap(),
+        );
+        let cancel_count_before_race = cancel_count.load(Ordering::SeqCst);
+        let cancel_race_task = {
+            let cancel_race = cancel_race.clone();
+            tokio::spawn(async move { cancel_race.cancel().await })
+        };
+        while cancel_count.load(Ordering::SeqCst) == cancel_count_before_race {
+            tokio::task::yield_now().await;
+        }
+        let cancel_race_result = cancel_race.result().await.unwrap();
+        tokio::time::timeout(Duration::from_millis(500), cancel_race_task)
+            .await
+            .expect("completed result must make in-flight cancellation a no-op")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancel_race.describe().await.unwrap().status, "finished");
+        assert_eq!(cancel_race.result().await.unwrap(), cancel_race_result);
 
         let no_info = Arc::new(
             client
@@ -1759,9 +1912,9 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 9);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 4);
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 4);
+        assert_eq!(query_count.load(Ordering::SeqCst), 11);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 5);
+        assert_eq!(cancel_count.load(Ordering::SeqCst), 7);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
         assert_eq!(empty_result.len(), 1);

@@ -16,7 +16,7 @@ use crate::Result;
 pub struct QueryDescription {
     /// The stable, connection-scoped identifier assigned when the query was submitted.
     pub id: String,
-    /// The lifecycle state: `running`, `finished`, or `cancelled`.
+    /// The lifecycle state: `running`, `finished`, `cancelling`, or `cancelled`.
     pub status: String,
     /// Server-reported completion progress, when known.
     pub progress: Option<f64>,
