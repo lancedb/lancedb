@@ -396,6 +396,8 @@ def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
     for outside in [
         pa.list_(pa.field("item", pa.float32(), nullable=False, metadata={"k": "v"})),
         pa.list_(pa.field("item", pa.float32(), nullable=False), 0),
+        pa.list_(pa.float32(), 3),
+        pa.list_(pa.field("custom", pa.float32(), nullable=False), 3),
     ]:
         with pytest.raises(TypeError, match="unsupported Arrow type"):
             _canonical_arrow_type(outside)
@@ -405,6 +407,14 @@ def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
         )
         == "fixed_size_list<float32, 3>"
     )
+
+    for invalid_struct in [
+        pa.struct([]),
+        pa.struct([pa.field("a", pa.int32()), pa.field("a", pa.int64())]),
+        pa.struct([pa.field("", pa.int32())]),
+    ]:
+        with pytest.raises(TypeError, match="unsupported Arrow type"):
+            _canonical_arrow_type(invalid_struct)
 
 
 def _calls_missing(value: int) -> int:

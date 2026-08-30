@@ -537,6 +537,11 @@ def _grammar_list_item(data_type: pa.DataType) -> Optional[str]:
 
 
 def _exact_arrow_field(field: pa.Field) -> dict[str, Any]:
+    if not field.name:
+        raise TypeError(
+            "unsupported Arrow type for Function signature: nested field names "
+            "must not be empty"
+        )
     if field.metadata:
         raise TypeError(
             "unsupported Arrow type for Function signature: nested field metadata "
@@ -554,15 +559,33 @@ def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
         if data_type == candidate:
             return {"type": name}
     if pa.types.is_struct(data_type):
+        fields = list(data_type)
+        names = [field.name for field in fields]
+        if not fields or len(set(names)) != len(names):
+            raise TypeError(
+                "unsupported Arrow type for Function signature: structs must have "
+                "non-empty, uniquely named fields"
+            )
         return {
             "type": "struct",
-            "fields": [_exact_arrow_field(field) for field in data_type],
+            "fields": [_exact_arrow_field(field) for field in fields],
         }
     if (
         pa.types.is_list(data_type)
         or pa.types.is_large_list(data_type)
         or pa.types.is_fixed_size_list(data_type)
     ):
+        if pa.types.is_fixed_size_list(data_type):
+            child = data_type.value_field
+            if child.name != "item" or child.nullable or child.metadata:
+                raise TypeError(
+                    "unsupported Arrow type for Function signature: fixed-size list "
+                    "items must be a non-nullable field named 'item' without metadata"
+                )
+            if data_type.list_size <= 0:
+                raise TypeError(
+                    f"unsupported Arrow type for Function signature: {data_type}"
+                )
         value: dict[str, Any] = {
             "type": (
                 "list"
@@ -574,10 +597,6 @@ def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
             "fields": [_exact_arrow_field(data_type.value_field)],
         }
         if pa.types.is_fixed_size_list(data_type):
-            if data_type.list_size <= 0:
-                raise TypeError(
-                    f"unsupported Arrow type for Function signature: {data_type}"
-                )
             value["length"] = data_type.list_size
         return value
     raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
