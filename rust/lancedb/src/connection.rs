@@ -456,13 +456,18 @@ impl Connection {
     ///
     /// ```no_run
     /// # async fn query(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    ///
     /// let query = db
     ///     .submit_query("SELECT * FROM events LIMIT 10")
     ///     .default_namespace_path(["public"])
     ///     .execute()
     ///     .await?;
     /// println!("query id: {}", query.id());
-    /// let batches = query.result().await?;
+    /// let mut batches = query.result().await?;
+    /// while let Some(batch) = batches.try_next().await? {
+    ///     println!("received {} rows", batch.num_rows());
+    /// }
     /// # Ok(())
     /// # }
     /// ```

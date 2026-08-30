@@ -8,18 +8,21 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use arrow_array::RecordBatch;
+use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
     Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
-    FlightDescriptor, FlightInfo, PollInfo,
+    FlightDescriptor, FlightEndpoint, FlightInfo, PollInfo,
 };
+use arrow_schema::{Schema, SchemaRef};
 use futures::TryStreamExt;
 use prost::Message;
-use tokio::sync::{Mutex, Notify, OnceCell, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, Notify, OnceCell, OwnedSemaphorePermit, Semaphore, mpsc};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
+use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
 use crate::error::{Error, Result};
 use crate::remote::client::{ClientConfig, TlsConfig};
 use crate::remote::retry::ResolvedRetryConfig;
@@ -56,6 +59,28 @@ struct SqlClientInner {
 struct SqlConnection {
     channel: Channel,
     client: FlightServiceClient<Channel>,
+}
+
+struct ResultEndpointStream {
+    stream: FlightRecordBatchStream,
+    request_id: String,
+    read_timeout: Duration,
+}
+
+struct PreparedSqlResult {
+    schema: SchemaRef,
+    next_endpoint: usize,
+    endpoint_stream: Option<ResultEndpointStream>,
+    buffered_batch: Option<RecordBatch>,
+}
+
+impl ResultEndpointStream {
+    async fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
+        tokio::time::timeout(self.read_timeout, self.stream.try_next())
+            .await
+            .map_err(|_| sql_error(&self.request_id, "SQL result read timed out"))?
+            .map_err(|err| sql_error(&self.request_id, err))
+    }
 }
 
 enum CancelOutcome {
@@ -268,11 +293,11 @@ impl SqlClientInner {
         }
     }
 
-    async fn fetch_result(
+    async fn open_result_endpoint(
         &self,
-        info: FlightInfo,
+        endpoint: FlightEndpoint,
         default_namespace_path: &[String],
-    ) -> Result<Vec<RecordBatch>> {
+    ) -> Result<ResultEndpointStream> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let read_timeout = resolve_timeout(
             self.client_config.timeout_config.read_timeout,
@@ -280,48 +305,21 @@ impl SqlClientInner {
             Some(DEFAULT_READ_TIMEOUT),
         )?
         .unwrap();
-        let mut result_schema = if info.schema.is_empty() {
-            None
-        } else {
-            Some(std::sync::Arc::new(
-                info.clone()
-                    .try_decode_schema()
-                    .map_err(|err| sql_error(&request_id, err))?,
-            ))
-        };
-
-        let mut batches = Vec::new();
-        for endpoint in info.endpoint {
-            let ticket = endpoint.ticket.clone().ok_or_else(|| {
-                sql_error(&request_id, "SQL result endpoint did not include a ticket")
-            })?;
-            let mut endpoint_client = self
-                .client_with_headers(default_namespace_path, &request_id)
-                .await?;
-            let mut stream = tokio::time::timeout(read_timeout, endpoint_client.do_get(ticket))
-                .await
-                .map_err(|_| sql_error(&request_id, "SQL result fetch timed out"))?
-                .map_err(|err| sql_error(&request_id, err))?;
-            loop {
-                let next = tokio::time::timeout(read_timeout, stream.try_next())
-                    .await
-                    .map_err(|_| sql_error(&request_id, "SQL result read timed out"))?
-                    .map_err(|err| sql_error(&request_id, err))?;
-                match next {
-                    Some(batch) => batches.push(batch),
-                    None => break,
-                }
-            }
-            if result_schema.is_none() {
-                result_schema = stream.schema().cloned();
-            }
-        }
-        if batches.is_empty()
-            && let Some(schema) = result_schema
-        {
-            batches.push(RecordBatch::new_empty(schema));
-        }
-        Ok(batches)
+        let ticket = endpoint.ticket.ok_or_else(|| {
+            sql_error(&request_id, "SQL result endpoint did not include a ticket")
+        })?;
+        let mut endpoint_client = self
+            .client_with_headers(default_namespace_path, &request_id)
+            .await?;
+        let stream = tokio::time::timeout(read_timeout, endpoint_client.do_get(ticket))
+            .await
+            .map_err(|_| sql_error(&request_id, "SQL result fetch timed out"))?
+            .map_err(|err| sql_error(&request_id, err))?;
+        Ok(ResultEndpointStream {
+            stream,
+            request_id,
+            read_timeout,
+        })
     }
 
     async fn cancel(
@@ -740,43 +738,187 @@ impl RemoteQuery {
         *self.last_accessed.lock().unwrap() = Instant::now();
     }
 
-    async fn poll_until_finished(&self) -> Result<FlightInfo> {
+    async fn poll_next_state(&self, descriptor: FlightDescriptor) -> Result<PollInfo> {
         self.touch();
+        if self.is_cancellation_requested() {
+            return Err(self.cancelled_error());
+        }
+        let _poll_guard = tokio::select! {
+            biased;
+            _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
+            poll_guard = self.poll_gate.lock() => poll_guard,
+        };
+        let latest = self.state.lock().await.clone();
+        if latest.flight_descriptor.as_ref() != Some(&descriptor) {
+            return Ok(latest);
+        }
+        let updated = tokio::select! {
+            biased;
+            _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
+            result = self.client.poll_continuation(
+                descriptor.clone(),
+                &self.default_namespace_path,
+            ) => match result {
+                Err(_) if self.is_cancellation_requested() => {
+                    return Err(self.cancelled_error());
+                }
+                result => result?,
+            },
+        };
+        self.update_state(&descriptor, updated).await
+    }
+
+    async fn prepare_result(self: &Arc<Self>) -> Result<PreparedSqlResult> {
         loop {
             if self.is_cancellation_requested() {
                 return Err(self.cancelled_error());
             }
             let state = self.state.lock().await.clone();
-            let Some(descriptor) = state.flight_descriptor else {
-                if self.is_cancellation_requested() {
-                    return Err(self.cancelled_error());
+            if let Some(info) = state.info {
+                if !info.schema.is_empty() {
+                    let request_id = uuid::Uuid::new_v4().to_string();
+                    let schema = Arc::new(
+                        info.try_decode_schema()
+                            .map_err(|err| sql_error(&request_id, err))?,
+                    );
+                    return Ok(PreparedSqlResult {
+                        schema,
+                        next_endpoint: 0,
+                        endpoint_stream: None,
+                        buffered_batch: None,
+                    });
                 }
-                return state.info.ok_or_else(|| Error::Runtime {
+                if let Some(endpoint) = info.endpoint.into_iter().next() {
+                    let mut endpoint_stream = tokio::select! {
+                        biased;
+                        _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
+                        result = self.client.open_result_endpoint(
+                            endpoint,
+                            &self.default_namespace_path,
+                        ) => result?,
+                    };
+                    let buffered_batch = tokio::select! {
+                        biased;
+                        _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
+                        result = endpoint_stream.next_batch() => result?,
+                    };
+                    let schema = buffered_batch
+                        .as_ref()
+                        .map(RecordBatch::schema)
+                        .or_else(|| endpoint_stream.stream.schema().cloned())
+                        .ok_or_else(|| Error::Runtime {
+                            message: "SQL result endpoint did not include a schema".to_string(),
+                        })?;
+                    return Ok(PreparedSqlResult {
+                        schema,
+                        next_endpoint: 1,
+                        endpoint_stream: buffered_batch.is_some().then_some(endpoint_stream),
+                        buffered_batch,
+                    });
+                }
+                if state.flight_descriptor.is_none() {
+                    return Ok(PreparedSqlResult {
+                        schema: Arc::new(Schema::empty()),
+                        next_endpoint: 0,
+                        endpoint_stream: None,
+                        buffered_batch: None,
+                    });
+                }
+            } else if state.flight_descriptor.is_none() {
+                return Err(Error::Runtime {
                     message: "Completed SQL query did not include result information".to_string(),
                 });
-            };
-            let _poll_guard = tokio::select! {
-                biased;
-                _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
-                poll_guard = self.poll_gate.lock() => poll_guard,
-            };
-            if self.state.lock().await.flight_descriptor.as_ref() != Some(&descriptor) {
+            }
+            let descriptor = state.flight_descriptor.ok_or_else(|| Error::Runtime {
+                message: "Completed SQL query did not include result information".to_string(),
+            })?;
+            self.poll_next_state(descriptor).await?;
+        }
+    }
+
+    async fn run_result_stream(
+        self: Arc<Self>,
+        mut prepared: PreparedSqlResult,
+        sender: mpsc::Sender<Result<RecordBatch>>,
+    ) -> Result<()> {
+        if let Some(batch) = prepared.buffered_batch.take()
+            && !self
+                .send_result_batch(&sender, &prepared.schema, batch)
+                .await?
+        {
+            return Ok(());
+        }
+        loop {
+            if self.is_cancellation_requested() {
+                return Err(self.cancelled_error());
+            }
+            if let Some(endpoint_stream) = prepared.endpoint_stream.as_mut() {
+                let batch = tokio::select! {
+                    biased;
+                    _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
+                    result = endpoint_stream.next_batch() => result?,
+                };
+                if let Some(batch) = batch {
+                    if !self
+                        .send_result_batch(&sender, &prepared.schema, batch)
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                } else {
+                    prepared.endpoint_stream = None;
+                }
                 continue;
             }
-            let updated = tokio::select! {
-                biased;
-                _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
-                result = self.client.poll_continuation(
-                    descriptor.clone(),
-                    &self.default_namespace_path,
-                ) => match result {
-                    Err(_) if self.is_cancellation_requested() => {
-                        return Err(self.cancelled_error());
-                    }
-                    result => result?,
-                },
-            };
-            self.update_state(&descriptor, updated).await?;
+
+            let state = self.state.lock().await.clone();
+            let endpoints = state
+                .info
+                .as_ref()
+                .map(|info| info.endpoint.as_slice())
+                .unwrap_or_default();
+            if prepared.next_endpoint > endpoints.len() {
+                return Err(Error::Runtime {
+                    message: "SQL service removed a previously advertised result endpoint"
+                        .to_string(),
+                });
+            }
+            if let Some(endpoint) = endpoints.get(prepared.next_endpoint).cloned() {
+                prepared.next_endpoint += 1;
+                prepared.endpoint_stream = Some(tokio::select! {
+                    biased;
+                    _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
+                    result = self.client.open_result_endpoint(
+                        endpoint,
+                        &self.default_namespace_path,
+                    ) => result?,
+                });
+                continue;
+            }
+            if let Some(descriptor) = state.flight_descriptor {
+                self.poll_next_state(descriptor).await?;
+                continue;
+            }
+            self.mark_result_completed()?;
+            return Ok(());
+        }
+    }
+
+    async fn send_result_batch(
+        &self,
+        sender: &mpsc::Sender<Result<RecordBatch>>,
+        schema: &SchemaRef,
+        batch: RecordBatch,
+    ) -> Result<bool> {
+        if batch.schema().as_ref() != schema.as_ref() {
+            return Err(Error::Runtime {
+                message: "SQL result endpoint returned a different schema".to_string(),
+            });
+        }
+        tokio::select! {
+            biased;
+            _ = self.wait_for_cancellation() => Err(self.cancelled_error()),
+            result = sender.send(Ok(batch)) => Ok(result.is_ok()),
         }
     }
 
@@ -971,14 +1113,14 @@ impl RemoteQuery {
 
 struct RemoteQueryHandle {
     query: Arc<RemoteQuery>,
-    result: OnceCell<Vec<RecordBatch>>,
+    result_started: AtomicBool,
 }
 
 impl RemoteQueryHandle {
     fn new(query: Arc<RemoteQuery>) -> Self {
         Self {
             query,
-            result: OnceCell::new(),
+            result_started: AtomicBool::new(false),
         }
     }
 }
@@ -994,36 +1136,48 @@ impl QueryHandle for RemoteQueryHandle {
         self.query.describe().await
     }
 
-    async fn result(&self) -> Result<Vec<RecordBatch>> {
+    async fn result(&self) -> Result<SendableRecordBatchStream> {
         let timeout = self.query.client.overall_timeout()?;
-        with_overall_timeout(timeout, "SQL query result", async {
-            let batches = self
-                .result
-                .get_or_try_init(|| async {
-                    let info = self.query.poll_until_finished().await?;
-                    let batches = tokio::select! {
-                        biased;
-                        _ = self.query.wait_for_cancellation() => {
-                            return Err(self.query.cancelled_error());
-                        }
-                        result = self.query.client.fetch_result(
-                            info,
-                            &self.query.default_namespace_path,
-                        ) => match result {
-                            Err(_) if self.query.is_cancellation_requested() => {
-                                return Err(self.query.cancelled_error());
-                            }
-                            result => result?,
-                        },
-                    };
-                    self.query.mark_result_completed()?;
-                    Ok(batches)
-                })
-                .await?;
-            self.query.mark_result_completed()?;
-            Ok(batches.clone())
-        })
-        .await
+        if self
+            .result_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(Error::Runtime {
+                message: "SQL query results can only be consumed once".to_string(),
+            });
+        }
+        let started = Instant::now();
+        let prepared =
+            match with_overall_timeout(timeout, "SQL query result", self.query.prepare_result())
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.result_started.store(false, Ordering::SeqCst);
+                    return Err(error);
+                }
+            };
+        let remaining_timeout = timeout.map(|timeout| timeout.saturating_sub(started.elapsed()));
+        let schema = prepared.schema.clone();
+        let (sender, receiver) = mpsc::channel(2);
+        let error_sender = sender.clone();
+        let query = self.query.clone();
+        tokio::spawn(async move {
+            let result = with_overall_timeout(
+                remaining_timeout,
+                "SQL query result",
+                query.run_result_stream(prepared, sender),
+            )
+            .await;
+            if let Err(error) = result {
+                let _ = error_sender.send(Err(error)).await;
+            }
+        });
+        let stream = futures::stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|item| (item, receiver))
+        });
+        Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
     }
 
     async fn cancel(&self) -> Result<()> {
@@ -1382,8 +1536,8 @@ mod tests {
         FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
     };
     use arrow_schema::{DataType, Field, Schema};
-    use futures::StreamExt;
     use futures::stream::BoxStream;
+    use futures::{StreamExt, TryStreamExt};
     use tonic::{Request, Response, Status, Streaming};
 
     use super::*;
@@ -1413,6 +1567,10 @@ mod tests {
         }
     }
 
+    async fn collect_result(query: &Query) -> Result<Vec<RecordBatch>> {
+        query.result().await?.try_collect().await
+    }
+
     #[derive(Debug)]
     struct CapturedHeaders {
         database: String,
@@ -1431,6 +1589,7 @@ mod tests {
         cancel_timeout_count: Arc<AtomicUsize>,
         cancel_unspecified_count: Arc<AtomicUsize>,
         cancelling_response_count: Arc<AtomicUsize>,
+        incremental_finished: Arc<AtomicBool>,
         first_continuation_count: Arc<AtomicUsize>,
         transient_poll_failures: Arc<AtomicUsize>,
         headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
@@ -1468,6 +1627,7 @@ mod tests {
                 cancel_timeout_count: Arc::new(AtomicUsize::new(0)),
                 cancel_unspecified_count: Arc::new(AtomicUsize::new(0)),
                 cancelling_response_count: Arc::new(AtomicUsize::new(0)),
+                incremental_finished: Arc::new(AtomicBool::new(false)),
                 first_continuation_count: Arc::new(AtomicUsize::new(0)),
                 transient_poll_failures: Arc::new(AtomicUsize::new(0)),
                 headers: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1559,6 +1719,10 @@ mod tests {
             if query == "SELECT no info" && stage == 1 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
+            if query == "SELECT incremental" && stage == 1 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                self.incremental_finished.store(true, Ordering::SeqCst);
+            }
             if stage == 1
                 && (query == "SELECT fail"
                     || (query == "SELECT retry"
@@ -1572,11 +1736,23 @@ mod tests {
                 stage >= 1
             };
 
+            let first_ticket = if query == "SELECT incremental" {
+                format!("{query}:first")
+            } else {
+                query.clone()
+            };
             let mut info = FlightInfo::new().with_endpoint(
                 FlightEndpoint::new()
-                    .with_ticket(Ticket::new(query.clone()))
+                    .with_ticket(Ticket::new(first_ticket))
                     .with_location("grpc://127.0.0.1:1"),
             );
+            if query == "SELECT incremental" && stage > 0 {
+                info = info.with_endpoint(
+                    FlightEndpoint::new()
+                        .with_ticket(Ticket::new(format!("{query}:second")))
+                        .with_location("grpc://127.0.0.1:1"),
+                );
+            }
             if query != "SELECT empty" {
                 let schema = if query == "SELECT large message" {
                     self.large_result.schema_ref()
@@ -1728,6 +1904,7 @@ mod tests {
         let query_count = service.query_count.clone();
         let do_get_count = service.do_get_count.clone();
         let cancel_count = service.cancel_count.clone();
+        let incremental_finished = service.incremental_finished.clone();
         let first_continuation_count = service.first_continuation_count.clone();
         let headers = service.headers.clone();
         let expected = service.result.clone();
@@ -1805,7 +1982,7 @@ mod tests {
         timeout_header_provider
             .delay_next
             .store(true, Ordering::SeqCst);
-        assert_overall_timeout(timeout_query.result().await, "result");
+        assert_overall_timeout(collect_result(&timeout_query).await, "result");
         timeout_header_provider
             .delay_next
             .store(true, Ordering::SeqCst);
@@ -1848,7 +2025,7 @@ mod tests {
             "cancelled"
         );
         assert_eq!(
-            unspecified_cancel.result().await.unwrap(),
+            collect_result(&unspecified_cancel).await.unwrap(),
             vec![expected.clone()]
         );
 
@@ -1863,7 +2040,7 @@ mod tests {
             "cancelled"
         );
         assert_eq!(
-            uncertain_cancel.result().await.unwrap(),
+            collect_result(&uncertain_cancel).await.unwrap(),
             vec![expected.clone()]
         );
 
@@ -1881,8 +2058,26 @@ mod tests {
         assert!(describe_started.elapsed() >= Duration::from_millis(1_100));
         assert_eq!(first_description.status, "finished");
         assert_eq!(first_description.progress, Some(1.0));
-        let first_result = first.result().await.unwrap();
-        let first_result_again = first.result().await.unwrap();
+        let first_result = collect_result(&first).await.unwrap();
+        assert!(first.result().await.is_err());
+
+        let incremental = client
+            .submit("SELECT incremental", &["public".to_string()])
+            .await
+            .unwrap();
+        let mut incremental_result = incremental.result().await.unwrap();
+        let first_incremental_batch =
+            tokio::time::timeout(Duration::from_millis(100), incremental_result.try_next())
+                .await
+                .expect("the first partial result must arrive before query completion")
+                .unwrap()
+                .unwrap();
+        assert_eq!(first_incremental_batch, expected);
+        assert!(!incremental_finished.load(Ordering::SeqCst));
+        let remaining_incremental_batches =
+            incremental_result.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(remaining_incremental_batches, vec![expected.clone()]);
+        assert!(incremental_finished.load(Ordering::SeqCst));
 
         let staged = client
             .submit("SELECT no info", &["public".to_string()])
@@ -1898,12 +2093,14 @@ mod tests {
             .await
             .unwrap();
         let empty_result = empty.result().await.unwrap();
+        assert_eq!(empty_result.schema(), expected.schema());
+        let empty_result = empty_result.try_collect::<Vec<_>>().await.unwrap();
 
         let large = client
             .submit("SELECT large message", &["public".to_string()])
             .await
             .unwrap();
-        let large_result = large.result().await.unwrap();
+        let large_result = collect_result(&large).await.unwrap();
         assert_eq!(large_result.len(), 1);
         assert_eq!(large_result[0].num_rows(), 1);
         assert_eq!(
@@ -1939,7 +2136,7 @@ mod tests {
         );
         let result_task = {
             let slow = slow.clone();
-            tokio::spawn(async move { slow.result().await })
+            tokio::spawn(async move { collect_result(&slow).await })
         };
         tokio::time::sleep(Duration::from_millis(25)).await;
         tokio::time::timeout(Duration::from_millis(150), slow.cancel())
@@ -1970,7 +2167,7 @@ mod tests {
         let do_get_count_before_slow = do_get_count.load(Ordering::SeqCst);
         let slow_get_result_task = {
             let slow_get = slow_get.clone();
-            tokio::spawn(async move { slow_get.result().await })
+            tokio::spawn(async move { collect_result(&slow_get).await })
         };
         while do_get_count.load(Ordering::SeqCst) == do_get_count_before_slow {
             tokio::task::yield_now().await;
@@ -1984,10 +2181,7 @@ mod tests {
                 .unwrap(),
             Err(Error::JobCancelled { .. })
         ));
-        assert!(matches!(
-            slow_get.result().await,
-            Err(Error::JobCancelled { .. })
-        ));
+        assert!(slow_get.result().await.is_err());
 
         let restored = Arc::new(
             RemoteQuery::new(
@@ -2029,7 +2223,7 @@ mod tests {
         );
         let cancelling_result_task = {
             let cancelling = cancelling.clone();
-            tokio::spawn(async move { cancelling.result().await })
+            tokio::spawn(async move { collect_result(&cancelling).await })
         };
         tokio::time::sleep(Duration::from_millis(25)).await;
         cancelling.cancel().await.unwrap();
@@ -2058,14 +2252,15 @@ mod tests {
         while cancel_count.load(Ordering::SeqCst) == cancel_count_before_race {
             tokio::task::yield_now().await;
         }
-        let cancel_race_result = cancel_race.result().await.unwrap();
+        let cancel_race_result = collect_result(&cancel_race).await.unwrap();
         tokio::time::timeout(Duration::from_millis(500), cancel_race_task)
             .await
             .expect("completed result must make in-flight cancellation a no-op")
             .unwrap()
             .unwrap();
         assert_eq!(cancel_race.describe().await.unwrap().status, "finished");
-        assert_eq!(cancel_race.result().await.unwrap(), cancel_race_result);
+        assert_eq!(cancel_race_result, vec![expected.clone()]);
+        assert!(cancel_race.result().await.is_err());
 
         let no_info = Arc::new(
             client
@@ -2076,7 +2271,7 @@ mod tests {
         let continuation_count_before = first_continuation_count.load(Ordering::SeqCst);
         let no_info_result_task = {
             let no_info = no_info.clone();
-            tokio::spawn(async move { no_info.result().await })
+            tokio::spawn(async move { collect_result(&no_info).await })
         };
         tokio::time::sleep(Duration::from_millis(10)).await;
         tokio::time::timeout(Duration::from_secs(1), no_info.cancel())
@@ -2097,13 +2292,16 @@ mod tests {
             .submit("SELECT retry", &["public".to_string()])
             .await
             .unwrap();
-        assert_eq!(retried.result().await.unwrap(), vec![expected.clone()]);
+        assert_eq!(
+            collect_result(&retried).await.unwrap(),
+            vec![expected.clone()]
+        );
 
         let failed = client
             .submit("SELECT fail", &["public".to_string()])
             .await
             .unwrap();
-        assert!(failed.result().await.is_err());
+        assert!(collect_result(&failed).await.is_err());
 
         let active_registry = QueryRegistry::new(1);
         let active_permit = active_registry.reserve().unwrap();
@@ -2272,14 +2470,11 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 17);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 8);
+        assert_eq!(query_count.load(Ordering::SeqCst), 18);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 10);
         assert_eq!(cancel_count.load(Ordering::SeqCst), 15);
         assert_eq!(first_result, vec![expected.clone()]);
-        assert_eq!(first_result_again, vec![expected.clone()]);
-        assert_eq!(empty_result.len(), 1);
-        assert_eq!(empty_result[0].schema(), expected.schema());
-        assert_eq!(empty_result[0].num_rows(), 0);
+        assert!(empty_result.is_empty());
         assert!(client.describe("invalid").await.is_err());
         {
             let headers = headers.lock().unwrap();

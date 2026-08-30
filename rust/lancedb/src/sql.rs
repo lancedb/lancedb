@@ -5,11 +5,10 @@
 
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::Result;
+use crate::{Result, arrow::SendableRecordBatchStream};
 
 /// A point-in-time description of a submitted SQL query.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,7 +27,7 @@ pub struct QueryDescription {
 pub(crate) trait QueryHandle: Send + Sync {
     fn id(&self) -> &str;
     async fn describe(&self) -> Result<QueryDescription>;
-    async fn result(&self) -> Result<Vec<RecordBatch>>;
+    async fn result(&self) -> Result<SendableRecordBatchStream>;
     async fn cancel(&self) -> Result<()>;
 }
 
@@ -67,10 +66,15 @@ impl Query {
         self.handle.describe().await
     }
 
-    /// Wait for the query to finish and collect its Arrow record batches.
+    /// Return a stream of Arrow record batches as they become available.
     ///
-    /// A successfully downloaded result is cached on this handle.
-    pub async fn result(&self) -> Result<Vec<RecordBatch>> {
+    /// The stream can begin yielding partial results before query execution is
+    /// complete. It continues polling for newly available result endpoints
+    /// until the query finishes and all endpoints have been consumed.
+    ///
+    /// Results are single-consumer. Calling this method more than once on the
+    /// same handle returns an error.
+    pub async fn result(&self) -> Result<SendableRecordBatchStream> {
         self.handle.result().await
     }
 

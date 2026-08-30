@@ -3,14 +3,12 @@
 
 """Handles to SQL queries running on a remote database."""
 
-from typing import TYPE_CHECKING
+import pyarrow as pa
 
 from lancedb.background_loop import LOOP
 
 from . import _lancedb
-
-if TYPE_CHECKING:
-    import pyarrow as pa
+from .arrow import AsyncRecordBatchReader
 
 QueryDescription = _lancedb.QueryDescription
 
@@ -30,9 +28,13 @@ class AsyncQuery:
         """Get a point-in-time description of the query."""
         return await self._inner.describe()
 
-    async def result(self) -> "pa.Table":
-        """Wait for the query to finish and return its Arrow table."""
-        return await self._inner.result()
+    async def result(self) -> AsyncRecordBatchReader:
+        """Stream Arrow record batches as they become available.
+
+        Results are single-consumer. Calling this method more than once on the
+        same query raises an error.
+        """
+        return AsyncRecordBatchReader(await self._inner.result())
 
     async def cancel(self) -> None:
         """Request cancellation of the query."""
@@ -54,9 +56,25 @@ class Query:
         """Get a point-in-time description of the query."""
         return LOOP.run(self._inner.describe())
 
-    def result(self) -> "pa.Table":
-        """Block until the query finishes and return its Arrow table."""
-        return LOOP.run(self._inner.result())
+    def result(self) -> pa.RecordBatchReader:
+        """Return a blocking reader that streams available Arrow batches.
+
+        Results are single-consumer. Calling this method more than once on the
+        same query raises an error.
+        """
+        reader = LOOP.run(self._inner.result())
+
+        def next_batch():
+            try:
+                return LOOP.run(reader.__anext__())
+            except StopAsyncIteration:
+                return None
+
+        def batches():
+            while (batch := next_batch()) is not None:
+                yield batch
+
+        return pa.RecordBatchReader.from_batches(reader.schema, batches())
 
     def cancel(self) -> None:
         """Request cancellation of the query."""

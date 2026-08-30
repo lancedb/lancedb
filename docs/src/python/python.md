@@ -34,9 +34,10 @@ Submit SQL against a remote LanceDB database through the connection.
 The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. Submission returns a query
-handle immediately; use it to inspect progress, await the Arrow result, or
-cancel the query. The SQL client is initialized by the first submitted query
-and retained for the lifetime of the remote connection. Query ids are random,
+handle immediately; use it to inspect progress, stream Arrow record batches as
+they become available, or cancel the query. The SQL client is initialized by
+the first submitted query and retained for the lifetime of the remote
+connection. Query ids are random,
 connection-scoped references rather than encoded SQL or durable resume tokens:
 
 ```python
@@ -58,12 +59,14 @@ query = db.submit_query(
 )
 print(query.id)
 print(query.describe().status)
-result = query.result()
+for batch in query.result():
+    print(batch.num_rows)
 
 # The async connection exposes the same lifecycle without blocking:
 # query = await db.submit_query("SELECT * FROM events")
 # description = await db.describe_query(query.id)
-# result = await query.result()
+# async for batch in await query.result():
+#     print(batch.num_rows)
 # await query.cancel()
 ```
 

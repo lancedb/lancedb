@@ -2,9 +2,19 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import pytest
+import pyarrow as pa
 
 import lancedb
 from lancedb import _lancedb
+from lancedb.arrow import AsyncRecordBatchReader
+from lancedb.sql import AsyncQuery, Query
+
+
+class FakeNativeQuery:
+    id = "query-id"
+
+    async def result(self):
+        return pa.table({"value": [1, 2]})
 
 
 def remote_connection(sql_host_override=None):
@@ -31,6 +41,19 @@ def test_connection_serializes_sql_host_override():
         remote_connection(sql_host_override=endpoint).serialize()
     )
     assert restored.sql_host_override == endpoint
+
+
+@pytest.mark.asyncio
+async def test_async_sql_result_is_record_batch_stream():
+    reader = await AsyncQuery(FakeNativeQuery()).result()
+    assert isinstance(reader, AsyncRecordBatchReader)
+    assert (await reader.read_all())[0].column(0).to_pylist() == [1, 2]
+
+
+def test_sync_sql_result_is_record_batch_reader():
+    reader = Query(AsyncQuery(FakeNativeQuery())).result()
+    assert isinstance(reader, pa.RecordBatchReader)
+    assert reader.read_all().column(0).to_pylist() == [1, 2]
 
 
 def test_local_connection_rejects_sql(tmp_path):
