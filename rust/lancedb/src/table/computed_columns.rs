@@ -36,7 +36,7 @@ use lance_namespace::models::{JsonArrowDataType, JsonArrowField, JsonArrowSchema
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::function::{FunctionApplication, FunctionBinding};
+use crate::function::{FUNCTION_BLOB_V2_TYPE, FunctionApplication, FunctionBinding};
 use crate::utils::resolve_arrow_field_path;
 use crate::{Error, Result};
 
@@ -581,6 +581,11 @@ fn resolve_field_path<'a>(schema: &'a ArrowSchema, path: &str) -> Result<Resolve
 }
 
 fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
+    let arrow_field = lance_namespace::schema::convert_json_arrow_field(field)
+        .map_err(|e| invalid_function(format!("invalid Function input field: {e}")))?;
+    if arrow_field.is_blob_v2() {
+        return Ok(FUNCTION_BLOB_V2_TYPE.to_string());
+    }
     if field.r#type.fields.is_none() && field.r#type.length.is_none() {
         Ok(field.r#type.r#type.clone())
     } else {
@@ -669,6 +674,24 @@ fn parse_output_arrow_type(raw: &str) -> Result<JsonArrowDataType> {
     Ok(data_type)
 }
 
+fn function_output_field(name: &str, nullable: bool, raw: &str) -> Result<JsonArrowField> {
+    if raw == FUNCTION_BLOB_V2_TYPE {
+        return lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            crate::blob(name, nullable),
+        ]))
+        .map_err(|e| invalid_function(format!("could not encode Blob v2 output field: {e}")))?
+        .fields
+        .into_iter()
+        .next()
+        .ok_or_else(|| invalid_function("Blob v2 output field is missing"));
+    }
+    Ok(JsonArrowField::new(
+        name.to_string(),
+        nullable,
+        parse_output_arrow_type(raw)?,
+    ))
+}
+
 fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding) -> Result<()> {
     let mut input_fields = Vec::with_capacity(binding.inputs().len());
     for input in binding.inputs() {
@@ -749,10 +772,15 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 binding.binding_id()
             )));
         }
-        let expected_type = parse_output_arrow_type(&output.arrow_type)?;
-        let expected_type = lance_namespace::schema::convert_json_arrow_type(&expected_type)
-            .map_err(|e| invalid_function(format!("invalid Function output type: {e}")))?;
-        if field.data_type() != &expected_type {
+        let type_matches = if output.arrow_type == FUNCTION_BLOB_V2_TYPE {
+            field.is_blob_v2()
+        } else {
+            let expected_type = parse_output_arrow_type(&output.arrow_type)?;
+            let expected_type = lance_namespace::schema::convert_json_arrow_type(&expected_type)
+                .map_err(|e| invalid_function(format!("invalid Function output type: {e}")))?;
+            field.data_type() == &expected_type
+        };
+        if !type_matches {
             return Err(invalid_function(format!(
                 "Function output '{}' type no longer matches binding '{}'",
                 output.output_name,
@@ -781,15 +809,13 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 binding.binding_id()
             )));
         }
-        output_fields.push(ArrowField::new(
-            field.name().clone(),
-            field.data_type().clone(),
+        output_fields.push(function_output_field(
+            field.name(),
             true,
-        ));
+            &output.arrow_type,
+        )?);
     }
-    let output_schema =
-        lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(output_fields))
-            .map_err(|e| invalid_function(format!("invalid Function output schema: {e}")))?;
+    let output_schema = JsonArrowSchema::new(output_fields);
     let output_schema = serde_json::to_value(output_schema).map_err(|e| {
         invalid_function(format!(
             "could not encode exact Function output schema: {e}"
@@ -918,16 +944,15 @@ pub(crate) fn plan_function_application(
                     "Function logical outputs must be non-nullable during NULL assignment",
                 ));
             }
-            let data_type =
-                parse_output_arrow_type(output.arrow_type.as_deref().ok_or_else(|| {
-                    invalid_function("scalar Function output is missing its Arrow type")
-                })?)?;
+            let arrow_type = output.arrow_type.as_deref().ok_or_else(|| {
+                invalid_function("scalar Function output is missing its Arrow type")
+            })?;
             outputs.push(FunctionOutputTarget {
                 result_field: WHOLE_RESULT_FIELD.to_string(),
                 output_name: name.to_string(),
                 output_ordinal: 0,
             });
-            output_fields.push(JsonArrowField::new(name.to_string(), true, data_type));
+            output_fields.push(function_output_field(name, true, arrow_type)?);
         }
         "named_struct" => {
             if output.fields.is_empty() {
@@ -971,13 +996,7 @@ pub(crate) fn plan_function_application(
                 let fields = output
                     .fields
                     .iter()
-                    .map(|field| {
-                        Ok(JsonArrowField::new(
-                            field.name.clone(),
-                            false,
-                            parse_output_arrow_type(&field.arrow_type)?,
-                        ))
-                    })
+                    .map(|field| function_output_field(&field.name, false, &field.arrow_type))
                     .collect::<Result<Vec<_>>>()?;
                 let mut data_type = JsonArrowDataType::new("struct".to_string());
                 data_type.fields = Some(fields);
@@ -1004,11 +1023,7 @@ pub(crate) fn plan_function_application(
                         output_name: name.clone(),
                         output_ordinal: ordinal as u32,
                     });
-                    output_fields.push(JsonArrowField::new(
-                        name.clone(),
-                        true,
-                        parse_output_arrow_type(&field.arrow_type)?,
-                    ));
+                    output_fields.push(function_output_field(name, true, &field.arrow_type)?);
                 }
             }
         }
@@ -2606,6 +2621,19 @@ mod tests {
         .unwrap()
     }
 
+    fn blob_application(output: &str) -> FunctionApplication {
+        FunctionApplication::from_json(&format!(
+            r#"{{
+                "function":{{"name":"blob_features","version":"fv_blob"}},
+                "inputs":[
+                    {{"parameter":"image","kind":"column","value":{{"path":"image"}}}}
+                ],
+                "output":{output}
+            }}"#
+        ))
+        .unwrap()
+    }
+
     fn function_binding_schema(title_nullable: bool, body_nullable: bool) -> ArrowSchema {
         ArrowSchema::new(vec![
             ArrowField::new("title", DataType::Utf8, title_nullable),
@@ -2877,6 +2905,48 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn test_blob_function_plans_semantic_input_and_scalar_output() {
+        let schema = ArrowSchema::new(vec![crate::blob("image", false)]);
+        let application =
+            blob_application(r#"{"kind":"scalar","arrow_type":"blob_v2","nullable":false}"#);
+        let plan = plan_function_application(&schema, &application, Some("thumbnail")).unwrap();
+
+        assert_eq!(plan.input_bindings[0].arrow_type, FUNCTION_BLOB_V2_TYPE);
+        let input_schema =
+            lance_namespace::schema::convert_json_arrow_schema(&plan.input_schema).unwrap();
+        assert!(input_schema.field(0).is_blob_v2());
+        let output_schema =
+            lance_namespace::schema::convert_json_arrow_schema(&plan.output_schema).unwrap();
+        assert!(output_schema.field(0).is_blob_v2());
+    }
+
+    #[test]
+    fn test_blob_named_struct_plans_expanded_and_whole_outputs() {
+        let schema = ArrowSchema::new(vec![crate::blob("image", false)]);
+        let application = blob_application(
+            r#"{"kind":"named_struct","fields":[
+                {"name":"thumbnail","arrow_type":"blob_v2","nullable":false},
+                {"name":"width","arrow_type":"int32","nullable":false}
+            ]}"#,
+        );
+
+        let expanded = plan_function_application(&schema, &application, None).unwrap();
+        let expanded_schema =
+            lance_namespace::schema::convert_json_arrow_schema(&expanded.output_schema).unwrap();
+        assert!(expanded_schema.field(0).is_blob_v2());
+        assert_eq!(expanded_schema.field(1).data_type(), &DataType::Int32);
+
+        let whole = plan_function_application(&schema, &application, Some("analysis")).unwrap();
+        let whole_schema =
+            lance_namespace::schema::convert_json_arrow_schema(&whole.output_schema).unwrap();
+        let DataType::Struct(fields) = whole_schema.field(0).data_type() else {
+            panic!("whole Function output should be a struct");
+        };
+        assert!(fields[0].is_blob_v2());
+        assert_eq!(fields[1].data_type(), &DataType::Int32);
     }
 
     #[test]

@@ -526,6 +526,41 @@ def test_explicit_arrow_schema_is_deterministic():
     assert signature.output.nullable is False
 
 
+def test_blob_fields_use_the_scalar_function_semantic_type():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=lancedb.blob("result", nullable=False),
+    )
+    def copy_blob(image):
+        return image
+
+    signature = copy_blob.registration_request.signature
+    assert signature.inputs[0].arrow_type == "blob_v2"
+    assert signature.output.kind == "scalar"
+    assert signature.output.arrow_type == "blob_v2"
+
+
+def test_named_struct_function_can_include_a_blob_result_field():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=pa.schema(
+            [
+                lancedb.blob("thumbnail", nullable=False),
+                pa.field("width", pa.int32(), nullable=False),
+            ]
+        ),
+    )
+    def inspect_blob(image):
+        return {"thumbnail": image, "width": 1}
+
+    output = inspect_blob.registration_request.signature.output
+    assert output.kind == "named_struct"
+    assert [(field.name, field.arrow_type) for field in output.fields] == [
+        ("thumbnail", "blob_v2"),
+        ("width", "int32"),
+    ]
+
+
 def test_nested_struct_output_uses_canonical_exact_json():
     token = pa.struct(
         [

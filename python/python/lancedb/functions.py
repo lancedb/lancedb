@@ -479,6 +479,7 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_FUNCTION_BLOB_V2_TYPE = "blob_v2"
 
 
 _GRAMMAR_PRIMITIVES = (
@@ -503,6 +504,11 @@ _GRAMMAR_PRIMITIVES = (
 
 def _canonical_arrow_type(data_type: pa.DataType) -> str:
     """The compact Function grammar, or canonical exact JSON for nested types."""
+    if (
+        isinstance(data_type, pa.ExtensionType)
+        and data_type.extension_name == "lance.blob.v2"
+    ):
+        return _FUNCTION_BLOB_V2_TYPE
     grammar = _grammar_arrow_type(data_type)
     if grammar is not None:
         return grammar
@@ -542,20 +548,40 @@ def _validate_exact_arrow_field(field: pa.Field) -> None:
             "unsupported Arrow type for Function signature: field names "
             "must not be empty"
         )
-    if field.metadata:
+    if field.metadata and not _is_blob_v2_field(field):
         raise TypeError(
             "unsupported Arrow type for Function signature: field metadata "
             f"is not supported, got {field}"
         )
 
 
+def _is_blob_v2_field(field: pa.Field) -> bool:
+    from .schema import is_blob_v2_field
+
+    return is_blob_v2_field(field)
+
+
+def _canonical_arrow_field(field: pa.Field) -> str:
+    _validate_exact_arrow_field(field)
+    if _is_blob_v2_field(field):
+        return _FUNCTION_BLOB_V2_TYPE
+    return _canonical_arrow_type(field.type)
+
+
 def _exact_arrow_field(field: pa.Field) -> dict[str, Any]:
     _validate_exact_arrow_field(field)
-    return {
+    value = {
         "name": field.name,
         "nullable": field.nullable,
-        "type": _exact_arrow_type(field.type),
+        "type": _exact_arrow_type(
+            field.type.storage_type
+            if isinstance(field.type, pa.ExtensionType)
+            else field.type
+        ),
     }
+    if _is_blob_v2_field(field):
+        value["metadata"] = {"ARROW:extension:name": "lance.blob.v2"}
+    return value
 
 
 def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
@@ -679,7 +705,11 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         if output.metadata:
             raise TypeError("Function output schema metadata is not supported")
         fields = tuple(output)
-    elif isinstance(output, pa.Field) and pa.types.is_struct(output.type):
+    elif (
+        isinstance(output, pa.Field)
+        and not _is_blob_v2_field(output)
+        and pa.types.is_struct(output.type)
+    ):
         _validate_exact_arrow_field(output)
         if output.nullable:
             raise ValueError("Function output must be non-nullable")
@@ -701,7 +731,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
             raise ValueError("Function output must be non-nullable")
         return FunctionOutput(
             kind="scalar",
-            arrow_type=_canonical_arrow_type(field.type),
+            arrow_type=_canonical_arrow_field(field),
             nullable=False,
         )
 
@@ -719,7 +749,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         fields=tuple(
             FunctionResultField(
                 name=field.name,
-                arrow_type=_canonical_arrow_type(field.type),
+                arrow_type=_canonical_arrow_field(field),
                 nullable=False,
             )
             for field in fields
@@ -753,7 +783,7 @@ def _infer_signature(
         inputs = tuple(
             FunctionParameter(
                 name=field.name,
-                arrow_type=_canonical_arrow_type(field.type),
+                arrow_type=_canonical_arrow_field(field),
                 nullable=field.nullable,
             )
             for field in input_schema
@@ -776,7 +806,9 @@ def _infer_signature(
         inputs.append(
             FunctionParameter(
                 name=parameter.name,
-                arrow_type=_canonical_arrow_type(data_type),
+                arrow_type=_canonical_arrow_field(
+                    pa.field(parameter.name, data_type, nullable=nullable)
+                ),
                 nullable=nullable,
             )
         )
