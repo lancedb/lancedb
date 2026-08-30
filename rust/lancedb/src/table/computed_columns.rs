@@ -547,8 +547,12 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a direct Function input and reject computed roots before nested traversal.
-fn resolve_field_path<'a>(schema: &'a ArrowSchema, path: &str) -> Result<&'a ArrowField> {
+struct ResolvedFieldPath<'a> {
+    root: &'a ArrowField,
+    leaf: &'a ArrowField,
+}
+
+fn resolve_field_path<'a>(schema: &'a ArrowSchema, path: &str) -> Result<ResolvedFieldPath<'a>> {
     let parts = lance_core::datatypes::parse_field_path(path).map_err(|e| {
         invalid_function(format!("invalid Function input field path '{path}': {e}"))
     })?;
@@ -557,32 +561,23 @@ fn resolve_field_path<'a>(schema: &'a ArrowSchema, path: &str) -> Result<&'a Arr
             "Function input field path cannot be empty",
         ));
     };
-    let mut field = schema
+    let root = schema
         .field_with_name(root)
         .map_err(|_| invalid_function(format!("unknown Function input column '{path}'")))?;
-    if field
-        .metadata()
-        .get(COMPUTED_COLUMN_META_KEY)
-        .map(String::as_str)
-        == Some("true")
-    {
-        return Err(invalid_function(format!(
-            "Function input '{path}' is computed; computed-on-computed bindings are not supported"
-        )));
-    }
+    let mut leaf = root;
     for child in children {
-        let DataType::Struct(fields) = field.data_type() else {
+        let DataType::Struct(fields) = leaf.data_type() else {
             return Err(invalid_function(format!(
                 "Function input field path '{path}' traverses a non-struct field"
             )));
         };
-        field = fields
+        leaf = fields
             .iter()
             .find(|field| field.name() == child)
             .map(AsRef::as_ref)
             .ok_or_else(|| invalid_function(format!("unknown Function input column '{path}'")))?;
     }
-    Ok(field)
+    Ok(ResolvedFieldPath { root, leaf })
 }
 
 fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
@@ -677,7 +672,19 @@ fn parse_output_arrow_type(raw: &str) -> Result<JsonArrowDataType> {
 fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding) -> Result<()> {
     let mut input_fields = Vec::with_capacity(binding.inputs().len());
     for input in binding.inputs() {
-        let field = resolve_field_path(schema, &input.field_path)?;
+        let resolved = resolve_field_path(schema, &input.field_path)?;
+        let field = resolved.leaf;
+        if field
+            .metadata()
+            .get(COMPUTED_COLUMN_META_KEY)
+            .map(String::as_str)
+            == Some("true")
+        {
+            return Err(invalid_function(format!(
+                "Function input '{}' is computed",
+                input.field_path
+            )));
+        }
         // A non-null source is within a nullable parameter's domain. The
         // reverse can pass nulls to a Function that does not accept them.
         if field.is_nullable() && !input.nullable {
@@ -828,7 +835,19 @@ pub(crate) fn plan_function_application(
                 input.parameter
             ))
         })?;
-        let field = resolve_field_path(schema, path)?;
+        let resolved = resolve_field_path(schema, path)?;
+        if resolved
+            .root
+            .metadata()
+            .get(COMPUTED_COLUMN_META_KEY)
+            .map(String::as_str)
+            == Some("true")
+        {
+            return Err(invalid_function(format!(
+                "Function input '{path}' is computed; computed-on-computed bindings are not supported"
+            )));
+        }
+        let field = resolved.leaf;
         let parameter_field = ArrowField::new(
             input.parameter.clone(),
             field.data_type().clone(),
@@ -2601,6 +2620,43 @@ mod tests {
                     && message.contains("non-nullable")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn test_persisted_nested_input_keeps_leaf_level_validation() {
+        let mut raw_binding: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        raw_binding["inputs"][0]["field_path"] = Value::String("title.value".to_string());
+        let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
+        let title = ArrowField::new(
+            "title",
+            DataType::Struct(vec![ArrowField::new("value", DataType::Utf8, true)].into()),
+            true,
+        )
+        .with_metadata(HashMap::from([
+            (COMPUTED_COLUMN_META_KEY.to_string(), "true".to_string()),
+            (KIND_META_KEY.to_string(), SQL_KIND.to_string()),
+            (EXPRESSION_META_KEY.to_string(), "title".to_string()),
+        ]));
+        let mut fields = vec![title, ArrowField::new("body", DataType::Utf8, true)];
+        fields.extend(binding.outputs().iter().map(|output| {
+            let data_type = match output.arrow_type.as_str() {
+                "utf8" => DataType::Utf8,
+                "int64" => DataType::Int64,
+                other => panic!("unexpected fixture output type {other}"),
+            };
+            ArrowField::new(&output.output_name, data_type, true).with_metadata(
+                function_computed_column_metadata(
+                    binding.binding_id(),
+                    output.output_ordinal,
+                    &["title.value".into(), "body".into()],
+                ),
+            )
+        }));
+
+        ensure_binding_matches_schema(&ArrowSchema::new(fields), &binding).unwrap();
     }
 
     #[test]
