@@ -676,8 +676,11 @@ def _callable_parameters(function: Callable[..., Any]) -> tuple[inspect.Paramete
 
 def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutput:
     if isinstance(output, pa.Schema):
+        if output.metadata:
+            raise TypeError("Function output schema metadata is not supported")
         fields = tuple(output)
     elif isinstance(output, pa.Field) and pa.types.is_struct(output.type):
+        _validate_exact_arrow_field(output)
         if output.nullable:
             raise ValueError("Function output must be non-nullable")
         fields = tuple(output.type)
@@ -736,6 +739,8 @@ def _infer_signature(
     if input_schema is not None:
         if not isinstance(input_schema, pa.Schema):
             raise TypeError("input_schema must be a PyArrow Schema")
+        if input_schema.metadata:
+            raise TypeError("Function input schema metadata is not supported")
         for field in input_schema:
             _validate_exact_arrow_field(field)
         expected = tuple(parameter.name for parameter in parameters)

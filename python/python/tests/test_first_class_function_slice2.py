@@ -181,6 +181,13 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
         case["arrow_type"] for case in golden["valid"] if "<" not in case["arrow_type"]
     ]
     assert [name for _, name in _GRAMMAR_PRIMITIVES] == primitives
+    assert _canonical_arrow_type(pa.list_(pa.field("item", pa.float32(), False))) == (
+        "list<float32>"
+    )
+    assert (
+        _canonical_arrow_type(pa.large_list(pa.field("item", pa.float32(), False)))
+        == "large_list<float32>"
+    )
     for outside in [
         pa.timestamp("us"),
         pa.decimal128(10, 2),
@@ -695,6 +702,37 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         )
         def scalar_output_field_metadata(value):
             return value
+
+    struct_type = pa.struct([pa.field("value", pa.int64(), nullable=False)])
+    with pytest.raises(TypeError, match="unsupported Arrow type"):
+
+        @udf(
+            input_schema=pa.schema([pa.field("value", pa.int64())]),
+            output_schema=pa.field(
+                "result", struct_type, nullable=False, metadata={"k": "v"}
+            ),
+        )
+        def struct_output_field_metadata(value):
+            return {"value": value}
+
+    for input_schema, output_schema in [
+        (
+            pa.schema([pa.field("value", pa.int64())], metadata={"k": "v"}),
+            pa.int64(),
+        ),
+        (
+            pa.schema([pa.field("value", pa.int64())]),
+            pa.schema(
+                [pa.field("result", pa.int64(), nullable=False)],
+                metadata={"k": "v"},
+            ),
+        ),
+    ]:
+        with pytest.raises(TypeError, match="schema metadata"):
+
+            @udf(input_schema=input_schema, output_schema=output_schema)
+            def schema_metadata(value):
+                return value
 
 
 def test_local_function_catalog_operations_are_not_supported(tmp_path):
