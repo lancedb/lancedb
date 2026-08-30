@@ -197,23 +197,6 @@ pub struct PythonEnvironmentSpec {
     pub image: Option<String>,
 }
 
-fn validate_gpu_requirement(gpu: &str) -> std::result::Result<(), String> {
-    if gpu.is_empty() || gpu.trim() != gpu {
-        return Err("runtime.gpu must be non-empty and trimmed".to_string());
-    }
-    if gpu.bytes().all(|byte| byte.is_ascii_digit()) {
-        let count = gpu
-            .parse::<u32>()
-            .ok()
-            .filter(|count| *count > 0)
-            .ok_or_else(|| "a numeric runtime.gpu must be a positive uint32".to_string())?;
-        if count.to_string() != gpu {
-            return Err("a numeric runtime.gpu must use canonical decimal form".to_string());
-        }
-    }
-    Ok(())
-}
-
 /// Reproducible Python runtime definition understood by Sophon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -243,15 +226,13 @@ pub enum PythonRuntimeSpec {
     ///         image: None,
     ///     },
     ///     env: BTreeMap::new(),
-    ///     gpu: "1".to_string(),
     /// };
-    /// assert_eq!(runtime.gpu(), Some("1"));
+    /// assert!(runtime.requires_gpu());
     /// ```
     PythonV2 {
         python_version: String,
         environment: PythonEnvironmentSpec,
         env: BTreeMap<String, String>,
-        gpu: String,
     },
     /// A runtime kind introduced by a newer server.
     ///
@@ -298,12 +279,9 @@ impl PythonRuntimeSpec {
         }
     }
 
-    /// GPU requirement understood by the execution platform.
-    pub fn gpu(&self) -> Option<&str> {
-        match self {
-            Self::PythonV2 { gpu, .. } => Some(gpu),
-            Self::Python { .. } | Self::Unrecognized { .. } => None,
-        }
+    /// Whether the runtime requires a GPU selected by the execution platform.
+    pub fn requires_gpu(&self) -> bool {
+        matches!(self, Self::PythonV2 { .. })
     }
 }
 
@@ -323,7 +301,7 @@ struct PythonRuntimeV2Wire {
     environment: PythonEnvironmentSpec,
     #[serde(default)]
     env: BTreeMap<String, String>,
-    gpu: String,
+    gpu: bool,
 }
 
 impl<'de> Deserialize<'de> for PythonRuntimeSpec {
@@ -353,12 +331,13 @@ impl<'de> Deserialize<'de> for PythonRuntimeSpec {
             "python_v2" => {
                 let wire: PythonRuntimeV2Wire =
                     serde_json::from_value(value).map_err(de::Error::custom)?;
-                validate_gpu_requirement(&wire.gpu).map_err(de::Error::custom)?;
+                if !wire.gpu {
+                    return Err(de::Error::custom("runtime.gpu must be true"));
+                }
                 Ok(Self::PythonV2 {
                     python_version: wire.python_version,
                     environment: wire.environment,
                     env: wire.env,
-                    gpu: wire.gpu,
                 })
             }
             _ => Ok(Self::Unrecognized { kind }),
@@ -376,7 +355,7 @@ impl Serialize for PythonRuntimeSpec {
             #[serde(skip_serializing_if = "BTreeMap::is_empty")]
             env: &'a BTreeMap<String, String>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            gpu: Option<&'a str>,
+            gpu: Option<bool>,
         }
 
         #[derive(Serialize)]
@@ -401,18 +380,14 @@ impl Serialize for PythonRuntimeSpec {
                 python_version,
                 environment,
                 env,
-                gpu,
-            } => {
-                validate_gpu_requirement(gpu).map_err(serde::ser::Error::custom)?;
-                PythonRuntimeRef {
-                    kind: "python_v2",
-                    python_version,
-                    environment,
-                    env,
-                    gpu: Some(gpu),
-                }
-                .serialize(serializer)
+            } => PythonRuntimeRef {
+                kind: "python_v2",
+                python_version,
+                environment,
+                env,
+                gpu: Some(true),
             }
+            .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
         }
     }
@@ -420,7 +395,7 @@ impl Serialize for PythonRuntimeSpec {
 
 /// Immutable Function version returned by the Enterprise catalog.
 ///
-/// The GPU requirement is part of this identity. CPU and memory sizing,
+/// The GPU execution requirement is part of this identity. CPU and memory sizing,
 /// priority, concurrency, and retry policy belong to the execution platform.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
@@ -717,52 +692,28 @@ mod conda_environment_tests {
     }
 
     #[test]
-    fn gpu_python_runtime_round_trips_and_validates() {
+    fn gpu_python_runtime_marker_round_trips_and_validates() {
         let runtime: PythonRuntimeSpec = serde_json::from_str(
-            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"1"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
         )
         .unwrap();
         assert_eq!(runtime.kind(), "python_v2");
-        assert_eq!(runtime.gpu(), Some("1"));
+        assert!(runtime.requires_gpu());
         assert_eq!(
             super::canonical_json(&runtime).unwrap(),
-            r#"{"environment":{"kind":"pip"},"gpu":"1","kind":"python_v2","python_version":"3.12"}"#
+            r#"{"environment":{"kind":"pip"},"gpu":true,"kind":"python_v2","python_version":"3.12"}"#
         );
 
-        for requirement in ["H100", "H100:8"] {
-            let encoded = format!(
-                r#"{{"kind":"python_v2","python_version":"3.12","environment":{{"kind":"pip"}},"gpu":"{requirement}"}}"#
-            );
-            let runtime: PythonRuntimeSpec = serde_json::from_str(&encoded).unwrap();
-            assert_eq!(runtime.gpu(), Some(requirement));
-        }
-
         for invalid in [
-            r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":"1"}"#,
+            r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"}}"#,
             r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":1}"#,
-            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"0"}"#,
-            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"01"}"#,
-            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":""}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":false}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"true"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"H100"}"#,
         ] {
             assert!(serde_json::from_str::<PythonRuntimeSpec>(invalid).is_err());
         }
-
-        let invalid_runtime = match runtime {
-            PythonRuntimeSpec::PythonV2 {
-                python_version,
-                environment,
-                env,
-                ..
-            } => PythonRuntimeSpec::PythonV2 {
-                python_version,
-                environment,
-                env,
-                gpu: "0".to_string(),
-            },
-            _ => unreachable!(),
-        };
-        assert!(super::canonical_json(&invalid_runtime).is_err());
     }
 
     #[test]
