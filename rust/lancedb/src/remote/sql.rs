@@ -31,6 +31,7 @@ const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const QUERY_CACHE_CAPACITY: u64 = 10_000;
 const TERMINAL_QUERY_RETENTION: Duration = Duration::from_secs(300);
+const ABANDONED_QUERY_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const QUERY_ID_PREFIX: &str = "lq1_";
 
 #[derive(Clone)]
@@ -383,15 +384,17 @@ impl QueryRegistry {
 
     fn reserve(&self) -> Result<OwnedSemaphorePermit> {
         self.remove_expired();
-        self.capacity
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Runtime {
-                message: format!(
-                    "This connection already retains {} active SQL queries",
-                    self.max_capacity
-                ),
-            })
+        if let Ok(permit) = self.capacity.clone().try_acquire_owned() {
+            return Ok(permit);
+        }
+        if self.remove_oldest_terminal() || self.remove_oldest_abandoned() {
+            return self
+                .capacity
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| self.capacity_error());
+        }
+        Err(self.capacity_error())
     }
 
     fn insert(&self, id: String, query: Arc<RemoteQuery>, permit: OwnedSemaphorePermit) {
@@ -406,18 +409,56 @@ impl QueryRegistry {
 
     fn get(&self, id: &str) -> Option<Arc<RemoteQuery>> {
         self.remove_expired();
-        self.queries
+        let query = self
+            .queries
             .lock()
             .unwrap()
             .get(id)
-            .map(|entry| entry.query.clone())
+            .map(|entry| entry.query.clone());
+        if let Some(query) = &query {
+            query.touch();
+        }
+        query
     }
 
     fn remove_expired(&self) {
-        self.queries
-            .lock()
-            .unwrap()
-            .retain(|_, entry| !entry.query.registry_expired());
+        self.queries.lock().unwrap().retain(|_, entry| {
+            !entry
+                .query
+                .registry_expired(Arc::strong_count(&entry.query) == 1)
+        });
+    }
+
+    fn remove_oldest_terminal(&self) -> bool {
+        let mut queries = self.queries.lock().unwrap();
+        let oldest = queries
+            .iter()
+            .filter_map(|(id, entry)| entry.query.terminal_at.get().map(|at| (id.clone(), *at)))
+            .min_by_key(|(_, at)| *at)
+            .map(|(id, _)| id);
+        oldest.and_then(|id| queries.remove(&id)).is_some()
+    }
+
+    fn remove_oldest_abandoned(&self) -> bool {
+        let mut queries = self.queries.lock().unwrap();
+        let oldest = queries
+            .iter()
+            .filter(|(_, entry)| {
+                entry.query.terminal_at.get().is_none() && Arc::strong_count(&entry.query) == 1
+            })
+            .map(|(id, entry)| (id.clone(), *entry.query.last_accessed.lock().unwrap()))
+            .min_by_key(|(_, last_accessed)| *last_accessed)
+            .map(|(id, _)| id);
+        oldest.and_then(|id| queries.remove(&id)).is_some()
+    }
+
+    fn capacity_error(&self) -> Error {
+        Error::Runtime {
+            message: format!(
+                "This connection already retains {} active SQL queries",
+                self.max_capacity
+            ),
+        }
     }
 }
 
@@ -430,6 +471,7 @@ struct RemoteQuery {
     state_changed: Notify,
     expires_at: StdMutex<Option<chrono::DateTime<chrono::Utc>>>,
     terminal_at: OnceLock<Instant>,
+    last_accessed: StdMutex<Instant>,
 }
 
 impl RemoteQuery {
@@ -453,25 +495,32 @@ impl RemoteQuery {
             state_changed: Notify::new(),
             expires_at: StdMutex::new(expires_at),
             terminal_at,
+            last_accessed: StdMutex::new(Instant::now()),
         })
     }
 
-    fn registry_expired(&self) -> bool {
-        self.terminal_at
-            .get()
-            .is_some_and(|finished| finished.elapsed() >= TERMINAL_QUERY_RETENTION)
-            || self
-                .expires_at
-                .lock()
-                .unwrap()
-                .is_some_and(|expires_at| expires_at <= chrono::Utc::now())
+    fn registry_expired(&self, abandoned: bool) -> bool {
+        if let Some(finished) = self.terminal_at.get() {
+            return finished.elapsed() >= TERMINAL_QUERY_RETENTION;
+        }
+        self.expires_at
+            .lock()
+            .unwrap()
+            .is_some_and(|expires_at| expires_at <= chrono::Utc::now())
+            || (abandoned
+                && self.last_accessed.lock().unwrap().elapsed() >= ABANDONED_QUERY_RETENTION)
     }
 
     fn mark_terminal(&self) {
         let _ = self.terminal_at.set(Instant::now());
     }
 
+    fn touch(&self) {
+        *self.last_accessed.lock().unwrap() = Instant::now();
+    }
+
     async fn poll_until_finished(&self) -> Result<FlightInfo> {
+        self.touch();
         loop {
             let state = self.state.lock().await.clone();
             let Some(descriptor) = state.flight_descriptor else {
@@ -496,6 +545,7 @@ impl RemoteQuery {
         descriptor: &FlightDescriptor,
         updated: PollInfo,
     ) -> Result<PollInfo> {
+        self.touch();
         let expires_at = query_expiration(&updated)?;
         let mut state = self.state.lock().await;
         if state.flight_descriptor.as_ref() == Some(descriptor) {
@@ -512,6 +562,7 @@ impl RemoteQuery {
 
 impl RemoteQuery {
     async fn describe(&self) -> Result<QueryDescription> {
+        self.touch();
         let state = self.state.lock().await.clone();
         let state = if let Some(descriptor) = state.flight_descriptor.clone() {
             let Ok(_poll_guard) =
@@ -538,6 +589,7 @@ impl RemoteQuery {
     }
 
     async fn cancel(&self) -> Result<()> {
+        self.touch();
         loop {
             let notified = self.state_changed.notified();
             let state = self.state.lock().await.clone();
@@ -600,6 +652,7 @@ impl RemoteQueryHandle {
 #[async_trait::async_trait]
 impl QueryHandle for RemoteQueryHandle {
     fn id(&self) -> &str {
+        self.query.touch();
         &self.query.id
     }
 
@@ -1363,6 +1416,101 @@ mod tests {
         expired_registry.insert("expired".to_string(), expired_query, expired_permit);
         assert!(expired_registry.reserve().is_ok());
         assert!(expired_registry.get("expired").is_none());
+
+        let terminal_registry = QueryRegistry::new(1);
+        let terminal_permit = terminal_registry.reserve().unwrap();
+        let terminal_query = Arc::new(
+            RemoteQuery::new(
+                "terminal".to_string(),
+                client.inner.clone(),
+                vec!["public".to_string()],
+                PollInfo {
+                    flight_descriptor: None,
+                    expiration_time: Some(Default::default()),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        terminal_registry.insert("terminal".to_string(), terminal_query, terminal_permit);
+        assert!(terminal_registry.get("terminal").is_some());
+        assert!(terminal_registry.reserve().is_ok());
+        assert!(terminal_registry.get("terminal").is_none());
+
+        let transitioned_registry = QueryRegistry::new(1);
+        let transitioned_permit = transitioned_registry.reserve().unwrap();
+        let transition_descriptor = FlightDescriptor::new_cmd("transitioned");
+        let transitioned_query = Arc::new(
+            RemoteQuery::new(
+                "transitioned".to_string(),
+                client.inner.clone(),
+                vec!["public".to_string()],
+                PollInfo {
+                    flight_descriptor: Some(transition_descriptor.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        transitioned_query
+            .update_state(
+                &transition_descriptor,
+                PollInfo {
+                    flight_descriptor: None,
+                    expiration_time: Some(Default::default()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        transitioned_registry.insert(
+            "transitioned".to_string(),
+            transitioned_query,
+            transitioned_permit,
+        );
+        assert!(transitioned_registry.get("transitioned").is_some());
+
+        let abandoned_registry = QueryRegistry::new(1);
+        let abandoned_permit = abandoned_registry.reserve().unwrap();
+        let abandoned_query = Arc::new(
+            RemoteQuery::new(
+                "abandoned".to_string(),
+                client.inner.clone(),
+                vec!["public".to_string()],
+                PollInfo {
+                    flight_descriptor: Some(FlightDescriptor::new_cmd("abandoned")),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        abandoned_registry.insert(
+            "abandoned".to_string(),
+            abandoned_query.clone(),
+            abandoned_permit,
+        );
+        drop(abandoned_query);
+        assert!(abandoned_registry.reserve().is_ok());
+        assert!(abandoned_registry.get("abandoned").is_none());
+
+        let stale_registry = QueryRegistry::new(1);
+        let stale_permit = stale_registry.reserve().unwrap();
+        let stale_query = Arc::new(
+            RemoteQuery::new(
+                "stale".to_string(),
+                client.inner.clone(),
+                vec!["public".to_string()],
+                PollInfo {
+                    flight_descriptor: Some(FlightDescriptor::new_cmd("stale")),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        *stale_query.last_accessed.lock().unwrap() = Instant::now() - ABANDONED_QUERY_RETENTION;
+        stale_registry.insert("stale".to_string(), stale_query.clone(), stale_permit);
+        drop(stale_query);
+        assert!(stale_registry.get("stale").is_none());
 
         assert_eq!(client.initialized_client_count().await, 1);
         assert_eq!(query_count.load(Ordering::SeqCst), 8);
