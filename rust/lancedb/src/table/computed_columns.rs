@@ -29,7 +29,7 @@ use datafusion_common::{ScalarValue, tree_node::TreeNode};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::PhysicalExpr;
 use lance::dataset::NewColumnTransform;
-use lance_arrow::FieldExt;
+use lance_arrow::{ARROW_EXT_NAME_KEY, BLOB_V2_EXT_NAME, FieldExt};
 use lance_core::datatypes::{
     BLOB_V2_DESC_FIELD, BlobV2Layout, format_field_path_minimal, parse_field_path,
 };
@@ -583,9 +583,15 @@ fn resolve_field_path<'a>(schema: &'a ArrowSchema, path: &str) -> Result<Resolve
 }
 
 fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
-    let arrow_field = lance_namespace::schema::convert_json_arrow_field(field)
-        .map_err(|e| invalid_function(format!("invalid Function input field: {e}")))?;
-    if arrow_field.is_blob_v2() {
+    let is_blob_v2 = field
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(ARROW_EXT_NAME_KEY))
+        .map(String::as_str)
+        == Some(BLOB_V2_EXT_NAME);
+    if is_blob_v2 {
+        let arrow_field = lance_namespace::schema::convert_json_arrow_field(field)
+            .map_err(|e| invalid_function(format!("invalid Function input field: {e}")))?;
         if !has_supported_blob_v2_layout(&arrow_field) {
             return Err(invalid_function(format!(
                 "Function input '{}' has an invalid Blob v2 storage layout",
@@ -1739,7 +1745,7 @@ mod tests {
     }
 
     use arrow_array::record_batch;
-    use arrow_schema::DataType;
+    use arrow_schema::{DataType, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::ColumnAlteration;
 
@@ -3108,6 +3114,19 @@ mod tests {
             Some("thumbnail"),
         )
         .unwrap_err();
+    }
+
+    #[test]
+    fn test_non_blob_input_does_not_require_json_round_trip() {
+        let json = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            ArrowField::new("event_time", DataType::Time64(TimeUnit::Microsecond), false),
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            canonical_input_arrow_type(&json.fields[0]).unwrap(),
+            "time64"
+        );
     }
 
     #[test]
