@@ -692,6 +692,58 @@ fn function_output_field(name: &str, nullable: bool, raw: &str) -> Result<JsonAr
     ))
 }
 
+fn function_output_field_matches(expected: &ArrowField, actual: &ArrowField) -> bool {
+    expected.name() == actual.name()
+        && expected.is_nullable() == actual.is_nullable()
+        && if expected.is_blob_v2() {
+            actual.is_blob_v2()
+        } else {
+            function_output_type_matches(expected.data_type(), actual.data_type())
+        }
+}
+
+fn function_output_type_matches(expected: &DataType, actual: &DataType) -> bool {
+    if expected == actual {
+        return true;
+    }
+    match (expected, actual) {
+        (DataType::Struct(expected), DataType::Struct(actual)) => {
+            expected.len() == actual.len()
+                && expected
+                    .iter()
+                    .zip(actual)
+                    .all(|(expected, actual)| function_output_field_matches(expected, actual))
+        }
+        (DataType::List(expected), DataType::List(actual))
+        | (DataType::LargeList(expected), DataType::LargeList(actual)) => {
+            function_output_field_matches(expected, actual)
+        }
+        (
+            DataType::FixedSizeList(expected, expected_size),
+            DataType::FixedSizeList(actual, actual_size),
+        ) => expected_size == actual_size && function_output_field_matches(expected, actual),
+        (DataType::Map(expected, expected_sorted), DataType::Map(actual, actual_sorted)) => {
+            expected_sorted == actual_sorted && function_output_field_matches(expected, actual)
+        }
+        _ => false,
+    }
+}
+
+fn function_output_type_has_blob(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| field.is_blob_v2() || function_output_type_has_blob(field.data_type())),
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => {
+            field.is_blob_v2() || function_output_type_has_blob(field.data_type())
+        }
+        _ => false,
+    }
+}
+
 fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding) -> Result<()> {
     let mut input_fields = Vec::with_capacity(binding.inputs().len());
     for input in binding.inputs() {
@@ -772,13 +824,16 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 binding.binding_id()
             )));
         }
-        let type_matches = if output.arrow_type == FUNCTION_BLOB_V2_TYPE {
-            field.is_blob_v2()
+        let (type_matches, has_semantic_blob) = if output.arrow_type == FUNCTION_BLOB_V2_TYPE {
+            (field.is_blob_v2(), true)
         } else {
             let expected_type = parse_output_arrow_type(&output.arrow_type)?;
             let expected_type = lance_namespace::schema::convert_json_arrow_type(&expected_type)
                 .map_err(|e| invalid_function(format!("invalid Function output type: {e}")))?;
-            field.data_type() == &expected_type
+            (
+                function_output_type_matches(&expected_type, field.data_type()),
+                function_output_type_has_blob(&expected_type),
+            )
         };
         if !type_matches {
             return Err(invalid_function(format!(
@@ -809,11 +864,19 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 binding.binding_id()
             )));
         }
-        output_fields.push(function_output_field(
-            field.name(),
-            true,
-            &output.arrow_type,
-        )?);
+        if has_semantic_blob {
+            output_fields.push(function_output_field(
+                field.name(),
+                true,
+                &output.arrow_type,
+            )?);
+        } else {
+            let json = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+                ArrowField::new(field.name().clone(), field.data_type().clone(), true),
+            ]))
+            .map_err(|e| invalid_function(format!("invalid Function output schema: {e}")))?;
+            output_fields.push(json.fields.into_iter().next().unwrap());
+        }
     }
     let output_schema = JsonArrowSchema::new(output_fields);
     let output_schema = serde_json::to_value(output_schema).map_err(|e| {
@@ -2634,6 +2697,60 @@ mod tests {
         .unwrap()
     }
 
+    fn binding_from_plan(plan: &FunctionDeclarationPlan) -> FunctionBinding {
+        let inputs = plan
+            .input_bindings
+            .iter()
+            .enumerate()
+            .map(|(index, input)| {
+                serde_json::json!({
+                    "parameter": input.parameter,
+                    "field_id": index,
+                    "field_path": input.field_path,
+                    "arrow_type": input.arrow_type,
+                    "nullable": input.nullable,
+                })
+            })
+            .collect::<Vec<_>>();
+        let outputs = plan
+            .outputs
+            .iter()
+            .zip(&plan.output_schema.fields)
+            .enumerate()
+            .map(|(index, (output, field))| {
+                serde_json::json!({
+                    "result_field": output.result_field,
+                    "output_name": output.output_name,
+                    "output_field_id": 100 + index,
+                    "output_ordinal": output.output_ordinal,
+                    "arrow_type": canonical_input_arrow_type(field).unwrap(),
+                    "nullable": false,
+                })
+            })
+            .collect::<Vec<_>>();
+        FunctionBinding::from_json(
+            &serde_json::json!({
+                "binding_id": "fb_blob",
+                "function": plan.application.function(),
+                "inputs": inputs,
+                "outputs": outputs,
+                "input_schema": plan.input_schema,
+                "output_schema": plan.output_schema,
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    fn full_blob_field(name: &str, nullable: bool) -> ArrowField {
+        ArrowField::new(
+            name,
+            DataType::Struct(lance_core::datatypes::BLOB_V2_LOGICAL_FIELDS.clone()),
+            nullable,
+        )
+        .with_metadata(crate::blob(name, nullable).metadata().clone())
+    }
+
     fn function_binding_schema(title_nullable: bool, body_nullable: bool) -> ArrowSchema {
         ArrowSchema::new(vec![
             ArrowField::new("title", DataType::Utf8, title_nullable),
@@ -2924,6 +3041,26 @@ mod tests {
     }
 
     #[test]
+    fn test_blob_scalar_binding_accepts_full_logical_layout() {
+        let input = crate::blob("image", false);
+        let application =
+            blob_application(r#"{"kind":"scalar","arrow_type":"blob_v2","nullable":false}"#);
+        let plan = plan_function_application(
+            &ArrowSchema::new(vec![input.clone()]),
+            &application,
+            Some("thumbnail"),
+        )
+        .unwrap();
+        let binding = binding_from_plan(&plan);
+
+        ensure_binding_matches_schema(
+            &ArrowSchema::new(vec![input, full_blob_field("thumbnail", true)]),
+            &binding,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn test_blob_named_struct_plans_expanded_and_whole_outputs() {
         let schema = ArrowSchema::new(vec![crate::blob("image", false)]);
         let application = blob_application(
@@ -2947,6 +3084,34 @@ mod tests {
         };
         assert!(fields[0].is_blob_v2());
         assert_eq!(fields[1].data_type(), &DataType::Int32);
+    }
+
+    #[test]
+    fn test_blob_whole_struct_binding_accepts_full_logical_layout() {
+        let input = crate::blob("image", false);
+        let application = blob_application(
+            r#"{"kind":"named_struct","fields":[
+                {"name":"thumbnail","arrow_type":"blob_v2","nullable":false},
+                {"name":"width","arrow_type":"int32","nullable":false}
+            ]}"#,
+        );
+        let plan = plan_function_application(
+            &ArrowSchema::new(vec![input.clone()]),
+            &application,
+            Some("analysis"),
+        )
+        .unwrap();
+        let binding = binding_from_plan(&plan);
+
+        let output = ArrowField::new(
+            "analysis",
+            DataType::Struct(Fields::from(vec![
+                full_blob_field("thumbnail", false),
+                ArrowField::new("width", DataType::Int32, false),
+            ])),
+            true,
+        );
+        ensure_binding_matches_schema(&ArrowSchema::new(vec![input, output]), &binding).unwrap();
     }
 
     #[test]

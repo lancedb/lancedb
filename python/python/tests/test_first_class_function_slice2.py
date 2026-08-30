@@ -561,6 +561,71 @@ def test_named_struct_function_can_include_a_blob_result_field():
     ]
 
 
+def test_metadata_marked_blob_field_uses_the_semantic_type():
+    extension = lancedb.blob("image", nullable=False).type
+    storage = (
+        extension.storage_type if isinstance(extension, pa.ExtensionType) else extension
+    )
+    metadata_blob = pa.field(
+        "image",
+        storage,
+        nullable=False,
+        metadata={"ARROW:extension:name": "lance.blob.v2"},
+    )
+
+    @udf(
+        input_schema=pa.schema([metadata_blob]),
+        output_schema=pa.field("size", pa.int64(), nullable=False),
+    )
+    def blob_size(image):
+        return len(image)
+
+    assert blob_size.registration_request.signature.inputs[0].arrow_type == "blob_v2"
+
+
+def test_nested_blob_signature_field_has_a_clear_error():
+    nested = pa.field(
+        "value",
+        pa.struct([lancedb.blob("image", nullable=False)]),
+        nullable=False,
+    )
+    with pytest.raises(TypeError, match="nested Blob v2 fields are not supported"):
+
+        @udf(
+            input_schema=pa.schema([nested]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+        def blob_size(value):
+            return len(value["image"])
+
+
+def test_nested_non_blob_extension_is_not_silently_unwrapped():
+    class TestExtension(pa.ExtensionType):
+        def __init__(self):
+            super().__init__(pa.int64(), "test.function.extension")
+
+        def __arrow_ext_serialize__(self):
+            return b""
+
+        @classmethod
+        def __arrow_ext_deserialize__(cls, storage_type, serialized):
+            return cls()
+
+    nested = pa.field(
+        "value",
+        pa.struct([pa.field("extended", TestExtension(), nullable=False)]),
+        nullable=False,
+    )
+    with pytest.raises(TypeError, match="unsupported Arrow type"):
+
+        @udf(
+            input_schema=pa.schema([nested]),
+            output_schema=pa.field("result", pa.int64(), nullable=False),
+        )
+        def extension_value(value):
+            return value["extended"]
+
+
 def test_nested_struct_output_uses_canonical_exact_json():
     token = pa.struct(
         [

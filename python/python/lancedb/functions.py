@@ -49,6 +49,8 @@ from pydantic import (
     model_validator,
 )
 
+from .schema import is_blob_v2_field as _is_blob_v2_field
+
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
@@ -504,11 +506,6 @@ _GRAMMAR_PRIMITIVES = (
 
 def _canonical_arrow_type(data_type: pa.DataType) -> str:
     """The compact Function grammar, or canonical exact JSON for nested types."""
-    if (
-        isinstance(data_type, pa.ExtensionType)
-        and data_type.extension_name == "lance.blob.v2"
-    ):
-        return _FUNCTION_BLOB_V2_TYPE
     grammar = _grammar_arrow_type(data_type)
     if grammar is not None:
         return grammar
@@ -555,12 +552,6 @@ def _validate_exact_arrow_field(field: pa.Field) -> None:
         )
 
 
-def _is_blob_v2_field(field: pa.Field) -> bool:
-    from .schema import is_blob_v2_field
-
-    return is_blob_v2_field(field)
-
-
 def _canonical_arrow_field(field: pa.Field) -> str:
     _validate_exact_arrow_field(field)
     if _is_blob_v2_field(field):
@@ -570,17 +561,17 @@ def _canonical_arrow_field(field: pa.Field) -> str:
 
 def _exact_arrow_field(field: pa.Field) -> dict[str, Any]:
     _validate_exact_arrow_field(field)
+    if _is_blob_v2_field(field):
+        raise TypeError(
+            "unsupported Arrow type for Function signature: nested Blob v2 "
+            "fields are not supported; declare Blob parameters or named result "
+            "fields directly"
+        )
     value = {
         "name": field.name,
         "nullable": field.nullable,
-        "type": _exact_arrow_type(
-            field.type.storage_type
-            if isinstance(field.type, pa.ExtensionType)
-            else field.type
-        ),
+        "type": _exact_arrow_type(field.type),
     }
-    if _is_blob_v2_field(field):
-        value["metadata"] = {"ARROW:extension:name": "lance.blob.v2"}
     return value
 
 
