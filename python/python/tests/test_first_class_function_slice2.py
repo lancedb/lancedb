@@ -677,6 +677,28 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
             def invalid_explicit_field(value):
                 return value
 
+    with pytest.raises(TypeError, match="unsupported Arrow type"):
+
+        @udf(
+            input_schema=pa.schema(
+                [pa.field("value", pa.int64(), metadata={"k": "v"})]
+            ),
+            output_schema=pa.int64(),
+        )
+        def input_field_metadata(value):
+            return value
+
+    with pytest.raises(TypeError, match="unsupported Arrow type"):
+
+        @udf(
+            input_schema=pa.schema([pa.field("value", pa.int64())]),
+            output_schema=pa.field(
+                "result", pa.int64(), nullable=False, metadata={"k": "v"}
+            ),
+        )
+        def scalar_output_field_metadata(value):
+            return value
+
 
 def test_local_function_catalog_operations_are_not_supported(tmp_path):
     db = lancedb.connect(tmp_path)

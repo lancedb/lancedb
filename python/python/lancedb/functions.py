@@ -688,6 +688,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
             raise TypeError(
                 "output_schema must be a PyArrow DataType, Field, or Schema"
             )
+        _validate_exact_arrow_field(field)
         if field.nullable:
             raise ValueError("Function output must be non-nullable")
         return FunctionOutput(
@@ -730,6 +731,8 @@ def _infer_signature(
     if input_schema is not None:
         if not isinstance(input_schema, pa.Schema):
             raise TypeError("input_schema must be a PyArrow Schema")
+        for field in input_schema:
+            _validate_exact_arrow_field(field)
         expected = tuple(parameter.name for parameter in parameters)
         actual = tuple(input_schema.names)
         if actual != expected:
