@@ -912,17 +912,18 @@ impl RemoteQuery {
                 let status = match outcome {
                     CancelOutcome::Status(status) => status,
                     CancelOutcome::NotFound(_)
-                        if self.lifecycle() == QueryLifecycle::Cancelling
-                            || previously_uncertain =>
+                        if self.lifecycle() == QueryLifecycle::Cancelling =>
                     {
                         self.mark_cancelled();
                         return Ok(());
                     }
                     CancelOutcome::NotFound(request_id) => {
-                        return Err(sql_error(
-                            &request_id,
-                            "SQL query cancellation target was not found",
-                        ));
+                        let message = if previously_uncertain {
+                            "SQL query cancellation outcome is unknown because a prior request may have reached the service and the target was not found on retry"
+                        } else {
+                            "SQL query cancellation target was not found"
+                        };
+                        return Err(sql_error(&request_id, message));
                     }
                 };
                 return match status {
@@ -1841,10 +1842,14 @@ mod tests {
             .await
             .unwrap();
         assert!(unspecified_cancel.cancel().await.is_err());
-        unspecified_cancel.cancel().await.unwrap();
-        assert_eq!(
+        assert!(unspecified_cancel.cancel().await.is_err());
+        assert_ne!(
             unspecified_cancel.describe().await.unwrap().status,
             "cancelled"
+        );
+        assert_eq!(
+            unspecified_cancel.result().await.unwrap(),
+            vec![expected.clone()]
         );
 
         let uncertain_cancel = timeout_client
@@ -1852,15 +1857,15 @@ mod tests {
             .await
             .unwrap();
         assert_overall_timeout(uncertain_cancel.cancel().await, "cancellation");
-        uncertain_cancel.cancel().await.unwrap();
-        assert_eq!(
+        assert!(uncertain_cancel.cancel().await.is_err());
+        assert_ne!(
             uncertain_cancel.describe().await.unwrap().status,
             "cancelled"
         );
-        assert!(matches!(
-            uncertain_cancel.result().await,
-            Err(Error::JobCancelled { .. })
-        ));
+        assert_eq!(
+            uncertain_cancel.result().await.unwrap(),
+            vec![expected.clone()]
+        );
 
         let first = client
             .submit("SELECT 'super-secret'", &["public".to_string()])
