@@ -332,12 +332,12 @@ impl SqlClientInner {
             let response = client
                 .do_action(request)
                 .await
-                .map_err(FlightError::Tonic)?;
+                .map_err(|status| FlightError::Tonic(Box::new(status)))?;
             let response = response
                 .into_inner()
                 .message()
                 .await
-                .map_err(FlightError::Tonic)?
+                .map_err(|status| FlightError::Tonic(Box::new(status)))?
                 .ok_or_else(|| {
                     FlightError::protocol("Received no response for cancel_flight_info call")
                 })?;
