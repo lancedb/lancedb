@@ -545,11 +545,67 @@ def _validate_exact_arrow_field(field: pa.Field) -> None:
             "unsupported Arrow type for Function signature: field names "
             "must not be empty"
         )
-    if field.metadata and not _is_blob_v2_field(field):
+    if _is_blob_v2_field(field):
+        if not _has_supported_blob_v2_layout(field):
+            raise TypeError(
+                "unsupported Arrow type for Function signature: lance.blob.v2 "
+                f"requires a supported Blob storage layout, got {field}"
+            )
+    elif field.metadata:
         raise TypeError(
             "unsupported Arrow type for Function signature: field metadata "
             f"is not supported, got {field}"
         )
+
+
+def _has_supported_blob_v2_layout(field: pa.Field) -> bool:
+    data_type = field.type
+    if isinstance(data_type, pa.ExtensionType):
+        data_type = data_type.storage_type
+    if not pa.types.is_struct(data_type):
+        return False
+
+    fields = tuple(data_type)
+
+    def matches(spec, compare_nullable) -> bool:
+        return len(fields) == len(spec) and all(
+            actual.name == name
+            and actual.type == expected_type
+            and (not check_nullable or actual.nullable == nullable)
+            for actual, (name, expected_type, nullable), check_nullable in zip(
+                fields, spec, compare_nullable
+            )
+        )
+
+    logical_minimal = (
+        ("data", pa.large_binary(), True),
+        ("uri", pa.utf8(), True),
+    )
+    logical_full = logical_minimal + (
+        ("position", pa.uint64(), True),
+        ("size", pa.uint64(), True),
+    )
+    prepared = (
+        ("kind", pa.uint8(), True),
+        ("data", pa.large_binary(), True),
+        ("uri", pa.utf8(), True),
+        ("blob_id", pa.uint32(), True),
+        ("blob_size", pa.uint64(), True),
+        ("position", pa.uint64(), True),
+    )
+    descriptor = (
+        ("kind", pa.uint8(), False),
+        ("position", pa.uint64(), False),
+        ("size", pa.uint64(), False),
+        ("blob_id", pa.uint32(), False),
+        ("blob_uri", pa.utf8(), False),
+    )
+    return (
+        matches(logical_minimal, (True, True))
+        or matches(logical_full, (True, True, False, False))
+        or matches(prepared, (True,) * len(prepared))
+        or matches(descriptor, (False,) * len(descriptor))
+    )
 
 
 def _canonical_arrow_field(field: pa.Field) -> str:

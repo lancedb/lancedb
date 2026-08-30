@@ -30,7 +30,9 @@ use datafusion_expr::Expr;
 use datafusion_physical_plan::PhysicalExpr;
 use lance::dataset::NewColumnTransform;
 use lance_arrow::FieldExt;
-use lance_core::datatypes::{BLOB_V2_DESC_FIELD, format_field_path_minimal, parse_field_path};
+use lance_core::datatypes::{
+    BLOB_V2_DESC_FIELD, BlobV2Layout, format_field_path_minimal, parse_field_path,
+};
 use lance_datafusion::planner::Planner;
 use lance_namespace::models::{JsonArrowDataType, JsonArrowField, JsonArrowSchema};
 use serde::{Deserialize, Serialize};
@@ -584,6 +586,12 @@ fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
     let arrow_field = lance_namespace::schema::convert_json_arrow_field(field)
         .map_err(|e| invalid_function(format!("invalid Function input field: {e}")))?;
     if arrow_field.is_blob_v2() {
+        if !has_supported_blob_v2_layout(&arrow_field) {
+            return Err(invalid_function(format!(
+                "Function input '{}' has an invalid Blob v2 storage layout",
+                arrow_field.name()
+            )));
+        }
         return Ok(FUNCTION_BLOB_V2_TYPE.to_string());
     }
     if field.r#type.fields.is_none() && field.r#type.length.is_none() {
@@ -593,6 +601,14 @@ fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
             invalid_function(format!("could not encode exact Function input type: {e}"))
         })
     }
+}
+
+fn has_supported_blob_v2_layout(field: &ArrowField) -> bool {
+    field.is_blob_v2()
+        && matches!(
+            field.data_type(),
+            DataType::Struct(fields) if BlobV2Layout::classify(fields).is_some()
+        )
 }
 
 /// `fixed_size_list<item, size>` -> (`item`, `size`); the comma must sit outside
@@ -696,7 +712,7 @@ fn function_output_field_matches(expected: &ArrowField, actual: &ArrowField) -> 
     expected.name() == actual.name()
         && expected.is_nullable() == actual.is_nullable()
         && if expected.is_blob_v2() {
-            actual.is_blob_v2()
+            has_supported_blob_v2_layout(expected) && has_supported_blob_v2_layout(actual)
         } else {
             function_output_type_matches(expected.data_type(), actual.data_type())
         }
@@ -825,7 +841,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             )));
         }
         let (type_matches, has_semantic_blob) = if output.arrow_type == FUNCTION_BLOB_V2_TYPE {
-            (field.is_blob_v2(), true)
+            (has_supported_blob_v2_layout(field), true)
         } else {
             let expected_type = parse_output_arrow_type(&output.arrow_type)?;
             let expected_type = lance_namespace::schema::convert_json_arrow_type(&expected_type)
@@ -3058,6 +3074,40 @@ mod tests {
             &binding,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_blob_binding_rejects_marker_on_invalid_storage_layout() {
+        let input = crate::blob("image", false);
+        let application =
+            blob_application(r#"{"kind":"scalar","arrow_type":"blob_v2","nullable":false}"#);
+        let plan = plan_function_application(
+            &ArrowSchema::new(vec![input.clone()]),
+            &application,
+            Some("thumbnail"),
+        )
+        .unwrap();
+        let binding = binding_from_plan(&plan);
+        let malformed = ArrowField::new("thumbnail", DataType::Int64, true)
+            .with_metadata(crate::blob("thumbnail", true).metadata().clone());
+
+        ensure_binding_matches_schema(&ArrowSchema::new(vec![input, malformed]), &binding)
+            .unwrap_err();
+    }
+
+    #[test]
+    fn test_blob_input_rejects_marker_on_invalid_storage_layout() {
+        let malformed = ArrowField::new("image", DataType::Int64, false)
+            .with_metadata(crate::blob("image", false).metadata().clone());
+        let application =
+            blob_application(r#"{"kind":"scalar","arrow_type":"blob_v2","nullable":false}"#);
+
+        plan_function_application(
+            &ArrowSchema::new(vec![malformed]),
+            &application,
+            Some("thumbnail"),
+        )
+        .unwrap_err();
     }
 
     #[test]

@@ -583,6 +583,24 @@ def test_metadata_marked_blob_field_uses_the_semantic_type():
     assert blob_size.registration_request.signature.inputs[0].arrow_type == "blob_v2"
 
 
+def test_blob_marker_rejects_invalid_storage_layout():
+    malformed = pa.field(
+        "image",
+        pa.int64(),
+        nullable=False,
+        metadata={"ARROW:extension:name": "lance.blob.v2"},
+    )
+
+    with pytest.raises(TypeError, match="requires a supported Blob storage layout"):
+
+        @udf(
+            input_schema=pa.schema([malformed]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+        def blob_size(image):
+            return len(image)
+
+
 def test_nested_blob_signature_field_has_a_clear_error():
     nested = pa.field(
         "value",
