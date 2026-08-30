@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -387,14 +388,16 @@ impl QueryRegistry {
         if let Ok(permit) = self.capacity.clone().try_acquire_owned() {
             return Ok(permit);
         }
-        if self.remove_oldest_terminal() || self.remove_oldest_abandoned() {
-            return self
-                .capacity
-                .clone()
-                .try_acquire_owned()
-                .map_err(|_| self.capacity_error());
+        if let Some(permit) = self
+            .remove_oldest_terminal()
+            .or_else(|| self.remove_oldest_abandoned())
+        {
+            return Ok(permit);
         }
-        Err(self.capacity_error())
+        self.capacity
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| self.capacity_error())
     }
 
     fn insert(&self, id: String, query: Arc<RemoteQuery>, permit: OwnedSemaphorePermit) {
@@ -429,17 +432,19 @@ impl QueryRegistry {
         });
     }
 
-    fn remove_oldest_terminal(&self) -> bool {
+    fn remove_oldest_terminal(&self) -> Option<OwnedSemaphorePermit> {
         let mut queries = self.queries.lock().unwrap();
         let oldest = queries
             .iter()
             .filter_map(|(id, entry)| entry.query.terminal_at.get().map(|at| (id.clone(), *at)))
             .min_by_key(|(_, at)| *at)
             .map(|(id, _)| id);
-        oldest.and_then(|id| queries.remove(&id)).is_some()
+        oldest
+            .and_then(|id| queries.remove(&id))
+            .map(|entry| entry._permit)
     }
 
-    fn remove_oldest_abandoned(&self) -> bool {
+    fn remove_oldest_abandoned(&self) -> Option<OwnedSemaphorePermit> {
         let mut queries = self.queries.lock().unwrap();
         let oldest = queries
             .iter()
@@ -449,7 +454,9 @@ impl QueryRegistry {
             .map(|(id, entry)| (id.clone(), *entry.query.last_accessed.lock().unwrap()))
             .min_by_key(|(_, last_accessed)| *last_accessed)
             .map(|(id, _)| id);
-        oldest.and_then(|id| queries.remove(&id)).is_some()
+        oldest
+            .and_then(|id| queries.remove(&id))
+            .map(|entry| entry._permit)
     }
 
     fn capacity_error(&self) -> Error {
@@ -472,6 +479,7 @@ struct RemoteQuery {
     expires_at: StdMutex<Option<chrono::DateTime<chrono::Utc>>>,
     terminal_at: OnceLock<Instant>,
     last_accessed: StdMutex<Instant>,
+    cancelled: AtomicBool,
 }
 
 impl RemoteQuery {
@@ -496,6 +504,7 @@ impl RemoteQuery {
             expires_at: StdMutex::new(expires_at),
             terminal_at,
             last_accessed: StdMutex::new(Instant::now()),
+            cancelled: AtomicBool::new(false),
         })
     }
 
@@ -515,6 +524,16 @@ impl RemoteQuery {
         let _ = self.terminal_at.set(Instant::now());
     }
 
+    fn mark_cancelled(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.mark_terminal();
+        self.state_changed.notify_waiters();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
     fn touch(&self) {
         *self.last_accessed.lock().unwrap() = Instant::now();
     }
@@ -522,6 +541,11 @@ impl RemoteQuery {
     async fn poll_until_finished(&self) -> Result<FlightInfo> {
         self.touch();
         loop {
+            if self.is_cancelled() {
+                return Err(Error::JobCancelled {
+                    job_id: Some(self.id.clone()),
+                });
+            }
             let state = self.state.lock().await.clone();
             let Some(descriptor) = state.flight_descriptor else {
                 return state.info.ok_or_else(|| Error::Runtime {
@@ -563,12 +587,16 @@ impl RemoteQuery {
 impl RemoteQuery {
     async fn describe(&self) -> Result<QueryDescription> {
         self.touch();
+        if self.is_cancelled() {
+            let state = self.state.lock().await.clone();
+            return query_description(&self.id, &state, true);
+        }
         let state = self.state.lock().await.clone();
         let state = if let Some(descriptor) = state.flight_descriptor.clone() {
             let Ok(_poll_guard) =
                 tokio::time::timeout(STATUS_POLL_TIMEOUT, self.poll_gate.lock()).await
             else {
-                return query_description(&self.id, &state);
+                return query_description(&self.id, &state, false);
             };
             let latest = self.state.lock().await.clone();
             if latest.flight_descriptor.as_ref() != Some(&descriptor) {
@@ -585,7 +613,7 @@ impl RemoteQuery {
         } else {
             state
         };
-        query_description(&self.id, &state)
+        query_description(&self.id, &state, self.is_cancelled())
     }
 
     async fn cancel(&self) -> Result<()> {
@@ -603,7 +631,7 @@ impl RemoteQuery {
                     .await?
                 {
                     CancelStatus::Cancelled => {
-                        self.mark_terminal();
+                        self.mark_cancelled();
                         Ok(())
                     }
                     CancelStatus::Cancelling => Ok(()),
@@ -665,6 +693,11 @@ impl QueryHandle for RemoteQueryHandle {
             .result
             .get_or_try_init(|| async {
                 let info = self.query.poll_until_finished().await?;
+                if self.query.is_cancelled() {
+                    return Err(Error::JobCancelled {
+                        job_id: Some(self.query.id.clone()),
+                    });
+                }
                 self.query
                     .client
                     .fetch_result(info, &self.query.default_namespace_path)
@@ -679,11 +712,13 @@ impl QueryHandle for RemoteQueryHandle {
     }
 }
 
-fn query_description(id: &str, poll_info: &PollInfo) -> Result<QueryDescription> {
+fn query_description(id: &str, poll_info: &PollInfo, cancelled: bool) -> Result<QueryDescription> {
     let expires_at = query_expiration(poll_info)?;
     Ok(QueryDescription {
         id: id.to_string(),
-        status: if poll_info.flight_descriptor.is_some() {
+        status: if cancelled {
+            "cancelled"
+        } else if poll_info.flight_descriptor.is_some() {
             "running"
         } else {
             "finished"
@@ -983,7 +1018,7 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
 
     use arrow_array::Int64Array;
     use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -1322,6 +1357,11 @@ mod tests {
             .await
             .unwrap();
         cancelled.cancel().await.unwrap();
+        assert_eq!(cancelled.describe().await.unwrap().status, "cancelled");
+        assert!(matches!(
+            cancelled.result().await,
+            Err(Error::JobCancelled { .. })
+        ));
 
         let slow = Arc::new(
             client
@@ -1511,6 +1551,37 @@ mod tests {
         stale_registry.insert("stale".to_string(), stale_query.clone(), stale_permit);
         drop(stale_query);
         assert!(stale_registry.get("stale").is_none());
+
+        let concurrent_registry = Arc::new(QueryRegistry::new(2));
+        for id in ["terminal-one", "terminal-two"] {
+            let permit = concurrent_registry.reserve().unwrap();
+            let query = Arc::new(
+                RemoteQuery::new(
+                    id.to_string(),
+                    client.inner.clone(),
+                    vec!["public".to_string()],
+                    PollInfo::default(),
+                )
+                .unwrap(),
+            );
+            concurrent_registry.insert(id.to_string(), query, permit);
+        }
+        let reservation_barrier = Arc::new(std::sync::Barrier::new(3));
+        let reserve = |registry: Arc<QueryRegistry>, barrier: Arc<std::sync::Barrier>| {
+            tokio::task::spawn_blocking(move || {
+                barrier.wait();
+                registry.reserve()
+            })
+        };
+        let reservation_one = reserve(concurrent_registry.clone(), reservation_barrier.clone());
+        let reservation_two = reserve(concurrent_registry.clone(), reservation_barrier.clone());
+        reservation_barrier.wait();
+        let (permit_one, permit_two) = tokio::join!(reservation_one, reservation_two);
+        let permit_one = permit_one.unwrap().unwrap();
+        let permit_two = permit_two.unwrap().unwrap();
+        assert_eq!(concurrent_registry.capacity.available_permits(), 0);
+        drop((permit_one, permit_two));
+        assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
         assert_eq!(query_count.load(Ordering::SeqCst), 8);
