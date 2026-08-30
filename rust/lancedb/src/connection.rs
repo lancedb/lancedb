@@ -473,8 +473,10 @@ impl Connection {
     /// Describe a submitted SQL query by its connection-scoped id.
     ///
     /// This performs one bounded status poll using state retained by this
-    /// connection. Query ids are not portable to another connection. Local
-    /// connections return [`Error::NotSupported`].
+    /// connection. Running state is retained until its server expiration;
+    /// terminal state is retained briefly afterward. Query ids are not
+    /// portable to another connection. Local connections return
+    /// [`Error::NotSupported`].
     pub async fn describe_query(
         &self,
         query_id: impl AsRef<str>,

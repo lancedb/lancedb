@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use arrow_array::RecordBatch;
@@ -14,9 +14,8 @@ use arrow_flight::{
     CancelFlightInfoRequest, CancelStatus, FlightClient, FlightDescriptor, FlightInfo, PollInfo,
 };
 use futures::TryStreamExt;
-use moka::future::Cache;
 use prost::Message;
-use tokio::sync::{Mutex, Notify, OnceCell};
+use tokio::sync::{Mutex, Notify, OnceCell, OwnedSemaphorePermit, Semaphore};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 use crate::error::{Error, Result};
@@ -31,12 +30,13 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const QUERY_CACHE_CAPACITY: u64 = 10_000;
+const TERMINAL_QUERY_RETENTION: Duration = Duration::from_secs(300);
 const QUERY_ID_PREFIX: &str = "lq1_";
 
 #[derive(Clone)]
 pub(super) struct SqlClient {
     inner: Arc<SqlClientInner>,
-    queries: Cache<String, Arc<RemoteQuery>>,
+    queries: Arc<QueryRegistry>,
 }
 
 struct SqlClientInner {
@@ -83,7 +83,7 @@ impl SqlClient {
                 client_config,
                 client: Arc::new(OnceCell::new()),
             }),
-            queries: Cache::builder().max_capacity(QUERY_CACHE_CAPACITY).build(),
+            queries: Arc::new(QueryRegistry::new(QUERY_CACHE_CAPACITY)),
         }
     }
 
@@ -93,6 +93,7 @@ impl SqlClient {
         default_namespace_path: &[String],
     ) -> Result<Query> {
         validate_namespace_path(default_namespace_path)?;
+        let permit = self.queries.reserve()?;
         let command = CommandStatementQuery {
             query: query.to_string(),
             transaction_id: None,
@@ -105,16 +106,15 @@ impl SqlClient {
             self.inner.clone(),
             default_namespace_path.to_vec(),
             poll_info,
-        ));
-        self.queries.insert(query_id, query.clone()).await;
-        Ok(Query::new(query))
+        )?);
+        self.queries.insert(query_id, query.clone(), permit);
+        Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
     }
 
     pub(super) async fn describe(&self, query_id: &str) -> Result<QueryDescription> {
         let query = self
             .queries
             .get(query_id)
-            .await
             .ok_or_else(|| Error::InvalidInput {
                 message: "Unknown or expired SQL query id for this connection".to_string(),
             })?;
@@ -361,6 +361,66 @@ impl SqlClientInner {
     }
 }
 
+struct RegisteredQuery {
+    query: Arc<RemoteQuery>,
+    _permit: OwnedSemaphorePermit,
+}
+
+struct QueryRegistry {
+    queries: StdMutex<HashMap<String, RegisteredQuery>>,
+    capacity: Arc<Semaphore>,
+    max_capacity: u64,
+}
+
+impl QueryRegistry {
+    fn new(capacity: u64) -> Self {
+        Self {
+            queries: StdMutex::new(HashMap::new()),
+            capacity: Arc::new(Semaphore::new(capacity as usize)),
+            max_capacity: capacity,
+        }
+    }
+
+    fn reserve(&self) -> Result<OwnedSemaphorePermit> {
+        self.remove_expired();
+        self.capacity
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::Runtime {
+                message: format!(
+                    "This connection already retains {} active SQL queries",
+                    self.max_capacity
+                ),
+            })
+    }
+
+    fn insert(&self, id: String, query: Arc<RemoteQuery>, permit: OwnedSemaphorePermit) {
+        self.queries.lock().unwrap().insert(
+            id,
+            RegisteredQuery {
+                query,
+                _permit: permit,
+            },
+        );
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<RemoteQuery>> {
+        self.remove_expired();
+        self.queries
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|entry| entry.query.clone())
+    }
+
+    fn remove_expired(&self) {
+        self.queries
+            .lock()
+            .unwrap()
+            .retain(|_, entry| !entry.query.registry_expired());
+    }
+}
+
 struct RemoteQuery {
     id: String,
     client: Arc<SqlClientInner>,
@@ -368,7 +428,8 @@ struct RemoteQuery {
     state: Mutex<PollInfo>,
     poll_gate: Mutex<()>,
     state_changed: Notify,
-    result: OnceCell<Vec<RecordBatch>>,
+    expires_at: StdMutex<Option<chrono::DateTime<chrono::Utc>>>,
+    terminal_at: OnceLock<Instant>,
 }
 
 impl RemoteQuery {
@@ -377,16 +438,37 @@ impl RemoteQuery {
         client: Arc<SqlClientInner>,
         default_namespace_path: Vec<String>,
         poll_info: PollInfo,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let expires_at = query_expiration(&poll_info)?;
+        let terminal_at = OnceLock::new();
+        if poll_info.flight_descriptor.is_none() {
+            let _ = terminal_at.set(Instant::now());
+        }
+        Ok(Self {
             id,
             client,
             default_namespace_path,
             state: Mutex::new(poll_info),
             poll_gate: Mutex::new(()),
             state_changed: Notify::new(),
-            result: OnceCell::new(),
-        }
+            expires_at: StdMutex::new(expires_at),
+            terminal_at,
+        })
+    }
+
+    fn registry_expired(&self) -> bool {
+        self.terminal_at
+            .get()
+            .is_some_and(|finished| finished.elapsed() >= TERMINAL_QUERY_RETENTION)
+            || self
+                .expires_at
+                .lock()
+                .unwrap()
+                .is_some_and(|expires_at| expires_at <= chrono::Utc::now())
+    }
+
+    fn mark_terminal(&self) {
+        let _ = self.terminal_at.set(Instant::now());
     }
 
     async fn poll_until_finished(&self) -> Result<FlightInfo> {
@@ -405,67 +487,54 @@ impl RemoteQuery {
                 .client
                 .poll_continuation(descriptor.clone(), &self.default_namespace_path)
                 .await?;
-            self.update_state(&descriptor, updated).await;
+            self.update_state(&descriptor, updated).await?;
         }
     }
 
-    async fn update_state(&self, descriptor: &FlightDescriptor, updated: PollInfo) -> PollInfo {
+    async fn update_state(
+        &self,
+        descriptor: &FlightDescriptor,
+        updated: PollInfo,
+    ) -> Result<PollInfo> {
+        let expires_at = query_expiration(&updated)?;
         let mut state = self.state.lock().await;
         if state.flight_descriptor.as_ref() == Some(descriptor) {
+            if updated.flight_descriptor.is_none() {
+                self.mark_terminal();
+            }
+            *self.expires_at.lock().unwrap() = expires_at;
             *state = updated;
             self.state_changed.notify_waiters();
         }
-        state.clone()
+        Ok(state.clone())
     }
 }
 
-#[async_trait::async_trait]
-impl QueryHandle for RemoteQuery {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
+impl RemoteQuery {
     async fn describe(&self) -> Result<QueryDescription> {
         let state = self.state.lock().await.clone();
         let state = if let Some(descriptor) = state.flight_descriptor.clone() {
-            match tokio::time::timeout(STATUS_POLL_TIMEOUT, async {
-                let _poll_guard = self.poll_gate.lock().await;
-                let latest = self.state.lock().await.clone();
-                if latest.flight_descriptor.as_ref() != Some(&descriptor) {
-                    return Ok::<PollInfo, Error>(latest);
-                }
-                if let Some(updated) = self
-                    .client
-                    .poll_status(descriptor.clone(), &self.default_namespace_path)
-                    .await?
-                {
-                    Ok(self.update_state(&descriptor, updated).await)
-                } else {
-                    Ok(latest)
-                }
-            })
-            .await
+            let Ok(_poll_guard) =
+                tokio::time::timeout(STATUS_POLL_TIMEOUT, self.poll_gate.lock()).await
+            else {
+                return query_description(&self.id, &state);
+            };
+            let latest = self.state.lock().await.clone();
+            if latest.flight_descriptor.as_ref() != Some(&descriptor) {
+                latest
+            } else if let Some(updated) = self
+                .client
+                .poll_status(descriptor.clone(), &self.default_namespace_path)
+                .await?
             {
-                Ok(updated) => updated?,
-                Err(_) => state,
+                self.update_state(&descriptor, updated).await?
+            } else {
+                latest
             }
         } else {
             state
         };
         query_description(&self.id, &state)
-    }
-
-    async fn result(&self) -> Result<Vec<RecordBatch>> {
-        let batches = self
-            .result
-            .get_or_try_init(|| async {
-                let info = self.poll_until_finished().await?;
-                self.client
-                    .fetch_result(info, &self.default_namespace_path)
-                    .await
-            })
-            .await?;
-        Ok(batches.clone())
     }
 
     async fn cancel(&self) -> Result<()> {
@@ -481,7 +550,11 @@ impl QueryHandle for RemoteQuery {
                     .cancel(info, &self.default_namespace_path)
                     .await?
                 {
-                    CancelStatus::Cancelled | CancelStatus::Cancelling => Ok(()),
+                    CancelStatus::Cancelled => {
+                        self.mark_terminal();
+                        Ok(())
+                    }
+                    CancelStatus::Cancelling => Ok(()),
                     CancelStatus::NotCancellable => Err(Error::NotSupported {
                         message: "The SQL query is not cancellable".to_string(),
                     }),
@@ -502,7 +575,7 @@ impl QueryHandle for RemoteQuery {
                         descriptor.clone(),
                         &self.default_namespace_path,
                     ).await?;
-                    self.update_state(&descriptor, updated).await;
+                    self.update_state(&descriptor, updated).await?;
                 }
                 _ = notified => {}
             }
@@ -510,19 +583,51 @@ impl QueryHandle for RemoteQuery {
     }
 }
 
+struct RemoteQueryHandle {
+    query: Arc<RemoteQuery>,
+    result: OnceCell<Vec<RecordBatch>>,
+}
+
+impl RemoteQueryHandle {
+    fn new(query: Arc<RemoteQuery>) -> Self {
+        Self {
+            query,
+            result: OnceCell::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl QueryHandle for RemoteQueryHandle {
+    fn id(&self) -> &str {
+        &self.query.id
+    }
+
+    async fn describe(&self) -> Result<QueryDescription> {
+        self.query.describe().await
+    }
+
+    async fn result(&self) -> Result<Vec<RecordBatch>> {
+        let batches = self
+            .result
+            .get_or_try_init(|| async {
+                let info = self.query.poll_until_finished().await?;
+                self.query
+                    .client
+                    .fetch_result(info, &self.query.default_namespace_path)
+                    .await
+            })
+            .await?;
+        Ok(batches.clone())
+    }
+
+    async fn cancel(&self) -> Result<()> {
+        self.query.cancel().await
+    }
+}
+
 fn query_description(id: &str, poll_info: &PollInfo) -> Result<QueryDescription> {
-    let expires_at = poll_info
-        .expiration_time
-        .as_ref()
-        .map(|timestamp| {
-            u32::try_from(timestamp.nanos)
-                .ok()
-                .and_then(|nanos| chrono::DateTime::from_timestamp(timestamp.seconds, nanos))
-                .ok_or_else(|| Error::Runtime {
-                    message: "SQL service returned an invalid query expiration time".to_string(),
-                })
-        })
-        .transpose()?;
+    let expires_at = query_expiration(poll_info)?;
     Ok(QueryDescription {
         id: id.to_string(),
         status: if poll_info.flight_descriptor.is_some() {
@@ -534,6 +639,21 @@ fn query_description(id: &str, poll_info: &PollInfo) -> Result<QueryDescription>
         progress: poll_info.progress,
         expires_at,
     })
+}
+
+fn query_expiration(poll_info: &PollInfo) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    poll_info
+        .expiration_time
+        .as_ref()
+        .map(|timestamp| {
+            u32::try_from(timestamp.nanos)
+                .ok()
+                .and_then(|nanos| chrono::DateTime::from_timestamp(timestamp.seconds, nanos))
+                .ok_or_else(|| Error::Runtime {
+                    message: "SQL service returned an invalid query expiration time".to_string(),
+                })
+        })
+        .transpose()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -810,7 +930,7 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use arrow_array::Int64Array;
     use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -825,6 +945,22 @@ mod tests {
     use tonic::{Request, Response, Status, Streaming};
 
     use super::*;
+    use crate::remote::client::HeaderProvider;
+
+    #[derive(Debug, Default)]
+    struct DelayedHeaderProvider {
+        delay_next: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl HeaderProvider for DelayedHeaderProvider {
+        async fn get_headers(&self) -> Result<HashMap<String, String>> {
+            if self.delay_next.swap(false, Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(1_100)).await;
+            }
+            Ok(HashMap::new())
+        }
+    }
 
     #[derive(Debug)]
     struct CapturedHeaders {
@@ -1079,6 +1215,8 @@ mod tests {
         client_config
             .extra_headers
             .insert("x-static-secret".to_string(), "static-secret".to_string());
+        let header_provider = Arc::new(DelayedHeaderProvider::default());
+        client_config.header_provider = Some(header_provider.clone());
         let client = SqlClient::new(
             "analytics".to_string(),
             Some("tenant/production".to_string()),
@@ -1099,7 +1237,10 @@ mod tests {
         assert_eq!(id_suffix.len(), 32);
         assert!(id_suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert!(!first.id().contains("super-secret"));
+        header_provider.delay_next.store(true, Ordering::SeqCst);
+        let describe_started = Instant::now();
         let first_description = client.describe(first.id()).await.unwrap();
+        assert!(describe_started.elapsed() >= Duration::from_millis(1_100));
         assert_eq!(first_description.status, "finished");
         assert_eq!(first_description.progress, Some(1.0));
         let first_result = first.result().await.unwrap();
@@ -1182,6 +1323,46 @@ mod tests {
             .await
             .unwrap();
         assert!(failed.result().await.is_err());
+
+        let active_registry = QueryRegistry::new(1);
+        let active_permit = active_registry.reserve().unwrap();
+        let active_query = Arc::new(
+            RemoteQuery::new(
+                "active".to_string(),
+                client.inner.clone(),
+                vec!["public".to_string()],
+                PollInfo {
+                    flight_descriptor: Some(FlightDescriptor::new_cmd("active")),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        active_registry.insert("active".to_string(), active_query.clone(), active_permit);
+        assert!(active_registry.reserve().is_err());
+        assert!(Arc::ptr_eq(
+            &active_registry.get("active").unwrap(),
+            &active_query,
+        ));
+
+        let expired_registry = QueryRegistry::new(1);
+        let expired_permit = expired_registry.reserve().unwrap();
+        let expired_query = Arc::new(
+            RemoteQuery::new(
+                "expired".to_string(),
+                client.inner.clone(),
+                vec!["public".to_string()],
+                PollInfo {
+                    flight_descriptor: Some(FlightDescriptor::new_cmd("expired")),
+                    expiration_time: Some(Default::default()),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        expired_registry.insert("expired".to_string(), expired_query, expired_permit);
+        assert!(expired_registry.reserve().is_ok());
+        assert!(expired_registry.get("expired").is_none());
 
         assert_eq!(client.initialized_client_count().await, 1);
         assert_eq!(query_count.load(Ordering::SeqCst), 8);
