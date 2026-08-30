@@ -629,6 +629,16 @@ impl RemoteQuery {
         }
     }
 
+    async fn wait_for_cancellation(&self) {
+        loop {
+            let cancelled = self.cancelled.notified();
+            if self.is_cancellation_requested() {
+                return;
+            }
+            cancelled.await;
+        }
+    }
+
     fn touch(&self) {
         *self.last_accessed.lock().unwrap() = Instant::now();
     }
@@ -636,7 +646,6 @@ impl RemoteQuery {
     async fn poll_until_finished(&self) -> Result<FlightInfo> {
         self.touch();
         loop {
-            let cancelled = self.cancelled.notified();
             if self.is_cancellation_requested() {
                 return Err(self.cancelled_error());
             }
@@ -651,19 +660,15 @@ impl RemoteQuery {
             };
             let _poll_guard = tokio::select! {
                 biased;
-                _ = cancelled => return Err(self.cancelled_error()),
+                _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
                 poll_guard = self.poll_gate.lock() => poll_guard,
             };
             if self.state.lock().await.flight_descriptor.as_ref() != Some(&descriptor) {
                 continue;
             }
-            let cancelled = self.cancelled.notified();
-            if self.is_cancellation_requested() {
-                return Err(self.cancelled_error());
-            }
             let updated = tokio::select! {
                 biased;
-                _ = cancelled => return Err(self.cancelled_error()),
+                _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
                 result = self.client.poll_continuation(
                     descriptor.clone(),
                     &self.default_namespace_path,
@@ -707,10 +712,9 @@ impl RemoteQuery {
         }
         let state = self.state.lock().await.clone();
         let state = if let Some(descriptor) = state.flight_descriptor.clone() {
-            let cancelled = self.cancelled.notified();
             let poll_guard = tokio::select! {
                 biased;
-                _ = cancelled => return query_description(
+                _ = self.wait_for_cancellation() => return query_description(
                     &self.id,
                     &state,
                     self.lifecycle(),
@@ -727,13 +731,9 @@ impl RemoteQuery {
             if latest.flight_descriptor.as_ref() != Some(&descriptor) {
                 latest
             } else {
-                let cancelled = self.cancelled.notified();
-                if self.is_cancellation_requested() {
-                    return query_description(&self.id, &latest, self.lifecycle());
-                }
                 let updated = tokio::select! {
                     biased;
-                    _ = cancelled => return query_description(
+                    _ = self.wait_for_cancellation() => return query_description(
                         &self.id,
                         &latest,
                         self.lifecycle(),
@@ -881,13 +881,11 @@ impl QueryHandle for RemoteQueryHandle {
             .result
             .get_or_try_init(|| async {
                 let info = self.query.poll_until_finished().await?;
-                let cancelled = self.query.cancelled.notified();
-                if self.query.is_cancellation_requested() {
-                    return Err(self.query.cancelled_error());
-                }
                 let batches = tokio::select! {
                     biased;
-                    _ = cancelled => return Err(self.query.cancelled_error()),
+                    _ = self.query.wait_for_cancellation() => {
+                        return Err(self.query.cancelled_error());
+                    }
                     result = self.query.client.fetch_result(
                         info,
                         &self.query.default_namespace_path,
@@ -1660,6 +1658,38 @@ mod tests {
             slow_get.result().await,
             Err(Error::JobCancelled { .. })
         ));
+
+        let restored = Arc::new(
+            RemoteQuery::new(
+                "restored".to_string(),
+                client.inner.clone(),
+                vec!["public".to_string()],
+                PollInfo {
+                    flight_descriptor: Some(FlightDescriptor::new_cmd("restored")),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        let mut restored_waiter = {
+            let restored = restored.clone();
+            tokio::spawn(async move { restored.wait_for_cancellation().await })
+        };
+        tokio::task::yield_now().await;
+        restored.mark_cancelling();
+        restored.restore_after_rejected_cancellation().await;
+        assert_eq!(restored.lifecycle(), QueryLifecycle::Running);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut restored_waiter)
+                .await
+                .is_err(),
+            "a stale cancellation notification must not complete the waiter",
+        );
+        restored.mark_cancelling();
+        tokio::time::timeout(Duration::from_millis(100), restored_waiter)
+            .await
+            .expect("a current cancellation must complete the waiter")
+            .unwrap();
 
         let cancelling = Arc::new(
             client
