@@ -728,6 +728,11 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
         )));
     }
 
+    let expected_inputs = binding
+        .inputs()
+        .iter()
+        .map(|input| input.field_path.clone())
+        .collect::<Vec<_>>();
     let mut output_fields = Vec::with_capacity(binding.outputs().len());
     for output in binding.outputs() {
         let field = schema.field_with_name(&output.output_name).map_err(|_| {
@@ -750,6 +755,28 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
         if field.data_type() != &expected_type {
             return Err(invalid_function(format!(
                 "Function output '{}' type no longer matches binding '{}'",
+                output.output_name,
+                binding.binding_id()
+            )));
+        }
+        let metadata = field.metadata();
+        let declared_inputs = metadata
+            .get(INPUTS_META_KEY)
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok());
+        if metadata.get(COMPUTED_COLUMN_META_KEY).map(String::as_str) != Some("true")
+            || metadata.get(KIND_META_KEY).map(String::as_str) != Some(FUNCTION_KIND)
+            || metadata
+                .get(FUNCTION_BINDING_ID_META_KEY)
+                .map(String::as_str)
+                != Some(binding.binding_id())
+            || metadata
+                .get(FUNCTION_OUTPUT_ORDINAL_META_KEY)
+                .and_then(|value| value.parse::<u32>().ok())
+                != Some(output.output_ordinal)
+            || declared_inputs.as_deref() != Some(expected_inputs.as_slice())
+        {
+            return Err(invalid_function(format!(
+                "Function output '{}' declaration metadata does not match binding '{}'",
                 output.output_name,
                 binding.binding_id()
             )));
@@ -2590,6 +2617,37 @@ mod tests {
         ])
     }
 
+    fn valid_function_binding_schema(
+        title_nullable: bool,
+        body_nullable: bool,
+        binding: &FunctionBinding,
+    ) -> ArrowSchema {
+        let mut fields = function_binding_schema(title_nullable, body_nullable)
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .collect::<Vec<_>>();
+        let inputs = binding
+            .inputs()
+            .iter()
+            .map(|input| input.field_path.clone())
+            .collect::<Vec<_>>();
+        for output in binding.outputs() {
+            let index = fields
+                .iter()
+                .position(|field| field.name() == &output.output_name)
+                .unwrap();
+            fields[index] = fields[index]
+                .clone()
+                .with_metadata(function_computed_column_metadata(
+                    binding.binding_id(),
+                    output.output_ordinal,
+                    &inputs,
+                ));
+        }
+        ArrowSchema::new(fields)
+    }
+
     #[test]
     fn test_non_nullable_function_inputs_can_bind_to_nullable_parameters() {
         let binding = FunctionBinding::from_json(include_str!(
@@ -2597,7 +2655,11 @@ mod tests {
         ))
         .unwrap();
 
-        ensure_binding_matches_schema(&function_binding_schema(false, false), &binding).unwrap();
+        ensure_binding_matches_schema(
+            &valid_function_binding_schema(false, false, &binding),
+            &binding,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2610,14 +2672,47 @@ mod tests {
         raw_binding["input_schema"]["fields"][0]["nullable"] = Value::Bool(false);
         let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
 
-        let err = ensure_binding_matches_schema(&function_binding_schema(true, false), &binding)
-            .unwrap_err();
+        let err = ensure_binding_matches_schema(
+            &valid_function_binding_schema(true, false, &binding),
+            &binding,
+        )
+        .unwrap_err();
         assert!(
             matches!(&err, Error::InvalidInput { message }
                 if message.contains("input column 'title' is nullable")
                     && message.contains("parameter 'title'")
                     && message.contains("binding 'fb_01K3TEXT'")
                     && message.contains("non-nullable")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn test_second_binding_rejects_outputs_without_reciprocal_metadata() {
+        let binding = FunctionBinding::from_json(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        let schema = ArrowSchema::new_with_metadata(
+            function_binding_schema(true, true).fields().to_vec(),
+            HashMap::from([(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                function_bindings_metadata(std::slice::from_ref(&binding)).unwrap(),
+            )]),
+        );
+
+        let err = plan_function_application(
+            &schema,
+            &named_struct_application(
+                r#"{"normalized_text":"secondary_text","token_count":"secondary_token_count"}"#,
+            ),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("declaration metadata")
+                    && message.contains("fb_01K3TEXT")),
             "{err:?}"
         );
     }
