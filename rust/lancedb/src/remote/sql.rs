@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -475,11 +474,21 @@ struct RemoteQuery {
     default_namespace_path: Vec<String>,
     state: Mutex<PollInfo>,
     poll_gate: Mutex<()>,
+    cancel_gate: Mutex<()>,
     state_changed: Notify,
+    cancelled: Notify,
     expires_at: StdMutex<Option<chrono::DateTime<chrono::Utc>>>,
     terminal_at: OnceLock<Instant>,
     last_accessed: StdMutex<Instant>,
-    cancelled: AtomicBool,
+    lifecycle: StdMutex<QueryLifecycle>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueryLifecycle {
+    Running,
+    Ready,
+    Completed,
+    Cancelled,
 }
 
 impl RemoteQuery {
@@ -491,20 +500,25 @@ impl RemoteQuery {
     ) -> Result<Self> {
         let expires_at = query_expiration(&poll_info)?;
         let terminal_at = OnceLock::new();
-        if poll_info.flight_descriptor.is_none() {
+        let lifecycle = if poll_info.flight_descriptor.is_none() {
             let _ = terminal_at.set(Instant::now());
-        }
+            QueryLifecycle::Ready
+        } else {
+            QueryLifecycle::Running
+        };
         Ok(Self {
             id,
             client,
             default_namespace_path,
             state: Mutex::new(poll_info),
             poll_gate: Mutex::new(()),
+            cancel_gate: Mutex::new(()),
             state_changed: Notify::new(),
+            cancelled: Notify::new(),
             expires_at: StdMutex::new(expires_at),
             terminal_at,
             last_accessed: StdMutex::new(Instant::now()),
-            cancelled: AtomicBool::new(false),
+            lifecycle: StdMutex::new(lifecycle),
         })
     }
 
@@ -524,14 +538,52 @@ impl RemoteQuery {
         let _ = self.terminal_at.set(Instant::now());
     }
 
-    fn mark_cancelled(&self) {
-        self.cancelled.store(true, Ordering::Release);
+    fn mark_ready(&self) {
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        if *lifecycle == QueryLifecycle::Running {
+            *lifecycle = QueryLifecycle::Ready;
+        }
+        drop(lifecycle);
         self.mark_terminal();
+    }
+
+    fn mark_cancelled(&self) -> bool {
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        if matches!(
+            *lifecycle,
+            QueryLifecycle::Cancelled | QueryLifecycle::Completed
+        ) {
+            return false;
+        }
+        *lifecycle = QueryLifecycle::Cancelled;
+        drop(lifecycle);
+        self.mark_terminal();
+        self.cancelled.notify_waiters();
         self.state_changed.notify_waiters();
+        true
+    }
+
+    fn mark_result_completed(&self) -> Result<()> {
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        if *lifecycle == QueryLifecycle::Cancelled {
+            return Err(self.cancelled_error());
+        }
+        *lifecycle = QueryLifecycle::Completed;
+        Ok(())
+    }
+
+    fn lifecycle(&self) -> QueryLifecycle {
+        *self.lifecycle.lock().unwrap()
     }
 
     fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.lifecycle() == QueryLifecycle::Cancelled
+    }
+
+    fn cancelled_error(&self) -> Error {
+        Error::JobCancelled {
+            job_id: Some(self.id.clone()),
+        }
     }
 
     fn touch(&self) {
@@ -541,25 +593,42 @@ impl RemoteQuery {
     async fn poll_until_finished(&self) -> Result<FlightInfo> {
         self.touch();
         loop {
+            let cancelled = self.cancelled.notified();
             if self.is_cancelled() {
-                return Err(Error::JobCancelled {
-                    job_id: Some(self.id.clone()),
-                });
+                return Err(self.cancelled_error());
             }
             let state = self.state.lock().await.clone();
             let Some(descriptor) = state.flight_descriptor else {
+                if self.is_cancelled() {
+                    return Err(self.cancelled_error());
+                }
                 return state.info.ok_or_else(|| Error::Runtime {
                     message: "Completed SQL query did not include result information".to_string(),
                 });
             };
-            let _poll_guard = self.poll_gate.lock().await;
+            let _poll_guard = tokio::select! {
+                biased;
+                _ = cancelled => return Err(self.cancelled_error()),
+                poll_guard = self.poll_gate.lock() => poll_guard,
+            };
             if self.state.lock().await.flight_descriptor.as_ref() != Some(&descriptor) {
                 continue;
             }
-            let updated = self
-                .client
-                .poll_continuation(descriptor.clone(), &self.default_namespace_path)
-                .await?;
+            let cancelled = self.cancelled.notified();
+            if self.is_cancelled() {
+                return Err(self.cancelled_error());
+            }
+            let updated = tokio::select! {
+                biased;
+                _ = cancelled => return Err(self.cancelled_error()),
+                result = self.client.poll_continuation(
+                    descriptor.clone(),
+                    &self.default_namespace_path,
+                ) => match result {
+                    Err(_) if self.is_cancelled() => return Err(self.cancelled_error()),
+                    result => result?,
+                },
+            };
             self.update_state(&descriptor, updated).await?;
         }
     }
@@ -574,7 +643,7 @@ impl RemoteQuery {
         let mut state = self.state.lock().await;
         if state.flight_descriptor.as_ref() == Some(descriptor) {
             if updated.flight_descriptor.is_none() {
-                self.mark_terminal();
+                self.mark_ready();
             }
             *self.expires_at.lock().unwrap() = expires_at;
             *state = updated;
@@ -589,41 +658,77 @@ impl RemoteQuery {
         self.touch();
         if self.is_cancelled() {
             let state = self.state.lock().await.clone();
-            return query_description(&self.id, &state, true);
+            return query_description(&self.id, &state, self.lifecycle());
         }
         let state = self.state.lock().await.clone();
         let state = if let Some(descriptor) = state.flight_descriptor.clone() {
-            let Ok(_poll_guard) =
-                tokio::time::timeout(STATUS_POLL_TIMEOUT, self.poll_gate.lock()).await
-            else {
-                return query_description(&self.id, &state, false);
+            let cancelled = self.cancelled.notified();
+            let poll_guard = tokio::select! {
+                biased;
+                _ = cancelled => return query_description(
+                    &self.id,
+                    &state,
+                    self.lifecycle(),
+                ),
+                poll_guard = tokio::time::timeout(
+                    STATUS_POLL_TIMEOUT,
+                    self.poll_gate.lock(),
+                ) => poll_guard,
+            };
+            let Ok(_poll_guard) = poll_guard else {
+                return query_description(&self.id, &state, self.lifecycle());
             };
             let latest = self.state.lock().await.clone();
             if latest.flight_descriptor.as_ref() != Some(&descriptor) {
                 latest
-            } else if let Some(updated) = self
-                .client
-                .poll_status(descriptor.clone(), &self.default_namespace_path)
-                .await?
-            {
-                self.update_state(&descriptor, updated).await?
             } else {
-                latest
+                let cancelled = self.cancelled.notified();
+                if self.is_cancelled() {
+                    return query_description(&self.id, &latest, self.lifecycle());
+                }
+                let updated = tokio::select! {
+                    biased;
+                    _ = cancelled => return query_description(
+                        &self.id,
+                        &latest,
+                        self.lifecycle(),
+                    ),
+                    result = self.client.poll_status(
+                        descriptor.clone(),
+                        &self.default_namespace_path,
+                    ) => match result {
+                        Err(_) if self.is_cancelled() => return query_description(
+                            &self.id,
+                            &latest,
+                            self.lifecycle(),
+                        ),
+                        result => result?,
+                    },
+                };
+                if let Some(updated) = updated {
+                    self.update_state(&descriptor, updated).await?
+                } else {
+                    latest
+                }
             }
         } else {
             state
         };
-        query_description(&self.id, &state, self.is_cancelled())
+        query_description(&self.id, &state, self.lifecycle())
     }
 
     async fn cancel(&self) -> Result<()> {
         self.touch();
+        let _cancel_guard = self.cancel_gate.lock().await;
+        if matches!(
+            self.lifecycle(),
+            QueryLifecycle::Cancelled | QueryLifecycle::Completed
+        ) {
+            return Ok(());
+        }
         loop {
             let notified = self.state_changed.notified();
             let state = self.state.lock().await.clone();
-            let Some(descriptor) = state.flight_descriptor else {
-                return Ok(());
-            };
             if let Some(info) = state.info {
                 return match self
                     .client
@@ -644,6 +749,9 @@ impl RemoteQuery {
                     }),
                 };
             }
+            let Some(descriptor) = state.flight_descriptor else {
+                return Ok(());
+            };
 
             tokio::select! {
                 poll_guard = self.poll_gate.lock() => {
@@ -693,17 +801,28 @@ impl QueryHandle for RemoteQueryHandle {
             .result
             .get_or_try_init(|| async {
                 let info = self.query.poll_until_finished().await?;
+                let cancelled = self.query.cancelled.notified();
                 if self.query.is_cancelled() {
-                    return Err(Error::JobCancelled {
-                        job_id: Some(self.query.id.clone()),
-                    });
+                    return Err(self.query.cancelled_error());
                 }
-                self.query
-                    .client
-                    .fetch_result(info, &self.query.default_namespace_path)
-                    .await
+                let batches = tokio::select! {
+                    biased;
+                    _ = cancelled => return Err(self.query.cancelled_error()),
+                    result = self.query.client.fetch_result(
+                        info,
+                        &self.query.default_namespace_path,
+                    ) => match result {
+                        Err(_) if self.query.is_cancelled() => {
+                            return Err(self.query.cancelled_error());
+                        }
+                        result => result?,
+                    },
+                };
+                self.query.mark_result_completed()?;
+                Ok(batches)
             })
             .await?;
+        self.query.mark_result_completed()?;
         Ok(batches.clone())
     }
 
@@ -712,11 +831,15 @@ impl QueryHandle for RemoteQueryHandle {
     }
 }
 
-fn query_description(id: &str, poll_info: &PollInfo, cancelled: bool) -> Result<QueryDescription> {
+fn query_description(
+    id: &str,
+    poll_info: &PollInfo,
+    lifecycle: QueryLifecycle,
+) -> Result<QueryDescription> {
     let expires_at = query_expiration(poll_info)?;
     Ok(QueryDescription {
         id: id.to_string(),
-        status: if cancelled {
+        status: if lifecycle == QueryLifecycle::Cancelled {
             "cancelled"
         } else if poll_info.flight_descriptor.is_some() {
             "running"
@@ -1018,7 +1141,7 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use arrow_array::Int64Array;
     use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -1029,6 +1152,7 @@ mod tests {
         FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
     };
     use arrow_schema::{DataType, Field, Schema};
+    use futures::StreamExt;
     use futures::stream::BoxStream;
     use tonic::{Request, Response, Status, Streaming};
 
@@ -1216,8 +1340,17 @@ mod tests {
             request: Request<Ticket>,
         ) -> std::result::Result<Response<<Self as FlightService>::DoGetStream>, Status> {
             self.do_get_count.fetch_add(1, Ordering::SeqCst);
-            let empty = request.get_ref().ticket.as_ref() == b"SELECT empty";
-            let input = futures::stream::iter((!empty).then_some(Ok(self.result.clone())));
+            let ticket = request.get_ref().ticket.as_ref();
+            let empty = ticket == b"SELECT empty";
+            let slow = ticket == b"SELECT slow get";
+            let result = self.result.clone();
+            let input = futures::stream::once(async move {
+                if slow {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                (!empty).then_some(Ok(result))
+            })
+            .filter_map(futures::future::ready);
             let stream = FlightDataEncoderBuilder::new()
                 .with_schema(self.result.schema())
                 .build(input)
@@ -1378,8 +1511,48 @@ mod tests {
             .await
             .expect("cancellation must not wait for result polling")
             .unwrap();
-        result_task.abort();
-        let _ = result_task.await;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_millis(150), result_task)
+                .await
+                .expect("cancellation must wake result polling")
+                .unwrap(),
+            Err(Error::JobCancelled { .. })
+        ));
+        let cancel_count_after_slow = cancel_count.load(Ordering::SeqCst);
+        slow.cancel().await.unwrap();
+        assert_eq!(
+            cancel_count.load(Ordering::SeqCst),
+            cancel_count_after_slow,
+            "a confirmed cancellation must not be sent again",
+        );
+
+        let slow_get = Arc::new(
+            client
+                .submit("SELECT slow get", &["public".to_string()])
+                .await
+                .unwrap(),
+        );
+        let do_get_count_before_slow = do_get_count.load(Ordering::SeqCst);
+        let slow_get_result_task = {
+            let slow_get = slow_get.clone();
+            tokio::spawn(async move { slow_get.result().await })
+        };
+        while do_get_count.load(Ordering::SeqCst) == do_get_count_before_slow {
+            tokio::task::yield_now().await;
+        }
+        slow_get.cancel().await.unwrap();
+        assert_eq!(slow_get.describe().await.unwrap().status, "cancelled");
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_millis(150), slow_get_result_task)
+                .await
+                .expect("cancellation must wake result fetching")
+                .unwrap(),
+            Err(Error::JobCancelled { .. })
+        ));
+        assert!(matches!(
+            slow_get.result().await,
+            Err(Error::JobCancelled { .. })
+        ));
 
         let no_info = Arc::new(
             client
@@ -1397,8 +1570,10 @@ mod tests {
             .await
             .expect("cancellation should wait for cancellable query information")
             .unwrap();
-        no_info_result_task.abort();
-        let _ = no_info_result_task.await;
+        assert!(matches!(
+            no_info_result_task.await.unwrap(),
+            Err(Error::JobCancelled { .. })
+        ));
         assert_eq!(
             first_continuation_count.load(Ordering::SeqCst),
             continuation_count_before + 1,
@@ -1584,9 +1759,9 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 8);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 3);
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 3);
+        assert_eq!(query_count.load(Ordering::SeqCst), 9);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 4);
+        assert_eq!(cancel_count.load(Ordering::SeqCst), 4);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
         assert_eq!(empty_result.len(), 1);
