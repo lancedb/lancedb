@@ -7519,7 +7519,7 @@ mod tests {
                     );
                     http::Response::builder()
                         .status(200)
-                        .body(r#"{"version":10}"#)
+                        .body(r#"{"version":10}"#.to_string())
                         .unwrap()
                 }
                 path => panic!("Unexpected path: {path}"),
