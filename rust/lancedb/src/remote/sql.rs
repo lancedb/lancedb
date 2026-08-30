@@ -377,10 +377,7 @@ impl SqlClientInner {
         .await
         .map_err(|_| sql_error(&request_id, "SQL query cancellation timed out"))?;
         let result = match result {
-            Ok(result) => {
-                attempt.resolve();
-                result
-            }
+            Ok(result) => result,
             Err(FlightError::Tonic(status)) if status.code() == tonic::Code::NotFound => {
                 attempt.resolve();
                 return Ok(CancelOutcome::NotFound(request_id));
@@ -391,9 +388,12 @@ impl SqlClientInner {
             }
             Err(error) => return Err(sql_error(&request_id, error)),
         };
-        CancelStatus::try_from(result.status)
-            .map(CancelOutcome::Status)
-            .map_err(|_| sql_error(&request_id, "SQL query returned an invalid cancel status"))
+        let status = CancelStatus::try_from(result.status)
+            .map_err(|_| sql_error(&request_id, "SQL query returned an invalid cancel status"))?;
+        if status != CancelStatus::Unspecified {
+            attempt.resolve();
+        }
+        Ok(CancelOutcome::Status(status))
     }
 
     async fn client_with_headers(
@@ -1428,6 +1428,7 @@ mod tests {
         cancel_count: Arc<AtomicUsize>,
         cancel_denied_count: Arc<AtomicUsize>,
         cancel_timeout_count: Arc<AtomicUsize>,
+        cancel_unspecified_count: Arc<AtomicUsize>,
         cancelling_response_count: Arc<AtomicUsize>,
         first_continuation_count: Arc<AtomicUsize>,
         transient_poll_failures: Arc<AtomicUsize>,
@@ -1464,6 +1465,7 @@ mod tests {
                 cancel_count: Arc::new(AtomicUsize::new(0)),
                 cancel_denied_count: Arc::new(AtomicUsize::new(0)),
                 cancel_timeout_count: Arc::new(AtomicUsize::new(0)),
+                cancel_unspecified_count: Arc::new(AtomicUsize::new(0)),
                 cancelling_response_count: Arc::new(AtomicUsize::new(0)),
                 first_continuation_count: Arc::new(AtomicUsize::new(0)),
                 transient_poll_failures: Arc::new(AtomicUsize::new(0)),
@@ -1670,7 +1672,14 @@ mod tests {
                 }
                 return Err(Status::not_found("query was not found"));
             }
-            let status = if query == "SELECT cancelling" {
+            if query == "SELECT cancel unspecified"
+                && self.cancel_unspecified_count.fetch_add(1, Ordering::SeqCst) > 0
+            {
+                return Err(Status::not_found("query cancellation completed"));
+            }
+            let status = if query == "SELECT cancel unspecified" {
+                CancelStatus::Unspecified
+            } else if query == "SELECT cancelling" {
                 if self
                     .cancelling_response_count
                     .fetch_add(1, Ordering::SeqCst)
@@ -1824,6 +1833,17 @@ mod tests {
         assert!(rejected_cancel.cancel().await.is_err());
         assert_ne!(
             rejected_cancel.describe().await.unwrap().status,
+            "cancelled"
+        );
+
+        let unspecified_cancel = timeout_client
+            .submit("SELECT cancel unspecified", &["public".to_string()])
+            .await
+            .unwrap();
+        assert!(unspecified_cancel.cancel().await.is_err());
+        unspecified_cancel.cancel().await.unwrap();
+        assert_eq!(
+            unspecified_cancel.describe().await.unwrap().status,
             "cancelled"
         );
 
@@ -2247,9 +2267,9 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 16);
+        assert_eq!(query_count.load(Ordering::SeqCst), 17);
         assert_eq!(do_get_count.load(Ordering::SeqCst), 6);
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 13);
+        assert_eq!(cancel_count.load(Ordering::SeqCst), 15);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
         assert_eq!(empty_result.len(), 1);
