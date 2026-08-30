@@ -2125,7 +2125,11 @@ mod tests {
         .await
         .expect("result preparation must start polling");
         interrupted_result_task.abort();
-        assert!(interrupted_result_task.await.unwrap_err().is_cancelled());
+        assert!(
+            interrupted_result_task
+                .await
+                .is_err_and(|error| error.is_cancelled())
+        );
         assert_eq!(
             collect_result(&interrupted_result).await.unwrap(),
             vec![expected.clone()],
