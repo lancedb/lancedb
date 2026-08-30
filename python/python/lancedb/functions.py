@@ -54,6 +54,18 @@ _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
 
 
+def _validate_gpu_wire_marker(value: Any) -> bool:
+    if value is not True:
+        raise ValueError("runtime.gpu must be true")
+    return True
+
+
+def _normalize_gpu_marker(value: bool) -> Optional[bool]:
+    if not isinstance(value, bool):
+        raise ValueError("gpu must be a boolean")
+    return True if value else None
+
+
 class _FrozenDict(dict):
     def _immutable(self, *args, **kwargs):
         raise TypeError("remote canonical values are immutable")
@@ -239,6 +251,23 @@ class PythonRuntimeSpec(_RemoteValue):
     python_version: Optional[str] = None
     environment: Optional[PythonEnvironmentSpec] = None
     env: Optional[Mapping[str, str]] = None
+    gpu: Optional[bool] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_unknown_runtime_payload(cls, value):
+        if isinstance(value, Mapping):
+            kind = value.get("kind")
+            if isinstance(kind, str) and kind not in {"python", "python_v2"}:
+                return {"kind": kind}
+        return value
+
+    @field_validator("gpu", mode="before")
+    @classmethod
+    def _validate_gpu_marker(cls, value):
+        if value is None:
+            return None
+        return _validate_gpu_wire_marker(value)
 
     @model_validator(mode="after")
     def _validate_runtime_kind(self):
@@ -247,18 +276,28 @@ class PythonRuntimeSpec(_RemoteValue):
                 raise ValueError("python runtime requires python_version")
             if self.environment is None:
                 raise ValueError("python runtime requires environment")
+            if self.gpu is not None:
+                raise ValueError("python runtime with gpu requires kind='python_v2'")
+        elif self.kind == "python_v2":
+            if self.python_version is None:
+                raise ValueError("python_v2 runtime requires python_version")
+            if self.environment is None:
+                raise ValueError("python_v2 runtime requires environment")
+            if self.gpu is None:
+                raise ValueError("python_v2 runtime requires gpu")
         else:
             object.__setattr__(self, "python_version", None)
             object.__setattr__(self, "environment", None)
             object.__setattr__(self, "env", None)
+            object.__setattr__(self, "gpu", None)
         return self
 
 
 class FunctionVersion(_RemoteValue):
     """An exact immutable Function version returned by Enterprise.
 
-    Scheduling resources, priority, concurrency, and retry policy belong to
-    the submitting Job and are not part of this identity.
+    The GPU execution requirement is part of this identity. CPU and memory sizing,
+    priority, concurrency, and retry policy belong to the execution platform.
     """
 
     name: str
@@ -996,6 +1035,7 @@ class UdfDefinition:
         pip: tuple[str, ...],
         env: Mapping[str, str],
         python_version: Optional[str],
+        gpu: bool = False,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
     ):
@@ -1024,12 +1064,14 @@ class UdfDefinition:
         signature = _infer_signature(function, input_schema, output_schema)
         source = _package_source(function)
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
+        gpu_marker = _normalize_gpu_marker(gpu)
         runtime = PythonRuntimeSpec(
-            kind="python",
+            kind="python_v2" if gpu_marker is not None else "python",
             python_version=python_version
             or f"{sys.version_info.major}.{sys.version_info.minor}",
             environment=environment_spec,
             env=environment,
+            gpu=gpu_marker,
         )
         self._function = function
         self._request = FunctionRegistrationRequest(
@@ -1075,6 +1117,7 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
@@ -1089,6 +1132,7 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ):
@@ -1121,6 +1165,10 @@ def udf(
         Environment variables included in the Function definition.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
+    gpu : bool, default False
+        Whether every remote execution requires a GPU. The execution platform
+        selects one compatible GPU for each worker. The requirement is part of
+        the immutable Function version.
 
     The packaged artifact is a snapshot: the function source plus exactly
     the module-level names it references (modules as imports, importable
@@ -1145,6 +1193,11 @@ def udf(
     ...     return value * 2
     >>> score(1.5)
     3.0
+    >>> @udf(pip=["cupy-cuda12x"], gpu=True)
+    ... def gpu_score(value: int) -> int:
+    ...     return value * 2
+    >>> gpu_score.registration_request.runtime.gpu
+    True
     """
 
     def decorate(target: Callable[..., Any]) -> UdfDefinition:
@@ -1156,6 +1209,7 @@ def udf(
             pip=tuple(pip),
             env={} if env is None else env,
             python_version=python_version,
+            gpu=gpu,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
         )

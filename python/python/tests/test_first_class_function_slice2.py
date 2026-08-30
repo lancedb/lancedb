@@ -19,7 +19,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.functions import UdfDefinition, udf
+from lancedb.functions import PythonRuntimeSpec, UdfDefinition, udf
 
 THRESHOLD = 20
 _CACHE = None
@@ -87,6 +87,58 @@ def test_udf_conda_environment():
         udf(name="both", pip=["numpy"], conda=["numpy"])(lambda value: value)
     with pytest.raises(ValueError, match="requires conda"):
         udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
+
+
+def test_udf_gpu_marker_uses_gpu_runtime():
+    @udf(pip=["cupy-cuda12x"], gpu=True)
+    def double_on_gpu(value: int) -> int:
+        return value * 2
+
+    request = json.loads(double_on_gpu.registration_request.to_canonical_json())
+    assert request["runtime"]["kind"] == "python_v2"
+    assert request["runtime"]["gpu"] is True
+
+    @udf(pip=["pyarrow"])
+    def cpu_function(value: int) -> int:
+        return value
+
+    cpu_runtime = json.loads(cpu_function.registration_request.to_canonical_json())[
+        "runtime"
+    ]
+    assert cpu_runtime["kind"] == "python"
+    assert "gpu" not in cpu_runtime
+
+    def identity(value: int) -> int:
+        return value
+
+    for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
+        with pytest.raises(ValueError, match="gpu must be a boolean"):
+            udf(name="invalid_gpu", gpu=invalid)(identity)
+
+    base_runtime = {
+        "kind": "python_v2",
+        "python_version": "3.12",
+        "environment": {"kind": "pip"},
+    }
+    runtime = PythonRuntimeSpec.model_validate({**base_runtime, "gpu": True})
+    assert runtime.gpu is True
+    for invalid in [False, 1, 0, "", "true", "1", "H100"]:
+        with pytest.raises(ValueError, match="runtime.gpu must be true"):
+            PythonRuntimeSpec.model_validate({**base_runtime, "gpu": invalid})
+
+
+def test_unknown_runtime_discards_payload_before_known_field_validation():
+    for payload in [
+        {"kind": "python_v3", "gpu": {"model": "H100"}},
+        {"kind": "python_v3", "resources": []},
+        {
+            "kind": "python_v3",
+            "environment": {"kind": []},
+            "python_version": 3.15,
+        },
+    ]:
+        runtime = PythonRuntimeSpec.model_validate(payload)
+        assert runtime.to_canonical_json() == '{"kind":"python_v3"}'
 
 
 def test_udf_packages_attribute_access_and_body_imports():
