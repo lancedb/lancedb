@@ -99,23 +99,27 @@ impl SqlClient {
         query: &str,
         default_namespace_path: &[String],
     ) -> Result<Query> {
-        validate_namespace_path(default_namespace_path)?;
-        let permit = self.queries.reserve()?;
-        let command = CommandStatementQuery {
-            query: query.to_string(),
-            transaction_id: None,
-        };
-        let descriptor = FlightDescriptor::new_cmd(command.as_any().encode_to_vec());
-        let poll_info = self.inner.poll(descriptor, default_namespace_path).await?;
-        let query_id = format!("{QUERY_ID_PREFIX}{}", uuid::Uuid::new_v4().simple());
-        let query = Arc::new(RemoteQuery::new(
-            query_id.clone(),
-            self.inner.clone(),
-            default_namespace_path.to_vec(),
-            poll_info,
-        )?);
-        self.queries.insert(query_id, query.clone(), permit);
-        Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
+        let timeout = self.inner.overall_timeout()?;
+        with_overall_timeout(timeout, "SQL query submission", async {
+            validate_namespace_path(default_namespace_path)?;
+            let permit = self.queries.reserve()?;
+            let command = CommandStatementQuery {
+                query: query.to_string(),
+                transaction_id: None,
+            };
+            let descriptor = FlightDescriptor::new_cmd(command.as_any().encode_to_vec());
+            let poll_info = self.inner.poll(descriptor, default_namespace_path).await?;
+            let query_id = format!("{QUERY_ID_PREFIX}{}", uuid::Uuid::new_v4().simple());
+            let query = Arc::new(RemoteQuery::new(
+                query_id.clone(),
+                self.inner.clone(),
+                default_namespace_path.to_vec(),
+                poll_info,
+            )?);
+            self.queries.insert(query_id, query.clone(), permit);
+            Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
+        })
+        .await
     }
 
     pub(super) async fn describe(&self, query_id: &str) -> Result<QueryDescription> {
@@ -135,6 +139,14 @@ impl SqlClient {
 }
 
 impl SqlClientInner {
+    fn overall_timeout(&self) -> Result<Option<Duration>> {
+        resolve_timeout(
+            self.client_config.timeout_config.timeout,
+            "LANCE_CLIENT_TIMEOUT",
+            None,
+        )
+    }
+
     async fn poll(
         &self,
         descriptor: FlightDescriptor,
@@ -709,6 +721,11 @@ impl RemoteQuery {
 
 impl RemoteQuery {
     async fn describe(&self) -> Result<QueryDescription> {
+        let timeout = self.client.overall_timeout()?;
+        with_overall_timeout(timeout, "SQL query description", self.describe_inner()).await
+    }
+
+    async fn describe_inner(&self) -> Result<QueryDescription> {
         self.touch();
         if self.is_cancellation_requested() {
             let state = self.state.lock().await.clone();
@@ -767,6 +784,11 @@ impl RemoteQuery {
     }
 
     async fn cancel(&self) -> Result<()> {
+        let timeout = self.client.overall_timeout()?;
+        with_overall_timeout(timeout, "SQL query cancellation", self.cancel_inner()).await
+    }
+
+    async fn cancel_inner(&self) -> Result<()> {
         self.touch();
         let _cancel_guard = self.cancel_gate.lock().await;
         if matches!(
@@ -881,31 +903,35 @@ impl QueryHandle for RemoteQueryHandle {
     }
 
     async fn result(&self) -> Result<Vec<RecordBatch>> {
-        let batches = self
-            .result
-            .get_or_try_init(|| async {
-                let info = self.query.poll_until_finished().await?;
-                let batches = tokio::select! {
-                    biased;
-                    _ = self.query.wait_for_cancellation() => {
-                        return Err(self.query.cancelled_error());
-                    }
-                    result = self.query.client.fetch_result(
-                        info,
-                        &self.query.default_namespace_path,
-                    ) => match result {
-                        Err(_) if self.query.is_cancellation_requested() => {
+        let timeout = self.query.client.overall_timeout()?;
+        with_overall_timeout(timeout, "SQL query result", async {
+            let batches = self
+                .result
+                .get_or_try_init(|| async {
+                    let info = self.query.poll_until_finished().await?;
+                    let batches = tokio::select! {
+                        biased;
+                        _ = self.query.wait_for_cancellation() => {
                             return Err(self.query.cancelled_error());
                         }
-                        result => result?,
-                    },
-                };
-                self.query.mark_result_completed()?;
-                Ok(batches)
-            })
-            .await?;
-        self.query.mark_result_completed()?;
-        Ok(batches.clone())
+                        result = self.query.client.fetch_result(
+                            info,
+                            &self.query.default_namespace_path,
+                        ) => match result {
+                            Err(_) if self.query.is_cancellation_requested() => {
+                                return Err(self.query.cancelled_error());
+                            }
+                            result => result?,
+                        },
+                    };
+                    self.query.mark_result_completed()?;
+                    Ok(batches)
+                })
+                .await?;
+            self.query.mark_result_completed()?;
+            Ok(batches.clone())
+        })
+        .await
     }
 
     async fn cancel(&self) -> Result<()> {
@@ -1216,6 +1242,23 @@ fn resolve_timeout(
     }
 }
 
+async fn with_overall_timeout<T>(
+    timeout: Option<Duration>,
+    operation: &str,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match timeout {
+        Some(timeout) => {
+            tokio::time::timeout(timeout, future)
+                .await
+                .map_err(|_| Error::Runtime {
+                    message: format!("{operation} timed out"),
+                })?
+        }
+        None => future.await,
+    }
+}
+
 fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
     Error::Runtime {
         message: format!("SQL error (request_id={request_id}): {error}"),
@@ -1254,6 +1297,15 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(1_100)).await;
             }
             Ok(HashMap::new())
+        }
+    }
+
+    fn assert_overall_timeout<T>(result: Result<T>, operation: &str) {
+        match result {
+            Err(Error::Runtime { message }) => {
+                assert_eq!(message, format!("SQL query {operation} timed out"));
+            }
+            _ => panic!("SQL query {operation} did not honor the overall timeout"),
         }
     }
 
@@ -1584,6 +1636,48 @@ mod tests {
         assert_eq!(client.initialized_client_count().await, 0);
         assert!(!format!("{client:?}").contains("test-key"));
         assert!(!format!("{client:?}").contains("static-secret"));
+
+        let mut timeout_client_config = ClientConfig::default();
+        timeout_client_config.timeout_config.timeout = Some(Duration::from_millis(50));
+        let timeout_header_provider = Arc::new(DelayedHeaderProvider::default());
+        timeout_client_config.header_provider = Some(timeout_header_provider.clone());
+        let timeout_client = SqlClient::new(
+            "analytics".to_string(),
+            Some("tenant/production".to_string()),
+            "test-key".to_string(),
+            None,
+            Some(format!("grpc://{address}")),
+            timeout_client_config,
+        );
+        timeout_header_provider
+            .delay_next
+            .store(true, Ordering::SeqCst);
+        assert_overall_timeout(
+            timeout_client
+                .submit("SELECT overall timeout", &["public".to_string()])
+                .await,
+            "submission",
+        );
+        let timeout_query = timeout_client
+            .submit("SELECT overall timeout", &["public".to_string()])
+            .await
+            .unwrap();
+        timeout_header_provider
+            .delay_next
+            .store(true, Ordering::SeqCst);
+        assert_overall_timeout(
+            timeout_client.describe(timeout_query.id()).await,
+            "description",
+        );
+        timeout_header_provider
+            .delay_next
+            .store(true, Ordering::SeqCst);
+        assert_overall_timeout(timeout_query.result().await, "result");
+        timeout_header_provider
+            .delay_next
+            .store(true, Ordering::SeqCst);
+        assert_overall_timeout(timeout_query.cancel().await, "cancellation");
+        timeout_query.cancel().await.unwrap();
 
         let first = client
             .submit("SELECT 'super-secret'", &["public".to_string()])
@@ -1990,9 +2084,9 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 12);
+        assert_eq!(query_count.load(Ordering::SeqCst), 13);
         assert_eq!(do_get_count.load(Ordering::SeqCst), 6);
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 7);
+        assert_eq!(cancel_count.load(Ordering::SeqCst), 8);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
         assert_eq!(empty_result.len(), 1);
