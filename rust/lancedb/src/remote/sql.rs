@@ -12,7 +12,8 @@ use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
-    CancelFlightInfoRequest, CancelStatus, FlightClient, FlightDescriptor, FlightInfo, PollInfo,
+    Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
+    FlightDescriptor, FlightInfo, PollInfo,
 };
 use futures::TryStreamExt;
 use prost::Message;
@@ -49,7 +50,12 @@ struct SqlClientInner {
     host_override: Option<String>,
     sql_host_override: Option<String>,
     client_config: ClientConfig,
-    client: Arc<OnceCell<FlightServiceClient<Channel>>>,
+    client: Arc<OnceCell<SqlConnection>>,
+}
+
+struct SqlConnection {
+    channel: Channel,
+    client: FlightServiceClient<Channel>,
 }
 
 enum CancelOutcome {
@@ -294,7 +300,7 @@ impl SqlClientInner {
         &self,
         info: FlightInfo,
         default_namespace_path: &[String],
-        request_dispatched: &AtomicBool,
+        request_dispatched: Arc<AtomicBool>,
     ) -> Result<CancelOutcome> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let read_timeout = resolve_timeout(
@@ -303,14 +309,41 @@ impl SqlClientInner {
             Some(DEFAULT_READ_TIMEOUT),
         )?
         .unwrap();
-        let mut client = self
-            .client_with_headers(default_namespace_path, &request_id)
-            .await?;
-        request_dispatched.store(true, Ordering::SeqCst);
-        let result = tokio::time::timeout(
-            read_timeout,
-            client.cancel_flight_info(CancelFlightInfoRequest::new(info)),
+        let connection = self.connection(&request_id).await?;
+        let headers = self.headers(default_namespace_path, &request_id).await?;
+        let metadata = client_with_headers(connection.client.clone(), &headers)?
+            .metadata()
+            .clone();
+        let mut client = FlightServiceClient::with_interceptor(
+            connection.channel.clone(),
+            move |request: tonic::Request<()>| {
+                request_dispatched.store(true, Ordering::SeqCst);
+                Ok(request)
+            },
         )
+        .max_decoding_message_size(MAX_SQL_MESSAGE_SIZE);
+        let action = Action::new(
+            "CancelFlightInfo",
+            CancelFlightInfoRequest::new(info).encode_to_vec(),
+        );
+        let mut request = tonic::Request::new(action);
+        *request.metadata_mut() = metadata;
+        let result = tokio::time::timeout(read_timeout, async {
+            let response = client
+                .do_action(request)
+                .await
+                .map_err(FlightError::Tonic)?;
+            let response = response
+                .into_inner()
+                .message()
+                .await
+                .map_err(FlightError::Tonic)?
+                .ok_or_else(|| {
+                    FlightError::protocol("Received no response for cancel_flight_info call")
+                })?;
+            CancelFlightInfoResult::decode(response.body)
+                .map_err(|err| FlightError::DecodeError(err.to_string()))
+        })
         .await
         .map_err(|_| sql_error(&request_id, "SQL query cancellation timed out"))?;
         let result = match result {
@@ -330,22 +363,24 @@ impl SqlClientInner {
         default_namespace_path: &[String],
         request_id: &str,
     ) -> Result<FlightClient> {
-        let base = self
-            .client
+        let connection = self.connection(request_id).await?;
+        let headers = self.headers(default_namespace_path, request_id).await?;
+        client_with_headers(connection.client.clone(), &headers)
+    }
+
+    async fn connection(&self, request_id: &str) -> Result<&SqlConnection> {
+        self.client
             .get_or_try_init(|| async {
                 let target = resolve_sql_host_override(
                     self.host_override.as_deref(),
                     self.sql_host_override.as_deref(),
                 )?;
                 let channel = connect_channel(&target, &self.client_config, request_id).await?;
-                Ok::<_, Error>(
-                    FlightServiceClient::new(channel)
-                        .max_decoding_message_size(MAX_SQL_MESSAGE_SIZE),
-                )
+                let client = FlightServiceClient::new(channel.clone())
+                    .max_decoding_message_size(MAX_SQL_MESSAGE_SIZE);
+                Ok::<_, Error>(SqlConnection { channel, client })
             })
-            .await?;
-        let headers = self.headers(default_namespace_path, request_id).await?;
-        client_with_headers(base.clone(), &headers)
+            .await
     }
 
     async fn headers(
@@ -512,7 +547,7 @@ struct RemoteQuery {
     terminal_at: OnceLock<Instant>,
     last_accessed: StdMutex<Instant>,
     lifecycle: StdMutex<QueryLifecycle>,
-    cancel_request_dispatched: AtomicBool,
+    cancel_request_dispatched: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -552,7 +587,7 @@ impl RemoteQuery {
             terminal_at,
             last_accessed: StdMutex::new(Instant::now()),
             lifecycle: StdMutex::new(lifecycle),
-            cancel_request_dispatched: AtomicBool::new(false),
+            cancel_request_dispatched: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -814,7 +849,7 @@ impl RemoteQuery {
                     .cancel(
                         info,
                         &self.default_namespace_path,
-                        &self.cancel_request_dispatched,
+                        self.cancel_request_dispatched.clone(),
                     )
                     .await
                 {
@@ -1575,6 +1610,9 @@ mod tests {
                     return Err(Status::not_found("query cancellation completed"));
                 }
             }
+            if query == "SELECT cancel missing" {
+                return Err(Status::not_found("query was not found"));
+            }
             let status = if query == "SELECT cancelling" {
                 if self
                     .cancelling_response_count
@@ -1706,6 +1744,20 @@ mod tests {
             .store(true, Ordering::SeqCst);
         assert_overall_timeout(timeout_query.cancel().await, "cancellation");
         timeout_query.cancel().await.unwrap();
+
+        let pre_dispatch_timeout = timeout_client
+            .submit("SELECT cancel missing", &["public".to_string()])
+            .await
+            .unwrap();
+        timeout_header_provider
+            .delay_next
+            .store(true, Ordering::SeqCst);
+        assert_overall_timeout(pre_dispatch_timeout.cancel().await, "cancellation");
+        assert!(pre_dispatch_timeout.cancel().await.is_err());
+        assert_ne!(
+            pre_dispatch_timeout.describe().await.unwrap().status,
+            "cancelled"
+        );
 
         let uncertain_cancel = timeout_client
             .submit("SELECT cancel timeout", &["public".to_string()])
@@ -2127,9 +2179,9 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 14);
+        assert_eq!(query_count.load(Ordering::SeqCst), 15);
         assert_eq!(do_get_count.load(Ordering::SeqCst), 6);
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 10);
+        assert_eq!(cancel_count.load(Ordering::SeqCst), 11);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
         assert_eq!(empty_result.len(), 1);
