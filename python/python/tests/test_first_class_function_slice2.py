@@ -89,21 +89,14 @@ def test_udf_conda_environment():
         udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
 
 
-def test_udf_gpu_requirement_uses_gpu_runtime():
-    @udf(pip=["cupy-cuda12x"], gpu=1)
+def test_udf_gpu_marker_uses_gpu_runtime():
+    @udf(pip=["cupy-cuda12x"], gpu=True)
     def double_on_gpu(value: int) -> int:
         return value * 2
 
     request = json.loads(double_on_gpu.registration_request.to_canonical_json())
     assert request["runtime"]["kind"] == "python_v2"
-    assert request["runtime"]["gpu"] == "1"
-
-    @udf(pip=["cupy-cuda12x"], gpu="H100:8")
-    def double_on_h100(value: int) -> int:
-        return value * 2
-
-    h100_request = json.loads(double_on_h100.registration_request.to_canonical_json())
-    assert h100_request["runtime"]["gpu"] == "H100:8"
+    assert request["runtime"]["gpu"] is True
 
     @udf(pip=["pyarrow"])
     def cpu_function(value: int) -> int:
@@ -118,8 +111,8 @@ def test_udf_gpu_requirement_uses_gpu_runtime():
     def identity(value: int) -> int:
         return value
 
-    for invalid in [0, -1, 1.5, True, "", "0", "01", " 1"]:
-        with pytest.raises(ValueError):
+    for invalid in [None, 0, 1, -1, 1.5, "", "true", "1", "H100"]:
+        with pytest.raises(ValueError, match="gpu must be a boolean"):
             udf(name="invalid_gpu", gpu=invalid)(identity)
 
     base_runtime = {
@@ -127,11 +120,10 @@ def test_udf_gpu_requirement_uses_gpu_runtime():
         "python_version": "3.12",
         "environment": {"kind": "pip"},
     }
-    for requirement in ["H100", "H100:8"]:
-        runtime = PythonRuntimeSpec.model_validate({**base_runtime, "gpu": requirement})
-        assert runtime.gpu == requirement
-    for invalid in [1, 0, "", "0", "01", " 1"]:
-        with pytest.raises(ValueError):
+    runtime = PythonRuntimeSpec.model_validate({**base_runtime, "gpu": True})
+    assert runtime.gpu is True
+    for invalid in [False, 1, 0, "", "true", "1", "H100"]:
+        with pytest.raises(ValueError, match="runtime.gpu must be true"):
             PythonRuntimeSpec.model_validate({**base_runtime, "gpu": invalid})
 
 
