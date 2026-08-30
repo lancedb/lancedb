@@ -801,20 +801,7 @@ impl RemoteQuery {
             }
             let state = self.state.lock().await.clone();
             if let Some(info) = state.info {
-                if !info.schema.is_empty() {
-                    let request_id = uuid::Uuid::new_v4().to_string();
-                    let schema = Arc::new(
-                        info.try_decode_schema()
-                            .map_err(|err| sql_error(&request_id, err))?,
-                    );
-                    return Ok(PreparedSqlResult {
-                        schema,
-                        next_endpoint: 0,
-                        endpoint_stream: None,
-                        buffered_batch: None,
-                    });
-                }
-                if let Some(endpoint) = info.endpoint.into_iter().next() {
+                if let Some(endpoint) = info.endpoint.first().cloned() {
                     let mut endpoint_stream = tokio::select! {
                         biased;
                         _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
@@ -843,8 +830,17 @@ impl RemoteQuery {
                     });
                 }
                 if state.flight_descriptor.is_none() {
+                    let schema = if info.schema.is_empty() {
+                        Arc::new(Schema::empty())
+                    } else {
+                        let request_id = uuid::Uuid::new_v4().to_string();
+                        Arc::new(
+                            info.try_decode_schema()
+                                .map_err(|err| sql_error(&request_id, err))?,
+                        )
+                    };
                     return Ok(PreparedSqlResult {
-                        schema: Arc::new(Schema::empty()),
+                        schema,
                         next_endpoint: 0,
                         endpoint_stream: None,
                         buffered_batch: None,
@@ -1554,7 +1550,7 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 mod tests {
     use std::sync::atomic::AtomicUsize;
 
-    use arrow_array::{Int64Array, StringArray};
+    use arrow_array::{Array, Int64Array, StringArray, StringDictionaryBuilder, types::Int32Type};
     use arrow_flight::encode::FlightDataEncoderBuilder;
     use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
     use arrow_flight::sql::{Any, CommandStatementQuery};
@@ -1622,6 +1618,7 @@ mod tests {
         headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
         result: RecordBatch,
         large_result: RecordBatch,
+        dictionary_result: RecordBatch,
     }
 
     impl Default for TestSqlService {
@@ -1646,6 +1643,16 @@ mod tests {
                 ]))],
             )
             .unwrap();
+            let mut dictionary_builder = StringDictionaryBuilder::<Int32Type>::new();
+            dictionary_builder.append("dictionary value").unwrap();
+            let dictionary = dictionary_builder.finish();
+            let dictionary_schema = Arc::new(Schema::new(vec![Field::new(
+                "value",
+                dictionary.data_type().clone(),
+                false,
+            )]));
+            let dictionary_result =
+                RecordBatch::try_new(dictionary_schema, vec![Arc::new(dictionary)]).unwrap();
             Self {
                 query_count: Arc::new(AtomicUsize::new(0)),
                 do_get_count: Arc::new(AtomicUsize::new(0)),
@@ -1660,6 +1667,7 @@ mod tests {
                 headers: Arc::new(std::sync::Mutex::new(Vec::new())),
                 result,
                 large_result,
+                dictionary_result,
             }
         }
     }
@@ -1783,6 +1791,8 @@ mod tests {
             if query != "SELECT empty" {
                 let schema = if query == "SELECT large message" {
                     self.large_result.schema_ref()
+                } else if query == "SELECT dictionary" {
+                    self.dictionary_result.schema_ref()
                 } else {
                     self.result.schema_ref()
                 };
@@ -1815,6 +1825,8 @@ mod tests {
             let large = ticket == b"SELECT large message";
             let result = if large {
                 self.large_result.clone()
+            } else if ticket == b"SELECT dictionary" {
+                self.dictionary_result.clone()
             } else {
                 self.result.clone()
             };
@@ -2195,6 +2207,26 @@ mod tests {
             5 * 1024 * 1024,
         );
 
+        let dictionary = client
+            .submit("SELECT dictionary", &["public".to_string()])
+            .await
+            .unwrap();
+        let dictionary_result = collect_result(&dictionary).await.unwrap();
+        assert_eq!(dictionary_result.len(), 1);
+        assert_eq!(
+            dictionary_result[0].schema().field(0).data_type(),
+            &DataType::Utf8,
+        );
+        assert_eq!(
+            dictionary_result[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "dictionary value",
+        );
+
         let cancelled = client
             .submit(
                 "SELECT cancelled",
@@ -2551,8 +2583,8 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 20);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 16);
+        assert_eq!(query_count.load(Ordering::SeqCst), 21);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 17);
         assert_eq!(cancel_count.load(Ordering::SeqCst), 15);
         assert_eq!(first_result, vec![expected.clone()]);
         assert!(empty_result.is_empty());
