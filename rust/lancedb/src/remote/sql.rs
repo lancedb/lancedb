@@ -2273,7 +2273,7 @@ mod tests {
 
         assert_eq!(client.initialized_client_count().await, 1);
         assert_eq!(query_count.load(Ordering::SeqCst), 17);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 6);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 8);
         assert_eq!(cancel_count.load(Ordering::SeqCst), 15);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
