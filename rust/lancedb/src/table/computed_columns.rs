@@ -559,6 +559,16 @@ fn resolve_field_path<'a>(schema: &'a ArrowSchema, path: &str) -> Result<&'a Arr
     let mut field = schema
         .field_with_name(root)
         .map_err(|_| invalid_function(format!("unknown Function input column '{path}'")))?;
+    if field
+        .metadata()
+        .get(COMPUTED_COLUMN_META_KEY)
+        .map(String::as_str)
+        == Some("true")
+    {
+        return Err(invalid_function(format!(
+            "Function input '{path}' is computed; computed-on-computed bindings are not supported"
+        )));
+    }
     for child in children {
         let DataType::Struct(fields) = field.data_type() else {
             return Err(invalid_function(format!(
@@ -667,17 +677,6 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
     let mut input_fields = Vec::with_capacity(binding.inputs().len());
     for input in binding.inputs() {
         let field = resolve_field_path(schema, &input.field_path)?;
-        if field
-            .metadata()
-            .get(COMPUTED_COLUMN_META_KEY)
-            .map(String::as_str)
-            == Some("true")
-        {
-            return Err(invalid_function(format!(
-                "Function input '{}' is computed",
-                input.field_path
-            )));
-        }
         // A non-null source is within a nullable parameter's domain. The
         // reverse can pass nulls to a Function that does not accept them.
         if field.is_nullable() && !input.nullable {
@@ -829,16 +828,6 @@ pub(crate) fn plan_function_application(
             ))
         })?;
         let field = resolve_field_path(schema, path)?;
-        if field
-            .metadata()
-            .get(COMPUTED_COLUMN_META_KEY)
-            .map(String::as_str)
-            == Some("true")
-        {
-            return Err(invalid_function(format!(
-                "Function input '{path}' is computed; computed-on-computed bindings are not supported"
-            )));
-        }
         let parameter_field = ArrowField::new(
             input.parameter.clone(),
             field.data_type().clone(),
@@ -2828,6 +2817,35 @@ mod tests {
         schema = ArrowSchema::new(vec![title, schema.field(1).as_ref().clone()]);
         let err =
             plan_function_application(&schema, &named_struct_application("{}"), None).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("computed-on-computed"))
+        );
+
+        let nested_title = ArrowField::new(
+            "title",
+            DataType::Struct(vec![ArrowField::new("value", DataType::Utf8, true)].into()),
+            true,
+        )
+        .with_metadata(HashMap::from([
+            (COMPUTED_COLUMN_META_KEY.to_string(), "true".to_string()),
+            (KIND_META_KEY.to_string(), FUNCTION_KIND.to_string()),
+        ]));
+        let nested_schema = ArrowSchema::new(vec![nested_title, schema.field(1).as_ref().clone()]);
+        let nested_application = FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"text_features","version":"fv_exact"},
+                "inputs":[
+                    {"parameter":"title","kind":"column","value":{"path":"title.value"}},
+                    {"parameter":"body","kind":"column","value":{"path":"body"}}
+                ],
+                "output":{"kind":"named_struct","fields":[
+                    {"name":"normalized_text","arrow_type":"utf8","nullable":false},
+                    {"name":"token_count","arrow_type":"int64","nullable":false}
+                ]}
+            }"#,
+        )
+        .unwrap();
+        let err = plan_function_application(&nested_schema, &nested_application, None).unwrap_err();
         assert!(
             matches!(&err, Error::InvalidInput { message } if message.contains("computed-on-computed"))
         );
