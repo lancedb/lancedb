@@ -396,8 +396,9 @@ def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
     for outside in [
         pa.list_(pa.field("item", pa.float32(), nullable=False, metadata={"k": "v"})),
         pa.list_(pa.field("item", pa.float32(), nullable=False), 0),
-        pa.list_(pa.float32(), 3),
-        pa.list_(pa.field("custom", pa.float32(), nullable=False), 3),
+        pa.list_(
+            pa.field("item", pa.float32(), nullable=False, metadata={"k": "v"}), 3
+        ),
     ]:
         with pytest.raises(TypeError, match="unsupported Arrow type"):
             _canonical_arrow_type(outside)
@@ -407,6 +408,25 @@ def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
         )
         == "fixed_size_list<float32, 3>"
     )
+    fixed = json.loads(_canonical_arrow_type(pa.list_(pa.float32(), 3)))
+    assert fixed == {
+        "type": "fixed_size_list",
+        "fields": [
+            {
+                "name": "item",
+                "nullable": True,
+                "type": {"type": "float32"},
+            }
+        ],
+        "length": 3,
+    }
+    fixed_named = pa.list_(pa.field("custom", pa.float32(), nullable=False), 3)
+    assert json.loads(_canonical_arrow_type(fixed_named))["fields"][0]["name"] == (
+        "custom"
+    )
+    large = json.loads(_canonical_arrow_type(pa.large_list(pa.float32())))
+    assert large["type"] == "large_list"
+    assert large["fields"][0]["nullable"] is True
 
     for invalid_struct in [
         pa.struct([]),
@@ -643,6 +663,19 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         )
         def nullable_explicit(value):
             return value
+
+    for invalid_field in [
+        pa.field("", pa.int32(), nullable=False),
+        pa.field("result", pa.int32(), nullable=False, metadata={"k": "v"}),
+    ]:
+        with pytest.raises(TypeError, match="unsupported Arrow type"):
+
+            @udf(
+                input_schema=pa.schema([pa.field("value", pa.int64())]),
+                output_schema=pa.schema([invalid_field]),
+            )
+            def invalid_explicit_field(value):
+                return value
 
 
 def test_local_function_catalog_operations_are_not_supported(tmp_path):

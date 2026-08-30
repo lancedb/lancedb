@@ -536,17 +536,21 @@ def _grammar_list_item(data_type: pa.DataType) -> Optional[str]:
     return _grammar_arrow_type(child.type)
 
 
-def _exact_arrow_field(field: pa.Field) -> dict[str, Any]:
+def _validate_exact_arrow_field(field: pa.Field) -> None:
     if not field.name:
         raise TypeError(
-            "unsupported Arrow type for Function signature: nested field names "
+            "unsupported Arrow type for Function signature: field names "
             "must not be empty"
         )
     if field.metadata:
         raise TypeError(
-            "unsupported Arrow type for Function signature: nested field metadata "
+            "unsupported Arrow type for Function signature: field metadata "
             f"is not supported, got {field}"
         )
+
+
+def _exact_arrow_field(field: pa.Field) -> dict[str, Any]:
+    _validate_exact_arrow_field(field)
     return {
         "name": field.name,
         "nullable": field.nullable,
@@ -576,12 +580,6 @@ def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
         or pa.types.is_fixed_size_list(data_type)
     ):
         if pa.types.is_fixed_size_list(data_type):
-            child = data_type.value_field
-            if child.name != "item" or child.nullable or child.metadata:
-                raise TypeError(
-                    "unsupported Arrow type for Function signature: fixed-size list "
-                    "items must be a non-nullable field named 'item' without metadata"
-                )
             if data_type.list_size <= 0:
                 raise TypeError(
                     f"unsupported Arrow type for Function signature: {data_type}"
@@ -702,6 +700,8 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         raise ValueError("named-struct Function output must contain at least one field")
     if any(field.nullable for field in fields):
         raise ValueError("Function output fields must be non-nullable")
+    for field in fields:
+        _validate_exact_arrow_field(field)
     names = [field.name for field in fields]
     if len(set(names)) != len(names):
         raise ValueError("Function output field names must be unique")
