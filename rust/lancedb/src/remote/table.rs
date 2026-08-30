@@ -7465,6 +7465,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_function_column_allows_an_existing_binding() {
+        let binding = crate::function::FunctionBinding::from_json(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        let binding_metadata = crate::table::computed_columns::function_bindings_metadata(
+            std::slice::from_ref(&binding),
+        )
+        .unwrap();
+        let mut fields = vec![
+            Field::new("title", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ];
+        fields.extend(binding.outputs().iter().map(|output| {
+            let data_type = match output.arrow_type.as_str() {
+                "utf8" => DataType::Utf8,
+                "int64" => DataType::Int64,
+                other => panic!("unexpected fixture output type {other}"),
+            };
+            Field::new(&output.output_name, data_type, true).with_metadata(
+                crate::table::computed_columns::function_computed_column_metadata(
+                    binding.binding_id(),
+                    output.output_ordinal,
+                    &["title".into(), "body".into()],
+                ),
+            )
+        }));
+        let schema = Schema::new_with_metadata(
+            fields,
+            HashMap::from([(
+                crate::table::computed_columns::FUNCTION_BINDINGS_META_KEY.to_string(),
+                binding_metadata,
+            )]),
+        );
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/add_columns/" => {
+                    let actual: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(
+                        actual["new_columns"],
+                        serde_json::json!([
+                            {"name":"secondary_text","all_null":true},
+                            {"name":"secondary_token_count","all_null":true}
+                        ])
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":10}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {path}"),
+            });
+        let application = crate::function::FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"text_features","version":"fv_01K3TEXT"},
+                "inputs":[
+                    {"parameter":"title","kind":"column","value":{"path":"title"}},
+                    {"parameter":"body","kind":"column","value":{"path":"body"}}
+                ],
+                "output":{"kind":"named_struct","fields":[
+                    {"name":"normalized_text","arrow_type":"utf8","nullable":false},
+                    {"name":"token_count","arrow_type":"int64","nullable":false}
+                ]},
+                "columns":{
+                    "normalized_text":"secondary_text",
+                    "token_count":"secondary_token_count"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let result = table
+            .add_columns()
+            .function(application)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 10);
+    }
+
+    #[tokio::test]
     async fn test_add_fixed_size_list_function_column_declares_the_vector_type() {
         let table = Table::new_with_handler("my_table", |request| {
             match request.url().path() {
