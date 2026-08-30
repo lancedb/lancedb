@@ -574,7 +574,14 @@ fn resolve_field_path<'a>(schema: &'a ArrowSchema, path: &str) -> Result<&'a Arr
     Ok(field)
 }
 
-fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
+fn canonical_input_arrow_type(field: &ArrowField) -> Result<String> {
+    if field.is_blob_v2() {
+        return Ok("blob_v2".to_string());
+    }
+    let schema =
+        lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![field.clone()]))
+            .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
+    let field = schema.fields.into_iter().next().unwrap();
     if field.r#type.fields.is_none() && field.r#type.length.is_none() {
         Ok(field.r#type.r#type.clone())
     } else {
@@ -663,6 +670,90 @@ fn parse_output_arrow_type(raw: &str) -> Result<JsonArrowDataType> {
     Ok(data_type)
 }
 
+fn parse_output_arrow_field(name: &str, nullable: bool, raw: &str) -> Result<JsonArrowField> {
+    if raw.trim() == "blob_v2" {
+        let schema =
+            lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![crate::blob(
+                name, nullable,
+            )]))
+            .map_err(|e| invalid_function(format!("invalid Function Blob type: {e}")))?;
+        return Ok(schema.fields.into_iter().next().unwrap());
+    }
+
+    fn parse_nested(name: &str, nullable: bool, raw: &str) -> Result<JsonArrowField> {
+        let raw = raw.trim();
+        if raw == "blob_v2" {
+            return parse_output_arrow_field(name, nullable, raw);
+        }
+        if let Some(inner) = raw
+            .strip_prefix("list<")
+            .and_then(|value| value.strip_suffix('>'))
+        {
+            let mut data_type = JsonArrowDataType::new("list".to_string());
+            data_type.fields = Some(vec![parse_nested("item", false, inner)?]);
+            return Ok(JsonArrowField::new(name.to_string(), nullable, data_type));
+        }
+        if let Some(inner) = raw
+            .strip_prefix("large_list<")
+            .and_then(|value| value.strip_suffix('>'))
+        {
+            let mut data_type = JsonArrowDataType::new("large_list".to_string());
+            data_type.fields = Some(vec![parse_nested("item", false, inner)?]);
+            return Ok(JsonArrowField::new(name.to_string(), nullable, data_type));
+        }
+        if let Some((inner, size)) = split_fixed_size_list(raw) {
+            let mut data_type = JsonArrowDataType::new("fixed_size_list".to_string());
+            data_type.fields = Some(vec![parse_nested("item", false, inner)?]);
+            data_type.length = Some(i64::from(size));
+            return Ok(JsonArrowField::new(name.to_string(), nullable, data_type));
+        }
+        Ok(JsonArrowField::new(
+            name.to_string(),
+            nullable,
+            parse_output_arrow_type(raw)?,
+        ))
+    }
+
+    let field = parse_nested(name, nullable, raw)?;
+    lance_namespace::schema::convert_json_arrow_field(&field)
+        .map_err(|e| invalid_function(format!("unsupported Function Arrow type '{raw}': {e}")))?;
+    Ok(field)
+}
+
+fn function_fields_equivalent(actual: &ArrowField, expected: &ArrowField) -> bool {
+    if actual.is_blob_v2() || expected.is_blob_v2() {
+        return actual.is_blob_v2()
+            && expected.is_blob_v2()
+            && actual.data_type() == expected.data_type();
+    }
+    match (actual.data_type(), expected.data_type()) {
+        (DataType::Struct(actual), DataType::Struct(expected)) => {
+            actual.len() == expected.len()
+                && actual.iter().zip(expected).all(|(actual, expected)| {
+                    actual.name() == expected.name()
+                        && actual.is_nullable() == expected.is_nullable()
+                        && function_fields_equivalent(actual, expected)
+                })
+        }
+        (DataType::List(actual), DataType::List(expected))
+        | (DataType::LargeList(actual), DataType::LargeList(expected)) => {
+            actual.name() == expected.name()
+                && actual.is_nullable() == expected.is_nullable()
+                && function_fields_equivalent(actual, expected)
+        }
+        (
+            DataType::FixedSizeList(actual, actual_size),
+            DataType::FixedSizeList(expected, expected_size),
+        ) => {
+            actual_size == expected_size
+                && actual.name() == expected.name()
+                && actual.is_nullable() == expected.is_nullable()
+                && function_fields_equivalent(actual, expected)
+        }
+        _ => actual.data_type() == expected.data_type(),
+    }
+}
+
 fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding) -> Result<()> {
     let mut input_fields = Vec::with_capacity(binding.inputs().len());
     for input in binding.inputs() {
@@ -694,12 +785,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             input.nullable,
         )
         .with_metadata(field.metadata().clone());
-        let json = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
-            parameter_field.clone(),
-        ]))
-        .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
-        let json_field = json.fields.into_iter().next().unwrap();
-        if canonical_input_arrow_type(&json_field)? != input.arrow_type {
+        if canonical_input_arrow_type(&parameter_field)? != input.arrow_type {
             return Err(invalid_function(format!(
                 "Function input '{}' type no longer matches binding '{}'",
                 input.field_path,
@@ -737,21 +823,17 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 binding.binding_id()
             )));
         }
-        let expected_type = parse_output_arrow_type(&output.arrow_type)?;
-        let expected_type = lance_namespace::schema::convert_json_arrow_type(&expected_type)
+        let expected_field = parse_output_arrow_field(field.name(), true, &output.arrow_type)?;
+        let expected_field = lance_namespace::schema::convert_json_arrow_field(&expected_field)
             .map_err(|e| invalid_function(format!("invalid Function output type: {e}")))?;
-        if field.data_type() != &expected_type {
+        if !function_fields_equivalent(field, &expected_field) {
             return Err(invalid_function(format!(
                 "Function output '{}' type no longer matches binding '{}'",
                 output.output_name,
                 binding.binding_id()
             )));
         }
-        output_fields.push(ArrowField::new(
-            field.name().clone(),
-            field.data_type().clone(),
-            true,
-        ));
+        output_fields.push(expected_field);
     }
     let output_schema =
         lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(output_fields))
@@ -845,15 +927,10 @@ pub(crate) fn plan_function_application(
             field.is_nullable(),
         )
         .with_metadata(field.metadata().clone());
-        let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
-            parameter_field.clone(),
-        ]))
-        .map_err(|e| invalid_function(format!("invalid Function input schema: {e}")))?;
-        let json_field = input_schema.fields.into_iter().next().unwrap();
         input_bindings.push(FunctionInputTarget {
             parameter: input.parameter.clone(),
             field_path: path.to_string(),
-            arrow_type: canonical_input_arrow_type(&json_field)?,
+            arrow_type: canonical_input_arrow_type(&parameter_field)?,
             nullable: field.is_nullable(),
         });
         input_fields.push(parameter_field);
@@ -882,16 +959,19 @@ pub(crate) fn plan_function_application(
                     "Function logical outputs must be non-nullable during NULL assignment",
                 ));
             }
-            let data_type =
-                parse_output_arrow_type(output.arrow_type.as_deref().ok_or_else(|| {
+            let output_field = parse_output_arrow_field(
+                name,
+                true,
+                output.arrow_type.as_deref().ok_or_else(|| {
                     invalid_function("scalar Function output is missing its Arrow type")
-                })?)?;
+                })?,
+            )?;
             outputs.push(FunctionOutputTarget {
                 result_field: WHOLE_RESULT_FIELD.to_string(),
                 output_name: name.to_string(),
                 output_ordinal: 0,
             });
-            output_fields.push(JsonArrowField::new(name.to_string(), true, data_type));
+            output_fields.push(output_field);
         }
         "named_struct" => {
             if output.fields.is_empty() {
@@ -935,13 +1015,7 @@ pub(crate) fn plan_function_application(
                 let fields = output
                     .fields
                     .iter()
-                    .map(|field| {
-                        Ok(JsonArrowField::new(
-                            field.name.clone(),
-                            false,
-                            parse_output_arrow_type(&field.arrow_type)?,
-                        ))
-                    })
+                    .map(|field| parse_output_arrow_field(&field.name, false, &field.arrow_type))
                     .collect::<Result<Vec<_>>>()?;
                 let mut data_type = JsonArrowDataType::new("struct".to_string());
                 data_type.fields = Some(fields);
@@ -968,11 +1042,7 @@ pub(crate) fn plan_function_application(
                         output_name: name.clone(),
                         output_ordinal: ordinal as u32,
                     });
-                    output_fields.push(JsonArrowField::new(
-                        name.clone(),
-                        true,
-                        parse_output_arrow_type(&field.arrow_type)?,
-                    ));
+                    output_fields.push(parse_output_arrow_field(name, true, &field.arrow_type)?);
                 }
             }
         }
@@ -2570,6 +2640,44 @@ mod tests {
             }}"#
         ))
         .unwrap()
+    }
+
+    fn blob_function_application() -> FunctionApplication {
+        FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"copy_blob","version":"fv_exact"},
+                "inputs":[
+                    {"parameter":"image","kind":"column","value":{"path":"image"}}
+                ],
+                "output":{"kind":"scalar","arrow_type":"blob_v2","nullable":false}
+            }"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_blob_function_input_uses_the_semantic_binding_type() {
+        let schema = ArrowSchema::new(vec![crate::blob("image", true)]);
+        let plan =
+            plan_function_application(&schema, &blob_function_application(), Some("copy")).unwrap();
+
+        assert_eq!(plan.input_bindings[0].arrow_type, "blob_v2");
+        let input = lance_namespace::schema::convert_json_arrow_field(&plan.input_schema.fields[0])
+            .unwrap();
+        assert!(input.is_blob_v2());
+    }
+
+    #[test]
+    fn test_blob_function_output_is_plannable() {
+        let schema = ArrowSchema::new(vec![crate::blob("image", true)]);
+        let plan =
+            plan_function_application(&schema, &blob_function_application(), Some("copy")).unwrap();
+
+        let output =
+            lance_namespace::schema::convert_json_arrow_field(&plan.output_schema.fields[0])
+                .unwrap();
+        assert_eq!(output.name(), "copy");
+        assert!(output.is_blob_v2());
     }
 
     fn function_binding_schema(title_nullable: bool, body_nullable: bool) -> ArrowSchema {
