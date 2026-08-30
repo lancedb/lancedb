@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -293,6 +294,7 @@ impl SqlClientInner {
         &self,
         info: FlightInfo,
         default_namespace_path: &[String],
+        request_dispatched: &AtomicBool,
     ) -> Result<CancelOutcome> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let read_timeout = resolve_timeout(
@@ -304,6 +306,7 @@ impl SqlClientInner {
         let mut client = self
             .client_with_headers(default_namespace_path, &request_id)
             .await?;
+        request_dispatched.store(true, Ordering::SeqCst);
         let result = tokio::time::timeout(
             read_timeout,
             client.cancel_flight_info(CancelFlightInfoRequest::new(info)),
@@ -509,6 +512,7 @@ struct RemoteQuery {
     terminal_at: OnceLock<Instant>,
     last_accessed: StdMutex<Instant>,
     lifecycle: StdMutex<QueryLifecycle>,
+    cancel_request_dispatched: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -548,6 +552,7 @@ impl RemoteQuery {
             terminal_at,
             last_accessed: StdMutex::new(Instant::now()),
             lifecycle: StdMutex::new(lifecycle),
+            cancel_request_dispatched: AtomicBool::new(false),
         })
     }
 
@@ -603,6 +608,8 @@ impl RemoteQuery {
     }
 
     async fn restore_after_rejected_cancellation(&self) {
+        self.cancel_request_dispatched
+            .store(false, Ordering::SeqCst);
         let running = self.state.lock().await.flight_descriptor.is_some();
         let mut lifecycle = self.lifecycle.lock().unwrap();
         if *lifecycle == QueryLifecycle::Cancelling {
@@ -801,7 +808,16 @@ impl RemoteQuery {
             let notified = self.state_changed.notified();
             let state = self.state.lock().await.clone();
             if let Some(info) = state.info {
-                let outcome = match self.client.cancel(info, &self.default_namespace_path).await {
+                let previously_dispatched = self.cancel_request_dispatched.load(Ordering::SeqCst);
+                let outcome = match self
+                    .client
+                    .cancel(
+                        info,
+                        &self.default_namespace_path,
+                        &self.cancel_request_dispatched,
+                    )
+                    .await
+                {
                     Ok(outcome) => outcome,
                     Err(_)
                         if matches!(
@@ -822,12 +838,15 @@ impl RemoteQuery {
                 let status = match outcome {
                     CancelOutcome::Status(status) => status,
                     CancelOutcome::NotFound(_)
-                        if self.lifecycle() == QueryLifecycle::Cancelling =>
+                        if self.lifecycle() == QueryLifecycle::Cancelling
+                            || previously_dispatched =>
                     {
                         self.mark_cancelled();
                         return Ok(());
                     }
                     CancelOutcome::NotFound(request_id) => {
+                        self.cancel_request_dispatched
+                            .store(false, Ordering::SeqCst);
                         return Err(sql_error(
                             &request_id,
                             "SQL query cancellation target was not found",
@@ -1267,7 +1286,7 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
 
     use arrow_array::{Int64Array, StringArray};
     use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -1323,6 +1342,7 @@ mod tests {
         query_count: Arc<AtomicUsize>,
         do_get_count: Arc<AtomicUsize>,
         cancel_count: Arc<AtomicUsize>,
+        cancel_timeout_count: Arc<AtomicUsize>,
         cancelling_response_count: Arc<AtomicUsize>,
         first_continuation_count: Arc<AtomicUsize>,
         transient_poll_failures: Arc<AtomicUsize>,
@@ -1357,6 +1377,7 @@ mod tests {
                 query_count: Arc::new(AtomicUsize::new(0)),
                 do_get_count: Arc::new(AtomicUsize::new(0)),
                 cancel_count: Arc::new(AtomicUsize::new(0)),
+                cancel_timeout_count: Arc::new(AtomicUsize::new(0)),
                 cancelling_response_count: Arc::new(AtomicUsize::new(0)),
                 first_continuation_count: Arc::new(AtomicUsize::new(0)),
                 transient_poll_failures: Arc::new(AtomicUsize::new(0)),
@@ -1547,6 +1568,13 @@ mod tests {
             if query == "SELECT cancel race" {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
+            if query == "SELECT cancel timeout" {
+                if self.cancel_timeout_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                } else {
+                    return Err(Status::not_found("query cancellation completed"));
+                }
+            }
             let status = if query == "SELECT cancelling" {
                 if self
                     .cancelling_response_count
@@ -1678,6 +1706,21 @@ mod tests {
             .store(true, Ordering::SeqCst);
         assert_overall_timeout(timeout_query.cancel().await, "cancellation");
         timeout_query.cancel().await.unwrap();
+
+        let uncertain_cancel = timeout_client
+            .submit("SELECT cancel timeout", &["public".to_string()])
+            .await
+            .unwrap();
+        assert_overall_timeout(uncertain_cancel.cancel().await, "cancellation");
+        uncertain_cancel.cancel().await.unwrap();
+        assert_eq!(
+            uncertain_cancel.describe().await.unwrap().status,
+            "cancelled"
+        );
+        assert!(matches!(
+            uncertain_cancel.result().await,
+            Err(Error::JobCancelled { .. })
+        ));
 
         let first = client
             .submit("SELECT 'super-secret'", &["public".to_string()])
@@ -2084,9 +2127,9 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 13);
+        assert_eq!(query_count.load(Ordering::SeqCst), 14);
         assert_eq!(do_get_count.load(Ordering::SeqCst), 6);
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 8);
+        assert_eq!(cancel_count.load(Ordering::SeqCst), 10);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
         assert_eq!(empty_result.len(), 1);
