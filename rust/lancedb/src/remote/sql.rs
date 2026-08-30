@@ -29,6 +29,7 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(300);
 const STATUS_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_SQL_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
 const QUERY_CACHE_CAPACITY: u64 = 10_000;
 const TERMINAL_QUERY_RETENTION: Duration = Duration::from_secs(300);
 const ABANDONED_QUERY_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
@@ -322,7 +323,10 @@ impl SqlClientInner {
                     self.sql_host_override.as_deref(),
                 )?;
                 let channel = connect_channel(&target, &self.client_config, request_id).await?;
-                Ok::<_, Error>(FlightServiceClient::new(channel))
+                Ok::<_, Error>(
+                    FlightServiceClient::new(channel)
+                        .max_decoding_message_size(MAX_SQL_MESSAGE_SIZE),
+                )
             })
             .await?;
         let headers = self.headers(default_namespace_path, request_id).await?;
@@ -1222,7 +1226,7 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use arrow_array::Int64Array;
+    use arrow_array::{Int64Array, StringArray};
     use arrow_flight::encode::FlightDataEncoderBuilder;
     use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
     use arrow_flight::sql::{Any, CommandStatementQuery};
@@ -1272,6 +1276,7 @@ mod tests {
         transient_poll_failures: Arc<AtomicUsize>,
         headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
         result: RecordBatch,
+        large_result: RecordBatch,
     }
 
     impl Default for TestSqlService {
@@ -1284,6 +1289,18 @@ mod tests {
             let result =
                 RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![42_i64]))])
                     .unwrap();
+            let large_schema = Arc::new(Schema::new(vec![Field::new(
+                "value",
+                DataType::Utf8,
+                false,
+            )]));
+            let large_result = RecordBatch::try_new(
+                large_schema,
+                vec![Arc::new(StringArray::from(vec![
+                    "x".repeat(5 * 1024 * 1024),
+                ]))],
+            )
+            .unwrap();
             Self {
                 query_count: Arc::new(AtomicUsize::new(0)),
                 do_get_count: Arc::new(AtomicUsize::new(0)),
@@ -1293,6 +1310,7 @@ mod tests {
                 transient_poll_failures: Arc::new(AtomicUsize::new(0)),
                 headers: Arc::new(std::sync::Mutex::new(Vec::new())),
                 result,
+                large_result,
             }
         }
     }
@@ -1398,7 +1416,12 @@ mod tests {
                     .with_location("grpc://127.0.0.1:1"),
             );
             if query != "SELECT empty" {
-                info = info.try_with_schema(self.result.schema_ref()).unwrap();
+                let schema = if query == "SELECT large message" {
+                    self.large_result.schema_ref()
+                } else {
+                    self.result.schema_ref()
+                };
+                info = info.try_with_schema(schema).unwrap();
             }
             Ok(Response::new(PollInfo {
                 info: (query != "SELECT no info" || stage > 0).then_some(info),
@@ -1424,7 +1447,13 @@ mod tests {
             let ticket = request.get_ref().ticket.as_ref();
             let empty = ticket == b"SELECT empty";
             let slow = ticket == b"SELECT slow get";
-            let result = self.result.clone();
+            let large = ticket == b"SELECT large message";
+            let result = if large {
+                self.large_result.clone()
+            } else {
+                self.result.clone()
+            };
+            let schema = result.schema();
             let input = futures::stream::once(async move {
                 if slow {
                     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1432,10 +1461,11 @@ mod tests {
                 (!empty).then_some(Ok(result))
             })
             .filter_map(futures::future::ready);
-            let stream = FlightDataEncoderBuilder::new()
-                .with_schema(self.result.schema())
-                .build(input)
-                .map_err(Status::from);
+            let mut encoder = FlightDataEncoderBuilder::new().with_schema(schema);
+            if large {
+                encoder = encoder.with_max_flight_data_size(8 * 1024 * 1024);
+            }
+            let stream = encoder.build(input).map_err(Status::from);
             Ok(Response::new(Box::pin(stream)))
         }
 
@@ -1586,6 +1616,24 @@ mod tests {
             .await
             .unwrap();
         let empty_result = empty.result().await.unwrap();
+
+        let large = client
+            .submit("SELECT large message", &["public".to_string()])
+            .await
+            .unwrap();
+        let large_result = large.result().await.unwrap();
+        assert_eq!(large_result.len(), 1);
+        assert_eq!(large_result[0].num_rows(), 1);
+        assert_eq!(
+            large_result[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0)
+                .len(),
+            5 * 1024 * 1024,
+        );
 
         let cancelled = client
             .submit(
@@ -1942,8 +1990,8 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 11);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 5);
+        assert_eq!(query_count.load(Ordering::SeqCst), 12);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 6);
         assert_eq!(cancel_count.load(Ordering::SeqCst), 7);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
