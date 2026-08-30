@@ -1550,7 +1550,8 @@ fn sql_error(request_id: &str, error: impl std::fmt::Display) -> Error {
 mod tests {
     use std::sync::atomic::AtomicUsize;
 
-    use arrow_array::{Array, Int64Array, StringArray, StringDictionaryBuilder, types::Int32Type};
+    use arrow_array::builder::StringDictionaryBuilder;
+    use arrow_array::{Array, Int64Array, StringArray, types::Int32Type};
     use arrow_flight::encode::FlightDataEncoderBuilder;
     use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
     use arrow_flight::sql::{Any, CommandStatementQuery};
