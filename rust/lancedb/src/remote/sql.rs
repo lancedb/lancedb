@@ -63,6 +63,34 @@ enum CancelOutcome {
     NotFound(String),
 }
 
+struct CancelAttempt {
+    dispatched: Arc<AtomicBool>,
+    unresolved: Arc<AtomicBool>,
+    resolved: bool,
+}
+
+impl CancelAttempt {
+    fn new(dispatched: Arc<AtomicBool>, unresolved: Arc<AtomicBool>) -> Self {
+        Self {
+            dispatched,
+            unresolved,
+            resolved: false,
+        }
+    }
+
+    fn resolve(&mut self) {
+        self.resolved = true;
+    }
+}
+
+impl Drop for CancelAttempt {
+    fn drop(&mut self) {
+        if !self.resolved && self.dispatched.load(Ordering::SeqCst) {
+            self.unresolved.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 impl std::fmt::Debug for SqlClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -300,7 +328,7 @@ impl SqlClientInner {
         &self,
         info: FlightInfo,
         default_namespace_path: &[String],
-        request_dispatched: Arc<AtomicBool>,
+        unresolved_attempt: Arc<AtomicBool>,
     ) -> Result<CancelOutcome> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let read_timeout = resolve_timeout(
@@ -314,10 +342,12 @@ impl SqlClientInner {
         let metadata = client_with_headers(connection.client.clone(), &headers)?
             .metadata()
             .clone();
+        let dispatched = Arc::new(AtomicBool::new(false));
+        let mut attempt = CancelAttempt::new(dispatched.clone(), unresolved_attempt);
         let mut client = FlightServiceClient::with_interceptor(
             connection.channel.clone(),
             move |request: tonic::Request<()>| {
-                request_dispatched.store(true, Ordering::SeqCst);
+                dispatched.store(true, Ordering::SeqCst);
                 Ok(request)
             },
         )
@@ -347,9 +377,17 @@ impl SqlClientInner {
         .await
         .map_err(|_| sql_error(&request_id, "SQL query cancellation timed out"))?;
         let result = match result {
-            Ok(result) => result,
+            Ok(result) => {
+                attempt.resolve();
+                result
+            }
             Err(FlightError::Tonic(status)) if status.code() == tonic::Code::NotFound => {
+                attempt.resolve();
                 return Ok(CancelOutcome::NotFound(request_id));
+            }
+            Err(FlightError::Tonic(status)) if !cancellation_status_is_ambiguous(status.code()) => {
+                attempt.resolve();
+                return Err(sql_error(&request_id, status));
             }
             Err(error) => return Err(sql_error(&request_id, error)),
         };
@@ -547,7 +585,7 @@ struct RemoteQuery {
     terminal_at: OnceLock<Instant>,
     last_accessed: StdMutex<Instant>,
     lifecycle: StdMutex<QueryLifecycle>,
-    cancel_request_dispatched: Arc<AtomicBool>,
+    cancel_request_uncertain: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -587,7 +625,7 @@ impl RemoteQuery {
             terminal_at,
             last_accessed: StdMutex::new(Instant::now()),
             lifecycle: StdMutex::new(lifecycle),
-            cancel_request_dispatched: Arc::new(AtomicBool::new(false)),
+            cancel_request_uncertain: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -617,6 +655,7 @@ impl RemoteQuery {
     }
 
     fn mark_cancelled(&self) -> bool {
+        self.cancel_request_uncertain.store(false, Ordering::SeqCst);
         let mut lifecycle = self.lifecycle.lock().unwrap();
         if matches!(
             *lifecycle,
@@ -633,6 +672,7 @@ impl RemoteQuery {
     }
 
     fn mark_cancelling(&self) {
+        self.cancel_request_uncertain.store(false, Ordering::SeqCst);
         let mut lifecycle = self.lifecycle.lock().unwrap();
         if matches!(*lifecycle, QueryLifecycle::Running | QueryLifecycle::Ready) {
             *lifecycle = QueryLifecycle::Cancelling;
@@ -643,8 +683,7 @@ impl RemoteQuery {
     }
 
     async fn restore_after_rejected_cancellation(&self) {
-        self.cancel_request_dispatched
-            .store(false, Ordering::SeqCst);
+        self.cancel_request_uncertain.store(false, Ordering::SeqCst);
         let running = self.state.lock().await.flight_descriptor.is_some();
         let mut lifecycle = self.lifecycle.lock().unwrap();
         if *lifecycle == QueryLifecycle::Cancelling {
@@ -843,13 +882,13 @@ impl RemoteQuery {
             let notified = self.state_changed.notified();
             let state = self.state.lock().await.clone();
             if let Some(info) = state.info {
-                let previously_dispatched = self.cancel_request_dispatched.load(Ordering::SeqCst);
+                let previously_uncertain = self.cancel_request_uncertain.load(Ordering::SeqCst);
                 let outcome = match self
                     .client
                     .cancel(
                         info,
                         &self.default_namespace_path,
-                        self.cancel_request_dispatched.clone(),
+                        self.cancel_request_uncertain.clone(),
                     )
                     .await
                 {
@@ -874,14 +913,12 @@ impl RemoteQuery {
                     CancelOutcome::Status(status) => status,
                     CancelOutcome::NotFound(_)
                         if self.lifecycle() == QueryLifecycle::Cancelling
-                            || previously_dispatched =>
+                            || previously_uncertain =>
                     {
                         self.mark_cancelled();
                         return Ok(());
                     }
                     CancelOutcome::NotFound(request_id) => {
-                        self.cancel_request_dispatched
-                            .store(false, Ordering::SeqCst);
                         return Err(sql_error(
                             &request_id,
                             "SQL query cancellation target was not found",
@@ -1276,6 +1313,18 @@ fn poll_retry_delay(config: &ResolvedRetryConfig, retry_count: u8) -> Duration {
     Duration::from_secs_f32((backoff + jitter).clamp(MIN_POLL_INTERVAL.as_secs_f32(), 60.0))
 }
 
+fn cancellation_status_is_ambiguous(code: tonic::Code) -> bool {
+    matches!(
+        code,
+        tonic::Code::Cancelled
+            | tonic::Code::Unknown
+            | tonic::Code::DeadlineExceeded
+            | tonic::Code::Internal
+            | tonic::Code::Unavailable
+            | tonic::Code::DataLoss
+    )
+}
+
 fn resolve_timeout(
     configured: Option<Duration>,
     env_name: &str,
@@ -1377,6 +1426,7 @@ mod tests {
         query_count: Arc<AtomicUsize>,
         do_get_count: Arc<AtomicUsize>,
         cancel_count: Arc<AtomicUsize>,
+        cancel_denied_count: Arc<AtomicUsize>,
         cancel_timeout_count: Arc<AtomicUsize>,
         cancelling_response_count: Arc<AtomicUsize>,
         first_continuation_count: Arc<AtomicUsize>,
@@ -1412,6 +1462,7 @@ mod tests {
                 query_count: Arc::new(AtomicUsize::new(0)),
                 do_get_count: Arc::new(AtomicUsize::new(0)),
                 cancel_count: Arc::new(AtomicUsize::new(0)),
+                cancel_denied_count: Arc::new(AtomicUsize::new(0)),
                 cancel_timeout_count: Arc::new(AtomicUsize::new(0)),
                 cancelling_response_count: Arc::new(AtomicUsize::new(0)),
                 first_continuation_count: Arc::new(AtomicUsize::new(0)),
@@ -1613,6 +1664,12 @@ mod tests {
             if query == "SELECT cancel missing" {
                 return Err(Status::not_found("query was not found"));
             }
+            if query == "SELECT cancel denied" {
+                if self.cancel_denied_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(Status::permission_denied("cancellation is not allowed"));
+                }
+                return Err(Status::not_found("query was not found"));
+            }
             let status = if query == "SELECT cancelling" {
                 if self
                     .cancelling_response_count
@@ -1756,6 +1813,17 @@ mod tests {
         assert!(pre_dispatch_timeout.cancel().await.is_err());
         assert_ne!(
             pre_dispatch_timeout.describe().await.unwrap().status,
+            "cancelled"
+        );
+
+        let rejected_cancel = timeout_client
+            .submit("SELECT cancel denied", &["public".to_string()])
+            .await
+            .unwrap();
+        assert!(rejected_cancel.cancel().await.is_err());
+        assert!(rejected_cancel.cancel().await.is_err());
+        assert_ne!(
+            rejected_cancel.describe().await.unwrap().status,
             "cancelled"
         );
 
@@ -2179,9 +2247,9 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 15);
+        assert_eq!(query_count.load(Ordering::SeqCst), 16);
         assert_eq!(do_get_count.load(Ordering::SeqCst), 6);
-        assert_eq!(cancel_count.load(Ordering::SeqCst), 11);
+        assert_eq!(cancel_count.load(Ordering::SeqCst), 13);
         assert_eq!(first_result, vec![expected.clone()]);
         assert_eq!(first_result_again, vec![expected.clone()]);
         assert_eq!(empty_result.len(), 1);
