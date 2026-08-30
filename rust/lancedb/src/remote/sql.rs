@@ -94,6 +94,32 @@ struct CancelAttempt {
     resolved: bool,
 }
 
+struct ResultStartGuard<'a> {
+    started: &'a AtomicBool,
+    committed: bool,
+}
+
+impl<'a> ResultStartGuard<'a> {
+    fn new(started: &'a AtomicBool) -> Self {
+        Self {
+            started,
+            committed: false,
+        }
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for ResultStartGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.started.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 impl CancelAttempt {
     fn new(dispatched: Arc<AtomicBool>, unresolved: Arc<AtomicBool>) -> Self {
         Self {
@@ -855,6 +881,7 @@ impl RemoteQuery {
             if let Some(endpoint_stream) = prepared.endpoint_stream.as_mut() {
                 let batch = tokio::select! {
                     biased;
+                    _ = sender.closed() => return Ok(()),
                     _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
                     result = endpoint_stream.next_batch() => result?,
                 };
@@ -887,6 +914,7 @@ impl RemoteQuery {
                 prepared.next_endpoint += 1;
                 prepared.endpoint_stream = Some(tokio::select! {
                     biased;
+                    _ = sender.closed() => return Ok(()),
                     _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
                     result = self.client.open_result_endpoint(
                         endpoint,
@@ -896,7 +924,12 @@ impl RemoteQuery {
                 continue;
             }
             if let Some(descriptor) = state.flight_descriptor {
-                self.poll_next_state(descriptor).await?;
+                tokio::select! {
+                    biased;
+                    _ = sender.closed() => return Ok(()),
+                    _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
+                    result = self.poll_next_state(descriptor) => result?,
+                };
                 continue;
             }
             self.mark_result_completed()?;
@@ -1147,17 +1180,10 @@ impl QueryHandle for RemoteQueryHandle {
                 message: "SQL query results can only be consumed once".to_string(),
             });
         }
+        let result_start = ResultStartGuard::new(&self.result_started);
         let started = Instant::now();
         let prepared =
-            match with_overall_timeout(timeout, "SQL query result", self.query.prepare_result())
-                .await
-            {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    self.result_started.store(false, Ordering::SeqCst);
-                    return Err(error);
-                }
-            };
+            with_overall_timeout(timeout, "SQL query result", self.query.prepare_result()).await?;
         let remaining_timeout = timeout.map(|timeout| timeout.saturating_sub(started.elapsed()));
         let schema = prepared.schema.clone();
         let (sender, receiver) = mpsc::channel(2);
@@ -1177,6 +1203,7 @@ impl QueryHandle for RemoteQueryHandle {
         let stream = futures::stream::unfold(receiver, |mut receiver| async move {
             receiver.recv().await.map(|item| (item, receiver))
         });
+        result_start.commit();
         Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
     }
 
@@ -2079,6 +2106,56 @@ mod tests {
         assert_eq!(remaining_incremental_batches, vec![expected.clone()]);
         assert!(incremental_finished.load(Ordering::SeqCst));
 
+        let interrupted_result = Arc::new(
+            client
+                .submit("SELECT no info", &["public".to_string()])
+                .await
+                .unwrap(),
+        );
+        let continuation_count_before = first_continuation_count.load(Ordering::SeqCst);
+        let interrupted_result_task = {
+            let interrupted_result = interrupted_result.clone();
+            tokio::spawn(async move { interrupted_result.result().await })
+        };
+        tokio::time::timeout(Duration::from_millis(100), async {
+            while first_continuation_count.load(Ordering::SeqCst) == continuation_count_before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("result preparation must start polling");
+        interrupted_result_task.abort();
+        assert!(interrupted_result_task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            collect_result(&interrupted_result).await.unwrap(),
+            vec![expected.clone()],
+            "cancelling result preparation must release the one-shot result claim",
+        );
+
+        let dropped_reader = client
+            .submit("SELECT slow", &["public".to_string()])
+            .await
+            .unwrap();
+        let tracked_dropped_reader = client.queries.get(dropped_reader.id()).unwrap();
+        let continuation_count_before = first_continuation_count.load(Ordering::SeqCst);
+        let dropped_result_stream = dropped_reader.result().await.unwrap();
+        tokio::time::timeout(Duration::from_millis(100), async {
+            while first_continuation_count.load(Ordering::SeqCst) == continuation_count_before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the result producer must start continuation polling");
+        assert!(Arc::strong_count(&tracked_dropped_reader) >= 4);
+        drop(dropped_result_stream);
+        tokio::time::timeout(Duration::from_millis(100), async {
+            while Arc::strong_count(&tracked_dropped_reader) != 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropping a result reader must stop its producer");
+
         let staged = client
             .submit("SELECT no info", &["public".to_string()])
             .await
@@ -2470,8 +2547,8 @@ mod tests {
         assert_eq!(concurrent_registry.capacity.available_permits(), 2);
 
         assert_eq!(client.initialized_client_count().await, 1);
-        assert_eq!(query_count.load(Ordering::SeqCst), 18);
-        assert_eq!(do_get_count.load(Ordering::SeqCst), 14);
+        assert_eq!(query_count.load(Ordering::SeqCst), 20);
+        assert_eq!(do_get_count.load(Ordering::SeqCst), 16);
         assert_eq!(cancel_count.load(Ordering::SeqCst), 15);
         assert_eq!(first_result, vec![expected.clone()]);
         assert!(empty_result.is_empty());
