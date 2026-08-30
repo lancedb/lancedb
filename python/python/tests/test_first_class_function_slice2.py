@@ -399,6 +399,7 @@ def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
         pa.list_(
             pa.field("item", pa.float32(), nullable=False, metadata={"k": "v"}), 3
         ),
+        pa.list_(pa.field("custom", pa.float32(), nullable=False), 3),
     ]:
         with pytest.raises(TypeError, match="unsupported Arrow type"):
             _canonical_arrow_type(outside)
@@ -420,10 +421,6 @@ def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
         ],
         "length": 3,
     }
-    fixed_named = pa.list_(pa.field("custom", pa.float32(), nullable=False), 3)
-    assert json.loads(_canonical_arrow_type(fixed_named))["fields"][0]["name"] == (
-        "custom"
-    )
     large = json.loads(_canonical_arrow_type(pa.large_list(pa.float32())))
     assert large["type"] == "large_list"
     assert large["fields"][0]["nullable"] is True

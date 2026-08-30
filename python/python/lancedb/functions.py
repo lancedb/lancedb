@@ -580,6 +580,11 @@ def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
         or pa.types.is_fixed_size_list(data_type)
     ):
         if pa.types.is_fixed_size_list(data_type):
+            if data_type.value_field.name != "item":
+                raise TypeError(
+                    "unsupported Arrow type for Function signature: fixed-size list "
+                    "items must be named 'item'"
+                )
             if data_type.list_size <= 0:
                 raise TypeError(
                     f"unsupported Arrow type for Function signature: {data_type}"
