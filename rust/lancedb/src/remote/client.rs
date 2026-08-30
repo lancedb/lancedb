@@ -7,6 +7,7 @@ use reqwest::{
     Body, Request, RequestBuilder, Response,
     header::{HeaderMap, HeaderValue},
 };
+use serde_json::Value;
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 
 use crate::error::{Error, Result};
@@ -14,6 +15,60 @@ use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const REDACTED_JSON_VALUE: &str = "[REDACTED]";
+const SUPPRESSED_JSON_BODY: &str = "[JSON BODY SUPPRESSED]";
+
+fn is_sensitive_json_field(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("secret")
+}
+
+fn redact_sensitive_json_fields(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            for (name, child) in fields {
+                if is_sensitive_json_field(name) {
+                    *child = Value::String(REDACTED_JSON_VALUE.to_string());
+                } else {
+                    redact_sensitive_json_fields(child);
+                }
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(redact_sensitive_json_fields),
+        _ => {}
+    }
+}
+
+fn redacted_json_body(request: &Request) -> Option<String> {
+    let body = request.body()?.as_bytes()?;
+    let mut value = serde_json::from_slice(body).ok()?;
+    redact_sensitive_json_fields(&mut value);
+    serde_json::to_string(&value).ok()
+}
+
+fn request_log_message(request: &Request, request_id: &str) -> String {
+    let prefix = format!(
+        "Sending request_id={}: {} {}",
+        request_id,
+        request.method(),
+        request.url()
+    );
+    let content_type = request
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next());
+    if content_type.is_some_and(|value| value.eq_ignore_ascii_case("application/json")) {
+        // Never format the raw Request here: its Debug representation is not a
+        // redaction boundary and may include the original body. If the JSON body
+        // cannot be structurally parsed, suppress it instead of logging raw bytes.
+        let body = redacted_json_body(request).unwrap_or_else(|| SUPPRESSED_JSON_BODY.to_string());
+        format!("{prefix} with body {body}")
+    } else {
+        // Method and URL are sufficient request context. Raw Request formatting
+        // may expose headers or a non-JSON body, so it is never a logging fallback.
+        prefix
+    }
+}
 
 /// Configuration for TLS/mTLS settings.
 #[derive(Clone, Debug)]
@@ -839,22 +894,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    pub(crate) fn log_request(&self, request: &Request, request_id: &String) {
+    pub(crate) fn log_request(&self, request: &Request, request_id: &str) {
         if log::log_enabled!(log::Level::Debug) {
-            let content_type = request
-                .headers()
-                .get("content-type")
-                .map(|v| v.to_str().unwrap());
-            if content_type == Some("application/json") {
-                let body = request.body().as_ref().unwrap().as_bytes().unwrap();
-                let body = String::from_utf8_lossy(body);
-                debug!(
-                    "Sending request_id={}: {:?} with body {}",
-                    request_id, request, body
-                );
-            } else {
-                debug!("Sending request_id={}: {:?}", request_id, request);
-            }
+            debug!("{}", request_log_message(request, request_id));
         }
     }
 
@@ -1075,6 +1117,49 @@ mod tests {
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn test_request_log_message_redacts_secrets_and_never_formats_raw_requests() {
+        const SECRET_SENTINEL: &str = "udf-secret-log-sentinel-7e4e";
+        const MALFORMED_SENTINEL: &str = "malformed-secret-log-sentinel-b652";
+        const NON_JSON_SENTINEL: &str = "non-json-secret-log-sentinel-7fd1";
+
+        let request = reqwest::Client::new()
+            .post("https://example.com/v1/functions/create")
+            .json(&serde_json::json!({
+                "name": "uses_secret",
+                "nested": {
+                    "secret_values": {"OPENAI_API_KEY": SECRET_SENTINEL},
+                    "safe": "visible-value"
+                }
+            }))
+            .build()
+            .unwrap();
+        let log_message = request_log_message(&request, "valid-json");
+
+        let malformed_request = reqwest::Client::new()
+            .post("https://example.com/v1/functions/create")
+            .header("content-type", "application/json; charset=utf-8")
+            .body(format!(r#"{{"secret_values":"{MALFORMED_SENTINEL}""#))
+            .build()
+            .unwrap();
+        let malformed_log_message = request_log_message(&malformed_request, "malformed-json");
+
+        let non_json_request = reqwest::Client::new()
+            .post("https://example.com/v1/functions/create")
+            .header("content-type", "text/plain")
+            .body(NON_JSON_SENTINEL)
+            .build()
+            .unwrap();
+        let non_json_log_message = request_log_message(&non_json_request, "non-json");
+
+        assert!(log_message.contains("visible-value"));
+        assert!(log_message.contains(REDACTED_JSON_VALUE));
+        assert!(!log_message.contains(SECRET_SENTINEL));
+        assert!(malformed_log_message.contains(SUPPRESSED_JSON_BODY));
+        assert!(!malformed_log_message.contains(MALFORMED_SENTINEL));
+        assert!(!non_json_log_message.contains(NON_JSON_SENTINEL));
     }
 
     #[test]

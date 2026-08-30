@@ -554,6 +554,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         &self,
         request: FunctionRegistrationRequest,
     ) -> Result<Job<FunctionVersion>> {
+        request.validate_secret_values()?;
         let req = self.client.post("/v1/functions/create").json(&request);
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
@@ -2642,7 +2643,8 @@ mod tests {
         );
         const FUNCTION_JOB: &str =
             include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
-        let expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        let mut expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        expected["secret_values"] = serde_json::json!({"API_TOKEN": "secret-value"});
         let conn = Connection::new_with_handler(move |request| match request.url().path() {
             "/v1/functions/create" => {
                 assert_eq!(request.method(), &reqwest::Method::POST);
@@ -2660,12 +2662,41 @@ mod tests {
                 .unwrap(),
             path => panic!("unexpected path: {path}"),
         });
-        let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        let mut request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        request
+            .secret_values
+            .insert("API_TOKEN".to_string(), "secret-value".to_string());
         let job = conn.create_function_async(request).await.unwrap();
         assert_eq!(job.id(), Some("job-function-1"));
         let version = job.wait().await.unwrap();
         assert_eq!(version.name(), "embed");
         assert_eq!(version.version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_create_function_async_validates_secrets_before_serialization_and_send() {
+        const REQUEST: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+        );
+        let sends = Arc::new(AtomicUsize::new(0));
+        let sends_ref = sends.clone();
+        let conn = Connection::new_with_handler(move |_| {
+            sends_ref.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder().status(500).body("").unwrap()
+        });
+        let mut request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        request.secret_values.insert(
+            "API_TOKEN".to_string(),
+            "x".repeat(crate::function::MAX_FUNCTION_SECRET_VALUE_BYTES + 1),
+        );
+
+        let error = conn.create_function_async(request).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::InvalidInput { message } if message.contains("65536-byte limit")
+        ));
+        assert_eq!(sends.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

@@ -16,6 +16,7 @@ from typing import (
     Iterable,
     List,
     Literal,
+    Mapping,
     Optional,
     Union,
 )
@@ -687,17 +688,35 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("serialize is not supported for this connection type")
 
-    def create_function(self, definition: UdfDefinition) -> FunctionVersion:
+    def create_function(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, str]] = None,
+    ) -> FunctionVersion:
         """Register a scalar Python UDF and wait for its immutable version.
 
+        ``secrets`` must contain exactly the names declared by
+        ``@udf(secrets=[...])``. Values are sent in the create request and
+        stored server-side in the private execution artifact; returned
+        Function and Job metadata contain only the declared names.
         This is the blocking counterpart of :meth:`create_function_async`.
         Local connections raise ``NotImplementedError``.
         """
-        return self.create_function_async(definition).wait()
+        return self.create_function_async(definition, secrets=secrets).wait()
 
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, str]] = None,
+    ) -> Job[FunctionVersion]:
         """Register a scalar Python UDF through the remote Function catalog.
 
+        ``secrets`` must contain exactly the names declared by
+        ``@udf(secrets=[...])``. Values are sent in the create request and
+        stored server-side in the private execution artifact; returned
+        Function and Job metadata contain only the declared names.
         Submission returns a typed job. The immutable Function version becomes
         available only when :meth:`Job.wait` succeeds. Local connections raise
         ``NotImplementedError``.
@@ -1405,8 +1424,13 @@ class LanceDBConnection(DBConnection):
         return Job(self._conn.job(job_id))
 
     @override
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        job = LOOP.run(self._conn.create_function_async(definition))
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, str]] = None,
+    ) -> Job[FunctionVersion]:
+        job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
         return Job(job)
 
     @override
@@ -2225,17 +2249,24 @@ class AsyncConnection(object):
         return AsyncJob(self._inner.job(job_id))
 
     async def create_function_async(
-        self, definition: UdfDefinition
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, str]] = None,
     ) -> AsyncJob[FunctionVersion]:
         """Register a scalar Python UDF through the remote Function catalog.
 
+        ``secrets`` must contain exactly the names declared by
+        ``@udf(secrets=[...])``. Values are sent in the create request and
+        stored server-side in the private execution artifact; returned
+        Function and Job metadata contain only the declared names.
         The returned typed job resolves to the immutable Function version.
         Local connections raise ``NotImplementedError``.
         """
         if not isinstance(definition, UdfDefinition):
             raise TypeError("create_function_async requires a @udf definition")
         inner = await self._inner.create_function_async(
-            definition.registration_request.to_canonical_json()
+            definition._submission_json(secrets)
         )
         return _typed_job(inner, FunctionVersion.from_json)
 
