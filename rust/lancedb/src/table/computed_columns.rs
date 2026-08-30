@@ -3074,12 +3074,15 @@ mod tests {
         )
         .unwrap();
         let binding = binding_from_plan(&plan);
+        let mut metadata = full_blob_field("thumbnail", true).metadata().clone();
+        metadata.extend(function_computed_column_metadata(
+            binding.binding_id(),
+            0,
+            &["image".into()],
+        ));
+        let output = full_blob_field("thumbnail", true).with_metadata(metadata);
 
-        ensure_binding_matches_schema(
-            &ArrowSchema::new(vec![input, full_blob_field("thumbnail", true)]),
-            &binding,
-        )
-        .unwrap();
+        ensure_binding_matches_schema(&ArrowSchema::new(vec![input, output]), &binding).unwrap();
     }
 
     #[test]
@@ -3179,7 +3182,12 @@ mod tests {
                 ArrowField::new("width", DataType::Int32, false),
             ])),
             true,
-        );
+        )
+        .with_metadata(function_computed_column_metadata(
+            binding.binding_id(),
+            0,
+            &["image".into()],
+        ));
         ensure_binding_matches_schema(&ArrowSchema::new(vec![input, output]), &binding).unwrap();
     }
 
