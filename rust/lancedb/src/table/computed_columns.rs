@@ -547,6 +547,7 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a direct Function input and reject computed roots before nested traversal.
 fn resolve_field_path<'a>(schema: &'a ArrowSchema, path: &str) -> Result<&'a ArrowField> {
     let parts = lance_core::datatypes::parse_field_path(path).map_err(|e| {
         invalid_function(format!("invalid Function input field path '{path}': {e}"))
@@ -2650,6 +2651,21 @@ mod tests {
                 output_ordinal: 1,
             } if binding_id == "fb_01K3TEXT"
         ));
+        let dependent_application = FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"dependent","version":"fv_dependent"},
+                "inputs":[
+                    {"parameter":"text","kind":"column","value":{"path":"search_text"}}
+                ],
+                "output":{"kind":"scalar","arrow_type":"int64","nullable":false}
+            }"#,
+        )
+        .unwrap();
+        let err = plan_function_application(&reopened, &dependent_application, Some("dependent"))
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("computed-on-computed"))
+        );
         let plan = plan_function_application(
             &reopened,
             &named_struct_application(
@@ -2828,7 +2844,11 @@ mod tests {
         )
         .with_metadata(HashMap::from([
             (COMPUTED_COLUMN_META_KEY.to_string(), "true".to_string()),
-            (KIND_META_KEY.to_string(), FUNCTION_KIND.to_string()),
+            (KIND_META_KEY.to_string(), SQL_KIND.to_string()),
+            (
+                EXPRESSION_META_KEY.to_string(),
+                "struct('value')".to_string(),
+            ),
         ]));
         let nested_schema = ArrowSchema::new(vec![nested_title, schema.field(1).as_ref().clone()]);
         let nested_application = FunctionApplication::from_json(
