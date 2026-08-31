@@ -539,9 +539,7 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .drop_table(drop_request)
             .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to drop table: {}", e),
-            })?;
+            .map_err(|e| map_namespace_lance_error(e, name))?;
 
         Ok(())
     }
@@ -1494,6 +1492,15 @@ mod tests {
             .await
             .expect("Failed to list tables");
         assert!(!table_names_after.contains(&"drop_test".to_string()));
+
+        let error = conn
+            .drop_table("drop_test", &["test_ns".into()])
+            .await
+            .expect_err("dropping a missing table should fail");
+        assert!(
+            matches!(error, Error::TableNotFound { ref name, .. } if name == "drop_test"),
+            "expected TableNotFound, got: {error:?}"
+        );
 
         // Verify: Cannot open dropped table
         let open_result = conn.open_table("drop_test").execute().await;
