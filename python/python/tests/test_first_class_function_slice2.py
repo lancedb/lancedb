@@ -941,6 +941,8 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
         db.create_function_async(normalize_score)
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version="fv_exact")
+    with pytest.raises(NotImplementedError, match=message):
+        db.drop_function("normalize_score", version="fv_exact")
 
 
 @contextlib.contextmanager
@@ -986,6 +988,12 @@ def _mock_remote_function_catalog():
                     "version": "fv_exact",
                 }
                 response = state["version"]
+            elif self.path == "/v1/functions/drop":
+                assert body == {
+                    "name": "normalize_score",
+                    "version": "fv_exact",
+                }
+                response = {"dropped": True}
             else:
                 status = 404
                 response = {"error": "not found"}
@@ -1043,4 +1051,41 @@ def test_blocking_remote_registration_returns_function_version():
     assert [path for path, _ in state["requests"]] == [
         "/v1/functions/create",
         "/v1/jobs/describe",
+    ]
+
+
+def test_remote_drop_function_sends_exact_version():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        assert db.drop_function("normalize_score", version="fv_exact") is True
+
+    assert state["requests"] == [
+        (
+            "/v1/functions/drop",
+            {"name": "normalize_score", "version": "fv_exact"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_remote_drop_function_sends_exact_version():
+    with _mock_remote_function_catalog() as (host, state):
+        db = await lancedb.connect_async(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        assert await db.drop_function("normalize_score", version="fv_exact") is True
+
+    assert state["requests"] == [
+        (
+            "/v1/functions/drop",
+            {"name": "normalize_score", "version": "fv_exact"},
+        )
     ]

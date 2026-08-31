@@ -523,6 +523,21 @@ impl Connection {
             .await
     }
 
+    /// Drop one exact immutable Function version from the remote catalog.
+    ///
+    /// Returns `true` when the server appended a Dropped transition and
+    /// `false` for an idempotent replay. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn drop_function(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<bool> {
+        self.internal
+            .drop_function(name.as_ref(), version.as_ref())
+            .await
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.
