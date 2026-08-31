@@ -919,6 +919,16 @@ export abstract class Table {
   /** Return the table as an arrow table */
   abstract toArrow(): Promise<ArrowTable>;
 
+  /**
+   * Create a {@link MergeInsertBuilder}, which combines new data with the
+   * existing table in a single transaction — inserting, updating and deleting
+   * rows depending on how they match.
+   *
+   * @param on - The column, or columns, to match source rows against target
+   * rows on. Typically a key or id column. Several columns match on the
+   * composite key: a source row updates a target row only when it agrees on
+   * every one of them.
+   */
   abstract mergeInsert(on: string | string[]): MergeInsertBuilder;
 
   /** List all the stats of a specified index
