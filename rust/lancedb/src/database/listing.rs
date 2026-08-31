@@ -13,7 +13,7 @@ use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_file::version::LanceFileVersion;
-use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+use lance_io::object_store::{ReadDirOptions, StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -282,11 +282,14 @@ impl std::fmt::Display for ListingDatabase {
 
 const LANCE_EXTENSION: &str = "lance";
 
-/// The table a listed child directory holds, or `None` if it is not a table at all.
+/// The table a listed child of the database names, or `None` if the child is not a table.
 ///
 /// A table is the directory `<name>.lance`; a loose file or any other directory under the
 /// database prefix belongs to something else. `dir_suffix` is `.lance`, built once by the
 /// caller rather than per child.
+/// The table a listed child directory holds, or `None` if it is not a table at all.
+///
+/// Only directories are considered, so a loose object named like a table is not one.
 fn table_name(location: &object_store::path::Path, dir_suffix: &str) -> Option<String> {
     location
         .filename()?
@@ -294,75 +297,6 @@ fn table_name(location: &object_store::path::Path, dir_suffix: &str) -> Option<S
         .map(String::from)
         .filter(|name| !name.is_empty())
 }
-
-/// One page of the table directories under the database directory, in key order.
-struct DirPage {
-    /// The table directories the page holds, as the store lists them.
-    common_prefixes: Vec<object_store::path::Path>,
-    /// Resumes after this page, or `None` when the page reached the end of the level.
-    page_token: Option<String>,
-}
-
-/// Where a listed location sits inside the database directory — the space page tokens live
-/// in — or `None` if it is not a child of that directory at all. Matching both halves of the
-/// prefix drops a location that merely starts with the directory's name (`dbx/y` against
-/// `db/`) as well as the marker object some stores keep for the directory itself.
-fn relative_key<'a>(prefix: Option<&str>, location: &'a str) -> Option<&'a str> {
-    let relative = match prefix {
-        Some(prefix) => location.strip_prefix(prefix)?,
-        None => location,
-    };
-    (!relative.is_empty()).then_some(relative)
-}
-
-/// One page of the table directories under `base_path`, one directory level deep.
-///
-/// Lance 11 exposes no paginated directory listing, so the level is listed in full and paged
-/// locally: table directories go into key order (a directory's key keeps its trailing `/`,
-/// so a token is never a table name), the page is the smallest `limit` of them past
-/// `page_token`, and the token handed back is the key of the last directory the page took —
-/// so a page that took nothing ends the listing rather than resuming from a position no page
-/// ever reached. Only `<name>.lance/` directories enter the page: loose objects, other
-/// directories, and a bare `.lance/` never take a page slot or name a token, which keeps a
-/// page to exactly one listing of the level. Correct on every store, at the cost of that one
-/// full-level listing per page.
-async fn read_dir_page(
-    object_store: &ObjectStore,
-    base_path: &object_store::path::Path,
-    page_token: Option<String>,
-    limit: Option<usize>,
-) -> Result<DirPage> {
-    let listed = object_store.list_with_delimiter(Some(base_path)).await?;
-    let prefix = {
-        let base = base_path.as_ref();
-        (!base.is_empty()).then(|| format!("{base}/"))
-    };
-    let table_dir_suffix = format!(".{LANCE_EXTENSION}/");
-    let mut children: Vec<(String, object_store::path::Path)> = listed
-        .common_prefixes
-        .into_iter()
-        .filter_map(|location| {
-            let key = format!("{}/", relative_key(prefix.as_deref(), location.as_ref())?);
-            (key.len() > table_dir_suffix.len() && key.ends_with(&table_dir_suffix))
-                .then_some((key, location))
-        })
-        .collect();
-    children.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
-    if let Some(resume) = &page_token {
-        children.retain(|(key, _)| key > resume);
-    }
-    let total = children.len();
-    children.truncate(limit.unwrap_or(total).min(total));
-    let page_token = match children.last() {
-        Some((last, _)) if children.len() < total => Some(last.clone()),
-        _ => None,
-    };
-    Ok(DirPage {
-        common_prefixes: children.into_iter().map(|(_, location)| location).collect(),
-        page_token,
-    })
-}
-
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
 
@@ -1048,7 +982,8 @@ impl Database for ListingDatabase {
         let mut tables = Vec::new();
         let mut page_token = request.page_token.filter(|token| !token.is_empty());
 
-        // A page of nothing: no table was handed over for a token to resume after.
+        // A page of nothing: the store rejects a limit of zero, and no table was handed over
+        // for a token to resume after.
         if limit == Some(0) {
             return Ok(ListTablesResponse {
                 context: None,
@@ -1057,21 +992,35 @@ impl Database for ListingDatabase {
             });
         }
 
-        // The page holds only table directories, so one call — and the one full-level
-        // listing behind it — fills it.
-        let page = read_dir_page(
-            &self.object_store,
-            &self.base_path,
-            page_token.take(),
-            limit,
-        )
-        .await?;
-        page_token = page.page_token;
-        tables.extend(
-            page.common_prefixes
-                .iter()
-                .filter_map(|location| table_name(location, &dir_suffix)),
-        );
+        loop {
+            // Ask only for what the page still has room for, so a database holding more
+            // than one page costs one request per page rather than one per table.
+            let listing = self
+                .object_store
+                .read_dir_page(
+                    self.base_path.clone(),
+                    ReadDirOptions {
+                        page_token: page_token.take(),
+                        limit: limit.map(|limit| limit - tables.len()),
+                    },
+                )
+                .await?;
+            page_token = listing.page_token;
+            // Only child directories can be tables, and the store already separates them
+            // out, so the objects in the page are not looked at.
+            tables.extend(
+                listing
+                    .result
+                    .common_prefixes
+                    .iter()
+                    .filter_map(|location| table_name(location, &dir_suffix)),
+            );
+            // Children that are not tables leave the page short of the limit, so keep
+            // going until the page is full or the database runs out.
+            if page_token.is_none() || limit.is_none_or(|limit| tables.len() >= limit) {
+                break;
+            }
+        }
 
         Ok(ListTablesResponse {
             context: None,
@@ -1717,8 +1666,8 @@ mod tests {
     }
 
     /// Only directories named `<name>.lance` are tables; loose files and other directories
-    /// under the database prefix are not. They never take a page slot, so even a `limit`
-    /// smaller than the clutter ahead of the first table returns that table.
+    /// under the database prefix are not. A page spent on them is filled from the next one,
+    /// so a page holding only non-tables does not read as an empty database.
     #[tokio::test]
     async fn test_listing_ignores_non_table_children() {
         let (tempdir, db) = setup_database().await;
@@ -1735,37 +1684,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.tables, vec!["real"]);
-    }
-
-    /// The Lance 11 fallback pages locally over one full-level listing, so a bounded page
-    /// costs exactly one listing call — clutter ahead of the first table must not buy extra
-    /// round trips.
-    #[tokio::test]
-    async fn test_one_full_listing_per_public_page() {
-        use crate::io::object_store::io_tracking::IoStatsHolder;
-        use lance_io::object_store::WrappingObjectStore;
-
-        let (tempdir, mut db) = setup_database().await;
-        create_tables(&db, &["real"]).await;
-        std::fs::write(tempdir.path().join("aaa-loose.lance"), b"not a table").unwrap();
-        create_dir_all(tempdir.path().join("aaa-scratch")).unwrap();
-
-        let io_stats = IoStatsHolder::default();
-        let mut tracked_store = (*db.object_store).clone();
-        tracked_store.inner =
-            io_stats.wrap(&tracked_store.store_prefix, tracked_store.inner.clone());
-        db.object_store = Arc::new(tracked_store);
-
-        let page = db
-            .list_tables(ListTablesRequest {
-                limit: Some(1),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(page.tables, vec!["real"]);
-        assert_eq!(io_stats.incremental_stats().read_iops, 1);
     }
 
     #[tokio::test]
