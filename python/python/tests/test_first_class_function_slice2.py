@@ -19,7 +19,13 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.functions import PythonRuntimeSpec, UdfDefinition, udf
+from lancedb.functions import (
+    PythonRuntimeSpec,
+    UdfDefinition,
+    _canonical_arrow_type,
+    _GRAMMAR_PRIMITIVES,
+    udf,
+)
 
 THRESHOLD = 20
 _CACHE = None
@@ -221,8 +227,6 @@ def test_udf_resolves_module_globals_before_builtins(tmp_path):
 
 
 def test_canonical_arrow_type_prefers_the_compact_grammar():
-    from lancedb.functions import _GRAMMAR_PRIMITIVES, _canonical_arrow_type
-
     golden = json.loads(
         (
             Path(__file__).parents[3]
@@ -243,7 +247,6 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
     for outside in [
         pa.timestamp("us"),
         pa.decimal128(10, 2),
-        pa.large_string(),
         pa.large_binary(),
         pa.binary(4),
         pa.duration("s"),
@@ -437,8 +440,6 @@ def test_udf_recursion_versus_a_rebound_module_name(tmp_path):
 
 
 def test_canonical_arrow_type_uses_exact_json_for_list_child_properties():
-    from lancedb.functions import _canonical_arrow_type
-
     nullable = pa.list_(pa.float32())
     assert json.loads(_canonical_arrow_type(nullable)) == {
         "type": "list",
@@ -528,6 +529,7 @@ def _arrow_type_from_golden(spec: dict) -> pa.DataType:
         "null": pa.null(),
         "bool": pa.bool_(),
         "utf8": pa.string(),
+        "large_utf8": pa.large_string(),
         "binary": pa.binary(),
         "float16": pa.float16(),
         "float32": pa.float32(),
@@ -544,8 +546,6 @@ def test_arrow_type_grammar_matches_the_shared_golden():
             / "rust/lancedb/tests/fixtures/first_class_functions/v1/arrow_types.json"
         ).read_text()
     )
-    from lancedb.functions import _canonical_arrow_type
-
     emitted = {
         case["arrow_type"]: _canonical_arrow_type(_arrow_type_from_golden(case["json"]))
         for case in golden["valid"]
@@ -694,6 +694,33 @@ def test_nested_non_blob_extension_is_not_silently_unwrapped():
         )
         def extension_value(value):
             return value["extended"]
+
+
+def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
+    input_schema = pa.schema([pa.field("text", pa.large_string(), nullable=True)])
+    output_schema = pa.field("result", pa.large_string(), nullable=False)
+
+    @udf(input_schema=input_schema, output_schema=output_schema)
+    def preserve(text):
+        return text
+
+    signature = preserve.registration_request.signature
+    assert signature.inputs[0].arrow_type == "large_utf8"
+    assert signature.inputs[0].nullable is True
+    assert signature.output.arrow_type == "large_utf8"
+    assert signature.output.nullable is False
+
+    nested = pa.struct([pa.field("text", pa.large_string(), nullable=True)])
+    assert json.loads(_canonical_arrow_type(nested)) == {
+        "type": "struct",
+        "fields": [
+            {
+                "name": "text",
+                "nullable": True,
+                "type": {"type": "large_utf8"},
+            }
+        ],
+    }
 
 
 def test_nested_struct_output_uses_canonical_exact_json():

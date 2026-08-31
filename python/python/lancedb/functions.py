@@ -537,6 +537,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.float32(), "float32"),
     (pa.float64(), "float64"),
     (pa.string(), "utf8"),
+    (pa.large_string(), "large_utf8"),
     (pa.binary(), "binary"),
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
