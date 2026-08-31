@@ -49,6 +49,8 @@ from pydantic import (
     model_validator,
 )
 
+from .schema import is_blob_v2_field as _is_blob_v2_field
+
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
@@ -518,6 +520,7 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_FUNCTION_BLOB_V2_TYPE = "blob_v2"
 
 
 _GRAMMAR_PRIMITIVES = (
@@ -581,20 +584,90 @@ def _validate_exact_arrow_field(field: pa.Field) -> None:
             "unsupported Arrow type for Function signature: field names "
             "must not be empty"
         )
-    if field.metadata:
+    if _is_blob_v2_field(field):
+        if not _has_supported_blob_v2_layout(field):
+            raise TypeError(
+                "unsupported Arrow type for Function signature: lance.blob.v2 "
+                f"requires a supported Blob storage layout, got {field}"
+            )
+    elif field.metadata:
         raise TypeError(
             "unsupported Arrow type for Function signature: field metadata "
             f"is not supported, got {field}"
         )
 
 
+def _has_supported_blob_v2_layout(field: pa.Field) -> bool:
+    data_type = field.type
+    if isinstance(data_type, pa.ExtensionType):
+        data_type = data_type.storage_type
+    if not pa.types.is_struct(data_type):
+        return False
+
+    fields = tuple(data_type)
+
+    def matches(spec, compare_nullable) -> bool:
+        return len(fields) == len(spec) and all(
+            actual.name == name
+            and actual.type == expected_type
+            and (not check_nullable or actual.nullable == nullable)
+            for actual, (name, expected_type, nullable), check_nullable in zip(
+                fields, spec, compare_nullable
+            )
+        )
+
+    logical_minimal = (
+        ("data", pa.large_binary(), True),
+        ("uri", pa.utf8(), True),
+    )
+    logical_full = logical_minimal + (
+        ("position", pa.uint64(), True),
+        ("size", pa.uint64(), True),
+    )
+    prepared = (
+        ("kind", pa.uint8(), True),
+        ("data", pa.large_binary(), True),
+        ("uri", pa.utf8(), True),
+        ("blob_id", pa.uint32(), True),
+        ("blob_size", pa.uint64(), True),
+        ("position", pa.uint64(), True),
+    )
+    descriptor = (
+        ("kind", pa.uint8(), False),
+        ("position", pa.uint64(), False),
+        ("size", pa.uint64(), False),
+        ("blob_id", pa.uint32(), False),
+        ("blob_uri", pa.utf8(), False),
+    )
+    return (
+        matches(logical_minimal, (True, True))
+        or matches(logical_full, (True, True, False, False))
+        or matches(prepared, (True,) * len(prepared))
+        or matches(descriptor, (False,) * len(descriptor))
+    )
+
+
+def _canonical_arrow_field(field: pa.Field) -> str:
+    _validate_exact_arrow_field(field)
+    if _is_blob_v2_field(field):
+        return _FUNCTION_BLOB_V2_TYPE
+    return _canonical_arrow_type(field.type)
+
+
 def _exact_arrow_field(field: pa.Field) -> dict[str, Any]:
     _validate_exact_arrow_field(field)
-    return {
+    if _is_blob_v2_field(field):
+        raise TypeError(
+            "unsupported Arrow type for Function signature: nested Blob v2 "
+            "fields are not supported; declare Blob parameters or named result "
+            "fields directly"
+        )
+    value = {
         "name": field.name,
         "nullable": field.nullable,
         "type": _exact_arrow_type(field.type),
     }
+    return value
 
 
 def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
@@ -718,7 +791,11 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         if output.metadata:
             raise TypeError("Function output schema metadata is not supported")
         fields = tuple(output)
-    elif isinstance(output, pa.Field) and pa.types.is_struct(output.type):
+    elif (
+        isinstance(output, pa.Field)
+        and not _is_blob_v2_field(output)
+        and pa.types.is_struct(output.type)
+    ):
         _validate_exact_arrow_field(output)
         if output.nullable:
             raise ValueError("Function output must be non-nullable")
@@ -740,7 +817,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
             raise ValueError("Function output must be non-nullable")
         return FunctionOutput(
             kind="scalar",
-            arrow_type=_canonical_arrow_type(field.type),
+            arrow_type=_canonical_arrow_field(field),
             nullable=False,
         )
 
@@ -758,7 +835,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         fields=tuple(
             FunctionResultField(
                 name=field.name,
-                arrow_type=_canonical_arrow_type(field.type),
+                arrow_type=_canonical_arrow_field(field),
                 nullable=False,
             )
             for field in fields
@@ -792,7 +869,7 @@ def _infer_signature(
         inputs = tuple(
             FunctionParameter(
                 name=field.name,
-                arrow_type=_canonical_arrow_type(field.type),
+                arrow_type=_canonical_arrow_field(field),
                 nullable=field.nullable,
             )
             for field in input_schema
@@ -815,7 +892,9 @@ def _infer_signature(
         inputs.append(
             FunctionParameter(
                 name=parameter.name,
-                arrow_type=_canonical_arrow_type(data_type),
+                arrow_type=_canonical_arrow_field(
+                    pa.field(parameter.name, data_type, nullable=nullable)
+                ),
                 nullable=nullable,
             )
         )
