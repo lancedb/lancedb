@@ -491,9 +491,14 @@ impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
 impl<S: HttpSend> RemoteTable<S> {
     async fn submit_create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
         self.check_mutable().await?;
+        let route = if index.replace {
+            "create_index"
+        } else {
+            "create_index_if_not_exists"
+        };
         let request = self
             .client
-            .post(&format!("/v1/table/{}/create_index/", self.identifier));
+            .post(&format!("/v1/table/{}/{}/", self.identifier, route));
 
         let column = match index.columns.len() {
             0 => {
@@ -526,6 +531,10 @@ impl<S: HttpSend> RemoteTable<S> {
         let mut body = serde_json::json!({
             "column": canonical_column
         });
+
+        if !index.replace {
+            body["replace"] = false.into();
+        }
 
         // Add name parameter if provided (for backwards compatibility, only include if Some)
         if let Some(ref name) = index.name {
@@ -6075,6 +6084,80 @@ mod tests {
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_create_index_forwards_replace_false() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index_if_not_exists/" => {
+                    let body = request.body().unwrap().as_bytes().unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["replace"], json!(false));
+
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .replace(false)
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_index_replace_false_does_not_use_legacy_route_after_backend_downgrade() {
+        let legacy_create_request_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sent = legacy_create_request_sent.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 1),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => {
+                    sent.store(true, std::sync::atomic::Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index_if_not_exists/" => http::Response::builder()
+                    .status(404)
+                    .body("not found".to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            },
+        );
+
+        let result = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .replace(false)
+            .execute()
+            .await;
+
+        assert!(result.is_err());
+        assert!(!legacy_create_request_sent.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]

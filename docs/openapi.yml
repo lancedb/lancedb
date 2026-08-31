@@ -446,6 +446,15 @@ paths:
               properties:
                 column:
                   type: string
+                name:
+                  type: string
+                  description: Optional name for the created index.
+                replace:
+                  type: boolean
+                  default: true
+                  description: |
+                    Whether to replace an existing index with the same resolved
+                    name. Defaults to true.
                 metric_type:
                   type: string
                   nullable: false
@@ -470,6 +479,65 @@ paths:
           $ref: "#/components/responses/invalid_request"
         "401":
           $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
+  /v1/table/{name}/create_index_if_not_exists/:
+    post:
+      description: |
+        Create vector index on a Table without replacing an existing index.
+        Servers that do not support create-only index creation may return 404
+        for this route.
+      tags:
+        - Tables
+      summary: Create vector index on a Table if it does not already exist
+      operationId: createIndexIfNotExists
+      parameters:
+        - $ref: "#/components/parameters/table_name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                column:
+                  type: string
+                name:
+                  type: string
+                  description: Optional name for the created index.
+                replace:
+                  type: boolean
+                  default: false
+                  description: |
+                    Must be false for create-only behavior. If an index with
+                    the same resolved name already exists, the server returns a
+                    conflict or invalid request error without replacing it.
+                metric_type:
+                  type: string
+                  nullable: false
+                  description: |
+                    The metric type to use for the index. l2, Cosine, Dot are supported.
+                index_type:
+                  type: string
+                custom_stop_words:
+                  type: [array, "null"]
+                  items:
+                    type: string
+                  description: |
+                    The custom stop-word list for an FTS index. A non-null
+                    array replaces the language's built-in stop-word list and is only
+                    applied when remove_stop_words is enabled. Null uses the built-in
+                    language list, while an empty array explicitly replaces it with no
+                    stop words.
+      responses:
+        "200":
+          description: Index successfully created, or the create-only index job was accepted.
+        "400":
+          $ref: "#/components/responses/invalid_request"
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "409":
+          description: An index with the same resolved name already exists.
         "404":
           $ref: "#/components/responses/not_found"
   /v1/table/{name}/create_scalar_index/:

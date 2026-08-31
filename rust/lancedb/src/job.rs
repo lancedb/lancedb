@@ -51,23 +51,35 @@ impl TerminalResult {
         self.value.as_ref()
     }
 
+    #[cfg(feature = "remote")]
+    fn remote_decode_error(request_id: String, message: String) -> Error {
+        Error::Http {
+            source: message.into(),
+            request_id,
+            status_code: None,
+        }
+    }
+
+    #[cfg(not(feature = "remote"))]
+    fn remote_decode_error(_request_id: String, message: String) -> Error {
+        Error::Runtime { message }
+    }
+
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let value = self.value.ok_or_else(|| match &self.request_id {
-            Some(request_id) => Error::Http {
-                source: "successful typed job response did not contain a result".into(),
-                request_id: request_id.clone(),
-                status_code: None,
-            },
+            Some(request_id) => Self::remote_decode_error(
+                request_id.clone(),
+                "successful typed job response did not contain a result".to_string(),
+            ),
             None => Error::Runtime {
                 message: "successful typed job did not contain a result".to_string(),
             },
         })?;
         serde_json::from_value(value).map_err(|error| match self.request_id {
-            Some(request_id) => Error::Http {
-                source: format!("failed to parse typed job result: {error}").into(),
+            Some(request_id) => Self::remote_decode_error(
                 request_id,
-                status_code: None,
-            },
+                format!("failed to parse typed job result: {error}"),
+            ),
             None => Error::Runtime {
                 message: format!("failed to parse typed job result: {error}"),
             },
