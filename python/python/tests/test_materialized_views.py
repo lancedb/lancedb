@@ -266,3 +266,38 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
             handle._route_pushdown_to_rust == through_namespace._route_pushdown_to_rust
         )
         assert handle._namespace_path == through_namespace._namespace_path
+
+
+def test_namespaced_select_kind_is_read_and_unknown_kinds_are_refused():
+    import json
+
+    import pyarrow as pa
+
+    from lancedb.materialized_view import _definition_from_schema
+
+    def schema_with(definition: dict) -> pa.Schema:
+        return pa.schema([pa.field("id", pa.int32())]).with_metadata(
+            {b"mv.definition": json.dumps(definition).encode()}
+        )
+
+    # "namespaced_select" is the namespaced form of "select": same shape,
+    # a separate kind so readers that predate it refuse instead of
+    # resolving the source at the root.
+    definition = _definition_from_schema(
+        schema_with(
+            {
+                "kind": "namespaced_select",
+                "source_table": "people",
+                "source_namespace": ["ns"],
+                "projections": [{"output": "name", "expression": "name"}],
+            }
+        ),
+        "v",
+    )
+    assert definition.source_table == "people"
+    assert definition.source_namespace == ["ns"]
+
+    with pytest.raises(NotImplementedError, match="cannot refresh"):
+        _definition_from_schema(
+            schema_with({"kind": "select_v3", "source_table": "people"}), "v"
+        )

@@ -73,8 +73,18 @@ const EMBEDDING_FUNCTIONS_META_KEY: &str = "embedding_functions";
 /// produces, which is what lets a query embed its own text.
 const COLUMN_DEFINITIONS_META_KEY: &str = "lancedb::column_definitions";
 
-/// Value of the definition's `kind` tag for the projected `select` form.
+/// Value of the definition's `kind` tag for the projected `select` form
+/// over a root-namespace source. Reserved for root: releases that predate
+/// [`NAMESPACED_SELECT_KIND`] parse this kind and resolve its source at the
+/// root, so a `select` definition must never carry a namespace.
 pub const SELECT_KIND: &str = "select";
+
+/// The `select` form over a namespaced source. A separate kind because it is
+/// a version boundary: readers that predate it drop unknown fields, so under
+/// [`SELECT_KIND`] they would silently resolve the source at the root and
+/// refresh from the wrong table. This kind routes them to the
+/// [`MaterializedViewKind::Unrecognized`] refusal instead.
+pub const NAMESPACED_SELECT_KIND: &str = "namespaced_select";
 
 /// Which view outputs each source column is projected to directly. A column
 /// may be projected more than once, so each carries every name the view gives
@@ -133,7 +143,12 @@ pub(crate) fn definition_to_metadata(definition: &MaterializedViewDefinition) ->
     let mut value = serde_json::to_value(definition).map_err(|e| Error::Runtime {
         message: format!("failed to serialize view definition: {e}"),
     })?;
-    value["kind"] = serde_json::Value::String(SELECT_KIND.to_string());
+    let kind = if definition.source_namespace.is_empty() {
+        SELECT_KIND
+    } else {
+        NAMESPACED_SELECT_KIND
+    };
+    value["kind"] = serde_json::Value::String(kind.to_string());
     Ok(value.to_string())
 }
 
@@ -154,12 +169,23 @@ pub fn materialized_view_kind(
         .get("kind")
         .and_then(|k| k.as_str())
         .ok_or_else(|| unreadable(&"missing kind tag"))?;
-    if kind != SELECT_KIND {
+    if kind != SELECT_KIND && kind != NAMESPACED_SELECT_KIND {
         return Ok(Some(MaterializedViewKind::Unrecognized {
             kind: kind.to_string(),
         }));
     }
-    let definition = serde_json::from_value(value).map_err(|e| unreadable(&e))?;
+    let kind = kind.to_string();
+    let definition: MaterializedViewDefinition =
+        serde_json::from_value(value).map_err(|e| unreadable(&e))?;
+    // The kind states where the source lives; a mismatch is a definition no
+    // correct writer produces, and under `select` one that pre-namespace
+    // readers would resolve at the root.
+    if (kind == SELECT_KIND) != definition.source_namespace.is_empty() {
+        return Err(unreadable(&format!(
+            "kind '{kind}' does not match its source namespace {:?}",
+            definition.source_namespace
+        )));
+    }
     Ok(Some(MaterializedViewKind::Select(definition)))
 }
 
@@ -2190,5 +2216,73 @@ mod tests {
             r#"{"source_table":"people","projections":[{"output":"name","expression":"name"}]}"#;
         let definition: MaterializedViewDefinition = serde_json::from_str(stored).unwrap();
         assert!(definition.source_namespace.is_empty());
+    }
+
+    fn definition(source_namespace: Vec<String>) -> MaterializedViewDefinition {
+        MaterializedViewDefinition {
+            source_table: "people".to_string(),
+            source_namespace,
+            projections: vec![ViewProjection {
+                output: "name".to_string(),
+                expression: "name".to_string(),
+            }],
+            filter: None,
+            limit: None,
+            inputs: vec!["name".to_string()],
+        }
+    }
+
+    /// The stored kind is a version boundary. A root definition keeps the
+    /// pre-namespace `select` form with no namespace key, so older releases
+    /// read it unchanged. A namespaced one moves to `namespaced_select`:
+    /// their readers drop unknown fields and resolve `select` sources at the
+    /// root, so keeping the kind would refresh from the wrong table --
+    /// instead the unfamiliar kind routes them to the `Unrecognized` refusal
+    /// (`test_unrecognized_kind_is_refused_by_name` is that path).
+    #[test]
+    fn a_namespaced_definition_is_refused_by_the_pre_namespace_reader() {
+        let root = definition_to_metadata(&definition(Vec::new())).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&root).unwrap();
+        assert_eq!(root["kind"], "select");
+        assert!(
+            root.get("source_namespace").is_none(),
+            "a root definition must not grow new keys: {root}"
+        );
+
+        let stored = definition_to_metadata(&definition(vec!["ns".to_string()])).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        // The pre-namespace discriminator is `kind == "select"`; anything
+        // else lands in its Unrecognized refusal rather than in a root open.
+        assert_eq!(value["kind"], "namespaced_select");
+
+        // The current reader round-trips the coordinate.
+        let metadata = HashMap::from([(DEFINITION_META_KEY.to_string(), stored)]);
+        match materialized_view_kind(&metadata).unwrap() {
+            Some(MaterializedViewKind::Select(read)) => {
+                assert_eq!(read.source_namespace, vec!["ns".to_string()])
+            }
+            other => panic!("expected the namespaced select form, got {other:?}"),
+        }
+    }
+
+    /// A kind that disagrees with its namespace is a definition no correct
+    /// writer produces; under `select` it is exactly the shape pre-namespace
+    /// readers would resolve at the root, so it is an error, not a view.
+    #[test]
+    fn a_kind_namespace_mismatch_is_refused() {
+        for (kind, namespace) in [
+            (SELECT_KIND, vec!["ns".to_string()]),
+            (NAMESPACED_SELECT_KIND, Vec::new()),
+        ] {
+            let mut value = serde_json::to_value(definition(namespace)).unwrap();
+            value["kind"] = serde_json::Value::String(kind.to_string());
+            let metadata = HashMap::from([(DEFINITION_META_KEY.to_string(), value.to_string())]);
+            let err = materialized_view_kind(&metadata).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("does not match its source namespace"),
+                "kind '{kind}': {err}"
+            );
+        }
     }
 }
