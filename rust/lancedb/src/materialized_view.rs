@@ -73,17 +73,14 @@ const EMBEDDING_FUNCTIONS_META_KEY: &str = "embedding_functions";
 /// produces, which is what lets a query embed its own text.
 const COLUMN_DEFINITIONS_META_KEY: &str = "lancedb::column_definitions";
 
-/// Value of the definition's `kind` tag for the projected `select` form
-/// over a root-namespace source. Reserved for root: releases that predate
-/// [`NAMESPACED_SELECT_KIND`] parse this kind and resolve its source at the
-/// root, so a `select` definition must never carry a namespace.
+/// Value of the definition's `kind` tag for the projected `select` form.
+/// Reserved for root-namespace sources; see [`NAMESPACED_SELECT_KIND`].
 pub const SELECT_KIND: &str = "select";
 
-/// The `select` form over a namespaced source. A separate kind because it is
-/// a version boundary: readers that predate it drop unknown fields, so under
-/// [`SELECT_KIND`] they would silently resolve the source at the root and
-/// refresh from the wrong table. This kind routes them to the
-/// [`MaterializedViewKind::Unrecognized`] refusal instead.
+/// The `select` form over a namespaced source: its own kind, because released
+/// readers drop unknown fields and resolve a `select` source at the root, so
+/// this routes them to the [`MaterializedViewKind::Unrecognized`] refusal
+/// instead of a wrong-table refresh.
 pub const NAMESPACED_SELECT_KIND: &str = "namespaced_select";
 
 /// Which view outputs each source column is projected to directly. A column
@@ -177,9 +174,7 @@ pub fn materialized_view_kind(
     let kind = kind.to_string();
     let definition: MaterializedViewDefinition =
         serde_json::from_value(value).map_err(|e| unreadable(&e))?;
-    // The kind states where the source lives; a mismatch is a definition no
-    // correct writer produces, and under `select` one that pre-namespace
-    // readers would resolve at the root.
+    // No correct writer produces a kind that disagrees with its namespace.
     if (kind == SELECT_KIND) != definition.source_namespace.is_empty() {
         return Err(unreadable(&format!(
             "kind '{kind}' does not match its source namespace {:?}",
@@ -899,18 +894,15 @@ impl CreateMaterializedViewBuilder {
     }
 
     /// The namespace to create the view in. Defaults to the root namespace.
-    pub fn namespace(mut self, namespace: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.namespace = namespace.into_iter().map(Into::into).collect();
+    pub fn namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.namespace = namespace_path;
         self
     }
 
-    /// The namespace holding the source table. Defaults to the root
-    /// namespace, and is recorded in the definition for refresh to resolve.
-    pub fn source_namespace(
-        mut self,
-        namespace: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        self.source_namespace = namespace.into_iter().map(Into::into).collect();
+    /// The namespace holding the source table; recorded in the definition
+    /// for refresh to resolve. Defaults to the root namespace.
+    pub fn source_namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.source_namespace = namespace_path;
         self
     }
 
@@ -2232,13 +2224,9 @@ mod tests {
         }
     }
 
-    /// The stored kind is a version boundary. A root definition keeps the
-    /// pre-namespace `select` form with no namespace key, so older releases
-    /// read it unchanged. A namespaced one moves to `namespaced_select`:
-    /// their readers drop unknown fields and resolve `select` sources at the
-    /// root, so keeping the kind would refresh from the wrong table --
-    /// instead the unfamiliar kind routes them to the `Unrecognized` refusal
-    /// (`test_unrecognized_kind_is_refused_by_name` is that path).
+    /// A root definition keeps the pre-namespace `select` form byte-stably;
+    /// a namespaced one moves off `select`, which sends pre-namespace readers
+    /// to the `Unrecognized` refusal instead of a root resolve.
     #[test]
     fn a_namespaced_definition_is_refused_by_the_pre_namespace_reader() {
         let root = definition_to_metadata(&definition(Vec::new())).unwrap();
@@ -2265,9 +2253,8 @@ mod tests {
         }
     }
 
-    /// A kind that disagrees with its namespace is a definition no correct
-    /// writer produces; under `select` it is exactly the shape pre-namespace
-    /// readers would resolve at the root, so it is an error, not a view.
+    /// A kind that disagrees with its namespace is an error, not a view:
+    /// under `select` it is the shape old readers would resolve at the root.
     #[test]
     fn a_kind_namespace_mismatch_is_refused() {
         for (kind, namespace) in [

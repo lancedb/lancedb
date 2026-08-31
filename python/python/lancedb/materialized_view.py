@@ -55,9 +55,7 @@ def _definition_from_schema(
         raise ValueError(f"Table '{name}' is not a materialized view")
     value = json.loads(raw)
     kind = value.get("kind")
-    # "select" is the root-namespace form; "namespaced_select" carries a
-    # source namespace, a separate kind so older readers refuse it rather
-    # than silently resolving the source at the root.
+    # "namespaced_select" keeps older readers from resolving the source at root.
     if kind not in ("select", "namespaced_select"):
         raise NotImplementedError(
             f"materialized view '{name}' is defined by '{kind}', which this "
