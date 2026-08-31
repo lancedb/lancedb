@@ -1737,6 +1737,37 @@ mod tests {
         assert_eq!(page.tables, vec!["real"]);
     }
 
+    /// The Lance 11 fallback pages locally over one full-level listing, so a bounded page
+    /// costs exactly one listing call — clutter ahead of the first table must not buy extra
+    /// round trips.
+    #[tokio::test]
+    async fn test_one_full_listing_per_public_page() {
+        use crate::io::object_store::io_tracking::IoStatsHolder;
+        use lance_io::object_store::WrappingObjectStore;
+
+        let (tempdir, mut db) = setup_database().await;
+        create_tables(&db, &["real"]).await;
+        std::fs::write(tempdir.path().join("aaa-loose.lance"), b"not a table").unwrap();
+        create_dir_all(tempdir.path().join("aaa-scratch")).unwrap();
+
+        let io_stats = IoStatsHolder::default();
+        let mut tracked_store = (*db.object_store).clone();
+        tracked_store.inner =
+            io_stats.wrap(&tracked_store.store_prefix, tracked_store.inner.clone());
+        db.object_store = Arc::new(tracked_store);
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["real"]);
+        assert_eq!(io_stats.incremental_stats().read_iops, 1);
+    }
+
     #[tokio::test]
     async fn listing_ignores_empty_table_name() {
         let (tempdir, db) = setup_database().await;
