@@ -32,8 +32,6 @@ from typing_extensions import Annotated
 
 from lancedb._lancedb import fts_query_to_json
 from lancedb.background_loop import LOOP
-from lancedb.pydantic import PYDANTIC_VERSION
-
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
@@ -167,6 +165,12 @@ def _projection_to_scanner_kwargs(columns: QueryProjection) -> Dict[str, Any]:
             expr = expr.to_sql()
         projection[name] = expr
     return {"columns": projection}
+
+
+def _query_request_projection(req: "PyQueryRequest") -> QueryProjection:
+    if req.select_source_columns is not None:
+        return req.select_source_columns
+    return req.select
 
 
 def _scanner_kwargs_for_query(
@@ -377,6 +381,13 @@ class FullTextOperator(str, Enum):
     OR = "OR"
 
 
+class DocumentGranularity(str, Enum):
+    """The unit treated as one full-text-search document."""
+
+    ROW = "row"
+    LIST_ELEMENT = "list_element"
+
+
 class Occur(str, Enum):
     SHOULD = "SHOULD"
     MUST = "MUST"
@@ -480,6 +491,10 @@ class MatchQuery(FullTextQuery):
     prefix_length : int, optional
         The number of beginning characters being unchanged for fuzzy matching.
         This is useful to achieve prefix matching.
+    document_granularity : DocumentGranularity, optional
+        Explicitly select row or deepest-list-element documents. If omitted,
+        the indexed granularity is inferred. When both granularities are indexed
+        for the field, this must be specified. With no index, row granularity is used.
     """
 
     query: str
@@ -489,6 +504,9 @@ class MatchQuery(FullTextQuery):
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
+    document_granularity: Optional[DocumentGranularity] = pydantic.Field(
+        None, kw_only=True
+    )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
@@ -505,11 +523,20 @@ class PhraseQuery(FullTextQuery):
         The query string to match against.
     column : str
         The name of the column to match against.
+    slop : int, default 0
+        The maximum number of intervening positions permitted in the phrase.
+    document_granularity : DocumentGranularity, optional
+        Explicitly select row or deepest-list-element documents. If omitted,
+        the indexed granularity is inferred. When both granularities are indexed
+        for the field, this must be specified. With no index, row granularity is used.
     """
 
     query: str
     column: str
     slop: int = pydantic.Field(0, kw_only=True)
+    document_granularity: Optional[DocumentGranularity] = pydantic.Field(
+        None, kw_only=True
+    )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
@@ -837,12 +864,7 @@ class Query(pydantic.BaseModel):
 
     # This tells pydantic to allow custom types (needed for the `vector` query since
     # pa.Array wouln't be allowed otherwise)
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            arbitrary_types_allowed = True
-    else:
-        model_config = {"arbitrary_types_allowed": True}
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
 
 class LanceQueryBuilder(ABC):
@@ -2842,15 +2864,16 @@ class AsyncQueryBase(object):
 
         req = self._inner.to_query_request()
         schema = await self._table.schema()
+        projection = _query_request_projection(req)
         self._blob_auto_row_id = blob_auto_row_id_for_scan(
             schema,
-            req.select,
+            projection,
             with_row_id=self._with_row_id,
         )
         if not self._blob_auto_row_id:
             self._blob_paths = ()
             return
-        self._blob_paths = tuple(blob_v2_projection_sources(schema, req.select).keys())
+        self._blob_paths = tuple(blob_v2_projection_sources(schema, projection).keys())
         self._inner.with_row_id()
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
@@ -3310,12 +3333,7 @@ class AsyncStandardQuery(AsyncQueryBase):
         if ordering is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by(
-                [
-                    o.model_dump() if hasattr(o, "model_dump") else o.dict()
-                    for o in ordering
-                ]
-            )
+            self._inner.order_by([o.model_dump() for o in ordering])
         return self
 
     def fast_search(self) -> Self:
@@ -3449,9 +3467,10 @@ class AsyncQuery(AsyncStandardQuery):
         pass in multiple vectors. When multiple vectors are passed in, if the vector
         column is with multivector type, then the vectors will be treated as a single
         query. Or the vectors will be treated as multiple queries, this can be useful
-        if you want to find the nearest vectors to multiple query vectors.
-        This is not expected to be faster than making multiple queries concurrently;
-        it is just a convenience method. If multiple vectors are passed in then
+        if you want to find the nearest vectors to multiple query vectors. Flat
+        searches share one table scan across the query vectors, avoiding the scan
+        and memory amplification of making multiple queries concurrently. If
+        multiple vectors are passed in then
         an additional column `query_index` will be added to the results. This column
         will contain the index of the query vector that the result is nearest to.
         """
@@ -3580,8 +3599,8 @@ class AsyncFTSQuery(AsyncStandardQuery):
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest
-        vectors to multiple query vectors. This is not expected to be faster than
-        making multiple queries concurrently; it is just a convenience method.
+        vectors to multiple query vectors. Flat searches share one table scan across
+        the query vectors instead of issuing concurrent full scans.
         If multiple vectors are passed in then an additional column `query_index`
         will be added to the results.  This column will contain the index of the
         query vector that the result is nearest to.
@@ -3956,14 +3975,15 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         blob_paths: tuple[str, ...] = ()
         if self._table is not None:
             schema = await self._table.schema()
+            projection = _query_request_projection(req)
             blob_auto_row_id = blob_auto_row_id_for_scan(
                 schema,
-                req.select,
+                projection,
                 with_row_id=self._with_row_id,
             )
             if blob_auto_row_id:
                 blob_paths = tuple(
-                    blob_v2_projection_sources(schema, req.select).keys()
+                    blob_v2_projection_sources(schema, projection).keys()
                 )
         self._blob_auto_row_id = blob_auto_row_id
         self._blob_paths = blob_paths

@@ -54,6 +54,60 @@ listing a storage directory.
 
 ::: lancedb.LsmWriteSpec
 
+## Functions and Jobs
+
+::: lancedb.functions.FunctionArtifact
+
+::: lancedb.functions.FunctionParameter
+
+::: lancedb.functions.FunctionResultField
+
+::: lancedb.functions.FunctionOutput
+
+::: lancedb.functions.FunctionSignature
+
+::: lancedb.functions.PythonEnvironmentSpec
+
+::: lancedb.functions.udf
+
+::: lancedb.functions.UdfDefinition
+
+::: lancedb.functions.FunctionRegistrationRequest
+
+::: lancedb.functions.FunctionArtifactRequest
+
+::: lancedb.functions.FunctionArtifactContent
+
+::: lancedb.functions.PythonAdapterSpec
+
+::: lancedb.functions.FunctionVersion
+
+::: lancedb.functions.PythonRuntimeSpec
+
+::: lancedb.functions.FunctionVersionRef
+
+::: lancedb.functions.ApplicationInput
+
+::: lancedb.functions.FunctionApplication
+
+::: lancedb.functions.InputBinding
+
+::: lancedb.functions.OutputMapping
+
+::: lancedb.functions.FunctionBinding
+
+::: lancedb.functions.RefreshColumnResult
+
+::: lancedb.job.Job
+
+::: lancedb.job.AsyncJob
+
+## Materialized Views (Synchronous)
+
+::: lancedb.materialized_view.MaterializedView
+
+::: lancedb.materialized_view.MaterializedViewDefinition
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead
@@ -105,6 +159,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 
 ::: lancedb.query.FullTextOperator
 
+::: lancedb.query.DocumentGranularity
+
 ::: lancedb.query.Occur
 
 ## Embeddings
@@ -153,8 +209,9 @@ The same option is available on `lancedb.tokenize(...)` and the deprecated
 ```python
 import lancedb
 
-tokens = list(lancedb.tokenize("acme makes searchable data",
-                               custom_stop_words=["acme"]))
+tokens = list(
+    lancedb.tokenize("acme makes searchable data", custom_stop_words=["acme"])
+)
 ```
 
 ::: lancedb.tokenize
@@ -166,9 +223,13 @@ tokens = list(lancedb.tokenize("acme makes searchable data",
 Blob columns store large binary values out of line so they can be read lazily
 instead of being materialized with the rest of the row.
 
-::: lancedb.blob
+`lancedb.BlobType` is `lance.blob.BlobType` when pylance is installed. Without
+pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
+still work. Queries return descriptors. Call
+[`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
+[`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
 
-::: lancedb.BlobType
+::: lancedb.blob
 
 ::: lancedb._blob.BlobFile
     options:
@@ -205,6 +266,8 @@ instead of being materialized with the rest of the row.
 ## PyTorch
 
 ::: lancedb.streaming.StreamingDataset
+
+::: lancedb.streaming.StreamingDataLoader
 
 ::: lancedb.permutation.permutation_builder
 
@@ -245,6 +308,10 @@ Table hold your actual data as a collection of records / rows.
 ::: lancedb.table.AsyncTags
 
 ::: lancedb.table.AsyncBranches
+
+## Materialized Views (Asynchronous)
+
+::: lancedb.materialized_view.AsyncMaterializedView
 
 ## Indices (Asynchronous)
 

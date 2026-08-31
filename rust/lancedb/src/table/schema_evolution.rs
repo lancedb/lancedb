@@ -55,7 +55,9 @@ pub struct DropColumnsResult {
 pub struct FieldMetadataUpdate {
     /// Dot-separated path to the field (e.g. `"embedding"` or `"address.zip"`).
     pub path: String,
-    /// Keys to set (`Some`) or delete (`None`).
+    /// Keys to set (`Some`) or delete (`None`). See
+    /// [`Table::update_field_metadata`](crate::Table::update_field_metadata) for
+    /// the conventional `lancedb:*` keys.
     pub metadata: HashMap<String, Option<String>>,
     /// If `true`, replace the field's entire metadata map instead of merging.
     pub replace: bool,
@@ -101,6 +103,10 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "schema evolution",
+    )?;
     // Declarations are admitted only through [`execute_declare`].
     match &transforms {
         NewColumnTransform::AllNulls(schema) => {
@@ -120,14 +126,26 @@ pub(crate) async fn execute_declare(
     table: &NativeTable,
     columns: &[(String, String)],
 ) -> Result<AddColumnsResult> {
+    use lance::dataset::mem_wal::DatasetMemWalExt;
+
     // An LSM write spec keeps visible rows in tiers refresh cannot reach;
     // checked against latest committed state, not this handle's snapshot.
-    // The catch-up flag outlives unset and marks retained SSTable rows.
     table.checkout_latest().await?;
-    let catchup = table.dataset.get().await?.manifest().reader_feature_flags
-        & lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP
-        != 0;
-    if catchup || table.get_lsm_write_spec().await?.is_some() {
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "schema evolution",
+    )?;
+    // Unset drops the MemWAL index, so the spec alone stops describing a table
+    // whose SSTables still hold rows. The shard directories outlive it and are
+    // the durable evidence.
+    let retained_sstables = !table
+        .dataset
+        .get()
+        .await?
+        .list_mem_wal_latest_shard_ids()
+        .await?
+        .is_empty();
+    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "computed columns are not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
@@ -163,6 +181,10 @@ pub(crate) async fn execute_alter_columns(
     // Nullability is not part of what an expression resolves against, so only
     // a rename or a retype can invalidate a binding.
     let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        schema.as_ref(),
+        "schema evolution",
+    )?;
     let rebinding = alterations
         .iter()
         .filter(|alteration| alteration.rename.is_some() || alteration.data_type.is_some())
@@ -190,6 +212,10 @@ pub(crate) async fn execute_drop_columns(
 ) -> Result<DropColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        &ArrowSchema::from(dataset.schema()),
+        "schema evolution",
+    )?;
     computed_columns::ensure_not_an_input(
         &std::sync::Arc::new(ArrowSchema::from(dataset.schema())),
         columns,
@@ -215,6 +241,7 @@ pub(crate) async fn execute_update_field_metadata(
     // binding out from under a refresh. A replace on a declared column would
     // silently erase it.
     let schema = ArrowSchema::from(dataset.schema());
+    computed_columns::ensure_no_function_bindings_for_mutation(&schema, "schema evolution")?;
     let declared: Vec<String> = computed_columns::computed_columns(&schema)
         .into_iter()
         .map(|declaration| declaration.name)

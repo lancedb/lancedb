@@ -181,10 +181,12 @@ pub mod dataloader;
 pub mod embeddings;
 pub mod error;
 pub mod expr;
+pub mod function;
 pub mod index;
 pub mod io;
 pub mod ipc;
 pub mod job;
+pub mod materialized_view;
 #[cfg(feature = "metrics-otel")]
 pub mod metrics_otel;
 #[cfg(feature = "polars")]
@@ -205,9 +207,13 @@ use serde::{Deserialize, Serialize};
 pub use blob::{BlobRangeRequest, blob, is_blob};
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, JobFailure, Result};
+pub use function::FunctionVersion;
 pub use job::Job;
 use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
+pub use materialized_view::{
+    MaterializedView, MaterializedViewDefinition, RefreshMaterializedViewResult, RefreshMode,
+};
 /// Re-export of the [`metrics`](https://docs.rs/metrics) crate facade. Enable
 /// the `metrics` feature to publish LanceDB's internal metrics; install any
 /// `metrics`-compatible recorder to collect them. See also [`metrics_otel`] for

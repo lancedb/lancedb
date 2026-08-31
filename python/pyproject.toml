@@ -8,7 +8,7 @@ dependencies = [
     "overrides>=0.7; python_version<'3.12'",
     "packaging>=23.0",
     "pyarrow>=16",
-    "pydantic>=1.10",
+    "pydantic>=2.7.4,<3",
     "tqdm>=4.27.0",
     "lance-namespace>=0.3.2"
 ]
@@ -101,9 +101,12 @@ azure = ["adlfs>=2024.2.0"]
 [tool.maturin]
 python-source = "python"
 module-name = "lancedb._lancedb"
+# uv installs the project as an editable package before `uv run`, so keep that
+# bootstrap build consistent with `maturin develop`.
+editable-profile = "dev"
 
 [build-system]
-requires = ["maturin>=1.4"]
+requires = ["maturin>=1.10"]
 build-backend = "maturin"
 
 [tool.ruff.lint]

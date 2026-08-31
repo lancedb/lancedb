@@ -13,7 +13,7 @@ use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_file::version::LanceFileVersion;
-use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+use lance_io::object_store::{ReadDirOptions, StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -281,6 +281,22 @@ impl std::fmt::Display for ListingDatabase {
 }
 
 const LANCE_EXTENSION: &str = "lance";
+
+/// The table a listed child of the database names, or `None` if the child is not a table.
+///
+/// A table is the directory `<name>.lance`; a loose file or any other directory under the
+/// database prefix belongs to something else. `dir_suffix` is `.lance`, built once by the
+/// caller rather than per child.
+/// The table a listed child directory holds, or `None` if it is not a table at all.
+///
+/// Only directories are considered, so a loose object named like a table is not one.
+fn table_name(location: &object_store::path::Path, dir_suffix: &str) -> Option<String> {
+    location
+        .filename()?
+        .strip_suffix(dir_suffix)
+        .map(String::from)
+        .filter(|name| !name.is_empty())
+}
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
 
@@ -765,60 +781,13 @@ impl ListingDatabase {
         }
     }
 
-    /// Extract storage option overrides from the request
-    fn extract_storage_overrides(
-        &self,
-        request: &CreateTableRequest,
-    ) -> Result<(Option<LanceFileVersion>, Option<bool>, Option<bool>)> {
-        let storage_options = request
-            .write_options
-            .lance_write_params
-            .as_ref()
-            .and_then(|p| p.store_params.as_ref())
-            .and_then(|sp| sp.storage_options());
-
-        let storage_version_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
-            .map(|s| s.parse::<LanceFileVersion>())
-            .transpose()?;
-
-        let v2_manifest_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_v2_manifest_paths must be a boolean".to_string(),
-            })?;
-
-        let stable_row_ids_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_stable_row_ids must be a boolean".to_string(),
-            })?;
-
-        Ok((
-            storage_version_override,
-            v2_manifest_override,
-            stable_row_ids_override,
-        ))
-    }
-
     /// Prepare write parameters for table creation
     fn prepare_write_params(
         &self,
         request: &CreateTableRequest,
-        storage_version_override: Option<LanceFileVersion>,
-        v2_manifest_override: Option<bool>,
-        stable_row_ids_override: Option<bool>,
+        mut write_params: lance::dataset::WriteParams,
+        overrides: NewTableConfig,
     ) -> lance::dataset::WriteParams {
-        let mut write_params = request
-            .write_options
-            .lance_write_params
-            .clone()
-            .unwrap_or_default();
-
         // Only modify the storage options if we actually have something to
         // inherit. There is a difference between storage_options=None and
         // storage_options=Some({}). Using storage_options=None will cause the
@@ -842,18 +811,21 @@ impl ListingDatabase {
             store_params.storage_options_accessor = Some(Arc::new(accessor));
         }
 
-        write_params.data_storage_version = storage_version_override
+        write_params.data_storage_version = overrides
+            .data_storage_version
             .or(write_params.data_storage_version)
             .or(self.new_table_config.data_storage_version);
 
-        if let Some(enable_v2_manifest_paths) =
-            v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
+        if let Some(enable_v2_manifest_paths) = overrides
+            .enable_v2_manifest_paths
+            .or(self.new_table_config.enable_v2_manifest_paths)
         {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
         let data_schema = request.data.arrow_schema();
-        if let Some(enable_stable_row_ids) = stable_row_ids_override
+        if let Some(enable_stable_row_ids) = overrides
+            .enable_stable_row_ids
             .or(self.new_table_config.enable_stable_row_ids)
             .or(has_blob_columns(&data_schema).then_some(true))
         {
@@ -988,53 +960,72 @@ impl Database for ListingDatabase {
         Ok(f)
     }
 
+    /// List the tables in the database, a page at a time.
+    ///
+    /// The page_token is opaque, unlike the `start_after` parameter of [`Self::table_names()`].
+    ///
+    /// When there are no more results, the returned page_token will be None.
+    ///
+    /// `limit` is the maximum number of tables to return in the response. But it is possible
+    /// for the response to contain fewer than `limit` tables, even when there are more tables
+    /// to return. Clients should check the returned page_token to determine if there are
+    /// more results, rather than relying on the number of tables returned.
+    ///
+    /// The order that results are returned in not guaranteed to be stable across calls,
+    /// so clients should not rely on it.
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
             return self.namespace_database().list_tables(request).await;
         }
-        let mut f = self
-            .object_store
-            .read_dir(self.base_path.clone())
-            .await?
-            .iter()
-            .map(Path::new)
-            .filter(|path| {
-                let is_lance = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == LANCE_EXTENSION);
-                is_lance.unwrap_or(false)
-            })
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
-            .collect::<Vec<String>>();
-        f.sort();
+        let limit = request.limit.map(|limit| limit.max(0) as usize);
+        let dir_suffix = format!(".{LANCE_EXTENSION}");
+        let mut tables = Vec::new();
+        let mut page_token = request.page_token.filter(|token| !token.is_empty());
 
-        // Handle pagination with page_token
-        if let Some(ref page_token) = request.page_token {
-            let index = f
-                .iter()
-                .position(|name| name.as_str() > page_token.as_str())
-                .unwrap_or(f.len());
-            f.drain(0..index);
+        // A page of nothing: the store rejects a limit of zero, and no table was handed over
+        // for a token to resume after.
+        if limit == Some(0) {
+            return Ok(ListTablesResponse {
+                context: None,
+                tables,
+                page_token: None,
+            });
         }
 
-        // Determine if there's a next page
-        let next_page_token = if let Some(limit) = request.limit {
-            if f.len() > limit as usize {
-                let token = f[limit as usize].clone();
-                f.truncate(limit as usize);
-                Some(token)
-            } else {
-                None
+        loop {
+            // Ask only for what the page still has room for, so a database holding more
+            // than one page costs one request per page rather than one per table.
+            let listing = self
+                .object_store
+                .read_dir_page(
+                    self.base_path.clone(),
+                    ReadDirOptions {
+                        page_token: page_token.take(),
+                        limit: limit.map(|limit| limit - tables.len()),
+                    },
+                )
+                .await?;
+            page_token = listing.page_token;
+            // Only child directories can be tables, and the store already separates them
+            // out, so the objects in the page are not looked at.
+            tables.extend(
+                listing
+                    .result
+                    .common_prefixes
+                    .iter()
+                    .filter_map(|location| table_name(location, &dir_suffix)),
+            );
+            // Children that are not tables leave the page short of the limit, so keep
+            // going until the page is full or the database runs out.
+            if page_token.is_none() || limit.is_none_or(|limit| tables.len() >= limit) {
+                break;
             }
-        } else {
-            None
-        };
+        }
 
         Ok(ListTablesResponse {
             context: None,
-            tables: f,
-            page_token: next_page_token,
+            tables,
+            page_token,
         })
     }
 
@@ -1048,15 +1039,13 @@ impl Database for ListingDatabase {
             .clone()
             .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
 
-        let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
-            self.extract_storage_overrides(&request)?;
-
-        let write_params = self.prepare_write_params(
-            &request,
-            storage_version_override,
-            v2_manifest_override,
-            stable_row_ids_override,
-        );
+        let mut write_params = request
+            .write_options
+            .lance_write_params
+            .clone()
+            .unwrap_or_default();
+        let overrides = take_request_creation_overrides(&mut write_params)?;
+        let write_params = self.prepare_write_params(&request, write_params, overrides);
 
         let data_schema = request.data.arrow_schema();
 
@@ -1288,8 +1277,232 @@ impl Database for ListingDatabase {
     }
 }
 
+/// Parse the request-level `new_table_*` creation keys into overrides and
+/// strip them from the store options in one step: every create path that
+/// honors them must also keep them out of the object store.
+pub(crate) fn take_request_creation_overrides(
+    params: &mut lance::dataset::WriteParams,
+) -> Result<NewTableConfig> {
+    let storage_options = params
+        .store_params
+        .as_ref()
+        .and_then(|sp| sp.storage_options());
+    let overrides = NewTableConfig {
+        data_storage_version: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
+            .map(|s| s.parse::<LanceFileVersion>())
+            .transpose()?,
+        enable_v2_manifest_paths: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_v2_manifest_paths must be a boolean".to_string(),
+            })?,
+        enable_stable_row_ids: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_stable_row_ids must be a boolean".to_string(),
+            })?,
+    };
+    if let Some(store_params) = params.store_params.as_mut() {
+        strip_new_table_creation_keys(store_params);
+    }
+    Ok(overrides)
+}
+
+/// Strip the `new_table_*` creation keys from request store options: they are
+/// creation config, not credentials, and left in place they fork a fresh
+/// store connection for the request.
+fn strip_new_table_creation_keys(store_params: &mut ObjectStoreParams) {
+    let mut options = store_params.storage_options().cloned().unwrap_or_default();
+    let mut removed = false;
+    for key in [
+        OPT_NEW_TABLE_STORAGE_VERSION,
+        OPT_NEW_TABLE_V2_MANIFEST_PATHS,
+        OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
+    ] {
+        removed |= options.remove(key).is_some();
+    }
+    if !removed {
+        return;
+    }
+    let provider = store_params
+        .storage_options_accessor
+        .as_ref()
+        .and_then(|accessor| accessor.provider().cloned());
+    store_params.storage_options_accessor = match (options.is_empty(), provider) {
+        (true, None) => None,
+        (true, Some(provider)) => Some(Arc::new(StorageOptionsAccessor::with_provider(provider))),
+        (false, Some(provider)) => Some(Arc::new(
+            StorageOptionsAccessor::with_initial_and_provider(options, provider),
+        )),
+        (false, None) => Some(Arc::new(StorageOptionsAccessor::with_static_options(
+            options,
+        ))),
+    };
+}
+
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn request_level_creation_keys_do_not_fork_the_store() {
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let batch = arrow_array::record_batch!(("x", Int32, [1, 2])).unwrap();
+        let store_params = ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([(
+                    OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                    "true".to_string(),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        db.create_table("t", batch)
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(store_params),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let table = db.open_table("t").execute().await.unwrap();
+        let rows: usize = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 2, "the table must live in the session's store");
+    }
+
+    mod strip_new_table_creation_keys {
+        use super::super::*;
+
+        #[derive(Debug)]
+        struct EmptyProvider;
+
+        #[async_trait::async_trait]
+        impl StorageOptionsProvider for EmptyProvider {
+            async fn fetch_storage_options(
+                &self,
+            ) -> lance_core::Result<Option<HashMap<String, String>>> {
+                Ok(Some(HashMap::new()))
+            }
+
+            fn provider_id(&self) -> String {
+                "empty-test-provider".into()
+            }
+        }
+
+        fn params_with_static(options: &[(&str, &str)]) -> ObjectStoreParams {
+            ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_static_options(
+                        options
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect(),
+                    ),
+                )),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn creation_keys_are_removed_and_store_keys_kept() {
+            let mut params = params_with_static(&[
+                ("region", "us-west-2"),
+                (OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true"),
+            ]);
+            strip_new_table_creation_keys(&mut params);
+            let options = params.storage_options().cloned().unwrap();
+            assert_eq!(options.get("region").map(String::as_str), Some("us-west-2"));
+            assert!(!options.contains_key(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS));
+
+            // Creation keys alone: no accessor survives to fork a store.
+            let mut params = params_with_static(&[(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")]);
+            strip_new_table_creation_keys(&mut params);
+            assert!(params.storage_options_accessor.is_none());
+        }
+
+        /// A provider must survive every shape of strip: untouched accessors
+        /// keep their identity, emptied ones still fetch, and residual
+        /// statics ride along.
+        #[test]
+        fn provider_accessors_survive_the_strip() {
+            let accessor = Arc::new(StorageOptionsAccessor::with_provider(Arc::new(
+                EmptyProvider,
+            )));
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(accessor.clone()),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            assert!(Arc::ptr_eq(
+                params.storage_options_accessor.as_ref().unwrap(),
+                &accessor
+            ));
+
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([
+                            ("region".to_string(), "us-west-2".to_string()),
+                            (
+                                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                                "true".to_string(),
+                            ),
+                        ]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            let accessor = params.storage_options_accessor.unwrap();
+            assert!(accessor.has_provider());
+            assert_eq!(
+                accessor
+                    .initial_storage_options()
+                    .and_then(|o| o.get("region").cloned())
+                    .as_deref(),
+                Some("us-west-2")
+            );
+
+            // Emptied entirely: a first-fetch accessor, not one caching {}.
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([(
+                            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                            "true".to_string(),
+                        )]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            let accessor = params.storage_options_accessor.unwrap();
+            assert!(accessor.has_provider());
+            assert!(accessor.initial_storage_options().is_none());
+        }
+    }
+
     use super::*;
     use crate::Table;
     use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
@@ -1300,13 +1513,189 @@ mod tests {
     use crate::table::{AnyQuery, WriteOptions};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
-    use futures::{TryStreamExt, stream::once};
+    use futures::{TryStreamExt, future::try_join_all, stream::once};
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio::sync::Barrier;
     use tokio::time::timeout;
+
+    async fn create_tables(db: &ListingDatabase, names: &[&str]) {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        for name in names {
+            db.create_table(CreateTableRequest {
+                name: name.to_string(),
+                namespace_path: vec![],
+                data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    /// Every table in the database, taken `limit` at a time, which is how a caller walks a
+    /// listing: the token ends the walk, never a short page.
+    async fn walk(db: &ListingDatabase, limit: Option<i32>) -> Vec<String> {
+        let mut seen = Vec::new();
+        let mut page_token = None;
+        loop {
+            let page = db
+                .list_tables(ListTablesRequest {
+                    limit,
+                    page_token,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            seen.extend(page.tables);
+            page_token = page.page_token;
+            if page_token.is_none() {
+                return seen;
+            }
+            assert!(
+                seen.len() < 100,
+                "the walk is serving tables more than once"
+            );
+        }
+    }
+
+    /// Paging with the returned token has to visit every table exactly once, whatever the
+    /// page size, with nothing lost or repeated at a boundary.
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn test_list_tables_pages_over_every_table_once(#[values(1, 2, 3, 5, 10)] limit: i32) {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b", "c", "d", "e"]).await;
+
+        assert_eq!(walk(&db, Some(limit)).await, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    /// The token is opaque: it is whatever resumes the store the database sits on, not a
+    /// table name. Callers hand it back and nothing else.
+    ///
+    /// Nothing validates a token, so one invented by a caller is read as a position rather
+    /// than refused — which is why the token has to come back from a previous page.
+    #[tokio::test]
+    async fn test_the_page_token_is_not_a_table_name() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b", "c"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a"]);
+        let token = page.page_token.expect("two tables are still to come");
+        assert_ne!(token, "a");
+
+        // Handing it back is the only thing a caller does with it, and it resumes.
+        let rest = db
+            .list_tables(ListTablesRequest {
+                page_token: Some(token),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rest.tables, vec!["b", "c"]);
+    }
+
+    /// A limit the listing does not fill leaves no token behind, so a caller paging by token
+    /// stops without asking for an empty page.
+    #[tokio::test]
+    async fn test_a_listing_that_runs_out_has_no_token() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(10),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a", "b"]);
+        assert_eq!(page.page_token, None);
+    }
+
+    /// An empty page token means "from the start", which is how a client looping on a token
+    /// spells its first request.
+    #[tokio::test]
+    async fn test_an_empty_page_token_lists_from_the_start() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                page_token: Some(String::new()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a", "b"]);
+    }
+
+    /// Listing follows the order the object store lists directories in, so a name that
+    /// extends another comes first: the `-` of `users-archive.lance` sorts below the `.` of
+    /// `users.lance`. Pagination pushes its cursor into the list request, so it cannot report
+    /// an order other than the one it resumes in.
+    #[tokio::test]
+    async fn test_listing_order_follows_the_store_not_the_table_name() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["users", "users-archive", "users.old"]).await;
+
+        assert_eq!(
+            walk(&db, None).await,
+            vec!["users-archive", "users", "users.old"]
+        );
+        // And paging reports the same order, so a walk sees each table once.
+        assert_eq!(
+            walk(&db, Some(1)).await,
+            vec!["users-archive", "users", "users.old"]
+        );
+    }
+
+    /// Only directories named `<name>.lance` are tables; loose files and other directories
+    /// under the database prefix are not. A page spent on them is filled from the next one,
+    /// so a page holding only non-tables does not read as an empty database.
+    #[tokio::test]
+    async fn test_listing_ignores_non_table_children() {
+        let (tempdir, db) = setup_database().await;
+        create_tables(&db, &["real"]).await;
+        std::fs::write(tempdir.path().join("aaa-loose.lance"), b"not a table").unwrap();
+        create_dir_all(tempdir.path().join("aaa-scratch")).unwrap();
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["real"]);
+    }
+
+    #[tokio::test]
+    async fn listing_ignores_empty_table_name() {
+        let (tempdir, db) = setup_database().await;
+        create_dir_all(tempdir.path().join(".lance")).unwrap();
+        let page = db.list_tables(ListTablesRequest::default()).await.unwrap();
+        assert!(
+            page.tables.is_empty(),
+            "invalid empty table name was listed"
+        );
+    }
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
         let tempdir = tempdir().unwrap();
@@ -1436,6 +1825,59 @@ mod tests {
             1,
             "expected one manifest conflict, got {results:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_open_table_reuses_connection_object_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let session = Arc::new(lance::session::Session::default());
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session.clone()),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let before = session.store_registry().stats();
+        let opened_tables = try_join_all((0..32).map(|_| {
+            db.open_table(OpenTableRequest {
+                name: "test".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+        }))
+        .await
+        .unwrap();
+        let after = session.store_registry().stats();
+
+        assert_eq!(opened_tables.len(), 32);
+        assert_eq!(after.misses, before.misses);
+        assert_eq!(after.active_stores, before.active_stores);
+        assert!(after.hits >= before.hits + 32);
     }
 
     #[tokio::test]
@@ -2567,6 +3009,21 @@ mod tests {
                 "az://container/prefix/test.lance"
             );
         }
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/2283.
+    ///
+    /// Object-store URIs must use `/` on every platform. In particular, joining
+    /// with `std::path::Path` used to insert a `\\` into Azure blob keys on
+    /// Windows.
+    #[tokio::test]
+    async fn test_table_uri_uses_forward_slashes_for_azure() {
+        let (_tempdir, mut db) = setup_database().await;
+        db.uri = "az://test/db/test".to_string();
+
+        let uri = db.table_uri("test").unwrap();
+
+        assert_eq!(uri, "az://test/db/test/test.lance");
     }
 
     /// Regression: connecting via a URL-style URI (which goes through

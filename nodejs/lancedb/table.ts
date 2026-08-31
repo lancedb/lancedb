@@ -35,6 +35,7 @@ import {
   Branches as NativeBranches,
   OptimizeStats,
   RefreshColumnResult,
+  RefreshMaterializedViewResult,
   TableStatistics,
   Tags,
   UpdateFieldMetadataResult,
@@ -42,10 +43,12 @@ import {
   Table as _NativeTable,
 } from "./native";
 import {
+  AutoQuery,
   FullTextQuery,
   Query,
   TakeQuery,
   VectorQuery,
+  createAutoQuery,
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
@@ -522,7 +525,7 @@ export abstract class Table {
     query: string | IntoVector | MultiVector | FullTextQuery,
     queryType?: string,
     ftsColumns?: string | string[],
-  ): VectorQuery | Query;
+  ): VectorQuery | Query | AutoQuery;
   /**
    * Search the table with a given query vector.
    *
@@ -603,6 +606,18 @@ export abstract class Table {
   abstract refreshColumnAsync(column: string): Promise<Job>;
 
   /**
+   * Recompute this table's contents from its materialized-view definition.
+   *
+   * Plumbing for {@link MaterializedView.refresh}, which is the way to call
+   * it: rejects tables that carry no view definition. Local tables only.
+   * @ignore
+   */
+  abstract refreshMaterializedView(
+    full?: boolean,
+    sourceVersion?: number,
+  ): Promise<RefreshMaterializedViewResult>;
+
+  /**
    * Alter the name or nullability of columns.
    * @param {ColumnAlteration[]} columnAlterations One or more alterations to
    * apply to columns.
@@ -615,6 +630,18 @@ export abstract class Table {
 
   /**
    * Update per-field (column) metadata.
+   *
+   * The following keys are treated specially, by convention, and should be
+   * used when appropriate:
+   *
+   * - `lancedb:description`: for a human-readable description of a field.
+   * - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+   *   names the tag category; e.g. `lancedb:tag:model: "clip"`.
+   * - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+   *   `feature_v2` might be in the same logical column.
+   * - `lancedb:status`: for status options (`production`, `candidate`,
+   *   `deprecated`, `archived`) to designate the current life cycle state of
+   *   this column.
    * @param {FieldMetadataUpdate[]} updates One or more per-field updates. Each
    * update's metadata is merged into the field's existing metadata by default;
    * a value of `null` deletes that key, and `replace: true` swaps the whole map.
@@ -962,10 +989,11 @@ export class LocalTable extends Table {
     return this.inner.display();
   }
 
-  private async getEmbeddingFunctions(): Promise<
-    Map<string, EmbeddingFunctionConfig>
-  > {
-    const schema = await this.schema();
+  private async getEmbeddingFunctions(
+    inner: _NativeTable = this.inner,
+  ): Promise<Map<string, EmbeddingFunctionConfig>> {
+    const schemaBuf = await inner.schema();
+    const schema = tableFromIPC(schemaBuf).schema;
     const registry = getRegistry();
     return registry.parseFunctions(schema.metadata);
   }
@@ -1147,7 +1175,7 @@ export class LocalTable extends Table {
     query: string | IntoVector | MultiVector | FullTextQuery,
     queryType: string = "auto",
     ftsColumns?: string | string[],
-  ): VectorQuery | Query {
+  ): VectorQuery | Query | AutoQuery {
     if (typeof query !== "string" && !instanceOfFullTextQuery(query)) {
       if (queryType === "fts") {
         throw new Error("Cannot perform full text search on a vector query");
@@ -1162,14 +1190,28 @@ export class LocalTable extends Table {
       });
     }
 
-    // The query type is auto or vector
-    // fall back to full text search if no embedding functions are defined and the query is a string
-    if (
-      queryType === "auto" &&
-      (getRegistry().length() === 0 || instanceOfFullTextQuery(query))
-    ) {
-      return this.query().fullTextSearch(query, {
-        columns: ftsColumns,
+    if (queryType === "auto") {
+      if (instanceOfFullTextQuery(query)) {
+        return this.query().fullTextSearch(query, {
+          columns: ftsColumns,
+        });
+      }
+
+      const columns =
+        typeof ftsColumns === "string" ? [ftsColumns] : (ftsColumns ?? null);
+      return createAutoQuery(this.inner, query, columns, async (metadata) => {
+        const functions = await getRegistry().parseFunctions(
+          new Map([["embedding_functions", metadata]]),
+        );
+        // TODO: Support multiple embedding functions
+        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+          .values()
+          .next().value;
+        // The route only calls this callback when embedding metadata exists.
+        // parseFunctions either yields a provider or reports malformed metadata.
+        if (!embeddingFunc)
+          throw new Error("Invalid embedding function metadata");
+        return await embeddingFunc.function.computeQueryEmbeddings(query);
       });
     }
 
@@ -1262,6 +1304,13 @@ export class LocalTable extends Table {
 
   async refreshColumnAsync(column: string): Promise<Job> {
     return await this.inner.refreshColumnAsync(column);
+  }
+
+  async refreshMaterializedView(
+    full?: boolean,
+    sourceVersion?: number,
+  ): Promise<RefreshMaterializedViewResult> {
+    return await this.inner.refreshMaterializedView(full, sourceVersion);
   }
 
   async alterColumns(
@@ -1518,7 +1567,8 @@ export interface FieldMetadataUpdate {
   path: string;
   /**
    * Metadata key/value pairs. Merged into the field's existing metadata by
-   * default; a value of `null` deletes that key.
+   * default; a value of `null` deletes that key. See
+   * {@link Table.updateFieldMetadata} for the conventional `lancedb:*` keys.
    */
   metadata: Record<string, string | null>;
   /** If true, replace the field's entire metadata map instead of merging. */
@@ -1557,8 +1607,8 @@ export interface BranchRowCountSummary {
   deltaAvailable: boolean;
 }
 
-/** A reason why a branch cannot currently be merged. */
-export interface MergeBlocker {
+/** A reason why a cherry-pick cannot currently land. */
+export interface CherryPickError {
   code: string;
   message: string;
 }
@@ -1578,20 +1628,19 @@ export interface BranchDiff {
   changedColumns: BranchColumnChange[];
   addedIndexes: BranchIndexSummary[];
   removedIndexes: BranchIndexSummary[];
-  mergeable: boolean;
-  mergeBlockers: MergeBlocker[];
+  errors: CherryPickError[];
 }
 
-/** Changes that would be, or were, promoted by a branch merge. */
-export interface MergePreview {
+/** Changes that would be, or were, promoted by a cherry-pick. */
+export interface CherryPickPreview {
   promotedColumns: string[];
 }
 
-/** Result of previewing or attempting a branch merge. */
-export interface MergeBranchResult {
-  status: "ready" | "rejected" | "notImplemented" | "merged" | "unknown";
+/** Result of previewing or attempting a cherry-pick. */
+export interface CherryPickResult {
+  status: "ready" | "failed" | "notImplemented" | "cherryPicked" | "unknown";
   diff: BranchDiff;
-  preview: MergePreview;
+  preview: CherryPickPreview;
   mainVersionAfter?: number;
 }
 
@@ -1654,21 +1703,21 @@ export class Branches {
   }
 
   /**
-   * Merge a branch into main.
+   * Cherry-pick a branch onto main.
    *
-   * Set `dryRun` to `true` to preview the merge. A rejected merge resolves
-   * with `status: "rejected"` instead of throwing.
+   * Set `dryRun` to `true` to preview. A failed cherry-pick resolves
+   * with `status: "failed"` instead of throwing.
    *
-   * @param fromBranch Branch to merge from.
-   * @param dryRun When true, only preview the merge. Defaults to false.
+   * @param fromBranch Branch to cherry-pick from.
+   * @param dryRun When true, only preview. Defaults to false.
    */
-  async merge(
+  async cherryPick(
     fromBranch: string,
     dryRun: boolean = false,
-  ): Promise<MergeBranchResult> {
-    return (await this.#inner.merge(
+  ): Promise<CherryPickResult> {
+    return (await this.#inner.cherryPick(
       fromBranch,
       dryRun,
-    )) as unknown as MergeBranchResult;
+    )) as unknown as CherryPickResult;
   }
 }
