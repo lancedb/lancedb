@@ -300,7 +300,7 @@ async fn build_read_context(
     for shard_id in shard_ids {
         let manifest_store =
             ShardManifestStore::new(store.clone(), &base_path, shard_id, scan_batch_size);
-        if let Some(manifest) = manifest_store.latest().await? {
+        if let Some(manifest) = manifest_store.read_latest().await? {
             snapshots.push(snapshot_from_manifest(shard_id, &manifest, &exclude));
         }
     }
