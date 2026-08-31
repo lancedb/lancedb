@@ -63,6 +63,13 @@ jobs:
         run: cargo clippy --profile ci --workspace --tests --all-features -- -D warnings
       - name: Run clippy (without remote feature)
         run: cargo clippy --profile ci --workspace --tests -- -D warnings
+      - name: Check lancedb without remote feature (package-scoped)
+        # Workspace-wide feature unification means the step above still
+        # builds `lancedb` with `remote` enabled, because `python/Cargo.toml`
+        # and `nodejs/Cargo.toml` both default to it. Scope this check to
+        # just the `lancedb` package so `remote`-gated code paths (e.g.
+        # `rust/lancedb/src/job.rs`) are actually exercised without it.
+        run: cargo check --profile ci -p lancedb --tests --no-default-features
 
   deny:
     # Supply-chain checks: advisories, licenses, banned crates, and source
