@@ -11,6 +11,7 @@ import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.namespace import _MAX_QUERY_K
+from lancedb.query import Query
 from lancedb.table import AsyncTable, LanceTable
 
 
@@ -38,6 +39,9 @@ class _FailingSyncInner:
 
     async def to_arrow(self):
         raise RuntimeError("direct table to_arrow should not be used")
+
+    async def _execute_query(self, query, **kwargs):
+        raise RuntimeError("local execution reached")
 
 
 class _FailingAsyncInner:
@@ -950,6 +954,16 @@ class TestPushdownOperations:
         ]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
+    def test_lance_table_approx_mode_is_not_pushed_down(self):
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table(namespace_client)
+
+        # The QueryTable request cannot carry approx_mode, so the query has to
+        # run locally rather than silently lose the mode.
+        with pytest.raises(RuntimeError, match="local execution reached"):
+            table._execute_query(Query(vector=[1.0, 2.0], approx_mode="fast"))
+        assert namespace_client.requests == []
+
 
 @pytest.mark.asyncio
 class TestAsyncPushdownOperations:
@@ -1010,6 +1024,20 @@ class TestAsyncPushdownOperations:
             _MAX_QUERY_K,
         ]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
+
+    async def test_async_table_approx_mode_is_not_pushed_down(self):
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInner(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        with pytest.raises(AssertionError, match="direct async query"):
+            await table._execute_query(Query(vector=[1.0, 2.0], approx_mode="fast"))
+        assert namespace_client.requests == []
 
 
 def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
