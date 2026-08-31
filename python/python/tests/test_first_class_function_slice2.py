@@ -12,6 +12,8 @@ from datetime import date
 import http.server
 import json
 from pathlib import Path
+import subprocess
+import sys
 import threading
 from typing import Optional
 
@@ -65,6 +67,80 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+def _main_udf_source(
+    *, threshold: int = 20, input_annotation: str = "int", comparison: str = ">="
+) -> str:
+    return (
+        "from __future__ import annotations\n"
+        "from lancedb.functions import udf\n"
+        f"THRESHOLD = {threshold}\n"
+        "\n"
+        "@udf\n"
+        f"def label(value: {input_annotation}) -> str:\n"
+        f"    return 'big' if value {comparison} THRESHOLD else 'small'\n"
+        "\n"
+        "assert label.__module__ == '__main__'\n"
+        "print(label.registration_request.to_canonical_json())\n"
+    )
+
+
+def _run_main_udf(path: Path, source: str) -> dict:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source)
+    result = subprocess.run(
+        [sys.executable, str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_main_udf_registration_identity_is_stable_across_processes_and_paths(
+    tmp_path,
+):
+    source = _main_udf_source()
+    original_path = tmp_path / "original" / "job.py"
+    moved_path = tmp_path / "moved" / "renamed_job.py"
+
+    original_runs = [_run_main_udf(original_path, source) for _ in range(2)]
+    moved_run = _run_main_udf(moved_path, source)
+
+    assert len({run["artifact"]["digest"] for run in [*original_runs, moved_run]}) == 1
+    assert all(
+        run["signature"] == original_runs[0]["signature"]
+        for run in [original_runs[1], moved_run]
+    )
+    assert original_runs[0] == original_runs[1] == moved_run
+
+    body_change = _run_main_udf(
+        tmp_path / "changes" / "body.py", _main_udf_source(comparison=">")
+    )
+    global_change = _run_main_udf(
+        tmp_path / "changes" / "global.py", _main_udf_source(threshold=21)
+    )
+    annotation_change = _run_main_udf(
+        tmp_path / "changes" / "annotation.py",
+        _main_udf_source(input_annotation="float"),
+    )
+
+    baseline = original_runs[0]
+    assert baseline["signature"] == body_change["signature"]
+    assert baseline["signature"] == global_change["signature"]
+    assert baseline["signature"] != annotation_change["signature"]
+    assert (
+        len(
+            {
+                baseline["artifact"]["digest"],
+                body_change["artifact"]["digest"],
+                global_change["artifact"]["digest"],
+                annotation_change["artifact"]["digest"],
+            }
+        )
+        == 4
+    )
 
 
 def _run_packaged(definition, *args):
