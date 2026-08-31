@@ -13,7 +13,7 @@ use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_file::version::LanceFileVersion;
-use lance_io::object_store::{ReadDirOptions, StorageOptionsAccessor, StorageOptionsProvider};
+use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -282,21 +282,6 @@ impl std::fmt::Display for ListingDatabase {
 
 const LANCE_EXTENSION: &str = "lance";
 
-/// The table a listed child of the database names, or `None` if the child is not a table.
-///
-/// A table is the directory `<name>.lance`; a loose file or any other directory under the
-/// database prefix belongs to something else. `dir_suffix` is `.lance`, built once by the
-/// caller rather than per child.
-/// The table a listed child directory holds, or `None` if it is not a table at all.
-///
-/// Only directories are considered, so a loose object named like a table is not one.
-fn table_name(location: &object_store::path::Path, dir_suffix: &str) -> Option<String> {
-    location
-        .filename()?
-        .strip_suffix(dir_suffix)
-        .map(String::from)
-        .filter(|name| !name.is_empty())
-}
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
 
@@ -973,54 +958,27 @@ impl Database for ListingDatabase {
     ///
     /// The order that results are returned in not guaranteed to be stable across calls,
     /// so clients should not rely on it.
+    #[allow(deprecated)]
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
             return self.namespace_database().list_tables(request).await;
         }
-        let limit = request.limit.map(|limit| limit.max(0) as usize);
-        let dir_suffix = format!(".{LANCE_EXTENSION}");
-        let mut tables = Vec::new();
-        let mut page_token = request.page_token.filter(|token| !token.is_empty());
-
-        // A page of nothing: the store rejects a limit of zero, and no table was handed over
-        // for a token to resume after.
-        if limit == Some(0) {
-            return Ok(ListTablesResponse {
-                context: None,
-                tables,
-                page_token: None,
-            });
-        }
-
-        loop {
-            // Ask only for what the page still has room for, so a database holding more
-            // than one page costs one request per page rather than one per table.
-            let listing = self
-                .object_store
-                .read_dir_page(
-                    self.base_path.clone(),
-                    ReadDirOptions {
-                        page_token: page_token.take(),
-                        limit: limit.map(|limit| limit - tables.len()),
-                    },
-                )
-                .await?;
-            page_token = listing.page_token;
-            // Only child directories can be tables, and the store already separates them
-            // out, so the objects in the page are not looked at.
-            tables.extend(
-                listing
-                    .result
-                    .common_prefixes
-                    .iter()
-                    .filter_map(|location| table_name(location, &dir_suffix)),
-            );
-            // Children that are not tables leave the page short of the limit, so keep
-            // going until the page is full or the database runs out.
-            if page_token.is_none() || limit.is_none_or(|limit| tables.len() >= limit) {
-                break;
+        let mut tables = self
+            .table_names(TableNamesRequest {
+                start_after: request.page_token.filter(|token| !token.is_empty()),
+                limit: None,
+                namespace_path: Vec::new(),
+            })
+            .await?;
+        let page_token = request.limit.and_then(|limit| {
+            let limit = limit.max(0) as usize;
+            if tables.len() > limit {
+                tables.truncate(limit);
+                tables.last().cloned()
+            } else {
+                None
             }
-        }
+        });
 
         Ok(ListTablesResponse {
             context: None,
