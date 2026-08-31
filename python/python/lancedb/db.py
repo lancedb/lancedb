@@ -712,6 +712,16 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
+    def drop_function(self, name: str, *, version: str) -> bool:
+        """Drop one exact immutable Function version from the remote catalog.
+
+        Returns True when the version changed to Dropped and False for an
+        idempotent replay. Local connections raise NotImplementedError.
+        """
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
+
     def job(self, job_id: str) -> Job:
         """A [Job][lancedb.job.Job] handle for a server-side job by id.
 
@@ -1412,6 +1422,10 @@ class LanceDBConnection(DBConnection):
     @override
     def get_function(self, name: str, *, version: str) -> FunctionVersion:
         return LOOP.run(self._conn.get_function(name, version=version))
+
+    @override
+    def drop_function(self, name: str, *, version: str) -> bool:
+        return LOOP.run(self._conn.drop_function(name, version=version))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -2242,6 +2256,10 @@ class AsyncConnection(object):
     async def get_function(self, name: str, *, version: str) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""
         return FunctionVersion.from_json(await self._inner.get_function(name, version))
+
+    async def drop_function(self, name: str, *, version: str) -> bool:
+        """Drop one exact immutable Function version from the remote catalog."""
+        return await self._inner.drop_function(name, version)
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
