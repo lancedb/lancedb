@@ -282,6 +282,101 @@ impl std::fmt::Display for ListingDatabase {
 
 const LANCE_EXTENSION: &str = "lance";
 
+/// The table a listed child directory holds, or `None` if it is not a table at all.
+///
+/// A table is the directory `<name>.lance`; a loose file or any other directory under the
+/// database prefix belongs to something else. `dir_suffix` is `.lance`, built once by the
+/// caller rather than per child.
+fn table_name(location: &object_store::path::Path, dir_suffix: &str) -> Option<String> {
+    location
+        .filename()?
+        .strip_suffix(dir_suffix)
+        .map(String::from)
+        .filter(|name| !name.is_empty())
+}
+
+/// One page of the immediate children of the database directory, in key order.
+struct DirPage {
+    /// The child directories the page holds, as the store lists them.
+    common_prefixes: Vec<object_store::path::Path>,
+    /// Resumes after this page, or `None` when the page reached the end of the level.
+    page_token: Option<String>,
+}
+
+/// A child of the directory being listed, with the key a page token names.
+///
+/// A child directory keeps its trailing `/`, since that is the prefix its keys share and so
+/// where it sits in the listing; a child file is its bare name. Tokens live in this key
+/// space, so a token is never a table name.
+struct KeyedChild {
+    key: String,
+    directory: Option<object_store::path::Path>,
+}
+
+/// Where a listed location sits inside the database directory — the space page tokens live
+/// in — or `None` if it is not a child of that directory at all. Matching both halves of the
+/// prefix drops a location that merely starts with the directory's name (`dbx/y` against
+/// `db/`) as well as the marker object some stores keep for the directory itself.
+fn relative_key<'a>(prefix: Option<&str>, location: &'a str) -> Option<&'a str> {
+    let relative = match prefix {
+        Some(prefix) => location.strip_prefix(prefix)?,
+        None => location,
+    };
+    (!relative.is_empty()).then_some(relative)
+}
+
+/// One page of the immediate children of `base_path`, one directory level deep.
+///
+/// Lance 11 exposes no paginated directory listing, so the level is listed in full and paged
+/// locally: children go into key order, the page is the smallest `limit` of them past
+/// `page_token`, and the token handed back is the key of the last child the page took — so a
+/// page that took nothing ends the listing rather than resuming from a position no page ever
+/// reached. Correct on every store, at the cost of one full-level listing per page.
+async fn read_dir_page(
+    object_store: &ObjectStore,
+    base_path: &object_store::path::Path,
+    page_token: Option<String>,
+    limit: Option<usize>,
+) -> Result<DirPage> {
+    let listed = object_store.list_with_delimiter(Some(base_path)).await?;
+    let prefix = {
+        let base = base_path.as_ref();
+        (!base.is_empty()).then(|| format!("{base}/"))
+    };
+    let directories = listed.common_prefixes.into_iter().filter_map(|location| {
+        let key = format!("{}/", relative_key(prefix.as_deref(), location.as_ref())?);
+        Some(KeyedChild {
+            key,
+            directory: Some(location),
+        })
+    });
+    let files = listed.objects.into_iter().filter_map(|object| {
+        let key = relative_key(prefix.as_deref(), object.location.as_ref())?.to_string();
+        Some(KeyedChild {
+            key,
+            directory: None,
+        })
+    });
+    let mut children: Vec<KeyedChild> = directories.chain(files).collect();
+    children.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+    if let Some(resume) = &page_token {
+        children.retain(|child| child.key > *resume);
+    }
+    let total = children.len();
+    children.truncate(limit.unwrap_or(total).min(total));
+    let page_token = match children.last() {
+        Some(last) if children.len() < total => Some(last.key.clone()),
+        _ => None,
+    };
+    Ok(DirPage {
+        common_prefixes: children
+            .into_iter()
+            .filter_map(|child| child.directory)
+            .collect(),
+        page_token,
+    })
+}
+
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
 
@@ -958,27 +1053,48 @@ impl Database for ListingDatabase {
     ///
     /// The order that results are returned in not guaranteed to be stable across calls,
     /// so clients should not rely on it.
-    #[allow(deprecated)]
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
             return self.namespace_database().list_tables(request).await;
         }
-        let mut tables = self
-            .table_names(TableNamesRequest {
-                start_after: request.page_token.filter(|token| !token.is_empty()),
-                limit: None,
-                namespace_path: Vec::new(),
-            })
+        let limit = request.limit.map(|limit| limit.max(0) as usize);
+        let dir_suffix = format!(".{LANCE_EXTENSION}");
+        let mut tables = Vec::new();
+        let mut page_token = request.page_token.filter(|token| !token.is_empty());
+
+        // A page of nothing: no table was handed over for a token to resume after.
+        if limit == Some(0) {
+            return Ok(ListTablesResponse {
+                context: None,
+                tables,
+                page_token: None,
+            });
+        }
+
+        loop {
+            // Ask only for what the page still has room for, so children that are not
+            // tables cost key space rather than page slots left unused.
+            let page = read_dir_page(
+                &self.object_store,
+                &self.base_path,
+                page_token.take(),
+                limit.map(|limit| limit - tables.len()),
+            )
             .await?;
-        let page_token = request.limit.and_then(|limit| {
-            let limit = limit.max(0) as usize;
-            if tables.len() > limit {
-                tables.truncate(limit);
-                tables.last().cloned()
-            } else {
-                None
+            page_token = page.page_token;
+            // Only child directories can be tables, so the objects in the page are not
+            // looked at.
+            tables.extend(
+                page.common_prefixes
+                    .iter()
+                    .filter_map(|location| table_name(location, &dir_suffix)),
+            );
+            // Children that are not tables leave the page short of the limit, so keep
+            // going until the page is full or the database runs out.
+            if page_token.is_none() || limit.is_none_or(|limit| tables.len() >= limit) {
+                break;
             }
-        });
+        }
 
         Ok(ListTablesResponse {
             context: None,
