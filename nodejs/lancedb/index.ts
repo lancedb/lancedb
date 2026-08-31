@@ -21,6 +21,11 @@ import type { BaseTokenizer } from "./indices";
 import type { FtsToken } from "./table";
 
 // Re-export native header provider for use with connectWithHeaderProvider
+export {
+  MaterializedView,
+  MaterializedViewDefinition,
+  MaterializedViewSelect,
+} from "./materialized_view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 // OpenTelemetry metrics bridge. Only the high-level entry point is public; the
@@ -50,6 +55,8 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnResult,
+  RefreshMaterializedViewResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
   DeleteResult,
@@ -74,20 +81,29 @@ export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
+  ListTablesOptions,
   OpenTableOptions,
   ListNamespacesOptions,
   CreateNamespaceOptions,
   DropNamespaceOptions,
   ListNamespacesResponse,
+  ListTablesResponse,
   CreateNamespaceResponse,
   DropNamespaceResponse,
   DescribeNamespaceResponse,
   RenameTableOptions,
 } from "./connection";
 
-export { Session } from "./native.js";
+export {
+  Job,
+  JobDescription,
+  JobFailureInfo,
+  JobInfo,
+  Session,
+} from "./native.js";
 
 export {
+  AutoQuery,
   ExecutableQuery,
   Query,
   QueryBase,
@@ -128,10 +144,10 @@ export {
   BranchColumnChange,
   BranchIndexSummary,
   BranchRowCountSummary,
-  MergeBlocker,
+  CherryPickError,
   BranchDiff,
-  MergePreview,
-  MergeBranchResult,
+  CherryPickPreview,
+  CherryPickResult,
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
@@ -140,6 +156,10 @@ export {
   FtsToken,
   TokenizeTableOptions,
   LsmWriteSpec,
+  LsmStats,
+  BucketStats,
+  GenerationStats,
+  MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
 } from "./table";
@@ -194,6 +214,16 @@ export interface TokenizeOptions {
   /** Whether to remove stop words. */
   removeStopWords?: boolean;
 
+  /**
+   * Custom stop words that replace the built-in list for `language`.
+   *
+   * This option only affects tokenization when `removeStopWords` is true.
+   *
+   * `undefined` keeps the built-in language list. An empty array explicitly
+   * replaces it with no stop words.
+   */
+  customStopWords?: string[];
+
   /** Whether to fold ASCII characters. */
   asciiFolding?: boolean;
 
@@ -225,6 +255,7 @@ export async function tokenize(
     options?.lowercase,
     options?.stem,
     options?.removeStopWords,
+    options?.customStopWords,
     options?.asciiFolding,
     options?.ngramMinLength,
     options?.ngramMaxLength,

@@ -373,6 +373,37 @@ pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
     Ok(ParsedDbUrl { db_name, db_prefix })
 }
 
+fn validate_dns_hostname(hostname: &str) -> Result<()> {
+    let ascii_hostname = match url::Host::parse(hostname) {
+        Ok(url::Host::Domain(hostname)) => hostname,
+        Ok(_) => {
+            return Err(Error::InvalidInput {
+                message: "LanceDB Cloud database URI or region produced a non-DNS hostname"
+                    .to_string(),
+            });
+        }
+        Err(err) => {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "LanceDB Cloud database URI or region produced an invalid hostname: {err}"
+                ),
+            });
+        }
+    };
+
+    if ascii_hostname.len() > 253
+        || ascii_hostname
+            .split('.')
+            .any(|label| label.is_empty() || label.len() > 63)
+    {
+        return Err(Error::InvalidInput {
+            message: "LanceDB Cloud database URI or region produced an invalid hostname: DNS labels must contain 1 to 63 bytes and the full hostname must not exceed 253 bytes".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 impl RestfulLanceDbClient<Sender> {
     fn get_timeout(passed: Option<Duration>, env_var: &str) -> Result<Option<Duration>> {
         if let Some(passed) = passed {
@@ -480,7 +511,11 @@ impl RestfulLanceDbClient<Sender> {
 
         let host = match host_override {
             Some(host_override) => host_override,
-            None => format!("https://{}.{}.api.lancedb.com", parsed_url.db_name, region),
+            None => {
+                let hostname = format!("{}.{}.api.lancedb.com", parsed_url.db_name, region);
+                validate_dns_hostname(&hostname)?;
+                format!("https://{hostname}")
+            }
         };
         debug!("Created client for host: {}", host);
         let retry_config = client_config.retry_config.clone().try_into()?;
@@ -706,7 +741,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             .err_to_http(request_id.clone())?;
         debug!(
             "Received response for request_id={}: {:?}",
-            request_id, &response
+            request_id, response
         );
         Ok((request_id, response))
     }
@@ -768,7 +803,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 Ok((status, response)) if status.is_success() => {
                     debug!(
                         "Received response for request_id={}: {:?}",
-                        retry_counter.request_id, &response
+                        retry_counter.request_id, response
                     );
                     return Ok((retry_counter.request_id, response));
                 }
@@ -1155,6 +1190,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(headers.get("x-api-key").unwrap(), "api-key");
+    }
+
+    #[test]
+    fn test_rejects_invalid_cloud_dns_hostname() {
+        let invalid_database_names = ["a".repeat(64), "invalid..database".to_string()];
+
+        for db_name in invalid_database_names {
+            let parsed_url = parse_db_url(&format!("db://{db_name}")).unwrap();
+            let error = RestfulLanceDbClient::<Sender>::try_new(
+                &parsed_url,
+                "us-east-1",
+                None,
+                HeaderMap::new(),
+                ClientConfig::default(),
+                None,
+            )
+            .unwrap_err();
+
+            assert!(
+                matches!(error, Error::InvalidInput { ref message } if message.contains("DNS labels must contain 1 to 63 bytes")),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     // Test implementation of HeaderProvider

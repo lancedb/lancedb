@@ -3,6 +3,7 @@
 
 //! LanceDB Table APIs
 
+use crate::blob::BlobFile;
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
@@ -12,7 +13,6 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use lance::dataset::BlobFile;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
@@ -21,6 +21,7 @@ use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
+use lance::index::scalar::load_segment_params;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::IndexCriteria;
@@ -46,6 +47,7 @@ use std::sync::Arc;
 use crate::connection::NamespaceClientPushdownOperation;
 
 use crate::DistanceType;
+use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::database::read_freshness::TableFreshness;
@@ -54,42 +56,55 @@ use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
+use crate::job::Job;
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
+use crate::utils::{
+    PatchReadParam, PatchWriteParam, public_fts_field_path_by_id, resolve_arrow_field_path,
+};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
+pub mod add_columns;
 mod add_data;
-pub mod branch_merge;
+pub mod checkpoint;
+pub mod cherry_pick;
+pub mod computed_columns;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
 mod primary_key;
 pub mod query;
+pub mod refresh;
 pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
 use crate::index::waiter::wait_for_index;
+pub use add_columns::AddColumnsBuilder;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
-pub use branch_merge::{
-    BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
-    MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
+pub use cherry_pick::{
+    BranchDiff, CherryPickError, CherryPickErrorCode, CherryPickPreview, CherryPickResult,
+    CherryPickStatus, ColumnChange, ColumnSummary, IndexSummary, RowCountSummary,
 };
 pub use chrono::Duration;
+pub use computed_columns::{
+    ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
+};
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
+pub use lsm_stats::{BucketStats, GenerationStats, LsmStats, MemtableStats};
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use refresh::RefreshColumnResult;
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
     UpdateFieldMetadataResult,
@@ -313,6 +328,8 @@ pub use self::merge::MergeResult;
 /// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
+/// A fresh spec maintains every index on the table, resolved on install.
+///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
 /// onto the MemWAL writer is a follow-up.
@@ -327,9 +344,12 @@ pub enum LsmWriteSpec {
     Bucket {
         column: String,
         num_buckets: u32,
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
@@ -339,35 +359,41 @@ pub enum LsmWriteSpec {
     /// distinct value of `column` becomes its own shard.
     Identity {
         column: String,
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
     /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
     Unsharded {
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
 }
 
 impl LsmWriteSpec {
-    /// Construct a hash-bucket sharding spec with no maintained indexes.
+    /// Construct a hash-bucket sharding spec maintaining every index on the table.
     pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
         Self::Bucket {
             column: column.into(),
             num_buckets,
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
     /// Construct an identity-sharding spec (shard by the raw value of
-    /// `column`) with no maintained indexes.
+    /// `column`) maintaining every index on the table.
     ///
     /// `column` must be a deterministic function of the unenforced primary
     /// key: every row with a given primary key must always produce the same
@@ -379,28 +405,37 @@ impl LsmWriteSpec {
     pub fn identity(column: impl Into<String>) -> Self {
         Self::Identity {
             column: column.into(),
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
-    /// Construct an unsharded spec with no maintained indexes.
+    /// Construct an unsharded spec maintaining every index on the table.
     pub fn unsharded() -> Self {
         Self::Unsharded {
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
-    /// Replace the list of indexes the MemWAL should keep up to date as
-    /// rows are appended. Each name must reference an index that already
-    /// exists on the table at the time `set_lsm_write_spec` is called.
-    pub fn with_maintained_indexes<I, S>(mut self, indexes: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let v: Vec<String> = indexes.into_iter().map(Into::into).collect();
+    /// Set which indexes the MemWAL maintains.
+    ///
+    /// `None` (the default) resolves to every index on the table at install,
+    /// failing if one cannot be maintained — name the set to install anyway. A
+    /// list is verbatim: each name must already exist and be maintainable, and
+    /// an empty list maintains nothing.
+    ///
+    /// ```
+    /// # use lancedb::table::LsmWriteSpec;
+    /// // Every index the table has when the spec is installed:
+    /// LsmWriteSpec::unsharded().with_maintained_indexes(None);
+    /// // Exactly these:
+    /// LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
+    /// // None at all:
+    /// LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new());
+    /// ```
+    pub fn with_maintained_indexes(mut self, indexes: impl Into<Option<Vec<String>>>) -> Self {
+        let indexes = indexes.into();
         match &mut self {
             Self::Bucket {
                 maintained_indexes, ..
@@ -410,7 +445,7 @@ impl LsmWriteSpec {
             }
             | Self::Unsharded {
                 maintained_indexes, ..
-            } => *maintained_indexes = v,
+            } => *maintained_indexes = indexes,
         }
         self
     }
@@ -446,8 +481,9 @@ impl LsmWriteSpec {
         self
     }
 
-    /// Borrow the list of index names this spec asks MemWAL to maintain.
-    pub fn maintained_indexes(&self) -> &[String] {
+    /// Borrow the list of index names this spec asks MemWAL to maintain, or
+    /// `None` when it asks for every index on the table.
+    pub fn maintained_indexes(&self) -> Option<&[String]> {
         match self {
             Self::Bucket {
                 maintained_indexes, ..
@@ -457,7 +493,7 @@ impl LsmWriteSpec {
             }
             | Self::Unsharded {
                 maintained_indexes, ..
-            } => maintained_indexes,
+            } => maintained_indexes.as_deref(),
         }
     }
 
@@ -526,6 +562,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Create a read-only handle pinned to the table's current active revision.
+    ///
+    /// The returned handle is independent from later refreshes or checkouts on
+    /// this handle.  This is used by bindings that must prepare client-side
+    /// query state from the same revision that the query will execute against.
+    #[doc(hidden)]
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -561,6 +604,9 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+
+    /// Starts index creation, returning a handle to the resulting job.
+    async fn create_index_async(&self, index: IndexBuilder) -> Result<Job>;
     /// List the indices on the table.
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
@@ -627,6 +673,31 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "get_lsm_write_spec is not supported on this table type".into(),
         })
     }
+    /// Seal every bucket's active memtable into L0.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn flush_lsm(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "flush_lsm is not supported on this table type".into(),
+        })
+    }
+    /// Trigger a background L0 → base compaction pass per bucket.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn compact_lsm(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "compact_lsm is not supported on this table type".into(),
+        })
+    }
+    /// Read live LSM state, or `None` when the LSM write path is not
+    /// enabled for this table.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn get_lsm_stats(&self, _include_generation_rows: bool) -> Result<Option<LsmStats>> {
+        Err(Error::NotSupported {
+            message: "get_lsm_stats is not supported on this table type".into(),
+        })
+    }
     /// Drain and close any cached MemWAL shard writers for this table.
     ///
     /// The default implementation is a no-op; table types that maintain
@@ -644,6 +715,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
             message: "fetch_blobs is not supported on this table type".into(),
+        })
+    }
+    /// Materialize blob-local ranges. See [`Table::fetch_blob_ranges`].
+    async fn fetch_blob_ranges(
+        &self,
+        _column: &str,
+        _requests: &[BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        Err(Error::NotSupported {
+            message: "fetch_blob_ranges is not supported on this table type".into(),
         })
     }
     /// Open lazy blob handles for the given row ids. See [`Table::fetch_blob_files`].
@@ -666,12 +747,59 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
+    /// Declare computed columns, each defined by a SQL expression.
+    ///
+    /// Where the declaration is planned depends on the backend: a local table
+    /// validates and types the expression itself, while a remote one sends the
+    /// expression for the server to plan.
+    async fn add_computed_columns(
+        &self,
+        _columns: &[(String, String)],
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are not supported on this table type".into(),
+        })
+    }
+    /// Declare one immutable registered-Function binding.
+    async fn add_function_columns(
+        &self,
+        _application: &crate::function::FunctionApplication,
+        _output_name: Option<&str>,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
+        })
+    }
+    /// Fill a computed column's unfilled rows.
+    ///
+    /// The default returns `NotSupported`; Lance-backed tables override it.
+    async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
+        })
+    }
+    /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
+    /// the operation.
+    async fn refresh_column_async(
+        &self,
+        _column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
     /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
+    /// Return a new table handle pinned to the exact revision currently visible.
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "checkout_current is not supported on this table type".into(),
+        })
+    }
     /// Checkout a specific version of the table.
     async fn checkout(&self, version: u64) -> Result<()>;
     /// Checkout a table version referenced by a tag.
@@ -679,6 +807,21 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Return an independent handle pinned to the version currently selected.
+    ///
+    /// Backends that can advance between requests should override this for
+    /// multi-request operations that need snapshot consistency. Backends whose
+    /// existing handles already provide the desired behavior return `None`.
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        Ok(None)
+    }
+    /// Whether repeated identical scans return rows in the same order.
+    ///
+    /// Callers that assign meaning to a row's position must order the results
+    /// themselves when this is false.  Defaults to false so a table type opts in.
+    fn scan_order_is_deterministic(&self) -> bool {
+        false
+    }
     /// Restore the table to the currently checked out version.
     async fn restore(&self) -> Result<()>;
     /// List the versions of the table.
@@ -715,14 +858,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Diff a branch against main. Remote only.
     async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
         Err(Error::NotSupported {
-            message: "diff_branch is only supported on remote tables".into(),
+            message: "Branch diffs are only supported on Enterprise tables.".into(),
         })
     }
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    async fn merge_branch(&self, _from_branch: &str, _dry_run: bool) -> Result<MergeBranchResult> {
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
         Err(Error::NotSupported {
-            message: "merge_branch is only supported on remote tables".into(),
+            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
         })
     }
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -949,6 +1092,11 @@ impl Table {
         self.database.as_ref().unwrap()
     }
 
+    /// The database this handle was opened through, when it was.
+    pub fn database_opt(&self) -> Option<&Arc<dyn Database>> {
+        self.database.as_ref()
+    }
+
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
         &self.embedding_registry
     }
@@ -1000,13 +1148,26 @@ impl Table {
         self.inner.schema().await
     }
 
+    /// Create a read-only handle pinned to the current active revision.
+    #[doc(hidden)]
+    pub async fn query_snapshot(&self) -> Result<Self> {
+        Ok(Self {
+            inner: self.inner.query_snapshot().await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
+    }
+
     /// Count the number of rows in this dataset.
     ///
     /// # Arguments
     ///
     /// * `filter` if present, only count rows matching the filter
     pub async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        self.inner.count_rows(filter.map(Filter::Sql)).await
+        let filter = filter
+            .map(|predicate| crate::expr::canonicalize_sql_predicate(&predicate).map(Filter::Sql))
+            .transpose()?;
+        self.inner.count_rows(filter).await
     }
 
     /// Names of the blob v2 columns in this table, in declaration order.
@@ -1019,8 +1180,9 @@ impl Table {
 
     /// Materialize blob bytes for the given row ids.
     ///
-    /// Output matches `row_ids` in length and order. Null and zero-length rows
-    /// are null. Prefer [`Self::fetch_blob_files`] for large selections.
+    /// Output matches `row_ids` in length and order. Null blobs are null;
+    /// valid empty blobs contain empty byte strings. Prefer
+    /// [`Self::fetch_blob_files`] for large selections.
     ///
     /// ```
     /// use arrow_array::UInt64Array;
@@ -1053,6 +1215,47 @@ impl Table {
         row_ids: &[u64],
     ) -> Result<LargeBinaryArray> {
         self.inner.fetch_blobs(column.as_ref(), row_ids).await
+    }
+
+    /// Materialize row-specific ranges from a blob v2 column.
+    ///
+    /// Each request contains a row id and a blob-local offset and length.
+    /// Requests may be duplicated or reordered, including multiple
+    /// ranges for the same blob. The output has the same length and order as
+    /// the requests. Null blobs produce null output slots; empty ranges on
+    /// non-null blobs produce empty byte strings.
+    ///
+    /// ```
+    /// use lancedb::blob::BlobRangeRequest;
+    ///
+    /// # use lancedb::Table;
+    /// # async fn read_ranges(table: &Table, row_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+    /// let ranges = table
+    ///     .fetch_blob_ranges(
+    ///         "image",
+    ///         [
+    ///             BlobRangeRequest::new(row_id, 0, 1024),
+    ///             BlobRangeRequest::new(row_id, 4096, 1024),
+    ///         ],
+    ///     )
+    ///     .await?;
+    /// # let _ = ranges;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Returns an error when a range is invalid, a requested row id does not
+    /// exist, or the column is not a blob v2 column. Returns
+    /// [`Error::NotSupported`] on table types without blob support.
+    pub async fn fetch_blob_ranges(
+        &self,
+        column: impl AsRef<str>,
+        requests: impl IntoIterator<Item = BlobRangeRequest>,
+    ) -> Result<LargeBinaryArray> {
+        let requests = requests.into_iter().collect::<Vec<_>>();
+        self.inner
+            .fetch_blob_ranges(column.as_ref(), &requests)
+            .await
     }
 
     /// Open lazy [`BlobFile`] handles for the given row ids.
@@ -1164,7 +1367,13 @@ impl Table {
     /// # });
     /// ```
     pub async fn delete(&self, predicate: impl Into<Predicate<'_>>) -> Result<DeleteResult> {
-        self.inner.delete(predicate.into()).await
+        match predicate.into() {
+            Predicate::String(predicate) => {
+                let predicate = crate::expr::canonicalize_sql_predicate(predicate)?;
+                self.inner.delete(Predicate::String(&predicate)).await
+            }
+            predicate @ Predicate::Expr(_) => self.inner.delete(predicate).await,
+        }
     }
 
     /// Create an index on the provided column(s).
@@ -1512,12 +1721,61 @@ impl Table {
     }
 
     /// Add new columns to the table, providing values to fill in.
-    pub async fn add_columns(
+    pub fn add_columns(&self) -> AddColumnsBuilder {
+        AddColumnsBuilder::new(self.inner.clone())
+    }
+
+    /// Fill the fragments of a computed column that hold no values yet.
+    ///
+    /// Declared with
+    /// [`AddColumnsBuilder::computed`](add_columns::AddColumnsBuilder::computed),
+    /// a column starts empty and gets its values here. Fragments appended
+    /// since the last refresh are filled by the next one; fragments already
+    /// filled are left as they are, so the call is idempotent and does not
+    /// observe a mutated input.
+    ///
+    /// Local tables only: a remote refresh runs as a server job, through
+    /// [`Table::refresh_column_async`].
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = table.refresh_column("doubled").await?;
+    /// println!("filled {} rows at version {}", result.rows_filled, result.version);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column(&self, column: impl AsRef<str>) -> Result<RefreshColumnResult> {
+        self.inner.refresh_column(column.as_ref()).await
+    }
+
+    /// Like [`Table::refresh_column`], but returns a [`Job`] tracking the
+    /// operation instead of blocking until it completes.
+    ///
+    /// The job may already be complete when returned, and callers must not
+    /// assume the column is filled until [`Job::wait`] returns. A successful
+    /// wait returns the durable [`crate::function::RefreshColumnResult`] for
+    /// both expression-backed and Function-backed columns. Invalid input
+    /// -- an unknown column, or one that is not computed -- is reported by
+    /// this call rather than by the job. On local tables the job runs as an
+    /// in-process task; on LanceDB Cloud and Enterprise it is the server's
+    /// backfill job.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = table.refresh_column_async("doubled").await?;
+    /// println!("refresh running: {:?}", job.status().await?);
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_async(
         &self,
-        transforms: NewColumnTransform,
-        read_columns: Option<Vec<String>>,
-    ) -> Result<AddColumnsResult> {
-        self.inner.add_columns(transforms, read_columns).await
+        column: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner.refresh_column_async(column.as_ref()).await
     }
 
     /// Change a column's name or nullability.
@@ -1528,7 +1786,23 @@ impl Table {
         self.inner.alter_columns(alterations).await
     }
 
-    /// Update per-field metadata (merges by default).
+    /// Update per-field (column) metadata.
+    ///
+    /// Each [`FieldMetadataUpdate`] is merged into the field's existing metadata
+    /// by default; use [`FieldMetadataUpdate::remove`] to delete a key, or
+    /// [`FieldMetadataUpdate::replace`] to swap the field's entire metadata map.
+    ///
+    /// The following keys are treated specially, by convention, and should be
+    /// used when appropriate:
+    ///
+    /// - `lancedb:description`: for a human-readable description of a field.
+    /// - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+    ///   names the tag category; e.g. `lancedb:tag:model: "clip"`.
+    /// - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+    ///   `feature_v2` might be in the same logical column.
+    /// - `lancedb:status`: for status options (`production`, `candidate`,
+    ///   `deprecated`, `archived`) to designate the current life cycle state of
+    ///   this column.
     pub async fn update_field_metadata(
         &self,
         updates: &[FieldMetadataUpdate],
@@ -1579,7 +1853,7 @@ impl Table {
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// table
     ///     .set_lsm_write_spec(
-    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(["id_idx"]),
+    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(vec!["id_idx".to_string()]),
     ///     )
     ///     .await?;
     /// # Ok(())
@@ -1601,9 +1875,10 @@ impl Table {
     ///
     /// Returns `Ok(None)` when the MemWAL LSM write path is not enabled (no
     /// spec has been set, or it was removed with [`Table::unset_lsm_write_spec`]).
-    /// The returned spec — including its [`LsmWriteSpec::maintained_indexes`] and
-    /// [`LsmWriteSpec::writer_config_defaults`] — mirrors what was passed to
-    /// [`Table::set_lsm_write_spec`].
+    /// The returned spec mirrors what was passed to
+    /// [`Table::set_lsm_write_spec`], except that
+    /// [`LsmWriteSpec::maintained_indexes`] always reports the concrete list
+    /// resolved when the spec was set — `None` never round-trips.
     ///
     /// # Example
     ///
@@ -1618,6 +1893,85 @@ impl Table {
     /// ```
     pub async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
         self.inner.get_lsm_write_spec().await
+    }
+
+    /// Converge this table's LSM write path into its base table.
+    ///
+    /// One `flush` to seal every memtable into L0, then compaction triggers
+    /// until every generation that existed at that moment has reached base.
+    /// The loop runs client-side, reading progress from `get_lsm_stats`, so
+    /// there is no held socket and nothing to reconcile if you drop this
+    /// future partway through.
+    ///
+    /// **Best-effort.** Generations created *after* the opening flush are
+    /// deliberately not waited on — that is what lets this terminate on a
+    /// table taking writes. Idempotent and safe on a cadence: an
+    /// already-converged table costs two round trips and triggers nothing.
+    ///
+    /// **No deadline, and the caller owns that.** It returns when the target
+    /// generations are gone, propagates a terminal server fault, and
+    /// otherwise waits however long the server takes. A slow table and a
+    /// stuck one are the same picture from here: the compactor pool is shared
+    /// across every table on the node, so a checkpoint queued behind
+    /// unrelated work is indistinguishable from one that is merging. Wrap
+    /// this in `tokio::time::timeout` for a wall-clock bound; abandoning it
+    /// partway costs nothing.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let before = table.get_lsm_stats(false).await?;
+    /// table.checkpoint_lsm().await?;
+    /// let after = table.get_lsm_stats(false).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn checkpoint_lsm(&self) -> Result<()> {
+        checkpoint::checkpoint_lsm(self).await
+    }
+
+    /// Seal every bucket's active memtable into L0 without touching the
+    /// base table.
+    ///
+    /// Independently useful: flushing makes memtable rows readable from L0 at
+    /// a lower per-query cost. On a node that has not claimed this table it
+    /// claims it and replays the WAL log first — reporting "nothing to flush"
+    /// without replaying would lie about durable data.
+    pub async fn flush_lsm(&self) -> Result<()> {
+        self.inner.flush_lsm().await
+    }
+
+    /// Run one bounded L0 → base compaction pass per bucket, reporting what
+    /// it merged and what is left.
+    ///
+    /// One pass, not convergence: that bounds each request's cost and gives a
+    /// caller driving its own cadence a progress signal per round trip.
+    pub async fn compact_lsm(&self) -> Result<()> {
+        self.inner.compact_lsm().await
+    }
+
+    /// Read live per-bucket LSM state.
+    ///
+    /// Answers "how far behind is my fresh tier", "which bucket is hot", and
+    /// "why is my fresh-tier vector search brute-force". Mutates no table
+    /// state, though on a node that has not claimed this table it claims it,
+    /// exactly as a read would.
+    ///
+    /// `include_generation_rows` reports a row count per L0 generation. Off by
+    /// default: each count opens an uncached Lance dataset, and
+    /// `checkpoint_lsm` polls this needing only generation numbers.
+    ///
+    /// `Ok(None)` only when the LSM write path is not enabled, matching
+    /// [`Table::get_lsm_write_spec`]. Stats is fresh-tier only, so with the
+    /// WAL off there is no manifest to report and a struct of zeros would
+    /// read as measurements.
+    ///
+    /// Do not build a checkpoint's termination on this: the completion
+    /// predicate lives in the `flush` and `compact` responses.
+    pub async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
+        self.inner.get_lsm_stats(include_generation_rows).await
     }
 
     /// Drain and close any cached MemWAL shard writers held for this table.
@@ -1638,6 +1992,20 @@ impl Table {
     /// version to replace the current table with a previous version.
     pub async fn version(&self) -> Result<u64> {
         self.inner.version().await
+    }
+
+    /// Return a new table handle pinned to the exact revision currently visible.
+    ///
+    /// This is used when asynchronous preparation must remain consistent with
+    /// the revision used for a later read.
+    #[doc(hidden)]
+    pub async fn checkout_current(&self) -> Result<Self> {
+        let inner = self.inner.checkout_current().await?;
+        Ok(Self {
+            inner,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
     }
 
     /// Checks out a specific version of the Table
@@ -1976,14 +2344,10 @@ impl Table {
         self.inner.diff_branch(from_branch).await
     }
 
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    pub async fn merge_branch(
-        &self,
-        from_branch: &str,
-        dry_run: bool,
-    ) -> Result<MergeBranchResult> {
-        self.inner.merge_branch(from_branch, dry_run).await
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    pub async fn cherry_pick(&self, from_branch: &str, dry_run: bool) -> Result<CherryPickResult> {
+        self.inner.cherry_pick(from_branch, dry_run).await
     }
 
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -2201,13 +2565,18 @@ impl NativeTable {
             builder = builder.with_commit_handler(commit_handler);
         }
 
-        let dataset = builder.load().await.map_err(|e| match e {
-            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                name: name.to_string(),
-                source: Box::new(e),
-            },
-            e => e.into(),
-        })?;
+        let dataset = match builder.load().await {
+            Ok(dataset) => dataset,
+            Err(e @ lance::Error::DatasetNotFound { .. }) => {
+                // The manifest load is the existence check. A physical prefix may be
+                // from a concurrent or abandoned create, so it cannot refine this error.
+                return Err(Error::TableNotFound {
+                    name: name.to_string(),
+                    source: Box::new(e),
+                });
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
@@ -2416,6 +2785,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
+        computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2715,6 +3085,12 @@ impl BaseTable for NativeTable {
         self
     }
 
+    /// Lance scans fragments in order (`Scanner::ordered` defaults to true, and we
+    /// never clear it), so repeated identical scans agree.
+    fn scan_order_is_deterministic(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         self.name.as_str()
     }
@@ -2727,8 +3103,31 @@ impl BaseTable for NativeTable {
         &self.id
     }
 
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
+        let snapshot = self.dataset.new_query_snapshot().await?;
+        let mut table = self.with_dataset(snapshot);
+        // QueryTable requests do not carry a revision. A pinned snapshot must
+        // execute locally until the namespace API can accept that revision.
+        table
+            .pushdown_operations
+            .remove(&NamespaceClientPushdownOperation::QueryTable);
+        Ok(Arc::new(table))
+    }
+
     async fn version(&self) -> Result<u64> {
         Ok(self.dataset.get().await?.version().version)
+    }
+
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        let current = self.dataset.get().await?;
+        let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
+            current.as_ref().clone(),
+            self.read_consistency_interval,
+        );
+        Ok(Arc::new(Self {
+            dataset,
+            ..self.clone()
+        }))
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
@@ -2849,7 +3248,10 @@ impl BaseTable for NativeTable {
         let dataset = self.dataset.get().await?;
         match filter {
             None => Ok(dataset.count_rows(None).await?),
-            Some(Filter::Sql(sql)) => Ok(dataset.count_rows(Some(sql)).await?),
+            Some(Filter::Sql(sql)) => {
+                let sql = crate::expr::canonicalize_sql_predicate(&sql)?;
+                Ok(dataset.count_rows(Some(sql)).await?)
+            }
             Some(Filter::Datafusion(_)) => Err(Error::NotSupported {
                 message: "Datafusion filters are not yet supported".to_string(),
             }),
@@ -2864,6 +3266,14 @@ impl BaseTable for NativeTable {
         let ds = self.dataset.get().await?;
 
         let table_schema = Schema::from(&ds.schema().clone());
+        computed_columns::ensure_supported_function_metadata(&table_schema)?;
+        computed_columns::ensure_not_written(
+            &table_schema,
+            add.data.schema().fields().iter().map(|f| f.name().as_str()),
+        )?;
+        if matches!(add.mode, AddDataMode::Overwrite) {
+            computed_columns::ensure_no_foreign_declarations(add.data.schema().fields())?;
+        }
 
         let num_partitions = if let Some(parallelism) = add.write_parallelism {
             parallelism
@@ -2888,7 +3298,7 @@ impl BaseTable for NativeTable {
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        let lance_params = output
+        let mut lance_params = output
             .write_options
             .lance_write_params
             .unwrap_or(WriteParams {
@@ -2898,6 +3308,9 @@ impl BaseTable for NativeTable {
                 },
                 ..Default::default()
             });
+        if output.allow_external_blob_outside_bases {
+            lance_params.allow_external_blob_outside_bases = true;
+        }
 
         // Repartition for write parallelism if beneficial.
         let plan = if num_partitions > 1 {
@@ -2955,29 +3368,18 @@ impl BaseTable for NativeTable {
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
-        if opts.columns.len() != 1 {
-            return Err(Error::Schema {
-                message: "Multi-column (composite) indices are not yet supported".to_string(),
-            });
-        }
-        self.dataset.ensure_mutable()?;
-        let mut dataset = (*self.dataset.get().await?).clone();
-        let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
+        let prepared = self.prepare_index(&opts).await?;
+        self.build_index(opts, prepared).await
+    }
 
-        let lance_idx_params = self.make_index_params(&field, opts.index.clone()).await?;
-        let index_type = self.get_index_type_for_field(&field, &opts.index);
-        let columns = [column.as_str()];
-        let mut builder = dataset
-            .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
-            .train(opts.train)
-            .replace(opts.replace);
-
-        if let Some(name) = opts.name {
-            builder = builder.name(name);
-        }
-        builder.await?;
-        self.dataset.update(dataset);
-        Ok(())
+    async fn create_index_async(&self, opts: IndexBuilder) -> Result<Job> {
+        // Prepare before spawning so bad input is reported by this call rather
+        // than only by the job.
+        let prepared = self.prepare_index(&opts).await?;
+        let table = self.clone();
+        Ok(Job::spawned(tokio::spawn(async move {
+            table.build_index(opts, prepared).await
+        })))
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
@@ -3035,6 +3437,11 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
+        let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
+        computed_columns::ensure_not_written(
+            &Schema::from(self.dataset.get().await?.schema()),
+            source_schema.fields().iter().map(|f| f.name().as_str()),
+        )?;
         let result = merge::execute_merge_insert(self, params, new_data).await?;
         self.bump_freshness();
         Ok(result)
@@ -3068,6 +3475,15 @@ impl BaseTable for NativeTable {
     async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
         let dataset = self.dataset.get().await?;
         crate::blob::take_blobs_aligned(&dataset, column, row_ids).await
+    }
+
+    async fn fetch_blob_ranges(
+        &self,
+        column: &str,
+        requests: &[BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::take_blob_ranges_aligned(&dataset, column, requests).await
     }
 
     async fn fetch_blob_files(
@@ -3107,6 +3523,25 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
+    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
+        let result = schema_evolution::execute_declare(self, columns).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn refresh_column(&self, column: &str) -> Result<RefreshColumnResult> {
+        let result = refresh::execute_refresh_column(self, column).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn refresh_column_async(
+        &self,
+        column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        refresh::execute_refresh_column_async(self, column).await
+    }
+
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
         let result = schema_evolution::execute_alter_columns(self, alterations).await?;
         self.bump_freshness();
@@ -3131,10 +3566,9 @@ impl BaseTable for NativeTable {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
         let total_rows = dataset.count_rows(None).await? as u64;
-        let indices = dataset
-            .describe_indices(None)
-            .await?
-            .into_iter()
+        let descriptions = dataset.describe_indices(None).await?;
+        let mut indices: Vec<IndexConfig> = descriptions
+            .iter()
             .filter_map(|idx_desc| {
                 let index_type: crate::index::IndexType = idx_desc
                     .index_type()
@@ -3155,7 +3589,14 @@ impl BaseTable for NativeTable {
                 let field_ids = idx_desc.field_ids();
                 let mut columns = Vec::with_capacity(field_ids.len());
                 for field_id in field_ids {
-                    let field_path = match dataset.schema().field_path(*field_id as i32) {
+                    let field_path = match if index_type == crate::index::IndexType::FTS {
+                        public_fts_field_path_by_id(dataset.schema(), *field_id as i32)
+                    } else {
+                        dataset
+                            .schema()
+                            .field_path(*field_id as i32)
+                            .map_err(Into::into)
+                    } {
                         Ok(field_path) => field_path,
                         Err(e) => {
                             log::warn!(
@@ -3192,6 +3633,31 @@ impl BaseTable for NativeTable {
                 })
             })
             .collect();
+
+        for index in indices
+            .iter_mut()
+            .filter(|index| index.index_type == crate::index::IndexType::FTS)
+        {
+            let Some(description) = descriptions
+                .iter()
+                .find(|description| description.name() == index.name)
+            else {
+                continue;
+            };
+            let segments = description.segments();
+            let Some(segment) = segments.first() else {
+                continue;
+            };
+            let params = load_segment_params(&dataset, segment).await?;
+            let details = serde_json::to_string(&params).map_err(|source| Error::Other {
+                message: format!(
+                    "Failed to serialize full text search configuration for index '{}'",
+                    index.name
+                ),
+                source: Some(Box::new(source)),
+            })?;
+            index.index_details = Some(details);
+        }
         Ok(indices)
     }
 
@@ -3311,9 +3777,24 @@ impl BaseTable for NativeTable {
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
         let ds = self.dataset.get().await?;
-        let ds_clone = (*ds).clone();
-        let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
-        let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
+        // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
+        // would open every data file to read its column metadata, which costs one
+        // IO per fragment and reports 0 for legacy v1 storage.
+        //
+        // The manifest summary covers only the fragments' base data files, so
+        // overlay files (recorded on each fragment) and index files (recorded in
+        // the manifest's index section) are added separately.
+        let mut total_bytes = ds.manifest().summary().total_files_size as usize;
+        for frag in ds.manifest().fragments.iter() {
+            for overlay in &frag.overlays {
+                if let Some(size) = overlay.data_file.file_size_bytes.get() {
+                    total_bytes += size.get() as usize;
+                }
+            }
+        }
+        for index in ds.load_indices().await?.iter() {
+            total_bytes += index.total_size_bytes().unwrap_or(0) as usize;
+        }
 
         let frags = ds.get_fragments();
         let mut sorted_sizes = join_all(
@@ -3385,7 +3866,12 @@ impl BaseTable for NativeTable {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TableStatistics {
-    /// The total number of bytes in the table
+    /// The total size, in bytes, of the table's data files, index files, and
+    /// overlay files
+    ///
+    /// Read from the manifest, so this excludes deletion files and manifests,
+    /// and it excludes any file whose size the manifest does not record
+    /// (tables and indices written before writers persisted file sizes).
     pub total_bytes: usize,
 
     /// The number of rows in the table
@@ -3430,7 +3916,7 @@ pub struct FragmentSummaryStats {
 #[allow(deprecated)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use arrow_array::{
@@ -3446,6 +3932,7 @@ mod tests {
     use super::*;
     use crate::connect;
     use crate::connection::ConnectBuilder;
+    use crate::io::object_store::io_tracking::IoTrackingStore;
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
@@ -3495,6 +3982,253 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
         let table = NativeTable::open(uri).await;
         assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_open_not_found_missing_lance_dir() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_not_found_when_empty_directory_exists() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        std::fs::create_dir(&dataset_path).unwrap();
+
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_not_found_when_only_uncommitted_storage_exists() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let data_dir = dataset_path.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("orphan.lance"), b"uncommitted").unwrap();
+
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    /// Listing databases discover physical `*.lance` entries. That snapshot is not an
+    /// authoritative table-existence check: only a committed manifest makes a table
+    /// openable, and the entry could also be concurrently created or dropped.
+    #[tokio::test]
+    async fn test_table_names_may_include_uncommitted_storage() {
+        let tmp_dir = tempdir().unwrap();
+        let db = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        std::fs::create_dir(tmp_dir.path().join("test.lance")).unwrap();
+
+        assert_eq!(
+            db.table_names().execute().await.unwrap(),
+            vec!["test".to_string()]
+        );
+        let err = db.open_table("test").execute().await.unwrap_err();
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "physical storage without a committed manifest is not a table: {err:?}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct ParentListGuardStore {
+        inner: Arc<dyn object_store::ObjectStore>,
+        parent: object_store::path::Path,
+        parent_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Display for ParentListGuardStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ParentListGuardStore")
+        }
+    }
+
+    #[async_trait::async_trait]
+    #[deny(clippy::missing_trait_methods)]
+    impl object_store::ObjectStore for ParentListGuardStore {
+        async fn put_opts(
+            &self,
+            location: &object_store::path::Path,
+            payload: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &object_store::path::Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &object_store::path::Path,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        async fn get_ranges(
+            &self,
+            location: &object_store::path::Path,
+            ranges: &[std::ops::Range<u64>],
+        ) -> object_store::Result<Vec<bytes::Bytes>> {
+            self.inner.get_ranges(location, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<
+                'static,
+                object_store::Result<object_store::path::Path>,
+            >,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+        {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list(prefix)
+        }
+
+        fn list_with_offset(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+            offset: &object_store::path::Path,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list_with_offset(prefix, offset)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::RenameOptions,
+        ) -> object_store::Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    #[derive(Debug)]
+    struct ParentListGuardWrapper {
+        parent_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl WrappingObjectStore for ParentListGuardWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            inner: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            Arc::new(ParentListGuardStore {
+                inner,
+                parent: object_store::path::Path::from("database"),
+                parent_list_calls: self.parent_list_calls.clone(),
+            })
+        }
+
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            _original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn test_open_missing_never_lists_database_parent() {
+        let parent_list_calls = Arc::new(AtomicUsize::new(0));
+        let params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store_wrapper: Some(Arc::new(ParentListGuardWrapper {
+                    parent_list_calls: parent_list_calls.clone(),
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            "memory:///database/missing.lance",
+            "missing",
+            Vec::new(),
+            None,
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "missing"),
+            "got {err:?}"
+        );
+        assert_eq!(
+            parent_list_calls.load(Ordering::Relaxed),
+            0,
+            "opening one missing table must not enumerate sibling tables"
+        );
     }
 
     #[test]
@@ -3559,6 +4293,14 @@ mod tests {
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
             original
+        }
+
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            Some(original)
         }
     }
 
@@ -4049,10 +4791,10 @@ mod tests {
         Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
     }
 
-    // Windows does not support precise sleep durations due to timer resolution limitations.
-    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_read_consistency_interval() {
+        use crate::utils::background_cache::clock;
+
         let intervals = vec![
             None,
             Some(0),
@@ -4079,6 +4821,12 @@ mod tests {
             let conn2 = conn2.execute().await.unwrap();
             let table2 = conn2.open_table("my_table").execute().await.unwrap();
 
+            // Freeze the consistency clock now that `table2` has seeded its cache, so the
+            // interval only elapses when this test advances it. Otherwise the write and
+            // count_rows calls below race the real 100ms interval, which a loaded CI
+            // runner loses. Must come after open_table: creating the cache clears the mock.
+            clock::pin();
+
             assert_eq!(table1.count_rows(None).await.unwrap(), 0);
             assert_eq!(table2.count_rows(None).await.unwrap(), 0);
 
@@ -4096,7 +4844,7 @@ mod tests {
                 }
                 Some(100) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    clock::advance_by(Duration::from_millis(100));
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
                 }
                 _ => unreachable!(),
@@ -4498,7 +5246,7 @@ mod tests {
                 .set_lsm_write_spec(LsmWriteSpec::bucket("id", bad))
                 .await
                 .expect_err("should reject");
-            assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
+            assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
         }
 
         // Happy path: install spec; verify MemWAL details record it.
@@ -4725,7 +5473,7 @@ mod tests {
         // Bucket spec round-trips exactly, including the routing column (recovered
         // from its field id), maintained indexes, and writer config defaults.
         let spec = LsmWriteSpec::bucket("id", 4)
-            .with_maintained_indexes([idx_name])
+            .with_maintained_indexes(vec![idx_name.clone()])
             .with_writer_config_defaults([("durable_write", "false")]);
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
@@ -4735,15 +5483,125 @@ mod tests {
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
         // Identity sharding round-trips (column recovered from the schema).
+        // A spec left at its default maintains every index on the table, so it
+        // reads back naming the one on the table rather than as "infer".
         let spec = LsmWriteSpec::identity("region");
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+        assert_eq!(
+            table.get_lsm_write_spec().await.unwrap(),
+            Some(spec.with_maintained_indexes(vec![idx_name.clone()]))
+        );
         table.unset_lsm_write_spec().await.unwrap();
 
         // Unsharded round-trips (no routing column).
         let spec = LsmWriteSpec::unsharded();
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+        assert_eq!(
+            table.get_lsm_write_spec().await.unwrap(),
+            Some(spec.with_maintained_indexes(vec![idx_name]))
+        );
+    }
+
+    /// The maintained set defaults to every index on the table, resolved at
+    /// install. An index the memtable cannot build fails the install rather
+    /// than being dropped: maintaining it would take the table offline for
+    /// writes, dropping it would hide that from the caller.
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_infers_maintained_indexes() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("tag", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        table
+            .create_index(&["id"], Index::BTree(Default::default()))
+            .name("id_btree".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["tag"], Index::Bitmap(Default::default()))
+            .name("tag_bitmap".to_string())
+            .execute()
+            .await
+            .unwrap();
+
+        // Explicitly naming the bitmap index fails before anything commits.
+        let err = table
+            .set_lsm_write_spec(
+                LsmWriteSpec::unsharded().with_maintained_indexes(vec!["tag_bitmap".to_string()]),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message } if message.contains("tag_bitmap")),
+            "expected the bitmap index to be rejected, got {err:?}"
+        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // The default covers every index, so the bitmap fails it too.
+        let err = table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message }
+                if message.contains("tag_bitmap") && message.contains("maintained_indexes")),
+            "expected the inferred set to be rejected, got {err:?}"
+        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // Naming the maintainable subset installs.
+        table
+            .set_lsm_write_spec(
+                LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .get_lsm_write_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some(["id_btree".to_string()].as_slice())
+        );
+
+        // Opting out entirely is distinct from the default.
+        table.unset_lsm_write_spec().await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .get_lsm_write_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some([].as_slice())
+        );
     }
 
     #[tokio::test]
@@ -4791,12 +5649,16 @@ mod tests {
 
         let res = table.stats().await.unwrap();
         println!("{:#?}", res);
+        // `total_bytes` is the full on-disk size of the 11 data files (this table
+        // has no index or overlay files), so it is well above the 2000 bytes of
+        // column data these 250 int32 pairs hold: each file carries its own footer
+        // and metadata.
         assert_eq!(
             res,
             TableStatistics {
                 num_rows: 250,
                 num_indices: 0,
-                total_bytes: 2300,
+                total_bytes: 8925,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
@@ -4835,5 +5697,204 @@ mod tests {
                 },
             }
         )
+    }
+
+    /// `total_bytes` counts more than the base data files: index files and
+    /// overlay files recorded in the manifest are included too.
+    #[tokio::test]
+    pub async fn test_stats_includes_index_and_overlay_files() {
+        use lance::dataset::WriteDestination;
+        use lance::dataset::transaction::{DataOverlayGroup, Operation};
+        use lance_file::version::stable_file_version;
+        use lance_file::writer::FileWriterOptions;
+        use lance_io::utils::CachedFileSize;
+        use lance_table::format::DataFile;
+        use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
+        use roaring::RoaringBitmap;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("foo", DataType::Int32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(Int32Array::from_iter_values(0..100)),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_stats_extra_files", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let data_only = table.stats().await.unwrap().total_bytes;
+        assert!(data_only > 0);
+
+        // A scalar index adds index files whose sizes are recorded in the
+        // manifest's index section.
+        table
+            .create_index(&["id"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        let with_index = table.stats().await.unwrap().total_bytes;
+        let dataset = {
+            let native = table.as_native().unwrap();
+            (*native.dataset.get().await.unwrap()).clone()
+        };
+        let index_bytes: usize = dataset
+            .load_indices()
+            .await
+            .unwrap()
+            .iter()
+            .map(|idx| idx.total_size_bytes().unwrap_or(0) as usize)
+            .sum();
+        assert!(index_bytes > 0);
+        assert_eq!(with_index, data_only + index_bytes);
+
+        // Release builds reject unstable overlay datasets unless explicitly opted in.
+        if !lance_table::feature_flags::can_read_dataset(
+            lance_table::feature_flags::FLAG_UNSTABLE_DATA_OVERLAY_FILES,
+        ) {
+            return;
+        }
+
+        // Commit an overlay file supplying new `foo` values for the first three
+        // rows of fragment 0. There is no high-level API that writes overlays
+        // yet, so write the overlay's data file and commit the `DataOverlay`
+        // operation by hand.
+        let read_version = dataset.version().version;
+        let fragment_id = dataset.get_fragments()[0].id() as u64;
+        let foo_field_id = dataset.schema().field("foo").unwrap().id;
+        let overlay_schema = dataset.schema().project_by_ids(&[foo_field_id], true);
+        let file_version = stable_file_version();
+
+        let filename = "overlay.lance".to_string();
+        let store = dataset.object_store(None).await.unwrap();
+        let path = dataset.data_dir().child(filename.clone());
+        let obj_writer = store.create(&path).await.unwrap();
+        let mut writer = lance_file::versions::create_writer(
+            file_version,
+            obj_writer,
+            overlay_schema,
+            FileWriterOptions::default(),
+        )
+        .unwrap();
+        writer
+            .write_column(0, Arc::new(Int32Array::from(vec![1000, 1001, 1002])) as _)
+            .await
+            .unwrap();
+        let summary = writer.finish().await.unwrap();
+        let overlay_bytes = summary.size_bytes as usize;
+        assert!(overlay_bytes > 0);
+
+        let mut data_file = DataFile::new_unstarted(filename, file_version);
+        data_file.fields = writer
+            .field_id_to_column_indices()
+            .iter()
+            .map(|(field_id, _)| *field_id as i32)
+            .collect::<Vec<_>>()
+            .into();
+        data_file.column_indices = writer
+            .field_id_to_column_indices()
+            .iter()
+            .map(|(_, column_index)| *column_index as i32)
+            .collect::<Vec<_>>()
+            .into();
+        data_file.file_size_bytes = CachedFileSize::new(summary.size_bytes);
+
+        let overlay = DataOverlayFile {
+            data_file,
+            coverage: OverlayCoverage::dense(RoaringBitmap::from_iter(0..3)),
+            committed_version: 0,
+        };
+        Dataset::commit(
+            WriteDestination::Dataset(Arc::new(dataset)),
+            Operation::DataOverlay {
+                groups: vec![DataOverlayGroup {
+                    fragment_id,
+                    overlays: vec![overlay],
+                }],
+            },
+            Some(read_version),
+            None,
+            None,
+            Arc::new(Default::default()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        table.checkout_latest().await.unwrap();
+        let with_overlay = table.stats().await.unwrap().total_bytes;
+        assert_eq!(with_overlay, with_index + overlay_bytes);
+    }
+
+    /// `stats()` must stay manifest-only. Summing per-field `bytes_on_disk`
+    /// instead opens every data file, so cost would grow with fragment count.
+    #[tokio::test]
+    pub async fn test_stats_does_not_read_data_files() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
+        )
+        .unwrap();
+
+        conn.create_table("test_stats_io", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.open_table("test_stats_io").execute().await.unwrap();
+        const NUM_APPENDS: usize = 20;
+        for _ in 0..NUM_APPENDS {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Reopen through a tracking store so the counters cover `stats()` alone and
+        // not the writes above.
+        let (wrapper, io_stats) = IoTrackingStore::new_wrapper();
+        let table = conn
+            .open_table("test_stats_io")
+            .lance_read_params(ReadParams {
+                store_options: Some(ObjectStoreParams {
+                    object_store_wrapper: Some(wrapper),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+        io_stats.lock().unwrap().read_iops = 0;
+
+        let stats = table.stats().await.unwrap();
+        let read_iops = io_stats.lock().unwrap().read_iops;
+
+        assert_eq!(stats.fragment_stats.num_fragments, NUM_APPENDS + 1);
+        assert!(stats.total_bytes > 0);
+        // Reading the fragments' data files would take at least one IOP each.
+        assert!(
+            read_iops < stats.fragment_stats.num_fragments as u64,
+            "stats() issued {} read IOPs across {} fragments",
+            read_iops,
+            stats.fragment_stats.num_fragments
+        );
     }
 }

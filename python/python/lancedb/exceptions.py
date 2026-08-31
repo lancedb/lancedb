@@ -23,3 +23,15 @@ class MissingColumnError(KeyError):
         return (
             f"Error: Column '{self.column_name}' does not exist in the DataFrame object"
         )
+
+
+class JobFailedError(RuntimeError):
+    """Exception raised when an asynchronous job reaches the failed state."""
+
+    pass
+
+
+class JobCancelledError(RuntimeError):
+    """Exception raised when an asynchronous job was cancelled."""
+
+    pass

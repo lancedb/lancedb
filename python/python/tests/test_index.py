@@ -85,6 +85,15 @@ async def binary_table(db_async):
 
 
 @pytest.mark.asyncio
+async def test_create_index_async_returns_done_job(some_table: AsyncTable):
+    job = await some_table.create_index_async("id", config=BTree())
+    assert job.id is None
+    assert await job.wait() is None
+    assert len(await some_table.list_indices()) == 1
+    await job.cancel()
+
+
+@pytest.mark.asyncio
 async def test_create_scalar_index(some_table: AsyncTable):
     # Can create
     await some_table.create_index("id")
@@ -361,6 +370,31 @@ async def test_create_vector_index(some_table: AsyncTable):
     assert stats.num_indexed_rows == await some_table.count_rows()
     assert stats.num_unindexed_rows == 0
     assert stats.num_indices == 1
+
+
+@pytest.mark.asyncio
+async def test_create_ivf_index_reports_unsplittable_partitions(db_async):
+    dim = 8
+    num_partitions = 300  # More than 256 selects hierarchical k-means.
+    base_vectors = [[float(row == column) for column in range(dim)] for row in range(5)]
+    vectors = pa.array(base_vectors * 200, pa.list_(pa.float32(), dim))
+    table = await db_async.create_table(
+        "unsplittable_partitions",
+        pa.table({"vector": vectors}),
+    )
+
+    error_pattern = (
+        rf"Cannot create {num_partitions} IVF partitions: k-means could only form"
+    )
+    with pytest.raises(RuntimeError, match=error_pattern):
+        await table.create_index(
+            "vector",
+            config=IvfFlat(
+                distance_type="dot",
+                num_partitions=num_partitions,
+                max_iterations=10,
+            ),
+        )
 
 
 @pytest.mark.asyncio

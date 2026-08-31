@@ -6,12 +6,13 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any, List, Iterable
+from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
 
 __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
+from ._lancedb import LsmWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -19,7 +20,24 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
-from .schema import blob, vector, BlobType
+from .schema import blob, vector
+from .job import AsyncJob, Job
+from .functions import (
+    FunctionArtifactRequest as FunctionArtifactRequest,
+    FunctionApplication as FunctionApplication,
+    FunctionBinding as FunctionBinding,
+    FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionVersion as FunctionVersion,
+    PythonRuntimeSpec as PythonRuntimeSpec,
+    RefreshColumnResult as RefreshColumnResult,
+    UdfDefinition as UdfDefinition,
+    udf as udf,
+)
+from .materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    MaterializedViewDefinition,
+)
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -29,6 +47,19 @@ from .namespace import (
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
 )
+
+
+if TYPE_CHECKING:
+    from lance.blob import BlobType as BlobType
+
+
+def __getattr__(name: str):
+    if name == "BlobType":
+        from .schema import BlobType
+
+        globals()["BlobType"] = BlobType
+        return BlobType
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _check_s3_bucket_with_dots(
@@ -161,6 +192,18 @@ def connect(
     ...     },
     ... )
 
+    For Azure Blob Storage, credentials can be passed directly without setting
+    environment variables:
+
+    >>> azure_storage_options = {
+    ...     "account_name": "some-account",
+    ...     "account_key": "some-key",
+    ... }
+    >>> db = lancedb.connect(  # doctest: +SKIP
+    ...     "az://my-container/my-database",
+    ...     storage_options=azure_storage_options,
+    ... )
+
     For tests and temporary data, use an in-memory database:
 
     >>> db = lancedb.connect("memory://")
@@ -258,6 +301,7 @@ def tokenize(
     lower_case: bool = True,
     stem: bool = True,
     remove_stop_words: bool = True,
+    custom_stop_words: Optional[List[str]] = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
@@ -265,9 +309,10 @@ def tokenize(
 ) -> Iterable[FtsToken]:
     """Tokenize a full-text search query using an explicit tokenizer.
 
-    This does not require a table or FTS index. The tokenizer options match
-    :class:`lancedb.index.FTS`.
+    This does not require an FTS index. The tokenizer options match
+    :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
     """
+
     return _tokenize(
         query,
         base_tokenizer=base_tokenizer,
@@ -276,6 +321,7 @@ def tokenize(
         lower_case=lower_case,
         stem=stem,
         remove_stop_words=remove_stop_words,
+        custom_stop_words=custom_stop_words,
         ascii_folding=ascii_folding,
         ngram_min_length=ngram_min_length,
         ngram_max_length=ngram_max_length,
@@ -444,6 +490,10 @@ async def connect_async(
     --------
 
     >>> import lancedb
+    >>> azure_storage_options = {
+    ...     "account_name": "some-account",
+    ...     "account_key": "some-key",
+    ... }
     >>> async def doctest_example():
     ...     # For a local directory, provide a path to the database
     ...     db = await lancedb.connect_async("~/.lancedb")
@@ -451,6 +501,11 @@ async def connect_async(
     ...     db = await lancedb.connect_async("s3://my-bucket/lancedb",
     ...                                      storage_options={
     ...                                          "aws_access_key_id": "***"})
+    ...     # Azure credentials can also be passed directly
+    ...     db = await lancedb.connect_async(
+    ...         "az://my-container/my-database",
+    ...         storage_options=azure_storage_options,
+    ...     )
     ...     # For tests and temporary data, use an in-memory database
     ...     db = await lancedb.connect_async("memory://")
     ...     # Connect to LanceDB cloud
@@ -491,12 +546,16 @@ async def connect_async(
 
 
 __all__ = [
+    "AsyncMaterializedView",
+    "MaterializedView",
+    "MaterializedViewDefinition",
     "connect",
     "connect_async",
     "tokenize",
     "connect_namespace",
     "connect_namespace_async",
     "AsyncConnection",
+    "AsyncJob",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
     "FtsToken",
@@ -510,8 +569,10 @@ __all__ = [
     "BlobType",
     "vector",
     "DBConnection",
+    "Job",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
+    "LsmWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",

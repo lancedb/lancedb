@@ -32,8 +32,6 @@ from typing_extensions import Annotated
 
 from lancedb._lancedb import fts_query_to_json
 from lancedb.background_loop import LOOP
-from lancedb.pydantic import PYDANTIC_VERSION
-
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
@@ -52,7 +50,6 @@ from ._blob import (
     finalize_blob_query_table,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
-    supports_blob_auto_row_id,
     validate_blob_mode,
 )
 from .types import BlobMode, QueryProjection
@@ -168,6 +165,12 @@ def _projection_to_scanner_kwargs(columns: QueryProjection) -> Dict[str, Any]:
             expr = expr.to_sql()
         projection[name] = expr
     return {"columns": projection}
+
+
+def _query_request_projection(req: "PyQueryRequest") -> QueryProjection:
+    if req.select_source_columns is not None:
+        return req.select_source_columns
+    return req.select
 
 
 def _scanner_kwargs_for_query(
@@ -378,6 +381,13 @@ class FullTextOperator(str, Enum):
     OR = "OR"
 
 
+class DocumentGranularity(str, Enum):
+    """The unit treated as one full-text-search document."""
+
+    ROW = "row"
+    LIST_ELEMENT = "list_element"
+
+
 class Occur(str, Enum):
     SHOULD = "SHOULD"
     MUST = "MUST"
@@ -481,6 +491,10 @@ class MatchQuery(FullTextQuery):
     prefix_length : int, optional
         The number of beginning characters being unchanged for fuzzy matching.
         This is useful to achieve prefix matching.
+    document_granularity : DocumentGranularity, optional
+        Explicitly select row or deepest-list-element documents. If omitted,
+        the indexed granularity is inferred. When both granularities are indexed
+        for the field, this must be specified. With no index, row granularity is used.
     """
 
     query: str
@@ -490,6 +504,9 @@ class MatchQuery(FullTextQuery):
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
+    document_granularity: Optional[DocumentGranularity] = pydantic.Field(
+        None, kw_only=True
+    )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
@@ -506,11 +523,20 @@ class PhraseQuery(FullTextQuery):
         The query string to match against.
     column : str
         The name of the column to match against.
+    slop : int, default 0
+        The maximum number of intervening positions permitted in the phrase.
+    document_granularity : DocumentGranularity, optional
+        Explicitly select row or deepest-list-element documents. If omitted,
+        the indexed granularity is inferred. When both granularities are indexed
+        for the field, this must be specified. With no index, row granularity is used.
     """
 
     query: str
     column: str
     slop: int = pydantic.Field(0, kw_only=True)
+    document_granularity: Optional[DocumentGranularity] = pydantic.Field(
+        None, kw_only=True
+    )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
@@ -651,7 +677,8 @@ class Query(pydantic.BaseModel):
     distance_type : Optional[str]
         the distance type to use for vector search
 
-        This can be l2 (default), cosine and dot.  See [metric definitions][search] for
+        This can be l2 (default), cosine and dot.  See
+        [metric definitions](https://lancedb.com/docs/search/vector-search/) for
         more details.
 
         If this is not a vector search this will be None.
@@ -664,8 +691,9 @@ class Query(pydantic.BaseModel):
 
         - A higher number makes search more accurate but also slower.
 
-        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
-          tuning advice.
+        - See discussion in
+          [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+          for tuning advice.
 
         Will be None if this is not a vector search.
     refine_factor : Optional[int]
@@ -673,8 +701,9 @@ class Query(pydantic.BaseModel):
 
         - A higher number makes search more accurate but also slower.
 
-        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
-          tuning advice.
+        - See discussion in
+          [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+          for tuning advice.
 
         Will be None if this is not a vector search.
     lower_bound : Optional[float]
@@ -778,6 +807,11 @@ class Query(pydantic.BaseModel):
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
+    # MemWAL LSM read routing: None auto-routes when the table carries a write
+    # spec, True forces the LSM scanner (errors without a spec), False reads the
+    # base table only
+    use_lsm: Optional[bool] = None
+
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
 
@@ -795,6 +829,9 @@ class Query(pydantic.BaseModel):
         query.full_text_query = req.full_text_search
         query.columns = req.select
         query.with_row_id = req.with_row_id
+        # use_lsm is a genuine tri-state (None / True / False); preserve it as-is
+        # so a round-tripped query keeps an explicit False.
+        query.use_lsm = req.use_lsm
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
@@ -817,12 +854,7 @@ class Query(pydantic.BaseModel):
 
     # This tells pydantic to allow custom types (needed for the `vector` query since
     # pa.Array wouln't be allowed otherwise)
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            arbitrary_types_allowed = True
-    else:
-        model_config = {"arbitrary_types_allowed": True}
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
 
 class LanceQueryBuilder(ABC):
@@ -967,6 +999,7 @@ class LanceQueryBuilder(ABC):
         self._with_row_address = None
         self._fragments = None
         self._fragment_ids = None
+        self._use_lsm = None
         self._vector = None
         self._text = None
         self._ef = None
@@ -1268,10 +1301,7 @@ class LanceQueryBuilder(ABC):
         return self._with_row_id is True
 
     def _blob_auto_row_id_enabled(self) -> bool:
-        if not supports_blob_auto_row_id(self._table):
-            return False
         return blob_auto_row_id_for_scan(
-            self._table,
             self._table.schema,
             self._columns,
             with_row_id=self._with_row_id,
@@ -1324,6 +1354,30 @@ class LanceQueryBuilder(ABC):
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
         """Set the Lance fragment ids to scan for plain scanner-backed queries."""
         self._fragment_ids = fragment_ids
+        return self
+
+    def use_lsm(self, enable: bool) -> Self:
+        """Control MemWAL LSM read routing for this query.
+
+        By default (unset), a query against a table with an LSM write spec is
+        routed through the LSM scanner so it also returns data written via the
+        ``merge_insert`` LSM path that has not yet been compacted into the base
+        table (active/frozen memtables + flushed generations); a table without a
+        spec reads the base table.
+
+        Parameters
+        ----------
+        enable : bool
+            ``True`` forces the LSM scanner and errors if the table has no LSM
+            write spec. ``False`` bypasses the MemWAL and reads the base table
+            only, even when a spec is present.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._use_lsm = enable
         return self
 
     def explain_plan(self, verbose: Optional[bool] = False) -> str:
@@ -1618,8 +1672,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
-        See discussion in [Querying an ANN Index][querying-an-ann-index] for
-        tuning advice.
+        See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+        for tuning advice.
 
         This method sets both the minimum and maximum number of probes to the same
         value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
@@ -1719,8 +1773,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         As an example, a refine factor of 2 will sample 2x as many vectors as
         requested, re-ranks them, and returns the top half most relevant results.
 
-        See discussion in [Querying an ANN Index][querying-an-ann-index] for
-        tuning advice.
+        See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+        for tuning advice.
 
         Parameters
         ----------
@@ -1788,6 +1842,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
+            use_lsm=self._use_lsm,
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
@@ -2012,6 +2067,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
+            use_lsm=self._use_lsm,
             full_text_query=FullTextSearchQuery(
                 query=self._query_with_phrase_semantics(), columns=self._fts_columns
             ),
@@ -2078,6 +2134,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
+            use_lsm=self._use_lsm,
             offset=self._offset,
             order_by=self._order_by,
         )
@@ -2200,6 +2257,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             reranker=self._reranker,
             limit=self._limit,
             with_row_ids=True,
+            offset=self._offset,
         )
         return self._finish_hybrid_results(results)
 
@@ -2221,6 +2279,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         reranker,
         limit: int,
         with_row_ids: bool,
+        offset: Optional[int] = None,
     ) -> pa.Table:
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
@@ -2297,7 +2356,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = results.column_names.index("_score")
             results = results.set_column(score_i, "_score", original_scores)
 
-        results = results.slice(length=limit)
+        results = results.slice(offset=offset or 0, length=limit)
 
         if not with_row_ids:
             results = results.drop(["_rowid"])
@@ -2644,8 +2703,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         # Apply common configurations
         if self._limit:
-            self._vector_query.limit(self._limit)
-            self._fts_query.limit(self._limit)
+            # The final offset/limit window is sliced out of the combined,
+            # reranked results, so each sub-query must fetch enough rows to
+            # cover the skipped prefix as well as the window itself.
+            sub_query_limit = self._limit + (self._offset or 0)
+            self._vector_query.limit(sub_query_limit)
+            self._fts_query.limit(sub_query_limit)
         if self._columns:
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
@@ -2655,11 +2718,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._with_row_id:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
+        if self._use_lsm is not None:
+            self._vector_query.use_lsm(self._use_lsm)
+            self._fts_query.use_lsm(self._use_lsm)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
-        if self._minimum_nprobes:
+        if self._minimum_nprobes is not None:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
         if self._maximum_nprobes is not None:
             self._vector_query.maximum_nprobes(self._maximum_nprobes)
@@ -2732,23 +2798,23 @@ class AsyncQueryBase(object):
         )
 
     async def _maybe_add_blob_row_id(self) -> None:
-        if self._table is None or not supports_blob_auto_row_id(self._table):
+        if self._table is None:
             self._blob_auto_row_id = False
             self._blob_paths = ()
             return
 
         req = self._inner.to_query_request()
         schema = await self._table.schema()
+        projection = _query_request_projection(req)
         self._blob_auto_row_id = blob_auto_row_id_for_scan(
-            self._table,
             schema,
-            req.select,
+            projection,
             with_row_id=self._with_row_id,
         )
         if not self._blob_auto_row_id:
             self._blob_paths = ()
             return
-        self._blob_paths = tuple(blob_v2_projection_sources(schema, req.select).keys())
+        self._blob_paths = tuple(blob_v2_projection_sources(schema, projection).keys())
         self._inner.with_row_id()
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
@@ -2992,7 +3058,6 @@ class AsyncQueryBase(object):
 
         schema = await self._table.schema()
         blob_auto_row_id = blob_auto_row_id_for_scan(
-            self._table,
             schema,
             query.columns,
             with_row_id=self._with_row_id,
@@ -3002,7 +3067,7 @@ class AsyncQueryBase(object):
             if blob_mode == "bytes"
             else {}
         )
-        dataset = await self._table._to_lance()
+        dataset = await self._table.to_lance()
         scanner = dataset.scanner(
             **_scanner_kwargs_for_query(
                 query,
@@ -3209,12 +3274,7 @@ class AsyncStandardQuery(AsyncQueryBase):
         if ordering is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by(
-                [
-                    o.model_dump() if hasattr(o, "model_dump") else o.dict()
-                    for o in ordering
-                ]
-            )
+            self._inner.order_by([o.model_dump() for o in ordering])
         return self
 
     def fast_search(self) -> Self:
@@ -3229,6 +3289,27 @@ class AsyncStandardQuery(AsyncQueryBase):
             [AsyncTable.optimize][lancedb.table.AsyncTable.optimize].
         """
         self._inner.fast_search()
+        return self
+
+    def use_lsm(self, enable: bool) -> Self:
+        """
+        Control MemWAL LSM read routing for this query.
+
+        By default (unset), a query against a table with an LSM write spec (see
+        [AsyncTable.set_lsm_write_spec][lancedb.table.AsyncTable.set_lsm_write_spec])
+        is routed through the LSM scanner so it also returns data written via the
+        ``merge_insert`` LSM path that has not yet been compacted into the base
+        table (the active/frozen in-memory memtables and the flushed generations),
+        deduplicated by primary key; a table without a spec reads the base table.
+
+        Parameters
+        ----------
+        enable : bool
+            ``True`` forces the LSM scanner and errors if the table has no LSM
+            write spec. ``False`` bypasses the MemWAL and reads the base table
+            only, even when a spec is present.
+        """
+        self._inner.use_lsm(enable)
         return self
 
     def postfilter(self) -> Self:
@@ -3319,16 +3400,18 @@ class AsyncQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Vector searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Vector searches always have a
+        [limit][lancedb.query.AsyncVectorQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors. When multiple vectors are passed in, if the vector
         column is with multivector type, then the vectors will be treated as a single
         query. Or the vectors will be treated as multiple queries, this can be useful
-        if you want to find the nearest vectors to multiple query vectors.
-        This is not expected to be faster than making multiple queries concurrently;
-        it is just a convenience method. If multiple vectors are passed in then
+        if you want to find the nearest vectors to multiple query vectors. Flat
+        searches share one table scan across the query vectors, avoiding the scan
+        and memory amplification of making multiple queries concurrently. If
+        multiple vectors are passed in then
         an additional column `query_index` will be added to the results. This column
         will contain the index of the query vector that the result is nearest to.
         """
@@ -3451,13 +3534,14 @@ class AsyncFTSQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Hybrid searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Hybrid searches always have a
+        [limit][lancedb.query.AsyncHybridQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest
-        vectors to multiple query vectors. This is not expected to be faster than
-        making multiple queries concurrently; it is just a convenience method.
+        vectors to multiple query vectors. Flat searches share one table scan across
+        the query vectors instead of issuing concurrent full scans.
         If multiple vectors are passed in then an additional column `query_index`
         will be added to the results.  This column will contain the index of the
         query vector that the result is nearest to.
@@ -3815,17 +3899,17 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
         blob_paths: tuple[str, ...] = ()
-        if self._table is not None and supports_blob_auto_row_id(self._table):
+        if self._table is not None:
             schema = await self._table.schema()
+            projection = _query_request_projection(req)
             blob_auto_row_id = blob_auto_row_id_for_scan(
-                self._table,
                 schema,
-                req.select,
+                projection,
                 with_row_id=self._with_row_id,
             )
             if blob_auto_row_id:
                 blob_paths = tuple(
-                    blob_v2_projection_sources(schema, req.select).keys()
+                    blob_v2_projection_sources(schema, projection).keys()
                 )
         self._blob_auto_row_id = blob_auto_row_id
         self._blob_paths = blob_paths
@@ -3944,6 +4028,15 @@ class AsyncTakeQuery(AsyncQueryBase):
     def __init__(self, inner: LanceTakeQuery, table: Optional["AsyncTable"] = None):
         super().__init__(inner, table)
 
+    def use_lsm(self, enable: bool) -> "AsyncTakeQuery":
+        """Control MemWAL LSM read routing for this take query.
+
+        ``False`` bypasses the MemWAL and reads the base table only — the escape
+        hatch, since take-by-row-id/offset is not supported on the LSM scanner.
+        """
+        self._inner.use_lsm(enable)
+        return self
+
     async def _plain_scan_to_pandas(
         self,
         blob_mode: BlobMode,
@@ -4000,6 +4093,16 @@ class BaseQueryBuilder(object):
         Include the _rowid column in the results.
         """
         self._inner.with_row_id()
+        return self
+
+    def use_lsm(self, enable: bool) -> Self:
+        """
+        Control MemWAL LSM read routing for this query.
+
+        ``False`` bypasses the MemWAL and reads the base table only, the escape
+        hatch for shapes the LSM scanner cannot honor (e.g. take-by-row-id).
+        """
+        self._inner.use_lsm(enable)
         return self
 
     def with_row_address(self, with_row_address: bool = True) -> Self:

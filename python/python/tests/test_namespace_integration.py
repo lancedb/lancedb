@@ -18,6 +18,7 @@ Tests verify:
 """
 
 import copy
+import os
 import shutil
 import sys
 import tempfile
@@ -239,7 +240,7 @@ def create_tracking_namespace(
 
     dir_props = {f"storage.{k}": v for k, v in storage_options_with_refresh.items()}
 
-    if bucket_name.startswith("/") or bucket_name.startswith("file://"):
+    if os.path.isabs(bucket_name) or bucket_name.startswith("file://"):
         dir_props["root"] = f"{bucket_name}/namespace_root"
     else:
         dir_props["root"] = f"s3://{bucket_name}/namespace_root"
@@ -767,3 +768,70 @@ def test_namespace_with_schema_only(s3_bucket: str, use_custom: bool):
 
     # Verify data was added
     assert table.count_rows() == 2
+
+
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_exists(use_custom: bool):
+    """
+    Test namespace_exists returns True for existing and False for non-existent.
+    """
+    temp_dir = tempfile.mkdtemp()
+    try:
+        ns_client, _ = create_tracking_namespace(
+            bucket_name=temp_dir,
+            storage_options={},
+            credential_expires_in_seconds=3600,
+            use_custom=use_custom,
+        )
+        db = LanceNamespaceDBConnection(ns_client)
+
+        namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
+        db.create_namespace([namespace_name])
+
+        # Existing namespace should return True
+        assert db.namespace_exists(namespace_id=[namespace_name]) is True
+
+        # Non-existent namespace should return False
+        assert db.namespace_exists(namespace_id=["nonexistent_ns"]) is False
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_table_exists(use_custom: bool):
+    """
+    Test table_exists returns True for existing table and False for non-existent.
+    """
+    temp_dir = tempfile.mkdtemp()
+    try:
+        ns_client, _ = create_tracking_namespace(
+            bucket_name=temp_dir,
+            storage_options={},
+            credential_expires_in_seconds=3600,
+            use_custom=use_custom,
+        )
+        db = LanceNamespaceDBConnection(ns_client)
+
+        namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
+        db.create_namespace([namespace_name])
+
+        table_name = f"test_table_{uuid.uuid4().hex}"
+        namespace_path = [namespace_name]
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+                pa.field("text", pa.string()),
+            ]
+        )
+
+        db.create_table(table_name, schema=schema, namespace_path=namespace_path)
+
+        # Existing table should return True
+        table_id = namespace_path + [table_name]
+        assert db.table_exists(table_id=table_id) is True
+
+        # Non-existent table should return False
+        assert db.table_exists(table_id=namespace_path + ["nonexistent_table"]) is False
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)

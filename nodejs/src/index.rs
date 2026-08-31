@@ -43,6 +43,7 @@ pub fn tokenize(
     lower_case: Option<bool>,
     stem: Option<bool>,
     remove_stop_words: Option<bool>,
+    custom_stop_words: Option<Vec<String>>,
     ascii_folding: Option<bool>,
     ngram_min_length: Option<u32>,
     ngram_max_length: Option<u32>,
@@ -72,6 +73,7 @@ pub fn tokenize(
     if let Some(remove_stop_words) = remove_stop_words {
         opts = opts.remove_stop_words(remove_stop_words);
     }
+    opts = opts.custom_stop_words(custom_stop_words);
     if let Some(ascii_folding) = ascii_folding {
         opts = opts.ascii_folding(ascii_folding);
     }
@@ -222,11 +224,13 @@ impl Index {
         lower_case: Option<bool>,
         stem: Option<bool>,
         remove_stop_words: Option<bool>,
+        custom_stop_words: Option<Vec<String>>,
         ascii_folding: Option<bool>,
         ngram_min_length: Option<u32>,
         ngram_max_length: Option<u32>,
         prefix_only: Option<bool>,
-    ) -> Self {
+        block_size: Option<u32>,
+    ) -> napi::Result<Self> {
         let mut opts = FtsIndexBuilder::default();
         if let Some(with_position) = with_position {
             opts = opts.with_position(with_position);
@@ -249,6 +253,7 @@ impl Index {
         if let Some(remove_stop_words) = remove_stop_words {
             opts = opts.remove_stop_words(remove_stop_words);
         }
+        opts = opts.custom_stop_words(custom_stop_words);
         if let Some(ascii_folding) = ascii_folding {
             opts = opts.ascii_folding(ascii_folding);
         }
@@ -261,10 +266,15 @@ impl Index {
         if let Some(prefix_only) = prefix_only {
             opts = opts.ngram_prefix_only(prefix_only);
         }
-
-        Self {
-            inner: Mutex::new(Some(LanceDbIndex::FTS(opts))),
+        if let Some(block_size) = block_size {
+            opts = opts
+                .block_size(block_size as usize)
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?;
         }
+
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::FTS(opts))),
+        })
     }
 
     #[napi(factory)]

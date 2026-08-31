@@ -10,10 +10,16 @@ permissions:
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
+  # The cross-compiled targets (musl especially) break from toolchain and
+  # dependency changes that nothing else in CI catches, and discovering that
+  # mid-release is expensive. A nightly run keeps that signal while dropping
+  # the full 8-target release matrix from all ~90 pushes to main each month.
+  # `report-failure` files an issue when a nightly breaks.
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
   pull_request:
     # This should trigger a dry run (we skip the final publish step)
     paths:
@@ -26,73 +32,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  gh-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          lfs: true
-      - name: Extract version
-        id: extract_version
-        env:
-          GITHUB_REF: ${{ github.ref }}
-        run: |
-          set -e
-          echo "Extracting tag and version from $GITHUB_REF"
-          if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
-            VERSION=${BASH_REMATCH[1]}
-            TAG=v$VERSION
-            echo "tag=$TAG" >> $GITHUB_OUTPUT
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "Failed to extract version from $GITHUB_REF"
-            exit 1
-          fi
-          echo "Extracted version $VERSION from $GITHUB_REF"
-          if [[ $VERSION =~ beta ]]; then
-            echo "This is a beta release"
-
-            # Get last release (that is not this one)
-            FROM_TAG=$(git tag --sort='version:refname' \
-              | grep ^v \
-              | grep -vF "$TAG" \
-              | python ci/semver_sort.py v \
-              | tail -n 1)
-          else
-            echo "This is a stable release"
-            # Get last stable tag (ignore betas)
-            FROM_TAG=$(git tag --sort='version:refname' \
-              | grep ^v \
-              | grep -vF "$TAG" \
-              | grep -v beta \
-              | python ci/semver_sort.py v \
-              | tail -n 1)
-          fi
-          echo "Found from tag $FROM_TAG"
-          echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
-      - name: Create Release Notes
-        id: release_notes
-        uses: mikepenz/release-changelog-builder-action@v4
-        with:
-          configuration: .github/release_notes.json
-          toTag: ${{ steps.extract_version.outputs.tag }}
-          fromTag: ${{ steps.extract_version.outputs.from_tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create GH release
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ contains('beta', github.ref) }}
-          tag_name: ${{ steps.extract_version.outputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          generate_release_notes: false
-          name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
-          body: ${{ steps.release_notes.outputs.changelog }}
-
   build-lancedb:
     strategy:
       fail-fast: false
@@ -101,31 +40,31 @@ jobs:
           - target: aarch64-apple-darwin
             host: macos-latest
             features: fp16kernels
-            pre_build: brew install protobuf
+            # Fat LTO was ~111 of this job's ~113 minutes.
+            lto: thin
+            codegen_units: 16
+            pre_build: |-
+              brew install protobuf
           - target: x86_64-pc-windows-msvc
-            host: windows-2025-8x-x64
+            host: windows-2025
             features: ","
+            # The lower peak also keeps this on the standard 4-core runner.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
               choco install --no-progress protoc ninja nasm
               tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
               # There is an issue where choco doesn't add nasm to the path
               export PATH="$PATH:/c/Program Files/NASM"
               nasm -v
-              # Fat LTO of the cdylib is single-threaded and the peak-memory
-              # step of the build, and had started hitting rustc-LLVM OOM on the
-              # Windows runners. ThinLTO parallelizes it across the runner's
-              # cores and keeps peak memory well under the limit.
-              export CARGO_PROFILE_RELEASE_LTO=thin
-              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: aarch64-pc-windows-msvc
-            host: windows-2025-8x-x64
+            host: windows-2025
             features: ","
+            lto: thin
+            codegen_units: 16
             pre_build: |-
                 choco install --no-progress protoc
                 rustup target add aarch64-pc-windows-msvc
-                # See ThinLTO note on the x86_64-pc-windows-msvc target above.
-                export CARGO_PROFILE_RELEASE_LTO=thin
-                export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
             features: fp16kernels
@@ -155,6 +94,14 @@ jobs:
             # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
             features: "fp16kernels"
+            # Fat LTO OOM-killed rustc every nightly; even with lld it peaked
+            # at 31391 MiB of the runner's 32 GiB.
+            lto: thin
+            codegen_units: 16
+            # arm64 Linux links through GNU `ld` where x86_64 defaults to
+            # `rust-lld`, which is why only arm64 OOM'd. lld cut the largest
+            # linker process 7.0 -> 4.0 GiB (lancedb/sophon#7313).
+            linker: /tmp/aarch64-lld-clang
             pre_build: |-
               set -e &&
               apt-get update &&
@@ -164,9 +111,30 @@ jobs:
               # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.
               export CFLAGS="$CFLAGS -DAT_HWCAP2=26" &&
               rustup target add aarch64-unknown-linux-gnu
+              # Not `&&`-chained: in dash, errexit does not fire for a
+              # non-final command in an `&&` list, so failures were ignored.
+              #
+              # A wrapper rather than `-C link-arg` because the per-target
+              # rustflags variable does not reach every unit that links, while
+              # the linker variable does. `clang` because GCC silently ignores
+              # `-fuse-ld=lld` unless built with lld support. Two echoes
+              # because printf's newline escape gets rewritten to `;` between
+              # here and the container.
+              echo '#!/bin/sh' > /tmp/aarch64-lld-clang
+              echo 'exec clang --target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot --gcc-toolchain=/usr/aarch64-unknown-linux-gnu -fuse-ld=lld "$@"' >> /tmp/aarch64-lld-clang
+              chmod 0755 /tmp/aarch64-lld-clang
+              # Fail now, not at the cdylib link ~30 minutes later. Linking at
+              # all also proves lld resolved; clang errors out when it cannot.
+              echo 'int main(void){return 0;}' > /tmp/probe.c
+              /tmp/aarch64-lld-clang /tmp/probe.c -o /tmp/probe
+              readelf -h /tmp/probe | grep AArch64
           - target: aarch64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             features: ","
+            # Fat LTO took the whole runner down. lld cannot help: it died
+            # inside rustc's LLVM, before any linker was spawned.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
               set -e &&
               sudo apt-get update &&
@@ -175,6 +143,19 @@ jobs:
               export EXTRA_ARGS="-x"
     name: build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
+    # On the job, not exported from `pre_build`: `Swatinem/rust-cache` hashes
+    # `CARGO_*` into its cache key before any step runs, so a step-local export
+    # leaves the key unchanged while cargo still rebuilds cold. The ThinLTO
+    # legs had been doing that every run.
+    #
+    # Not `RUSTFLAGS`: setting it, even to "", discards every config-file
+    # rustflag, silently dropping .cargo/config.toml's `target-cpu` and
+    # `target-feature` from the published binaries.
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ matrix.settings.lto || 'fat' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ matrix.settings.codegen_units || '1' }}
+      # Empty elsewhere: a per-target variable is only read for that triple.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.settings.linker }}
     defaults:
       run:
         working-directory: nodejs
@@ -187,8 +168,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v6
         with:
-          # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
-          # in October.
+          # pnpm 11 requires Node >= 22.13.
           node-version: 24
           cache: pnpm
           cache-dependency-path: nodejs/pnpm-lock.yaml
@@ -198,16 +178,45 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
-      - name: Cache cargo
-        uses: actions/cache@v5
+      # These builds were entirely uncached: the old key was static, so
+      # `actions/cache` (which only writes on a miss) could never refresh it,
+      # and the multi-GB whole-`target/` copy it tried to store never fit the
+      # repo's cache budget, so no entry was ever saved. rust-cache prunes
+      # `target/` to dependency artifacts and keys on Cargo.lock plus the rustc
+      # version, which both fixes the key and keeps entries a sane size.
+      #
+      # This caches dependency *compilation* only. The LTO link of the cdylib
+      # re-runs regardless, since the local crate changes every time, so the
+      # win is larger on the non-LTO jobs than here.
+      - name: Cache cargo (native builds)
+        uses: Swatinem/rust-cache@v2
+        if: ${{ !matrix.settings.docker }}
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            .cargo-cache
-            target/
-          key: nodejs-${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+          # The release profile and per-target dirs differ from what the test
+          # workflows cache, so these need to be separate entries.
+          key: release-${{ matrix.settings.target }}
+          # Only the nightly run on main writes, so tag and PR runs restore a
+          # warm entry without every dependabot PR writing its own (which would
+          # be unreadable elsewhere anyway, since GitHub scopes caches to the
+          # creating ref). The nightly cadence also keeps entries inside
+          # GitHub's 7-day eviction window, which a tag-only trigger would not.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Docker builds can use rust-cache too: the workspace is bind-mounted, so
+      # `target/` lives on the host and rust-cache's prune keeps the entry
+      # small.
+      #
+      # Two differences from the native builds. The container's CARGO_HOME is
+      # bind-mounted from `.cargo-cache` rather than ~/.cargo, so that is cached
+      # explicitly. And the key uses the *host* rustc version, not the compiler
+      # that built these artifacts -- safe, since cargo fingerprints the real
+      # one; a base-image bump just costs one cold build.
+      - name: Cache cargo (docker builds)
+        uses: Swatinem/rust-cache@v2
+        if: ${{ matrix.settings.docker }}
+        with:
+          key: docker-${{ matrix.settings.target }}
+          cache-directories: .cargo-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Install Zig
@@ -225,24 +234,43 @@ jobs:
         if: ${{ matrix.settings.docker }}
         with:
           image: ${{ matrix.settings.docker }}
+          # All three mounts must live under `.cargo-cache`, which is what the
+          # cache step above saves. Previously the registry mounts pointed at
+          # `.cargo/...`, a path nothing cached, so the container re-downloaded
+          # the whole crate registry on every run.
+          #
+          # `docker run` inherits nothing; `-e NAME` carries the job's `env:` in.
           options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
-                    -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
-                    -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
+                    -v ${{ github.workspace }}/.cargo-cache/registry/cache:/usr/local/cargo/registry/cache \
+                    -v ${{ github.workspace }}/.cargo-cache/registry/index:/usr/local/cargo/registry/index \
+                    -e CARGO_PROFILE_RELEASE_LTO \
+                    -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS \
+                    -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER \
                     -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
             ${{ matrix.settings.pre_build }}
-            npx napi build --platform --release \
+            node_modules/.bin/napi build --platform --release \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
               --js ../lancedb/native.js \
               --strip \
               --output-dir dist/
+      # The container runs as root (`--user 0:0`), so everything it wrote to the
+      # mounted cache dirs is root-owned. rust-cache's post step runs as the
+      # runner user and has to both read these and delete from them while
+      # pruning, so hand them back before it runs.
+      - name: Take ownership of docker build output
+        if: ${{ matrix.settings.docker }}
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            "${{ github.workspace }}/.cargo-cache" \
+            "${{ github.workspace }}/target"
       - name: Build
         run: |
           ${{ matrix.settings.pre_build }}
-          npx napi build --platform --release \
+          node_modules/.bin/napi build --platform --release \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
@@ -252,6 +280,27 @@ jobs:
               --output-dir dist/
         if: ${{ !matrix.settings.docker }}
         shell: bash
+      # The standard Windows runners have ~14 GB free, and a release `target/`
+      # for this workspace is a large fraction of that. Report the remaining
+      # headroom so a build that only just fits is visible before a dependency
+      # bump turns it into a failed release. `always()` so the numbers are
+      # still there when the build is what ran out of space.
+      - name: Report disk headroom
+        if: always()
+        run: df -h
+        shell: bash
+      - name: Report peak memory
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          peak=$(find /sys/fs/cgroup -name memory.peak -readable \
+                 -exec cat {} + 2>/dev/null | sort -n | tail -1)
+          if [ -n "$peak" ]; then
+            echo "peak memory: $((peak / 1024 / 1024)) MiB"
+          else
+            echo "peak memory: unavailable (no readable cgroup v2 memory.peak)"
+          fi
+          free -g || true
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -289,7 +338,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-2404-8x-arm64
         node:
-          - '20'
+          - '22'
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -335,9 +384,9 @@ jobs:
       - name: Move built files
         run: cp dist/native.d.ts dist/native.js dist/*.node lancedb/
       - name: Test bindings
-        # Invoke jest directly because pnpm 11 itself requires Node 22+
-        # while the matrix tests on older Node versions.
-        run: npx jest --verbose
+        # Invoke the installed jest binary directly; the pnpm shim is set up
+        # against the install-phase Node, not the version selected above.
+        run: node_modules/.bin/jest --verbose
   publish:
     name: Publish
     runs-on: ubuntu-latest
@@ -402,7 +451,9 @@ jobs:
     name: Report Workflow Failure
     runs-on: ubuntu-latest
     needs: [build-lancedb, test-lancedb, publish]
-    if: always() && failure() && startsWith(github.ref, 'refs/tags/v')
+    # Nightly runs are the only thing watching the cross-compiled targets now,
+    # so they have to report failures too or the signal is silently lost.
+    if: always() && failure() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule')
     permissions:
       contents: read
       issues: write

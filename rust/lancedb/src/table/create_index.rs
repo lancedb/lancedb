@@ -12,6 +12,7 @@ use arrow_schema::{DataType, Field};
 use lance::index::DatasetIndexExt;
 use lance::index::vector::VectorIndexParams;
 use lance::index::vector::utils::infer_vector_dim;
+use lance_arrow::json::is_json_field;
 use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
@@ -21,11 +22,15 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 
 use crate::error::{Error, Result};
+
+/// Resolved column, index parameters and index type for one build.
+pub(super) type PreparedIndex = (String, Box<dyn lance::index::IndexParams>, IndexType);
 use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
-    supported_bitmap_data_type, supported_btree_data_type, supported_fm_data_type,
-    supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
+    resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
+    supported_fm_data_type, supported_fts_data_type, supported_label_list_data_type,
+    supported_vector_data_type,
 };
 
 use super::NativeTable;
@@ -105,6 +110,60 @@ impl NativeTable {
         }
     }
 
+    /// Resolves the target column and index parameters, erroring on input the
+    /// build would reject.
+    pub(super) async fn prepare_index(
+        &self,
+        opts: &crate::index::IndexBuilder,
+    ) -> Result<PreparedIndex> {
+        if opts.columns.len() != 1 {
+            return Err(Error::Schema {
+                message: "Multi-column (composite) indices are not yet supported".to_string(),
+            });
+        }
+        self.dataset.ensure_mutable()?;
+        let dataset = self.dataset.get().await?;
+        let (column, field) = if let Index::FTS(params) = &opts.index {
+            let resolved = resolve_lance_fts_field_path(dataset.schema(), &opts.columns[0])?;
+            if params.get_document_granularity().is_list_element() && resolved.list_depth == 0 {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "FTS field path '{}' has no List layer and cannot use ListElement document granularity",
+                        resolved.canonical_path
+                    ),
+                });
+            }
+            (resolved.canonical_path, resolved.field)
+        } else {
+            Self::resolve_index_field(dataset.schema(), &opts.columns[0])?
+        };
+        let params = self.make_index_params(&field, opts.index.clone()).await?;
+        let index_type = self.get_index_type_for_field(&field, &opts.index);
+        Ok((column, params, index_type))
+    }
+
+    /// Builds a prepared index and publishes the new dataset version.
+    pub(super) async fn build_index(
+        &self,
+        opts: crate::index::IndexBuilder,
+        prepared: PreparedIndex,
+    ) -> Result<()> {
+        let (column, lance_idx_params, index_type) = prepared;
+        let mut dataset = (*self.dataset.get().await?).clone();
+        let columns = [column.as_str()];
+        let mut builder = dataset
+            .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
+            .train(opts.train)
+            .replace(opts.replace);
+
+        if let Some(name) = opts.name {
+            builder = builder.name(name);
+        }
+        builder.await?;
+        self.dataset.update(dataset);
+        Ok(())
+    }
+
     pub(super) fn resolve_index_field(
         schema: &lance_core::datatypes::Schema,
         column: &str,
@@ -175,6 +234,14 @@ impl NativeTable {
                 )))
             }
             Index::Bitmap(_) => {
+                if is_json_field(field) {
+                    return Err(Error::Schema {
+                        message: format!(
+                            "A BITMAP index cannot be created on the whole-document lance.json field `{}`. Create a JSON-path scalar index for structured equality or range predicates, or use FTS for document search",
+                            field.name()
+                        ),
+                    });
+                }
                 Self::validate_index_type(field, "Bitmap", supported_bitmap_data_type)?;
                 Ok(Box::new(ScalarIndexParams::for_builtin(
                     BuiltinIndexType::Bitmap,
@@ -382,7 +449,9 @@ mod tests {
     use crate::connect;
     use crate::connection::ConnectBuilder;
     use crate::index::Index;
-    use crate::index::scalar::{BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder};
+    use crate::index::scalar::{
+        BTreeIndexBuilder, BitmapIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder,
+    };
     use crate::index::vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
     };
@@ -471,6 +540,240 @@ mod tests {
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_job_waits_for_local_build() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let job = table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        // Local jobs run in this process and have no server id.
+        assert_eq!(job.id(), None);
+        // The build runs as a task, so the index need not exist yet; it must
+        // once the job resolves.
+        job.wait().await.unwrap();
+        assert_eq!(table.list_indices().await.unwrap().len(), 1);
+        // Cancelling a finished job is a no-op.
+        job.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_validates_fts_input_before_starting_job() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch =
+            record_batch!(("id", Int32, [1, 2]), ("text", Utf8, ["alpha", "beta"])).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let missing = table
+            .create_index(&["missing"], Index::FTS(FtsIndexBuilder::default()))
+            .execute_async()
+            .await;
+        assert!(missing.is_err());
+
+        let invalid_type = table
+            .create_index(&["id"], Index::FTS(FtsIndexBuilder::default()))
+            .execute_async()
+            .await;
+        assert!(invalid_type.is_err());
+
+        let invalid_granularity = table
+            .create_index(
+                &["text"],
+                Index::FTS(
+                    FtsIndexBuilder::default()
+                        .document_granularity(DocumentGranularity::ListElement),
+                ),
+            )
+            .execute_async()
+            .await;
+        assert!(invalid_granularity.is_err());
+    }
+
+    /// Concurrent waiters, and a wait issued after the job settled, all
+    /// succeed once the build does.
+    #[tokio::test]
+    async fn test_execute_async_job_reports_success_to_every_waiter() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let job = Arc::new(
+            table
+                .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+                .execute_async()
+                .await
+                .unwrap(),
+        );
+        let waiters = (0..4)
+            .map(|_| {
+                let job = job.clone();
+                tokio::spawn(async move { job.wait().await })
+            })
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            waiter.await.unwrap().unwrap();
+        }
+        // A wait after the job settled still reports the same outcome.
+        job.wait().await.unwrap();
+        assert_eq!(table.list_indices().await.unwrap().len(), 1);
+    }
+
+    /// Every waiter sees a failure, not just the first: a waiter that missed
+    /// the outcome would be told the job succeeded.
+    #[tokio::test]
+    async fn test_execute_async_job_reports_failure_to_every_waiter() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        // Rebuilding the same index without replace fails once the build
+        // starts, so the failure reaches the job rather than execute_async.
+        let job = Arc::new(
+            table
+                .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+                .replace(false)
+                .execute_async()
+                .await
+                .unwrap(),
+        );
+        let waiters = (0..3)
+            .map(|_| {
+                let job = job.clone();
+                tokio::spawn(async move { job.wait().await })
+            })
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            waiter
+                .await
+                .unwrap()
+                .expect_err("every waiter must see the failure");
+        }
+        job.wait().await.expect_err("a later wait still fails");
+    }
+
+    /// A local failure keeps the error it failed with, so a caller can match on
+    /// the original variant rather than parse a message.
+    #[tokio::test]
+    async fn test_execute_async_failure_keeps_the_source_error() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let job = table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .replace(false)
+            .execute_async()
+            .await
+            .unwrap();
+
+        let crate::Error::JobFailed { failure, .. } = job.wait().await.unwrap_err() else {
+            panic!("a failed job reports JobFailed");
+        };
+        let source = failure.source.expect("a local failure carries its error");
+        assert_eq!(
+            failure.message.as_deref(),
+            Some(source.to_string()).as_deref()
+        );
+        // Nothing local can report these, so they must be absent rather than invented.
+        assert!(failure.phase.is_none());
+        assert!(failure.retryable.is_none());
+    }
+
+    /// Every waiter sees the cancellation, including ones that were already
+    /// waiting when the cancel landed.
+    #[tokio::test]
+    async fn test_execute_async_job_reports_cancellation_to_every_waiter() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let job = Arc::new(
+            table
+                .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+                .execute_async()
+                .await
+                .unwrap(),
+        );
+        // Cancel before yielding, so the build cannot have started and the
+        // outcome is always the cancellation.
+        job.cancel().await.unwrap();
+
+        let waiters = (0..2)
+            .map(|_| {
+                let job = job.clone();
+                tokio::spawn(async move { job.wait().await })
+            })
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            match waiter.await.unwrap() {
+                Err(crate::Error::JobCancelled { .. }) => {}
+                other => panic!("expected the cancellation, got {other:?}"),
+            }
+        }
+        match job.wait().await {
+            Err(crate::Error::JobCancelled { .. }) => {}
+            other => panic!("expected the cancellation, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_job_cancel_stops_local_build() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let job = table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        job.cancel().await.unwrap();
+        match job.wait().await {
+            Err(crate::Error::JobCancelled { .. }) => {}
+            // The build may finish before the abort lands.
+            Ok(()) => {}
+            other => panic!("unexpected job outcome: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1218,6 +1521,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_bitmap_index_rejects_lance_json() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![lance_arrow::json::json_field(
+            "metadata", true,
+        )]));
+        let table = conn
+            .create_empty_table("json_bitmap", schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let err = table
+            .create_index(&["metadata"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .expect_err("a whole-document lance.json field must not support a bitmap index");
+        let message = err.to_string();
+        assert!(
+            message.contains("lance.json"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("JSON-path scalar index"),
+            "unexpected error: {message}"
+        );
+        assert!(message.contains("FTS"), "unexpected error: {message}");
+    }
+
+    #[tokio::test]
     async fn test_create_label_list_index() {
         let conn = connect("memory://").execute().await.unwrap();
 
@@ -1362,16 +1694,57 @@ mod tests {
             .unwrap();
 
         table
-            .create_index(&["text"], Index::FTS(Default::default()))
+            .create_index(
+                &["text"],
+                Index::FTS(
+                    FtsIndexBuilder::default()
+                        .stem(false)
+                        .custom_stop_words(Some(vec!["cat".to_string()]))
+                        .block_size(256)
+                        .unwrap(),
+                ),
+            )
             .execute()
             .await
             .unwrap();
+        drop(table);
+        let table = conn.open_table("test_bitmap").execute().await.unwrap();
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::FTS);
         assert_eq!(index.columns, vec!["text".to_string()]);
         assert_eq!(index.name, "text_idx");
+        assert_eq!(index.index_version, Some(3));
+        let index_params: FtsIndexBuilder =
+            serde_json::from_str(index.index_details.as_deref().unwrap()).unwrap();
+        assert_eq!(index_params.posting_block_size(), 256);
+        assert_eq!(
+            serde_json::to_value(&index_params).unwrap()["custom_stop_words"],
+            serde_json::json!(["cat"])
+        );
+        assert_eq!(
+            table
+                .tokenize("cat dog", "text_idx")
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|token| token.text)
+                .collect::<Vec<_>>(),
+            vec!["dog"]
+        );
+
+        let batches = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("cat dog".to_string()))
+            .limit(120)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 40);
 
         let num_rows = 120;
         let stats = table.index_stats("text_idx").await.unwrap().unwrap();

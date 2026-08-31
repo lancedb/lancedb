@@ -7,8 +7,7 @@ from functools import cached_property
 from typing import List, Optional, Union
 
 import numpy as np
-
-from lancedb.pydantic import PYDANTIC_VERSION
+from pydantic import ConfigDict
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
@@ -48,16 +47,16 @@ class GeminiText(TextEmbeddingFunction):
 
     Parameters
     ----------
-    name: str, default "gemini-embedding-001"
+    name : str, default "gemini-embedding-001"
         The name of the model to use. Supported models include:
         - "gemini-embedding-001" (768 dimensions)
 
         Note: The legacy "models/embedding-001" format is also supported but
         "gemini-embedding-001" is recommended.
 
-    query_task_type: str, default "retrieval_query"
+    query_task_type : str, default "retrieval_query"
         Sets the task type for the queries.
-    source_task_type: str, default "retrieval_document"
+    source_task_type : str, default "retrieval_document"
         Sets the task type for ingestion.
 
     Examples
@@ -87,13 +86,7 @@ class GeminiText(TextEmbeddingFunction):
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
 
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            keep_untouched = (cached_property,)
-    else:
-        model_config = dict()
-        model_config["ignored_types"] = (cached_property,)
+    model_config = ConfigDict(ignored_types=(cached_property,))
 
     def ndims(self):
         if self.dim:

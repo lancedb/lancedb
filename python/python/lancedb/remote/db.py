@@ -7,7 +7,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
 from urllib.parse import urlparse
 import warnings
 
@@ -23,6 +23,12 @@ import pyarrow as pa
 
 from ..common import DATA
 from ..db import DBConnection, LOOP
+from ..functions import FunctionVersion, UdfDefinition
+from ..job import AsyncJob, Job
+from ..materialized_view import MaterializedView, SelectArg
+
+if TYPE_CHECKING:
+    from .._lancedb import JobDescription, JobInfo
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
@@ -415,6 +421,11 @@ class RemoteDBConnection(DBConnection):
 
         if namespace_path is None:
             namespace_path = []
+        if storage_options is not None:
+            logging.info(
+                "storage_options is ignored in LanceDb Cloud"
+                " (storage is managed; set storage_options on connect() instead)"
+            )
         if index_cache_size is not None:
             logging.info(
                 "index_cache_size is ignored in LanceDb Cloud"
@@ -639,6 +650,32 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
+    def create_materialized_view(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> MaterializedView:
+        raise NotImplementedError(
+            "materialized views are supported only on local databases"
+        )
+
+    @override
+    def open_materialized_view(self, name: str) -> MaterializedView:
+        raise NotImplementedError(
+            "materialized views are supported only on local databases"
+        )
+
+    @override
+    def list_materialized_views(self) -> List[str]:
+        raise NotImplementedError(
+            "materialized views are supported only on local databases"
+        )
+
+    @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the database.
 
@@ -653,6 +690,16 @@ class RemoteDBConnection(DBConnection):
         if namespace_path is None:
             namespace_path = []
         LOOP.run(self._conn.drop_table(name, namespace_path=namespace_path))
+
+    @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def rename_table(
@@ -683,6 +730,55 @@ class RemoteDBConnection(DBConnection):
                 new_namespace_path=new_namespace_path,
             )
         )
+
+    @override
+    def job(self, job_id: str) -> Job:
+        """A [Job][lancedb.job.Job] handle for a server-side job by id.
+
+        The handle is constructed without a server round trip; an unknown id
+        surfaces when the handle is used. Dropping the handle has no effect
+        on the job itself.
+        """
+        return Job(self._conn.job(job_id))
+
+    @override
+    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
+        return Job(LOOP.run(self._conn.create_function_async(definition)))
+
+    @override
+    def get_function(self, name: str, *, version: str) -> FunctionVersion:
+        return LOOP.run(self._conn.get_function(name, version=version))
+
+    @override
+    def list_jobs(self) -> List["JobInfo"]:
+        """List server-side jobs across the database's tables."""
+        return LOOP.run(self._conn.list_jobs())
+
+    @override
+    def get_job(self, job_id: str) -> Optional["JobDescription"]:
+        """Describe a single server-side job by id.
+
+        Returns None when the server has no such job.
+        """
+        return LOOP.run(self._conn.get_job(job_id))
+
+    @override
+    def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation of a server-side job by id.
+
+        Returns True if the server accepted the cancellation, False if no
+        such job exists. Cancelling an already-terminal job is a no-op
+        success.
+        """
+        return LOOP.run(self._conn.cancel_job(job_id))
+
+    @override
+    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
+        """The lifecycle event history of a server-side job, as Arrow batches.
+
+        Lists history across all jobs when `job_id` is None.
+        """
+        return LOOP.run(self._conn.job_history(job_id))
 
     @override
     def namespace_client(self) -> LanceNamespace:

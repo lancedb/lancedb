@@ -169,6 +169,39 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn create_index_async(
+        &self,
+        index: Option<&Index>,
+        column: String,
+        replace: Option<bool>,
+        wait_timeout_s: Option<i64>,
+        name: Option<String>,
+        train: Option<bool>,
+    ) -> napi::Result<crate::job::Job> {
+        let lancedb_index = if let Some(index) = index {
+            index.consume()?
+        } else {
+            lancedb::index::Index::Auto
+        };
+        let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
+        if let Some(replace) = replace {
+            builder = builder.replace(replace);
+        }
+        if let Some(timeout) = wait_timeout_s {
+            builder =
+                builder.wait_timeout(std::time::Duration::from_secs(timeout.try_into().unwrap()));
+        }
+        if let Some(name) = name {
+            builder = builder.name(name);
+        }
+        if let Some(train) = train {
+            builder = builder.train(train);
+        }
+        let job = builder.execute_async().await.default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn drop_index(&self, index_name: String) -> napi::Result<()> {
         self.inner_ref()?
             .drop_index(&index_name)
@@ -245,6 +278,13 @@ impl Table {
         Ok(Query::new(self.inner_ref()?.query()))
     }
 
+    /// Return a read-only table handle pinned to the current query revision.
+    #[napi(catch_unwind)]
+    pub async fn query_snapshot(&self) -> napi::Result<Self> {
+        let snapshot = self.inner_ref()?.query_snapshot().await.default_error()?;
+        Ok(Self::new(snapshot))
+    }
+
     #[napi(catch_unwind)]
     pub fn take_offsets(&self, offsets: Vec<i64>) -> napi::Result<TakeQuery> {
         Ok(TakeQuery::new(
@@ -306,10 +346,66 @@ impl Table {
         let transforms = NewColumnTransform::SqlExpressions(transforms);
         let res = self
             .inner_ref()?
-            .add_columns(transforms, None)
+            .add_columns()
+            .transform(transforms)
+            .execute()
             .await
             .default_error()?;
         Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn add_computed_columns(
+        &self,
+        columns: Vec<AddColumnsSql>,
+    ) -> napi::Result<AddColumnsResult> {
+        let table = self.inner_ref()?;
+        let mut builder = table.add_columns();
+        for column in columns {
+            builder = builder.computed(column.name, column.value_sql);
+        }
+        let res = builder.execute().await.default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn refresh_column(&self, column: String) -> napi::Result<RefreshColumnResult> {
+        let res = self
+            .inner_ref()?
+            .refresh_column(column)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn refresh_column_async(&self, column: String) -> napi::Result<crate::job::Job> {
+        let job = self
+            .inner_ref()?
+            .refresh_column_async(column)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn refresh_materialized_view(
+        &self,
+        full: Option<bool>,
+        source_version: Option<i64>,
+    ) -> napi::Result<RefreshMaterializedViewResult> {
+        let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
+            .await
+            .default_error()?;
+        let mut builder = view.refresh().full(full.unwrap_or(false));
+        if let Some(version) = source_version {
+            let version = u64::try_from(version).map_err(|_| {
+                napi::Error::from_reason("sourceVersion must be a non-negative integer")
+            })?;
+            builder = builder.source_version(version);
+        }
+        let result = builder.execute().await.default_error()?;
+        Ok(result.into())
     }
 
     #[napi(catch_unwind)]
@@ -323,7 +419,9 @@ impl Table {
         let transforms = NewColumnTransform::AllNulls(schema);
         let res = self
             .inner_ref()?
-            .add_columns(transforms, None)
+            .add_columns()
+            .transform(transforms)
+            .execute()
             .await
             .default_error()?;
         Ok(res.into())
@@ -427,12 +525,46 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn flush_lsm(&self) -> napi::Result<()> {
+        self.inner_ref()?.flush_lsm().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn compact_lsm(&self) -> napi::Result<()> {
+        self.inner_ref()?.compact_lsm().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn checkpoint_lsm(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkpoint_lsm().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn get_lsm_stats(
+        &self,
+        include_generation_rows: bool,
+    ) -> napi::Result<Option<LsmStats>> {
+        let stats = self
+            .inner_ref()?
+            .get_lsm_stats(include_generation_rows)
+            .await
+            .default_error()?;
+        Ok(stats.map(LsmStats::from))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn version(&self) -> napi::Result<i64> {
         self.inner_ref()?
             .version()
             .await
             .map(|val| val as i64)
             .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn checkout_current(&self) -> napi::Result<Self> {
+        let table = self.inner_ref()?.checkout_current().await.default_error()?;
+        Ok(Self::new(table))
     }
 
     #[napi(catch_unwind)]
@@ -735,7 +867,8 @@ pub struct LsmWriteSpec {
     pub column: Option<String>,
     /// Bucket variant: the number of buckets, in `[1, 1024]`.
     pub num_buckets: Option<u32>,
-    /// Names of indexes the MemWAL should keep up to date during writes.
+    /// Indexes the MemWAL keeps up to date. Omitted resolves every
+    /// maintainable index on install; an empty array means none.
     pub maintained_indexes: Option<Vec<String>>,
     /// Default `ShardWriter` configuration recorded in the MemWAL index.
     pub writer_config_defaults: Option<HashMap<String, String>>,
@@ -745,7 +878,6 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
     type Error = napi::Error;
 
     fn try_from(value: LsmWriteSpec) -> napi::Result<Self> {
-        let maintained = value.maintained_indexes.unwrap_or_default();
         let writer_config_defaults = value.writer_config_defaults.unwrap_or_default();
         let spec = match value.spec_type.as_str() {
             "bucket" => {
@@ -772,7 +904,7 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
             }
         };
         Ok(spec
-            .with_maintained_indexes(maintained)
+            .with_maintained_indexes(value.maintained_indexes)
             .with_writer_config_defaults(writer_config_defaults))
     }
 }
@@ -790,7 +922,7 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
                 spec_type: "bucket".to_string(),
                 column: Some(column),
                 num_buckets: Some(num_buckets),
-                maintained_indexes: Some(maintained_indexes),
+                maintained_indexes,
                 writer_config_defaults: Some(writer_config_defaults),
             },
             Native::Identity {
@@ -801,7 +933,7 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
                 spec_type: "identity".to_string(),
                 column: Some(column),
                 num_buckets: None,
-                maintained_indexes: Some(maintained_indexes),
+                maintained_indexes,
                 writer_config_defaults: Some(writer_config_defaults),
             },
             Native::Unsharded {
@@ -811,9 +943,132 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
                 spec_type: "unsharded".to_string(),
                 column: None,
                 num_buckets: None,
-                maintained_indexes: Some(maintained_indexes),
+                maintained_indexes,
                 writer_config_defaults: Some(writer_config_defaults),
             },
+        }
+    }
+}
+
+/// One flushed L0 generation.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct GenerationStats {
+    /// The generation number. Increases as memtables are sealed into L0.
+    pub generation: i64,
+    /// On-disk size of the generation.
+    pub bytes: i64,
+    /// Present only when `includeGenerationRows` was requested. Off by default
+    /// because each count opens an uncached Lance dataset.
+    pub rows: Option<i64>,
+}
+
+impl From<lancedb::table::GenerationStats> for GenerationStats {
+    fn from(g: lancedb::table::GenerationStats) -> Self {
+        Self {
+            generation: g.generation as i64,
+            bytes: g.bytes as i64,
+            rows: g.rows.map(|r| r as i64),
+        }
+    }
+}
+
+/// One in-memory memtable.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct MemtableStats {
+    /// The generation this memtable will become once sealed.
+    pub generation: i64,
+    /// Rows currently buffered.
+    pub rows: i64,
+    /// Estimated in-memory size.
+    pub bytes: i64,
+    /// Record batches currently buffered.
+    pub batches: i64,
+    /// Names of the indexes this memtable carries. An absent name is the whole
+    /// answer to "why is my fresh-tier search on that column brute-force".
+    pub indexes: Vec<String>,
+}
+
+impl From<lancedb::table::MemtableStats> for MemtableStats {
+    fn from(m: lancedb::table::MemtableStats) -> Self {
+        Self {
+            generation: m.generation as i64,
+            rows: m.rows as i64,
+            bytes: m.bytes as i64,
+            batches: m.batches as i64,
+            indexes: m.indexes,
+        }
+    }
+}
+
+/// Live state of one bucket. A table is N buckets on one node; flattening to a
+/// single number hides the one hot bucket that is usually why someone opened
+/// this endpoint.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct BucketStats {
+    /// The shard this bucket writes.
+    pub shard_id: String,
+    /// `"Active"` or `"Sealed"` (drop-table 2PC in flight).
+    pub status: String,
+    /// Epoch of the writer that currently owns the shard.
+    pub writer_epoch: i64,
+    /// Version of the shard manifest these numbers were read from.
+    pub manifest_version: i64,
+    /// The generation the active memtable will become.
+    pub current_generation: i64,
+    /// WAL position replay resumes from.
+    pub replay_after_wal_entry_position: i64,
+    /// Highest WAL position the writer has seen. The difference against
+    /// `replayAfterWalEntryPosition` is the WAL lag.
+    pub wal_entry_position_last_seen: i64,
+    /// Flushed L0 generations not yet merged into the base table.
+    pub generations: Vec<GenerationStats>,
+    /// Whether a pass owns this bucket's compaction latch right now. Says *a*
+    /// driver is running, not *whose*, and the latch is held from dispatch —
+    /// including while the pass queues for a pod-wide compactor permit. Read it
+    /// as "do not pile on", never as "mine is progressing".
+    pub compacting: bool,
+    /// Oldest first, active last. Absent for a `"Sealed"` bucket, whose
+    /// in-memory state is torn down.
+    pub memtables: Option<Vec<MemtableStats>>,
+}
+
+impl From<lancedb::table::BucketStats> for BucketStats {
+    fn from(b: lancedb::table::BucketStats) -> Self {
+        Self {
+            shard_id: b.shard_id,
+            status: b.status,
+            writer_epoch: b.writer_epoch as i64,
+            manifest_version: b.manifest_version as i64,
+            current_generation: b.current_generation as i64,
+            replay_after_wal_entry_position: b.replay_after_wal_entry_position as i64,
+            wal_entry_position_last_seen: b.wal_entry_position_last_seen as i64,
+            generations: b.generations.into_iter().map(Into::into).collect(),
+            compacting: b.compacting,
+            memtables: b
+                .memtables
+                .map(|ms| ms.into_iter().map(Into::into).collect()),
+        }
+    }
+}
+
+/// Live per-bucket LSM state, as returned by `Table#getLsmStats`.
+///
+/// Nothing here is derived: sums and differences (total L0 bytes, WAL lag) are
+/// the caller's to compute.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct LsmStats {
+    /// One entry per bucket backing this table.
+    pub buckets: Vec<BucketStats>,
+}
+
+impl From<lancedb::table::LsmStats> for LsmStats {
+    fn from(stats: lancedb::table::LsmStats) -> Self {
+        Self {
+            buckets: stats.buckets.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -1006,7 +1261,10 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
 
 #[napi(object)]
 pub struct TableStatistics {
-    /// The total number of bytes in the table
+    /// The total size, in bytes, of the table's data files, index files, and
+    /// overlay files
+    ///
+    /// Read from the manifest, so this excludes deletion files and manifests.
     pub total_bytes: i64,
 
     /// The number of rows in the table
@@ -1154,6 +1412,46 @@ impl From<lancedb::table::MergeResult> for MergeResult {
 #[napi(object)]
 pub struct AddColumnsResult {
     pub version: i64,
+}
+
+#[napi(object)]
+pub struct RefreshColumnResult {
+    pub rows_filled: i64,
+    pub version: i64,
+}
+
+#[napi(object)]
+pub struct RefreshMaterializedViewResult {
+    /// How the view was brought up to date: "rebuild", "incremental" or "no_op".
+    pub mode: String,
+    pub rows_written: i64,
+    pub source_version: i64,
+    pub version: i64,
+}
+
+impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
+    fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
+        let mode = match value.mode {
+            lancedb::RefreshMode::Rebuild => "rebuild",
+            lancedb::RefreshMode::Incremental => "incremental",
+            lancedb::RefreshMode::NoOp => "no_op",
+        };
+        Self {
+            mode: mode.to_string(),
+            rows_written: value.rows_written as i64,
+            source_version: value.source_version as i64,
+            version: value.version as i64,
+        }
+    }
+}
+
+impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
+    fn from(value: lancedb::table::RefreshColumnResult) -> Self {
+        Self {
+            rows_filled: value.rows_filled as i64,
+            version: value.version as i64,
+        }
+    }
 }
 
 impl From<lancedb::table::AddColumnsResult> for AddColumnsResult {
@@ -1365,18 +1663,18 @@ impl Branches {
     }
 
     #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
-    pub async fn merge(
+    pub async fn cherry_pick(
         &self,
         from_branch: String,
         dry_run: Option<bool>,
     ) -> napi::Result<serde_json::Value> {
         let result = self
             .inner
-            .merge_branch(&from_branch, dry_run.unwrap_or(false))
+            .cherry_pick(&from_branch, dry_run.unwrap_or(false))
             .await
             .default_error()?;
         serde_json::to_value(result).map_err(|err| {
-            napi::Error::from_reason(format!("failed to serialize branch merge result: {err}"))
+            napi::Error::from_reason(format!("failed to serialize cherry-pick result: {err}"))
         })
     }
 }

@@ -69,14 +69,34 @@ abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 
 Add new columns with defined values.
 
+The `{ computed }` form stores the expression rather than evaluating it
+now: the column is committed with no values, and rows get them from
+[Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
+large table as on an empty one.
+
+A refresh does not revisit rows it has already filled, so mutating an
+input leaves the value computed at fill time; recomputing means dropping
+the column and declaring it again. While a declaration reads a column,
+that column cannot be renamed, retyped or dropped.
+
+On LanceDB Cloud and Enterprise the expression is planned by the
+server, and the refresh runs as a server job -- see
+[Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+
 #### Parameters
 
-* **newColumnTransforms**: `Field`&lt;`any`&gt; \| `Field`&lt;`any`&gt;[] \| `Schema`&lt;`any`&gt; \| [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+* **newColumnTransforms**:
+    \| `Field`&lt;`any`&gt;
+    \| `Field`&lt;`any`&gt;[]
+    \| `Schema`&lt;`any`&gt;
+    \| [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+    \| `object`
     Either:
     - An array of objects with column names and SQL expressions to calculate values
     - A single Arrow Field defining one column with its data type (column will be initialized with null values)
     - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
     - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
+    - `{ computed }`, declaring columns defined by a SQL expression whose type and inputs are derived from it
 
 #### Returns
 
@@ -84,6 +104,13 @@ Add new columns with defined values.
 
 A promise that resolves to an object
 containing the new version number of the table after adding the columns.
+
+#### Example
+
+```ts
+await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+const { rowsFilled } = await table.refreshColumn("doubled");
+```
 
 ***
 
@@ -186,6 +213,39 @@ version of the table.
 
 ***
 
+### checkpointLsm()
+
+```ts
+abstract checkpointLsm(): Promise<void>
+```
+
+Converge this table's LSM write path into its base table.
+
+Seals once, then triggers compaction and polls until the L0 that existed
+at the start is gone. The target set is fixed at the start, so
+generations created *during* the checkpoint are ignored — that is what
+lets it terminate under write load, and what makes it best-effort: it
+converges the fresh tier as of some instant. Idempotent, abandonable at
+any point, and safe to run on a cadence.
+
+There is no liveness bound — the compactor pool is shared across tables,
+so a checkpoint queued behind unrelated work looks exactly like one that
+is merging. The caller owns the deadline.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Example
+
+```ts
+const before = await table.getLsmStats();
+await table.checkpointLsm();
+const after = await table.getLsmStats();
+```
+
+***
+
 ### close()
 
 ```ts
@@ -216,6 +276,24 @@ When an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) is installed, `mergeInsert
 shard writers and caches them for reuse across calls. This closes them,
 flushing pending data; writers reopen lazily on the next `mergeInsert`.
 It is a no-op when no writers are cached.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### compactLsm()
+
+```ts
+abstract compactLsm(): Promise<void>
+```
+
+Trigger a background L0 → base compaction pass per bucket.
+
+Returns once the passes are *dispatched*, not once they finish — watch
+[Table#getLsmStats](Table.md#getlsmstats) for progress, or use
+[Table#checkpointLsm](Table.md#checkpointlsm) to wait for convergence.
 
 #### Returns
 
@@ -292,6 +370,29 @@ await table.createIndex("vector", {
 // Or create a Scalar index
 await table.createIndex("my_float_col");
 ```
+
+***
+
+### createIndexAsync()
+
+```ts
+abstract createIndexAsync(column, options?): Promise<Job>
+```
+
+Create an index, returning a handle to the indexing job.
+
+The job may already be complete when returned; callers must not assume
+the index exists until [Job.wait](Job.md#wait) resolves.
+
+#### Parameters
+
+* **column**: `string`
+
+* **options?**: `Partial`&lt;[`IndexOptions`](../interfaces/IndexOptions.md)&gt;
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 
@@ -398,6 +499,48 @@ Drop an index from the table.
 
 ***
 
+### flushLsm()
+
+```ts
+abstract flushLsm(): Promise<void>
+```
+
+Seal every bucket's active memtable into a new L0 generation.
+
+Returns once the seal is committed. Sealing an empty memtable is a no-op,
+so this is safe to call repeatedly.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### getLsmStats()
+
+```ts
+abstract getLsmStats(includeGenerationRows?): Promise<undefined | LsmStats>
+```
+
+Read live per-bucket LSM state.
+
+Answers "how far behind is my fresh tier", "which bucket is hot", and
+"why is my fresh-tier vector search brute-force". Mutates no table state.
+
+Resolves to `undefined` only when the LSM write path is not enabled.
+
+#### Parameters
+
+* **includeGenerationRows?**: `boolean`
+    Also count rows per L0 generation.
+    Off by default because each count opens an uncached Lance dataset.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`LsmStats`](../interfaces/LsmStats.md)&gt;
+
+***
+
 ### getLsmWriteSpec()
 
 ```ts
@@ -408,9 +551,10 @@ Read the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) currently installed on th
 
 Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
 spec has been set, or it was removed with [Table#unsetLsmWriteSpec](Table.md#unsetlsmwritespec)).
-The returned spec — including its `maintainedIndexes` and
-`writerConfigDefaults` — mirrors what was passed to
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec).
+The returned spec mirrors what was passed to
+[Table#setLsmWriteSpec](Table.md#setlsmwritespec), except that `maintainedIndexes` always
+reports the concrete list resolved when the spec was set — `undefined`
+never round-trips.
 
 #### Returns
 
@@ -694,6 +838,67 @@ for await (const batch of table.query()) {
 
 ***
 
+### refreshColumn()
+
+```ts
+abstract refreshColumn(column): Promise<RefreshColumnResult>
+```
+
+Fill the rows of a computed column that hold no value yet.
+
+Rows appended since the last refresh are filled by the next one; rows
+already filled are left as they are, so the call is idempotent and does
+not observe a mutated input. Local tables only: a remote refresh runs
+as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+
+#### Parameters
+
+* **column**: `string`
+    The name of the computed column to fill.
+
+#### Returns
+
+`Promise`&lt;[`RefreshColumnResult`](../interfaces/RefreshColumnResult.md)&gt;
+
+A promise that resolves to the
+number of rows filled and the new version number of the table.
+
+***
+
+### refreshColumnAsync()
+
+```ts
+abstract refreshColumnAsync(column): Promise<Job>
+```
+
+Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
+job instead of blocking until it completes.
+
+The job may already be complete when returned; callers must not assume
+the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
+an unknown column, or one that is not computed -- rejects here rather
+than failing the job. On local tables the job runs in-process; on
+LanceDB Cloud and Enterprise it is the server's backfill job.
+
+#### Parameters
+
+* **column**: `string`
+    The name of the computed column to fill.
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+#### Example
+
+```ts
+const job = await table.refreshColumnAsync("doubled");
+await job.wait();
+console.log(await job.status()); // "finished"
+```
+
+***
+
 ### restore()
 
 ```ts
@@ -737,7 +942,7 @@ Get the schema of the table.
 abstract search(
    query,
    queryType?,
-   ftsColumns?): Query | VectorQuery
+   ftsColumns?): Query | VectorQuery | AutoQuery
 ```
 
 Create a search query to find the nearest neighbors
@@ -759,7 +964,7 @@ of the given query
 
 #### Returns
 
-[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md)
+[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md) \| [`AutoQuery`](AutoQuery.md)
 
 ***
 
@@ -782,6 +987,11 @@ LSM-style write path for future `mergeInsert` calls.
 All variants require the table to have an unenforced primary key
 ([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
 requires it to be the single column being bucketed.
+
+Omitting `maintainedIndexes` maintains every index on the table, resolved
+here, failing if one cannot be maintained — name them to install anyway.
+Naming them pins an exact set, and a still-building index is rejected
+rather than quietly omitted.
 
 #### Parameters
 
@@ -1081,6 +1291,18 @@ abstract updateFieldMetadata(updates): Promise<UpdateFieldMetadataResult>
 ```
 
 Update per-field (column) metadata.
+
+The following keys are treated specially, by convention, and should be
+used when appropriate:
+
+- `lancedb:description`: for a human-readable description of a field.
+- `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+  names the tag category; e.g. `lancedb:tag:model: "clip"`.
+- `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+  `feature_v2` might be in the same logical column.
+- `lancedb:status`: for status options (`production`, `candidate`,
+  `deprecated`, `archived`) to designate the current life cycle state of
+  this column.
 
 #### Parameters
 

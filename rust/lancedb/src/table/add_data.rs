@@ -60,6 +60,7 @@ pub struct AddDataBuilder {
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     pub(crate) progress_callback: Option<ProgressCallback>,
     pub(crate) write_parallelism: Option<usize>,
+    pub(crate) allow_external_blob_outside_bases: bool,
 }
 
 impl std::fmt::Debug for AddDataBuilder {
@@ -87,6 +88,7 @@ impl AddDataBuilder {
             embedding_registry,
             progress_callback: None,
             write_parallelism: None,
+            allow_external_blob_outside_bases: false,
         }
     }
 
@@ -138,6 +140,16 @@ impl AddDataBuilder {
     /// Setting this to `1` disables parallel writes.
     pub fn write_parallelism(mut self, parallelism: usize) -> Self {
         self.write_parallelism = Some(parallelism);
+        self
+    }
+
+    /// Store blob URIs that sit outside registered blob bases.
+    ///
+    /// The row keeps a reference, so the object has to stay readable.
+    /// [`crate::table::Table::fetch_blobs`] reads from that location.
+    /// Defaults to `false`. Local tables only.
+    pub fn allow_external_blob_outside_bases(mut self, allow: bool) -> Self {
+        self.allow_external_blob_outside_bases = allow;
         self
     }
 
@@ -199,6 +211,7 @@ impl AddDataBuilder {
             write_options: self.write_options,
             mode: self.mode,
             tracker,
+            allow_external_blob_outside_bases: self.allow_external_blob_outside_bases,
         })
     }
 }
@@ -212,6 +225,7 @@ pub struct PreprocessingOutput {
     pub write_options: WriteOptions,
     pub mode: AddDataMode,
     pub tracker: Option<Arc<WriteProgressTracker>>,
+    pub allow_external_blob_outside_bases: bool,
 }
 
 /// Check that the input schema is valid for insert.
@@ -576,10 +590,12 @@ mod tests {
 
         // Add a new physical column AFTER the embedding column.
         table
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![("score".into(), "42.0".into())]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "score".into(),
+                "42.0".into(),
+            )]))
+            .execute()
             .await
             .unwrap();
 
@@ -683,7 +699,9 @@ mod tests {
             true,
         )]));
         table
-            .add_columns(NewColumnTransform::AllNulls(nested_schema), None)
+            .add_columns()
+            .transform(NewColumnTransform::AllNulls(nested_schema))
+            .execute()
             .await
             .unwrap();
 

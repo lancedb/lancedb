@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { tableFromIPC } from "apache-arrow";
 import {
   Data,
   SchemaLike,
@@ -15,18 +16,29 @@ import {
   makeEmptyTable,
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import {
+  MaterializedView,
+  MaterializedViewSelect,
+  normalizeSelect,
+  validateNonNegativeInteger,
+} from "./materialized_view";
 import { Connection as LanceDbConnection } from "./native";
 import type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
   DropNamespaceResponse,
+  Job,
+  JobDescription,
+  JobInfo,
   ListNamespacesResponse,
+  ListTablesResponse,
 } from "./native";
 export type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
   DropNamespaceResponse,
   ListNamespacesResponse,
+  ListTablesResponse,
 };
 import { sanitizeTable } from "./sanitize";
 import { LocalTable, Table } from "./table";
@@ -124,6 +136,10 @@ export interface OpenTableOptions {
   indexCacheSize?: number;
 }
 
+/**
+ * @deprecated Use {@link ListTablesOptions} with {@link Connection.listTables}
+ * instead.
+ */
 export interface TableNamesOptions {
   /**
    * If present, only return names that come lexicographically after the
@@ -134,6 +150,24 @@ export interface TableNamesOptions {
    */
   startAfter?: string;
   /** An optional limit to the number of results to return. */
+  limit?: number;
+}
+
+export interface ListTablesOptions {
+  /**
+   * Token from a previous response, to resume listing where it left off.
+   *
+   * The token is opaque: it carries whatever the database needs to resume, and
+   * callers should not construct or interpret one.
+   */
+  pageToken?: string;
+  /**
+   * An upper bound on how many tables to return.
+   *
+   * A page may hold fewer than this and still not be the last one, so keep
+   * going while the response carries a page token rather than while pages are
+   * full.
+   */
   limit?: number;
 }
 
@@ -221,6 +255,7 @@ export abstract class Connection {
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point (backwards compatibility)
    *
+   * @deprecated Use {@link Connection.listTables} instead.
    */
   abstract tableNames(options?: Partial<TableNamesOptions>): Promise<string[]>;
   /**
@@ -231,6 +266,7 @@ export abstract class Connection {
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point
    *
+   * @deprecated Use {@link Connection.listTables} instead.
    */
   abstract tableNames(
     namespacePath?: string[],
@@ -238,11 +274,86 @@ export abstract class Connection {
   ): Promise<string[]>;
 
   /**
+   * List a page of the tables in this database.
+   *
+   * To retrieve the tables after the page, pass the `pageToken` the response
+   * carries back in. A page can be shorter than `limit` without being the last
+   * one, so walk until a response carries no page token:
+   *
+   * ```ts
+   * const names = [];
+   * let pageToken = undefined;
+   * do {
+   *   const page = await conn.listTables({ pageToken, limit: 100 });
+   *   names.push(...page.tables);
+   *   pageToken = page.pageToken;
+   * } while (pageToken);
+   * ```
+   *
+   * @param {Partial<ListTablesOptions>} options - Pagination options
+   *   (`pageToken`, `limit`).
+   * @returns {Promise<ListTablesResponse>} A page of table names and an
+   *   optional token for the tables after it.
+   */
+  abstract listTables(
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse>;
+  /**
+   * List a page of the tables in this database.
+   *
+   * @param {string[]} namespacePath - The namespace path to list tables from
+   *   (defaults to root namespace)
+   * @param {Partial<ListTablesOptions>} options - Pagination options
+   *   (`pageToken`, `limit`).
+   * @returns {Promise<ListTablesResponse>} A page of table names and an
+   *   optional token for the tables after it.
+   */
+  abstract listTables(
+    namespacePath?: string[],
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse>;
+
+  /**
    * Open a table in the database.
    * @param {string} name - The name of the table
    * @param {string[]} namespacePath - The namespace path of the table (defaults to root namespace)
    * @param {Partial<OpenTableOptions>} options - Additional options
    */
+  /**
+   * Define a materialized view named `name` over the table `source`.
+   *
+   * The view is created empty, with the query recorded in its schema
+   * metadata; `view.refresh()` computes the rows. The view is a normal
+   * table: it can be queried, indexed and searched, and it appears in
+   * `tableNames`. The source table must have stable row ids (create it with
+   * the `newTableEnableStableRowIds` storage option); they keep the view's
+   * provenance valid across source compactions and cannot be enabled after
+   * a table exists. Local databases only.
+   */
+  abstract createMaterializedView(
+    name: string,
+    source: string,
+    options?: {
+      select?: MaterializedViewSelect;
+      where?: string;
+      limit?: number;
+    },
+  ): Promise<MaterializedView>;
+
+  /**
+   * Open the materialized view named `name`.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract openMaterializedView(name: string): Promise<MaterializedView>;
+
+  /**
+   * The names of the materialized views in this database.
+   *
+   * Found by reading every table's schema, so this costs an open per table.
+   */
+  abstract listMaterializedViews(): Promise<string[]>;
+
   abstract openTable(
     name: string,
     namespacePath?: string[],
@@ -322,6 +433,14 @@ export abstract class Connection {
    * @param {string[]} namespacePath The namespace path of the table (defaults to root namespace).
    */
   abstract dropTable(name: string, namespacePath?: string[]): Promise<void>;
+
+  /**
+   * Start dropping a table and return its cleanup job.
+   *
+   * The table may become unavailable before its data files are removed. Wait
+   * on the returned job to know when cleanup has finished.
+   */
+  abstract dropTableAsync(name: string, namespacePath?: string[]): Promise<Job>;
 
   /**
    * Drop all tables in the database.
@@ -436,6 +555,40 @@ export abstract class Connection {
     newName: string,
     options?: RenameTableOptions,
   ): Promise<void>;
+
+  /**
+   * A {@link Job} handle for a server-side job by id.
+   *
+   * The handle is constructed without a server round trip; an unknown id
+   * surfaces when the handle is used. Dropping the handle has no effect on
+   * the job itself.
+   */
+  abstract job(jobId: string): Job;
+
+  /** List server-side jobs across the database's tables. */
+  abstract listJobs(): Promise<JobInfo[]>;
+
+  /**
+   * Describe a single server-side job by id.
+   *
+   * Resolves to `null` when the server has no such job.
+   */
+  abstract getJob(jobId: string): Promise<JobDescription | null>;
+
+  /**
+   * Request cancellation of a server-side job by id.
+   *
+   * Resolves to true if the server accepted the cancellation, false if no
+   * such job exists. Cancelling an already-terminal job is a no-op success.
+   */
+  abstract cancelJob(jobId: string): Promise<boolean>;
+
+  /**
+   * The lifecycle event history of a server-side job, as an Arrow table.
+   *
+   * Lists history across all jobs when `jobId` is omitted.
+   */
+  abstract jobHistory(jobId?: string): Promise<ArrowTable>;
 }
 
 /** @hideconstructor */
@@ -482,6 +635,54 @@ export class LocalConnection extends Connection {
       namespacePath ?? [],
       tableNamesOptions?.startAfter,
       tableNamesOptions?.limit,
+    );
+  }
+
+  async createMaterializedView(
+    name: string,
+    source: string,
+    options?: {
+      select?: MaterializedViewSelect;
+      where?: string;
+      limit?: number;
+    },
+  ): Promise<MaterializedView> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    const innerTable = await this.inner.createMaterializedView(
+      name,
+      source,
+      normalizeSelect(options?.select),
+      options?.where,
+      options?.limit,
+    );
+    return new MaterializedView(new LocalTable(innerTable));
+  }
+
+  async openMaterializedView(name: string): Promise<MaterializedView> {
+    const innerTable = await this.inner.openMaterializedView(name);
+    return new MaterializedView(new LocalTable(innerTable));
+  }
+
+  async listMaterializedViews(): Promise<string[]> {
+    return await this.inner.listMaterializedViews();
+  }
+
+  async listTables(
+    namespacePathOrOptions?: string[] | Partial<ListTablesOptions>,
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse> {
+    // Detect if first argument is namespacePath array or options object
+    const namespacePath = Array.isArray(namespacePathOrOptions)
+      ? namespacePathOrOptions
+      : undefined;
+    const listTablesOptions = Array.isArray(namespacePathOrOptions)
+      ? options
+      : namespacePathOrOptions;
+
+    return this.inner.listTables(
+      namespacePath ?? [],
+      listTablesOptions?.pageToken,
+      listTablesOptions?.limit,
     );
   }
 
@@ -667,6 +868,10 @@ export class LocalConnection extends Connection {
     return this.inner.dropTable(name, namespacePath ?? []);
   }
 
+  async dropTableAsync(name: string, namespacePath?: string[]): Promise<Job> {
+    return this.inner.dropTableAsync(name, namespacePath ?? []);
+  }
+
   async dropAllTables(namespacePath?: string[]): Promise<void> {
     return this.inner.dropAllTables(namespacePath ?? []);
   }
@@ -721,6 +926,30 @@ export class LocalConnection extends Connection {
       options?.namespacePath ?? [],
       options?.newNamespacePath,
     );
+  }
+
+  job(jobId: string): Job {
+    return this.inner.job(jobId);
+  }
+
+  async listJobs(): Promise<JobInfo[]> {
+    return this.inner.listJobs();
+  }
+
+  async getJob(jobId: string): Promise<JobDescription | null> {
+    return this.inner.getJob(jobId);
+  }
+
+  async cancelJob(jobId: string): Promise<boolean> {
+    return this.inner.cancelJob(jobId);
+  }
+
+  async jobHistory(jobId?: string): Promise<ArrowTable> {
+    const buf = await this.inner.jobHistory(jobId);
+    if (buf.length === 0) {
+      return new ArrowTable();
+    }
+    return tableFromIPC(buf);
   }
 }
 

@@ -38,13 +38,18 @@ from lance_namespace_urllib3_client.models.query_table_request_vector import (
     QueryTableRequestVector,
 )
 from lance_namespace_urllib3_client.models.string_fts_query import StringFtsQuery
-from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from lance_namespace.errors import (
+    NamespaceNotEmptyError,
+    NamespaceNotFoundError,
+    TableNotFoundError,
+)
 from lancedb._lancedb import (
     connect_namespace as _connect_namespace,
     connect_namespace_client as _connect_namespace_client,
 )
 from lancedb.background_loop import LOOP
 from lancedb.db import AsyncConnection, DBConnection
+from lancedb.job import AsyncJob, Job
 from lance_namespace import (
     LanceNamespace,
     connect as namespace_connect,
@@ -53,6 +58,13 @@ from lance_namespace import (
     DropNamespaceResponse,
     ListNamespacesResponse,
     ListTablesResponse,
+    NamespaceExistsRequest,
+    TableExistsRequest,
+)
+from lancedb.materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    SelectArg,
 )
 from lancedb.table import AsyncTable, LanceTable, Table
 from lancedb.util import validate_table_name
@@ -613,10 +625,58 @@ class LanceNamespaceDBConnection(DBConnection):
         return tbl
 
     @override
+    def create_materialized_view(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "MaterializedView":
+        """Define a materialized view over a table in the root namespace.
+        See
+        [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
+        """
+        return MaterializedView(
+            self.open_table(
+                LOOP.run(
+                    self._inner.create_materialized_view(
+                        name, source, select=select, where=where, limit=limit
+                    )
+                ).name
+            )
+        )
+
+    @override
+    def open_materialized_view(self, name: str) -> "MaterializedView":
+        """Open the materialized view named ``name``."""
+        view = MaterializedView(self.open_table(name))
+        view.definition
+        return view
+
+    @override
+    def list_materialized_views(self) -> List[str]:
+        """The names of the materialized views in the root namespace."""
+        return LOOP.run(self._inner.list_materialized_views())
+
+    @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         if namespace_path is None:
             namespace_path = []
         LOOP.run(self._inner.drop_table(name, namespace_path=namespace_path))
+
+    @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._inner.drop_table_async(name, namespace_path=namespace_path)
+        )
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def rename_table(
@@ -779,6 +839,51 @@ class LanceNamespaceDBConnection(DBConnection):
             Response containing the namespace properties.
         """
         return LOOP.run(self._inner.describe_namespace(namespace_path))
+
+    @override
+    def namespace_exists(self, namespace_id: List[str]) -> bool:
+        """
+        Check if a namespace exists.
+
+        Parameters
+        ----------
+        namespace_id : List[str]
+            The namespace identifier to check.
+
+        Returns
+        -------
+        bool
+            True if the namespace exists, False otherwise.
+        """
+        request = NamespaceExistsRequest(id=namespace_id)
+        try:
+            self._namespace_client.namespace_exists(request)
+            return True
+        except NamespaceNotFoundError:
+            return False
+
+    @override
+    def table_exists(self, table_id: List[str]) -> bool:
+        """
+        Check if a table exists.
+
+        Parameters
+        ----------
+        table_id : List[str]
+            The table identifier to check (full path including namespace
+            segments and table name).
+
+        Returns
+        -------
+        bool
+            True if the table exists, False otherwise.
+        """
+        request = TableExistsRequest(id=table_id)
+        try:
+            self._namespace_client.table_exists(request)
+            return True
+        except TableNotFoundError:
+            return False
 
     @override
     def list_tables(
@@ -1077,11 +1182,46 @@ class AsyncLanceNamespaceDBConnection:
             route_pushdown_to_rust=self._route_pushdown_to_rust,
         )
 
+    async def create_materialized_view(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "AsyncMaterializedView":
+        """Define a materialized view over a table in the root namespace."""
+        view = await self._inner.create_materialized_view(
+            name, source, select=select, where=where, limit=limit
+        )
+        # Reopen through the namespace so the view's table carries the
+        # namespace client and pushdown configuration a bare inner table lacks.
+        return AsyncMaterializedView(await self.open_table(view.name))
+
+    async def open_materialized_view(self, name: str) -> "AsyncMaterializedView":
+        """Open the materialized view named ``name``."""
+        view = AsyncMaterializedView(await self.open_table(name))
+        await view.definition()
+        return view
+
+    async def list_materialized_views(self) -> List[str]:
+        """The names of the materialized views in the root namespace."""
+        return await self._inner.list_materialized_views()
+
     async def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the namespace."""
         if namespace_path is None:
             namespace_path = []
         await self._inner.drop_table(name, namespace_path=namespace_path)
+
+    async def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> AsyncJob:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.drop_table_async(name, namespace_path=namespace_path)
 
     async def rename_table(
         self,
@@ -1232,6 +1372,49 @@ class AsyncLanceNamespaceDBConnection:
             Response containing the namespace properties.
         """
         return await self._inner.describe_namespace(namespace_path)
+
+    async def namespace_exists(self, namespace_id: List[str]) -> bool:
+        """
+        Check if a namespace exists.
+
+        Parameters
+        ----------
+        namespace_id : List[str]
+            The namespace identifier to check.
+
+        Returns
+        -------
+        bool
+            True if the namespace exists, False otherwise.
+        """
+        request = NamespaceExistsRequest(id=namespace_id)
+        try:
+            self._namespace_client.namespace_exists(request)
+            return True
+        except NamespaceNotFoundError:
+            return False
+
+    async def table_exists(self, table_id: List[str]) -> bool:
+        """
+        Check if a table exists.
+
+        Parameters
+        ----------
+        table_id : List[str]
+            The table identifier to check (full path including namespace
+            segments and table name).
+
+        Returns
+        -------
+        bool
+            True if the table exists, False otherwise.
+        """
+        request = TableExistsRequest(id=table_id)
+        try:
+            self._namespace_client.table_exists(request)
+            return True
+        except TableNotFoundError:
+            return False
 
     async def list_tables(
         self,

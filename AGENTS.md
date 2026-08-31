@@ -18,6 +18,9 @@ Common commands:
 * Run specific test: `cargo test --quiet --features remote -p <package_name> --test <test_name>`
 * Lint: `cargo clippy --quiet --features remote --tests --examples`
 * Format Rust: `cargo fmt --all`
+* Use repository-defined Cargo profiles instead of ad hoc LTO overrides.
+* Use `release-with-debug` for benchmarks and profiling so optimized builds keep debug symbols without a rebuild.
+* Use `release-no-lto` only for local debugging, IO-bound benchmarks, or compile-time-sensitive performance investigation where LTO would not affect the measured bottleneck.
 * Format Python: `ruff format .`
 * Lint Python: `ruff check .`
 * Bootstrap Python dev env: `cd python && uv run --extra tests --extra dev maturin develop --extras tests,dev`
@@ -35,7 +38,7 @@ Before committing changes, run formatting for every language you touched. At min
 * Rust changes: run `cargo fmt --all`.
 * Python changes: run `ruff format .` and `ruff check .` from the repository root,
   and run targeted tests through `cd python && uv run ...`.
-* TypeScript changes: run the relevant `npm`/`pnpm` lint, format, build, and docs commands in `nodejs`.
+* TypeScript changes: run the relevant `pnpm` lint, format, build, and docs commands in `nodejs`.
 
 Before creating a PR, the exact value passed to `gh pr create --title` must follow
 Conventional Commits, such as `fix: support nested field paths in native index creation`
@@ -92,16 +95,45 @@ Python bindings changes:
     * Should use `LOOP.run()` to call the corresponding `AsyncTable` method.
 6. Add concrete sync method to `RemoteTable` class in `python/python/lancedb/remote/table.py`.
 7. Add unit test in `python/tests/test_table.py`.
+8. If you added a new public class or module-level function (not just a method on an
+   existing class), expose it in the API reference. See "Python API reference" below.
 
 TypeScript bindings changes:
 
 1. Add napi-rs method binding on `Table` in `nodejs/src/table.rs`.
-2. Run `npm run build` to generate TypeScript definitions.
+2. Run `pnpm build` to generate TypeScript definitions.
 3. Add typescript method on abstract class `Table` in `nodejs/src/table.ts`.
 4. Add concrete method on `LocalTable` class in `nodejs/src/native_table.ts`.
     * Note: despite the name, this class is also used for remote tables.
 5. Add test in `nodejs/__test__/table.test.ts`.
-6. Run `npm run docs` to generate TypeScript documentation.
+6. Run `pnpm run docs` to generate TypeScript documentation.
+
+## Python API reference
+
+`docs/src/python/python.md` is the entire Python API reference. It is maintained by
+hand, and anything not listed there is not rendered at all, so new public classes and
+module-level functions have to be added explicitly. How depends on the module:
+
+* `lancedb.index`, `lancedb.embeddings`, `lancedb.remote`, and `lancedb.rerankers` are
+  rendered by a single directive each, driven by the module's `__all__`. Add the new
+  name to `__all__` and it appears; forget, and it is silently omitted.
+* Everything else (`lancedb`, `lancedb.table`, `lancedb.query`, `lancedb.db`, ...) is
+  listed symbol by symbol. Add a `::: lancedb.<module>.<Name>` line to the matching
+  section, and remember that the page separates synchronous and asynchronous APIs.
+
+Deliberately undocumented: concrete implementations reached through an abstract base
+(`LanceTable`, `LanceDBConnection`, `RemoteDBConnection`), query base classes already
+covered by `inherited_members`, and internal helpers.
+
+Cross-references in docstrings use mkdocstrings syntax, `[text][lancedb.table.Table]`.
+Plain relative links such as `[Table](Table)` do not resolve. To check your work:
+
+```shell
+pip install -r docs/requirements.txt
+cd docs && PYTHONPATH=. mkdocs build
+```
+
+The docs site only builds on pushes to `main`, so this is not covered by PR CI.
 
 ## Review Guidelines
 

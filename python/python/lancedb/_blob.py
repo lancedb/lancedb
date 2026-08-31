@@ -12,15 +12,11 @@ from typing import TYPE_CHECKING, Optional, Union
 import pyarrow as pa
 
 from .expr import Expr
-from .schema import blob_v2_column_paths
+from .schema import row_addressable_blob_v2_paths
 from .types import BlobMode, QueryProjection, QueryProjectionSpec
-from .util import get_uri_scheme
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
-
-    from .remote.table import RemoteTable
-    from .table import AsyncTable, Table
 
 BLOB_MODE_TO_HANDLING = {
     "lazy": "blobs_descriptions",
@@ -104,22 +100,6 @@ def validate_blob_mode(blob_mode: BlobMode) -> None:
         raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
 
 
-def supports_blob_auto_row_id(table: Table | AsyncTable | RemoteTable) -> bool:
-    """Blob auto row-id applies to native tables, not LanceDB Cloud."""
-    from .remote.table import RemoteTable
-
-    if isinstance(table, RemoteTable):
-        return False
-
-    inner = getattr(table, "_inner", None)
-    if inner is not None:
-        uri = inner.database().uri
-        if isinstance(uri, str) and get_uri_scheme(uri) == "db":
-            return False
-
-    return True
-
-
 def projection_includes_blob_column(
     projection: QueryProjection,
     blob_columns: Iterable[str],
@@ -139,7 +119,7 @@ def blob_v2_projection_sources(
     schema: pa.Schema,
     projection: QueryProjection,
 ) -> dict[str, str]:
-    blob_columns = blob_v2_column_paths(schema)
+    blob_columns = row_addressable_blob_v2_paths(schema)
     if not blob_columns:
         return {}
     columns = set(blob_columns)
@@ -160,19 +140,19 @@ def v2_projection_needs_row_id(
 ) -> bool:
     if with_row_id:
         return False
-    return projection_includes_blob_column(projection, blob_v2_column_paths(schema))
+    return projection_includes_blob_column(
+        projection, row_addressable_blob_v2_paths(schema)
+    )
 
 
 def blob_auto_row_id_for_scan(
-    table: Table | AsyncTable | RemoteTable,
     schema: pa.Schema,
     projection: QueryProjection,
     *,
     with_row_id: bool | None,
 ) -> bool:
+    """Auto row-id only applies when the caller said nothing about row ids."""
     if with_row_id is not None:
-        return False
-    if not supports_blob_auto_row_id(table):
         return False
     return v2_projection_needs_row_id(schema, projection, with_row_id=False)
 
@@ -185,6 +165,11 @@ def finalize_blob_query_table(
     blob_paths: Iterable[str] = (),
 ) -> pa.Table:
     if user_requested_row_id or not blob_auto_row_id:
+        return tbl
+    if "_rowid" not in tbl.column_names:
+        # A backend that ignores the row-id request leaves nothing to stash. Hand
+        # back the projection as-is so fetch_blobs raises the error that names the
+        # ways to supply row ids, rather than failing here about a hidden column.
         return tbl
     return stash_auto_row_ids(tbl, blob_paths)
 
@@ -287,7 +272,8 @@ def _iter_projection_pairs(
             if isinstance(expr, str):
                 yield name, expr
             elif isinstance(expr, Expr):
-                yield name, expr.to_sql()
+                source = expr._column_name()
+                yield name, source if source is not None else expr.to_sql()
         return
     for column in projection:
         if isinstance(column, str):
@@ -297,7 +283,8 @@ def _iter_projection_pairs(
             if isinstance(expr, str):
                 yield name, expr
             elif isinstance(expr, Expr):
-                yield name, expr.to_sql()
+                source = expr._column_name()
+                yield name, source if source is not None else expr.to_sql()
 
 
 def _set_blob_column(tbl: pa.Table, output_name: str, blobs: pa.Array) -> pa.Table:

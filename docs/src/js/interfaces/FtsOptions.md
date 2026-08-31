@@ -43,6 +43,34 @@ The following tokenizers are available:
 
 ***
 
+### blockSize?
+
+```ts
+optional blockSize: 128 | 256;
+```
+
+Number of documents per compressed posting block.
+
+The default is 128. Supported values are 128 and 256. A value of 256 uses
+the experimental FTS V3 format and may introduce breaking changes.
+
+***
+
+### customStopWords?
+
+```ts
+optional customStopWords: string[];
+```
+
+Custom stop words that replace the built-in list for `language`.
+
+This option only affects tokenization when `removeStopWords` is true.
+
+`undefined` keeps the built-in language list. An empty array explicitly
+replaces it with no stop words.
+
+***
+
 ### language?
 
 ```ts

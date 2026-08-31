@@ -554,6 +554,16 @@ export interface FtsOptions {
   removeStopWords?: boolean;
 
   /**
+   * Custom stop words that replace the built-in list for `language`.
+   *
+   * This option only affects tokenization when `removeStopWords` is true.
+   *
+   * `undefined` keeps the built-in language list. An empty array explicitly
+   * replaces it with no stop words.
+   */
+  customStopWords?: string[];
+
+  /**
    * whether to remove punctuation
    */
   asciiFolding?: boolean;
@@ -572,6 +582,14 @@ export interface FtsOptions {
    * whether to only index the prefix of the token for ngram tokenizer
    */
   prefixOnly?: boolean;
+
+  /**
+   * Number of documents per compressed posting block.
+   *
+   * The default is 128. Supported values are 128 and 256. A value of 256 uses
+   * the experimental FTS V3 format and may introduce breaking changes.
+   */
+  blockSize?: 128 | 256;
 }
 
 export class Index {
@@ -747,10 +765,12 @@ export class Index {
         options?.lowercase,
         options?.stem,
         options?.removeStopWords,
+        options?.customStopWords,
         options?.asciiFolding,
         options?.ngramMinLength,
         options?.ngramMaxLength,
         options?.prefixOnly,
+        options?.blockSize,
       ),
     );
   }

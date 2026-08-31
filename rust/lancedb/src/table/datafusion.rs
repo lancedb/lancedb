@@ -12,7 +12,7 @@ pub mod udtf;
 
 use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::Schema as ArrowSchema;
 use async_trait::async_trait;
 use datafusion_catalog::{Session, TableProvider};
@@ -126,7 +126,12 @@ impl ExecutionPlan for MetadataEraserExec {
         let stream = self.input.execute(partition, context)?;
         let schema = self.schema.clone();
         let stream = stream.map_ok(move |batch| {
-            RecordBatch::try_new(schema.clone(), batch.columns().to_vec()).unwrap()
+            RecordBatch::try_new_with_options(
+                schema.clone(),
+                batch.columns().to_vec(),
+                &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+            )
+            .unwrap()
         });
         Ok(
             Box::pin(RecordBatchStreamAdapter::new(self.schema.clone(), stream))
@@ -542,6 +547,60 @@ pub mod tests {
         while let Some(batch) = stream.try_next().await.unwrap() {
             assert!(batch.schema().metadata().is_empty());
         }
+    }
+
+    /// A scan with an EMPTY projection (the shape a filtered `COUNT(*)` feeds in) yields
+    /// zero-column batches. `MetadataEraserExec::execute` rebuilt each batch with
+    /// `RecordBatch::try_new(schema, cols).unwrap()`; for a column-less batch that errors with
+    /// "must either specify a row count or at least one column" and the `.unwrap()` panics.
+    #[tokio::test]
+    async fn test_metadata_eraser_empty_projection_preserves_row_count() {
+        let fixture = TestFixture::new().await;
+
+        // Empty projection => zero output columns over N rows. Table "foo" has 10 rows.
+        let plan =
+            LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter), Some(vec![]))
+                .unwrap()
+                .build()
+                .unwrap();
+
+        let mut stream = TestFixture::plan_to_stream(plan).await;
+
+        let mut rows = 0usize;
+        while let Some(batch) = stream.try_next().await.unwrap() {
+            assert_eq!(
+                batch.num_columns(),
+                0,
+                "empty projection must yield zero columns"
+            );
+            rows += batch.num_rows();
+        }
+        assert_eq!(
+            rows, 10,
+            "row count must survive MetadataEraserExec on a zero-column batch"
+        );
+
+        // End-to-end SQL regression for the previous panic.
+        let fixture = TestFixture::new().await;
+
+        let ctx = SessionContext::new();
+        ctx.register_table("foo", fixture.adapter.clone()).unwrap();
+
+        let batches = ctx
+            .sql("SELECT COUNT(*) FROM foo WHERE i < 5")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let count = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(count, 5, "COUNT(*) WHERE i < 5 over 0..10 must be 5");
     }
 
     #[tokio::test]

@@ -10,7 +10,7 @@ use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
 use crate::index::vector::IvfRqIndexBuilder;
-use crate::{DistanceType, Error, Result, table::BaseTable};
+use crate::{DistanceType, Error, Result, job::Job, table::BaseTable};
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, LabelListIndexBuilder},
@@ -54,7 +54,26 @@ pub enum Index {
     /// substrings of the raw bytes, unlike the tokenized [`Index::FTS`] index.
     Fm(FmIndexBuilder),
 
-    /// Full text search index using bm25.
+    /// Full text search index using BM25.
+    ///
+    /// The posting block size defaults to 128. Supported values are 128 and 256;
+    /// a value of 256 uses the experimental FTS V3 format and may introduce
+    /// breaking changes.
+    ///
+    /// ```
+    /// use lancedb::index::{Index, scalar::FtsIndexBuilder};
+    ///
+    /// # async fn create_fts_index(
+    /// #     table: &lancedb::Table,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let params = FtsIndexBuilder::default().block_size(256)?;
+    /// table
+    ///     .create_index(&["text"], Index::FTS(params))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     FTS(FtsIndexBuilder),
 
     /// IVF index
@@ -285,6 +304,14 @@ impl IndexBuilder {
 
     pub async fn execute(self) -> Result<()> {
         self.parent.clone().create_index(self).await
+    }
+
+    /// Creates the index, returning a [`Job`] tracking the operation.
+    ///
+    /// The job may already be complete when returned, and callers must not
+    /// assume the index exists until [`Job::wait`] resolves.
+    pub async fn execute_async(self) -> Result<Job> {
+        self.parent.clone().create_index_async(self).await
     }
 }
 

@@ -2,11 +2,12 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from ._lancedb import (
     IndexConfig,
 )
+from .query import DocumentGranularity
 from .types import BaseTokenizerType
 
 lang_mapping = {
@@ -115,6 +116,17 @@ class FTS:
 
     For example, it works with `title`, `description`, `content`, etc.
 
+    Examples
+    --------
+    Create an index configuration that uses 256-document posting blocks:
+
+    >>> config = FTS(block_size=256)
+
+    Create an index that treats each deepest-list element as one document:
+
+    >>> from lancedb.query import DocumentGranularity
+    >>> config = FTS(document_granularity=DocumentGranularity.LIST_ELEMENT)
+
     Attributes
     ----------
     with_position : bool, default False
@@ -145,9 +157,32 @@ class FTS:
     remove_stop_words : bool, default True
         Whether to remove stop words. Stop words are common words that are often
         removed from text before indexing. For example, in English "the" and "and".
+    custom_stop_words : list of str, optional
+        Custom words replace the built-in language stop words
+        and only take effect when ``remove_stop_words`` is True. ``None`` uses
+        the built-in language list, while an empty list explicitly uses no
+        stop words.
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
+    block_size : int, default 128
+        The number of documents per compressed posting block. Supported values
+        are 128 and 256. A value of 256 uses the experimental FTS V3 format
+        and may introduce breaking changes.
+    memory_limit : int, optional
+        The total memory limit in MiB for the local FTS build stage. The limit
+        is divided evenly among indexing workers. This build-only setting is
+        not persisted with the index and does not apply to remote tables.
+    num_workers : int, optional
+        The number of workers for a local FTS build. By default Lance uses
+        roughly half of the available CPU cores. The effective value is
+        limited by the available compute capacity. This build-only setting is
+        not persisted with the index and does not apply to remote tables.
+    document_granularity : DocumentGranularity, default ROW
+        ``ROW`` treats the selected text in one table row as one document.
+        ``LIST_ELEMENT`` treats each element of the deepest list on the indexed
+        field path as one document and returns its physical coordinates in
+        ``_doc_index`` for matching queries.
 
     Notes
     -----
@@ -168,6 +203,11 @@ class FTS:
     ngram_min_length: int = 3
     ngram_max_length: int = 3
     prefix_only: bool = False
+    block_size: int = 128
+    custom_stop_words: Optional[List[str]] = None
+    memory_limit: Optional[int] = None
+    num_workers: Optional[int] = None
+    document_granularity: DocumentGranularity = DocumentGranularity.ROW
 
 
 @dataclass
@@ -202,7 +242,7 @@ class HnswPq:
         distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
         l2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-    num_partitions, default sqrt(num_rows)
+    num_partitions: int, default sqrt(num_rows)
 
         The number of IVF partitions to create.
 
@@ -211,7 +251,7 @@ class HnswPq:
         will require too much memory. Each partition becomes its own HNSW graph, so
         setting this value higher reduces the peak memory use of training.
 
-    num_sub_vectors, default is vector dimension / 16
+    num_sub_vectors: int, default is vector dimension / 16
 
         Number of sub-vectors of PQ.
 
@@ -227,13 +267,13 @@ class HnswPq:
         If the dimension is not visible by 8 then we use 1 subvector.  This is not
         ideal and will likely result in poor performance.
 
-     num_bits: int, default 8
+    num_bits: int, default 8
         Number of bits to encode each sub-vector.
 
         This value controls how much the sub-vectors are compressed.  The more bits
         the more accurate the index but the slower search. Only 4 and 8 are supported.
 
-    max_iterations, default 50
+    max_iterations: int, default 50
 
         Max iterations to train kmeans.
 
@@ -246,7 +286,7 @@ class HnswPq:
         those cases it is unlikely that setting this larger will lead to the index
         converging anyways.
 
-    sample_rate, default 256
+    sample_rate: int, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
@@ -262,14 +302,14 @@ class HnswPq:
         Increasing this value might improve the quality of the index but in
         most cases the default should be sufficient.
 
-    m, default 20
+    m: int, default 20
 
         The number of neighbors to select for each vector in the HNSW graph.
 
         This value controls the tradeoff between search speed and accuracy.
         The higher the value the more accurate the search but the slower it will be.
 
-    ef_construction, default 300
+    ef_construction: int, default 300
 
         The number of candidates to evaluate during the construction of the HNSW graph.
 
@@ -280,7 +320,7 @@ class HnswPq:
         This value should be set to a value that is not less than `ef` in the
         search phase.
 
-    target_partition_size, default is 1,048,576
+    target_partition_size: int, default is 1,048,576
 
         The target size of each partition.
 
@@ -334,7 +374,7 @@ class HnswSq:
         distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
         l2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-    num_partitions, default sqrt(num_rows)
+    num_partitions: int, default sqrt(num_rows)
 
         The number of IVF partitions to create.
 
@@ -343,7 +383,7 @@ class HnswSq:
         will require too much memory. Each partition becomes its own HNSW graph, so
         setting this value higher reduces the peak memory use of training.
 
-    max_iterations, default 50
+    max_iterations: int, default 50
 
         Max iterations to train kmeans.
 
@@ -356,7 +396,7 @@ class HnswSq:
         In those cases it is unlikely that setting this larger will lead to
         the index converging anyways.
 
-    sample_rate, default 256
+    sample_rate: int, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
@@ -372,14 +412,14 @@ class HnswSq:
         Increasing this value might improve the quality of the index but in
         most cases the default should be sufficient.
 
-    m, default 20
+    m: int, default 20
 
         The number of neighbors to select for each vector in the HNSW graph.
 
         This value controls the tradeoff between search speed and accuracy.
         The higher the value the more accurate the search but the slower it will be.
 
-    ef_construction, default 300
+    ef_construction: int, default 300
 
         The number of candidates to evaluate during the construction of the HNSW graph.
 
@@ -390,7 +430,7 @@ class HnswSq:
         This value should be set to a value that is not less than `ef` in the search
         phase.
 
-    target_partition_size, default is 1,048,576
+    target_partition_size: int, default is 1,048,576
 
         The target size of each partition.
 
@@ -443,7 +483,7 @@ class HnswFlat:
         distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
         l2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-    num_partitions, default sqrt(num_rows)
+    num_partitions: int, default sqrt(num_rows)
 
         The number of IVF partitions to create.
 
@@ -453,18 +493,18 @@ class HnswFlat:
         graph, so setting this value higher reduces the peak memory use of
         training.
 
-    max_iterations, default 50
+    max_iterations: int, default 50
 
         Max iterations to train kmeans.
 
         When training an IVF index we use kmeans to calculate the partitions.
         This parameter controls how many iterations of kmeans to run.
 
-    sample_rate, default 256
+    sample_rate: int, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
-    m, default 20
+    m: int, default 20
 
         The number of neighbors to select for each vector in the HNSW graph.
 
@@ -472,7 +512,7 @@ class HnswFlat:
         The higher the value the more accurate the search but the slower it
         will be.
 
-    ef_construction, default 300
+    ef_construction: int, default 300
 
         The number of candidates to evaluate during the construction of the HNSW
         graph.
@@ -484,7 +524,7 @@ class HnswFlat:
         than 500.  This value should be set to a value that is not less than `ef`
         in the search phase.
 
-    target_partition_size, default is 1,048,576
+    target_partition_size: int, default is 1,048,576
 
         The target size of each partition.
     """
@@ -588,7 +628,7 @@ class IvfFlat:
 
         The default value is 256.
 
-    target_partition_size, default is 8192
+    target_partition_size: int, default is 8192
 
         The target size of each partition.
 
@@ -752,7 +792,7 @@ class IvfPq:
 
         The default value is 256.
 
-    target_partition_size, default is 8192
+    target_partition_size: int, default is 8192
 
         The target size of each partition.
 
@@ -813,7 +853,7 @@ class IvfRq:
     sample_rate: int, default 256
         Controls the number of training vectors: sample_rate * num_partitions.
 
-    target_partition_size, default is 8192
+    target_partition_size: int, default is 8192
         Target size of each partition.
     """
 
@@ -828,6 +868,9 @@ class IvfRq:
     accelerator: Optional[str] = None
 
 
+# The API reference renders this module with a single mkdocstrings directive,
+# which only picks up names listed here. New public names must be added to this
+# list, or they will silently go undocumented.
 __all__ = [
     "BTree",
     "IvfPq",
