@@ -165,7 +165,8 @@ impl DataFrame {
 
     /// Assign a relation alias, typically before a self join.
     pub fn alias(&self, name: impl Into<String>) -> Result<Self> {
-        Self::wrap(self.inner.clone().alias(name.into()))
+        let name = name.into();
+        Self::wrap(self.inner.clone().alias(&name))
     }
 
     /// Resolve a literal field name to a relation-qualified expression.
