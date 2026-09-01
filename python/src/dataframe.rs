@@ -14,8 +14,8 @@ use datafusion::{
     logical_expr::{JoinType, LogicalPlanBuilder},
 };
 use datafusion_catalog::empty::EmptyTable;
-use datafusion_common::TableReference;
-use datafusion_expr::SortExpr;
+use datafusion_common::{Column, TableReference};
+use datafusion_expr::{Expr as DfExpr, SortExpr};
 use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
 use datafusion_substrait::{logical_plan::producer::to_substrait_plan, substrait::proto::Plan};
 use prost::Message;
@@ -138,6 +138,15 @@ impl NativeDataFrame {
 
     fn alias(&self, name: &str) -> PyResult<Self> {
         Self::wrap(self.inner.clone().alias(name))
+    }
+
+    fn column(&self, name: &str) -> PyResult<PyExpr> {
+        let field = self
+            .inner
+            .schema()
+            .qualified_field_with_unqualified_name(name)
+            .map_err(dataframe_error)?;
+        Ok(PyExpr(DfExpr::Column(Column::from(field))))
     }
 
     fn with_column(&self, name: &str, expression: PyExpr) -> PyResult<Self> {

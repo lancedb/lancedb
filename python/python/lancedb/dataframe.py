@@ -102,6 +102,19 @@ class _DataFrameBase:
         """Assign a relation alias, for example before a self join."""
         return self._wrap(self._inner.alias(name))
 
+    def col(self, name: str) -> Expr:
+        """Return a column expression qualified to this DataFrame.
+
+        Use this to disambiguate columns after joins. The name is matched as a
+        literal field name, so dots in column names are not treated as relation
+        separators.
+        """
+        return Expr(self._inner.column(name))
+
+    def column(self, name: str) -> Expr:
+        """Alias for :meth:`col`."""
+        return self.col(name)
+
     def with_column(self, name: str, expression: Expr):
         """Add or replace a column."""
         return self._wrap(self._inner.with_column(name, expression._inner))

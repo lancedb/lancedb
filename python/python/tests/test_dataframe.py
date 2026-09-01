@@ -61,6 +61,26 @@ def test_dataframe_set_operations_build_plans(tmp_path):
         assert frame.to_substrait()
 
 
+def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
+    db = lancedb.connect(tmp_path)
+    db.create_table("events", [{"id": 1, "value": 10}])
+
+    source = db.table("events")
+    left = source.alias("left")
+    right = source.alias("right")
+    joined = left.join(right, on="id").select(
+        left.col("value").alias("left_value"),
+        right.column("value").alias("right_value"),
+    )
+
+    assert joined.schema.names == ["left_value", "right_value"]
+    assert joined.to_substrait()
+
+    db.create_table("dotted", [{"left.value": 10}])
+    dotted = db.table("dotted")
+    assert dotted.select(dotted.col("left.value")).schema.names == ["left.value"]
+
+
 def test_dataframe_direct_execution_uses_connection(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("events", [{"id": 1}])

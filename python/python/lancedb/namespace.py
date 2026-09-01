@@ -51,6 +51,7 @@ from lancedb._lancedb import (
 from lancedb.background_loop import LOOP
 from lancedb.arrow import AsyncRecordBatchReader
 from lancedb.db import AsyncConnection, DBConnection
+from lancedb.dataframe import AsyncDataFrame
 from lancedb.job import AsyncJob, Job
 from lancedb.sql import AsyncQuery as AsyncSqlQuery
 from lancedb.sql import QueryDescription
@@ -1475,6 +1476,43 @@ class AsyncLanceNamespaceDBConnection:
         """
         return await self._inner.execute_query_async(
             query,
+            default_namespace_path=default_namespace_path,
+        )
+
+    async def table(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncDataFrame:
+        """Create a lazy DataFrame plan that scans a namespace table."""
+        return await self._inner.table(name, namespace_path=namespace_path)
+
+    async def execute_substrait(
+        self,
+        plan: bytes,
+        *,
+        version: Optional[str] = None,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute a serialized Substrait plan when supported."""
+        return await self._inner.execute_substrait(
+            plan,
+            version=version,
+            default_namespace_path=default_namespace_path,
+        )
+
+    async def execute_substrait_async(
+        self,
+        plan: bytes,
+        *,
+        version: Optional[str] = None,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncSqlQuery:
+        """Start a serialized Substrait plan when supported."""
+        return await self._inner.execute_substrait_async(
+            plan,
+            version=version,
             default_namespace_path=default_namespace_path,
         )
 
