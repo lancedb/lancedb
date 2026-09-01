@@ -72,7 +72,7 @@ use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -3651,7 +3651,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct MergeInsertRequest {
-    on: String,
+    // Sent as one repeated `on` query parameter per column, which is how the
+    // namespace spec encodes an array-valued `on`. serde_urlencoded (which
+    // reqwest's `query()` uses) cannot serialize a sequence nested in a struct,
+    // so this field is emitted separately by [`Self::on_query_params`].
+    #[serde(skip_serializing)]
+    on: Vec<String>,
     when_matched_update_all: bool,
     when_matched_update_all_filt: Option<String>,
     when_not_matched_insert_all: bool,
@@ -3667,6 +3672,17 @@ pub struct MergeInsertRequest {
     use_lsm: Option<bool>,
 }
 
+impl MergeInsertRequest {
+    /// The `on` columns as repeated query parameters: `?on=a&on=b`.
+    ///
+    /// A single column serializes to `?on=a`, exactly what clients sent before
+    /// `on` became a list, so a server that predates composite keys sees no
+    /// change from a single-column caller.
+    pub(crate) fn on_query_params(&self) -> Vec<(&str, &str)> {
+        self.on.iter().map(|col| ("on", col.as_str())).collect()
+    }
+}
+
 fn is_true(b: &bool) -> bool {
     *b
 }
@@ -3679,12 +3695,15 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             return Err(Error::InvalidInput {
                 message: "MergeInsertBuilder missing required 'on' field".into(),
             });
-        } else if value.on.len() > 1 {
-            return Err(Error::NotSupported {
-                message: "MergeInsertBuilder only supports a single 'on' column".into(),
+        }
+        // The server rejects a repeated column with a 400; catching it here
+        // names the offending column and costs no round trip.
+        let mut seen = HashSet::with_capacity(value.on.len());
+        if let Some(dup) = value.on.iter().find(|col| !seen.insert(*col)) {
+            return Err(Error::InvalidInput {
+                message: format!("MergeInsertBuilder 'on' column '{dup}' is repeated"),
             });
         }
-        let on = value.on[0].clone();
 
         let when_matched_update_all_filt = match value.when_matched_update_all_filt {
             Some(MergeFilter::Sql(sql)) => Some(sql),
@@ -3708,7 +3727,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             };
 
         Ok(Self {
-            on,
+            on: value.on,
             when_matched_update_all: value.when_matched_update_all,
             when_matched_update_all_filt,
             when_not_matched_insert_all: value.when_not_matched_insert_all,
@@ -4550,6 +4569,76 @@ mod tests {
             assert_eq!(result.num_inserted_rows, 3);
             assert_eq!(result.num_updated_rows, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_composite_key() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
+
+            // One repeated `on` per column, in the order the caller gave them.
+            let on = request
+                .url()
+                .query_pairs()
+                .filter(|(key, _)| key == "on")
+                .map(|(_, value)| value.into_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(on, vec!["shard_key".to_string(), "id".to_string()]);
+
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["when_matched_update_all"], "true");
+            assert_eq!(params["when_not_matched_insert_all"], "true");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43, "num_deleted_rows": 0, "num_inserted_rows": 3, "num_updated_rows": 0}"#)
+                .unwrap()
+        });
+
+        let mut merge = table.merge_insert(&["shard_key", "id"]);
+        merge.when_matched_update_all(None);
+        merge.when_not_matched_insert_all();
+        let result = table.base_table().merge_insert(merge, data).await.unwrap();
+
+        assert_eq!(result.num_inserted_rows, 3);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_rejects_repeated_on_column() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let table = Table::new_with_handler::<&str>("my_table", |request| {
+            panic!("Unexpected request: {}", request.url());
+        });
+
+        let merge = table.merge_insert(&["id", "id"]);
+        let err = table
+            .base_table()
+            .merge_insert(merge, data)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("'id' is repeated")),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

@@ -1547,7 +1547,9 @@ class Table(ABC):
         on: Union[str, Iterable[str]]
             A column (or columns) to join on.  This is how records from the
             source table and target table are matched.  Typically this is some
-            kind of key or id column.
+            kind of key or id column.  Passing several columns matches on the
+            composite key: a source row updates a target row only when it
+            agrees on every one of them.
 
         Examples
         --------
@@ -5701,7 +5703,9 @@ class AsyncTable:
         on: Union[str, Iterable[str]]
             A column (or columns) to join on.  This is how records from the
             source table and target table are matched.  Typically this is some
-            kind of key or id column.
+            kind of key or id column.  Passing several columns matches on the
+            composite key: a source row updates a target row only when it
+            agrees on every one of them.
 
         Examples
         --------

@@ -1506,7 +1506,9 @@ impl Table {
     ///
     /// * `on` One or more columns to join on.  This is how records from the
     ///   source table and target table are matched.  Typically this is some
-    ///   kind of key or id column.
+    ///   kind of key or id column.  Several columns match on the composite
+    ///   key: a source row updates a target row only when it agrees on every
+    ///   one of them.
     ///
     /// # Examples
     ///
