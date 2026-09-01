@@ -133,6 +133,14 @@ def test_dataframe_exports_are_public():
     )
 
 
+def test_sort_expr_uses_identity_equality():
+    first = col("first").sort()
+    second = col("second").sort()
+
+    assert (first == second) is False
+    assert len({first, second}) == 2
+
+
 @pytest.mark.asyncio
 async def test_async_dataframe_direct_execution(tmp_path):
     db = lancedb.connect(tmp_path)

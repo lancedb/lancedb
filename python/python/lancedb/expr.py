@@ -289,7 +289,7 @@ class Expr:
         return f"Expr({self._inner.to_sql()})"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SortExpr:
     """An expression with sort direction and null ordering."""
 
