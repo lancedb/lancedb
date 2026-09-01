@@ -129,6 +129,12 @@ jobs:
       # link.exe is single-threaded and the long pole on Windows builds. Use
       # rustc's bundled lld-link instead.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+      # Fat LTO of the cdylib is single-threaded and the peak-memory step of the
+      # build. ThinLTO parallelizes it across the runner's cores, at some cost
+      # to runtime performance on our least performance-sensitive platform.
+      # Matches what the nodejs Windows builds already do in npm-publish.yml.
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
     steps:
       - uses: actions/checkout@v6
         with:

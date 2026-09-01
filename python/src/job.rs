@@ -5,18 +5,32 @@ use std::sync::Arc;
 
 use crate::runtime::future_into_py;
 use pyo3::{Bound, PyAny, PyRef, PyResult, pyclass, pymethods};
+use serde::Serialize;
 
 use crate::error::PythonErrorExt;
 
 #[pyclass]
 pub struct Job {
-    inner: Arc<lancedb::Job>,
+    inner: Arc<lancedb::Job<std::result::Result<Option<String>, String>>>,
 }
 
 impl Job {
     pub(crate) fn new(inner: lancedb::Job) -> Self {
         Self {
-            inner: Arc::new(inner),
+            inner: Arc::new(inner.map(|()| Ok(None))),
+        }
+    }
+
+    pub(crate) fn new_typed<T>(inner: lancedb::Job<T>) -> Self
+    where
+        T: Clone + Serialize + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(inner.map(|result| {
+                serde_json::to_string(&result)
+                    .map(Some)
+                    .map_err(|error| format!("failed to serialize typed job result: {error}"))
+            })),
         }
     }
 }
@@ -39,8 +53,10 @@ impl Job {
     pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            inner.wait().await.infer_error()?;
-            Ok(())
+            let result = inner.wait().await.infer_error()?;
+            result
+                .map_err(|message| lancedb::Error::Runtime { message })
+                .infer_error()
         })
     }
 

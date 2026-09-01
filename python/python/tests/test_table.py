@@ -11,6 +11,7 @@ import warnings
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from time import sleep
 from typing import List
 from unittest.mock import patch
@@ -334,6 +335,21 @@ async def test_update_async(mem_db_async: AsyncConnection):
     assert update_res.rows_updated == 1
     assert update_res.version == 5
     assert await table.count_rows("id == 10") == 1
+
+
+@pytest.mark.asyncio
+async def test_update_expr_filter_literals_async(mem_db_async: AsyncConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = await mem_db_async.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = await table.update({"result": value}, where=col("field") == value)
+        assert update_res.rows_updated == 1
+
+    assert (await table.to_arrow())["result"].to_pylist() == values
 
 
 def test_create_table(mem_db: DBConnection):
@@ -1467,7 +1483,7 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     table = mem_db.create_table("job_test", [{"id": i} for i in range(10)])
     job = table.create_index_async("id", config=BTree())
     assert job.id is None
-    job.wait()
+    assert job.wait() is None
     assert len(table.list_indices()) == 1
     job.cancel()
 
@@ -2343,6 +2359,148 @@ def test_update(mem_db: DBConnection):
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
 
 
+def test_update_expr_filter_literals(mem_db: DBConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = mem_db.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = table.update(where=col("field") == value, values={"result": value})
+        assert update_res.rows_updated == 1
+
+    assert table.to_arrow()["result"].to_pylist() == values
+
+
+def test_update_expr_filter_preserves_typed_semantics(mem_db: DBConnection):
+    low = Decimal("1.234567890123456789")
+    high = Decimal("1.234567890123456790")
+    decimal_schema = pa.schema(
+        [("val", pa.decimal128(19, 18)), ("result", pa.string())]
+    )
+    decimal_table = mem_db.create_table(
+        "update_expr_decimal",
+        pa.table(
+            {"val": [low, high], "result": ["old", "old"]},
+            schema=decimal_schema,
+        ),
+    )
+    predicate = col("val") < lit(high)
+    assert decimal_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    keyword_table = mem_db.create_table(
+        "update_expr_keyword", [{"null": 1, "result": "old"}]
+    )
+    predicate = col("null") == 1
+    assert keyword_table.search().where(predicate).to_arrow().num_rows == 1
+    result = keyword_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    empty_in_table = mem_db.create_table(
+        "update_expr_empty_in", [{"id": 1, "result": "old"}]
+    )
+    predicate = col("id").isin([])
+    assert empty_in_table.search().where(predicate).to_arrow().num_rows == 0
+    result = empty_in_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
+
+    marker = "__lancedb_binary_placeholder_0__"
+    binary_schema = pa.schema(
+        [("payload", pa.binary()), ("text", pa.string()), ("result", pa.string())]
+    )
+    binary_table = mem_db.create_table(
+        "update_expr_binary",
+        pa.table(
+            {
+                "payload": [b"\x01", b"\x02"],
+                "text": ["other", marker],
+                "result": ["old", "old"],
+            },
+            schema=binary_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) | (col("text") == marker)
+    assert binary_table.search().where(predicate).to_arrow().num_rows == 2
+    result = binary_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    nonfinite_table = mem_db.create_table(
+        "update_expr_nonfinite",
+        [{"x": 1.0, "result": "old"}, {"x": 2.0, "result": "old"}],
+    )
+    predicate = col("x") < float("inf")
+    assert nonfinite_table.search().where(predicate).to_arrow().num_rows == 2
+    result = nonfinite_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    float16_table = mem_db.create_table(
+        "update_expr_float16",
+        [{"x": 1.0, "result": "old"}, {"x": 3.0, "result": "old"}],
+    )
+    predicate = col("x").cast(pa.float16()) < 2.0
+    assert float16_table.search().where(predicate).to_arrow().num_rows == 1
+    result = float16_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    string_cast_table = mem_db.create_table(
+        "update_expr_string_cast",
+        [{"x": 1, "result": "old"}, {"x": 2, "result": "old"}],
+    )
+    predicate = col("x").cast("string") == "1"
+    assert string_cast_table.search().where(predicate).to_arrow().num_rows == 1
+    result = string_cast_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    quoted_identifier_schema = pa.schema(
+        [("payload", pa.binary()), ("odd'name", pa.int64()), ("result", pa.string())]
+    )
+    quoted_identifier_table = mem_db.create_table(
+        "update_expr_quoted_identifier",
+        pa.table(
+            {"payload": [b"\x01"], "odd'name": [1], "result": ["old"]},
+            schema=quoted_identifier_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) & (col("odd'name") == 1)
+    assert quoted_identifier_table.search().where(predicate).to_arrow().num_rows == 1
+    result = quoted_identifier_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    decimal256_schema = pa.schema(
+        [("val", pa.decimal256(40, 2)), ("result", pa.string())]
+    )
+    decimal256_table = mem_db.create_table(
+        "update_expr_decimal256",
+        pa.table(
+            {
+                "val": [Decimal("1.00"), Decimal("3.00")],
+                "result": ["old", "old"],
+            },
+            schema=decimal256_schema,
+        ),
+    )
+    predicate = col("val") < lit(Decimal("2.00")).cast(pa.decimal256(40, 2))
+    assert decimal256_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal256_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    binary_empty_table = mem_db.create_table(
+        "update_expr_binary_empty",
+        pa.table(
+            {"payload": [b"\x01", b"\x02"], "result": ["old", "old"]},
+            schema=pa.schema([("payload", pa.binary()), ("result", pa.string())]),
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")).isin([])
+    assert binary_empty_table.search().where(predicate).to_arrow().num_rows == 0
+    assert predicate.to_sql() == "false"
+    result = binary_empty_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
+
+
 def test_update_with_arrow_scalar(mem_db: DBConnection):
     schema = pa.schema({"id": pa.int64(), "vector": pa.list_(pa.float32(), 4)})
     table = mem_db.create_table("my_table", schema=schema)
@@ -2770,6 +2928,56 @@ async def test_merge_insert_async(mem_db_async: AsyncConnection):
     )
     expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
     assert (await table.to_arrow()).sort_by("a") == expected
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_merge_insert_encodes_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+
+    def json_table(rows):
+        json_values = pa.ExtensionArray.from_storage(
+            json_type,
+            pa.array([value for _, value in rows], type=json_type.storage_type),
+        )
+        return pa.Table.from_arrays(
+            [pa.array([row_id for row_id, _ in rows]), json_values], schema=schema
+        )
+
+    table = await mem_db_async.create_table("json_merge", schema=schema)
+    await table.add(json_table([("a", '{"k": 1}'), ("b", '{"k": 9}')]))
+
+    await (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .execute(json_table([("a", '{"k": 2}')]))
+    )
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": '{"k":2}'},
+        {"id": "b", "j": '{"k":9}'},
+    ]
+    filtered = await table.query().where("json_extract(j, '$.k') = '2'").to_list()
+    assert filtered == [{"id": "a", "j": '{"k":2}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    json_values = pa.ExtensionArray.from_storage(
+        json_type, pa.array(['{"k": 3}'], type=json_type.storage_type)
+    )
+    data = pa.Table.from_arrays([pa.array(["c"]), json_values], schema=schema)
+
+    table = await mem_db_async.create_table("json_add", schema=schema)
+    await table.add(data, on_bad_vectors="fill")
+
+    rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
+    assert rows == [{"id": "c", "j": '{"k":3}'}]
 
 
 def test_create_with_embedding_function(mem_db: DBConnection):
@@ -3915,6 +4123,29 @@ def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
         table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
 
 
+def test_computed_column_blob_projection_inherits_semantics(tmp_path):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_column_blob", schema=schema)
+    table.add(
+        [
+            {"id": 1, "image": b"hello"},
+            {"id": 2, "image": b""},
+            {"id": 3, "image": None},
+        ]
+    )
+
+    table.add_columns(computed={"image_copy": "image", "second_copy": "image_copy"})
+    assert table.refresh_column("image_copy").rows_filled == 2
+    assert table.refresh_column("second_copy").rows_filled == 2
+    assert table.blob_columns() == ["image", "image_copy", "second_copy"]
+
+    hits = table.search().with_row_id(True).limit(10).to_arrow()
+    rows = sorted(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+    copied = table.fetch_blobs("second_copy", [row_id for _, row_id in rows])
+    assert copied.to_pylist() == [b"hello", b"", None]
+
+
 @pytest.mark.asyncio
 async def test_computed_column_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -3933,9 +4164,20 @@ def test_refresh_column_async_returns_job(tmp_path):
 
     job = table.refresh_column_async("doubled")
     assert job.id is None  # in-process jobs have no server id
-    job.wait()
+    result = job.wait()
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.rows_assigned == 2
+    assert result.rows_failed == 0
+    assert result.rows_remaining == 0
+    assert result.source_version == 2
+    assert result.published_version == 3
     assert job.status() == "finished"
     assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    no_op = table.refresh_column_async("doubled").wait()
+    assert no_op.rows_assigned == 0
+    assert no_op.source_version == 3
+    assert no_op.published_version is None
 
     # Bad input raises at the call, not through the job.
     with pytest.raises(Exception, match="not a computed column"):
@@ -3949,6 +4191,10 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     await table.add_columns(computed={"tripled": "x * 3"})
 
     job = await table.refresh_column_async("tripled")
-    await job.wait()
+    result = await job.wait()
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.rows_assigned == 1
+    assert result.source_version == 2
+    assert result.published_version == 3
     assert await job.status() == "finished"
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]

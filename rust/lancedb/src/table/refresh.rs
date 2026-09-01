@@ -7,6 +7,16 @@
 //! therefore idempotent and does not observe input mutation -- once a row is
 //! filled, changing what the expression reads leaves the stored result alone.
 //!
+//! A column's computed inputs are filled first -- the dependency graph is
+//! walked once, each reachable column filled once in dependency order, each
+//! fill its own commit. Every fill in the pass, the requested column's
+//! included, covers only the fragments of the snapshot the pass started
+//! from: a commit may rebase over a concurrent append, and the fragment that
+//! admits carries placeholder nulls no earlier fill covered, so it waits for
+//! a later refresh rather than being read as values. Two concurrent fills of
+//! one input collide on its field in lance's conflict check, so a dependent
+//! fill can only commit over inputs that were durable when it read them.
+//!
 //! Two passes per fragment. The first scans only the unfilled live rows and
 //! evaluates the expression over them, which yields the exact fill count and
 //! decides whether the fragment is staged at all -- a fragment where nothing
@@ -19,10 +29,14 @@
 //! inputs masked to null first, so a poison value in a row nobody is filling
 //! cannot fail the refresh.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions};
-use arrow_schema::Schema as ArrowSchema;
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, LargeBinaryArray, RecordBatch, RecordBatchOptions, StructArray,
+    new_null_array,
+};
+use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
 use datafusion_expr::ColumnarValue;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lance::Dataset;
@@ -30,7 +44,7 @@ use lance::dataset::WriteDestination;
 use lance::dataset::fragment::FileFragment;
 use lance::dataset::transaction::Operation;
 use lance_core::ROW_ID;
-use lance_core::datatypes::Schema as LanceSchema;
+use lance_core::datatypes::{BlobHandling, Schema as LanceSchema};
 use serde::{Deserialize, Serialize};
 
 use super::computed_columns::{BoundExpression, ComputedColumnKind, computed_column_from_field};
@@ -41,7 +55,8 @@ use crate::{Error, Result};
 /// The result of refreshing a computed column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RefreshColumnResult {
-    /// Rows that had a value computed.
+    /// Rows that had a value computed, in the requested column only; inputs
+    /// filled on its behalf are not counted.
     #[serde(default)]
     pub rows_filled: u64,
     /// The commit version associated with the operation.
@@ -49,18 +64,38 @@ pub struct RefreshColumnResult {
     pub version: u64,
 }
 
+struct RefreshExecution {
+    result: RefreshColumnResult,
+    source_version: u64,
+    published_version: Option<u64>,
+}
+
 /// Internal implementation of the refresh logic.
 pub(crate) async fn execute_refresh_column(
     table: &NativeTable,
     column: &str,
 ) -> Result<RefreshColumnResult> {
+    Ok(execute_refresh_column_with_source(table, column)
+        .await?
+        .result)
+}
+
+async fn execute_refresh_column_with_source(
+    table: &NativeTable,
+    column: &str,
+) -> Result<RefreshExecution> {
     table.dataset.ensure_mutable()?;
     ensure_no_lsm_write_spec(table).await?;
     let dataset = table.dataset.get().await?;
 
     let expression = declared_expression(&dataset, column)?;
     let schema = Arc::new(ArrowSchema::from(dataset.schema()));
-    let bound = Arc::new(super::computed_columns::bind(schema, column, &expression)?);
+    let bound = Arc::new(super::computed_columns::bind(
+        schema.clone(),
+        column,
+        &expression,
+    )?);
+    ensure_inputs_filled(&dataset, &schema, column, &bound).await?;
     let field = dataset
         .schema()
         .field(column)
@@ -73,6 +108,7 @@ pub(crate) async fn execute_refresh_column(
         fields: vec![field.clone()],
         metadata: Default::default(),
     };
+    let output_is_blob = field.is_blob_v2();
 
     let mut rows_filled = 0u64;
     let mut replacements = Vec::new();
@@ -82,25 +118,30 @@ pub(crate) async fn execute_refresh_column(
             continue;
         }
         rows_filled += gained;
-        let values = fill_stream(&dataset, &fragment, bound.clone(), column).await?;
+        let values =
+            fill_stream(&dataset, &fragment, bound.clone(), column, output_is_blob).await?;
         replacements.push(fragment.write_columns(values, &column_schema).await?);
     }
 
+    let source_version = dataset.version().version;
     if replacements.is_empty() {
-        return Ok(RefreshColumnResult {
-            rows_filled: 0,
-            version: dataset.version().version,
+        return Ok(RefreshExecution {
+            result: RefreshColumnResult {
+                rows_filled: 0,
+                version: source_version,
+            },
+            source_version,
+            published_version: None,
         });
     }
 
-    let read_version = dataset.version().version;
     // The dataset's own session, so registrations and caches survive the
     // commit being installed on the handle.
     let session = dataset.session();
     let new_dataset = Dataset::commit(
         WriteDestination::Dataset(dataset.clone()),
         Operation::DataReplacement { replacements },
-        Some(read_version),
+        Some(source_version),
         None,
         None,
         session,
@@ -110,14 +151,62 @@ pub(crate) async fn execute_refresh_column(
 
     let version = new_dataset.version().version;
     table.dataset.update(new_dataset);
-    Ok(RefreshColumnResult {
-        rows_filled,
-        version,
+    Ok(RefreshExecution {
+        result: RefreshColumnResult {
+            rows_filled,
+            version,
+        },
+        source_version,
+        published_version: Some(version),
     })
 }
 
+/// Refuse while a computed input still has rows a refresh of it would fill:
+/// read now, its placeholder null would be evaluated as a value and kept.
+async fn ensure_inputs_filled(
+    dataset: &Dataset,
+    schema: &Arc<ArrowSchema>,
+    column: &str,
+    bound: &BoundExpression,
+) -> Result<()> {
+    for input in &bound.roots {
+        let Some(declaration) = schema
+            .field_with_name(input)
+            .ok()
+            .and_then(computed_column_from_field)
+        else {
+            continue;
+        };
+        let ComputedColumnKind::Sql { expression } = &declaration.kind else {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "computed column '{column}' reads '{input}', whose fill state this \
+                     refresh cannot check; refresh '{input}' first"
+                ),
+            });
+        };
+        let input_bound = super::computed_columns::bind(schema.clone(), input, expression)?;
+        let mut unfilled = 0u64;
+        for fragment in dataset.get_fragments() {
+            unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input).await?;
+        }
+        if unfilled > 0 {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "computed column '{column}' reads '{input}', which has {unfilled} unfilled \
+                     rows; refresh '{input}' first"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Run the refresh as a [`Job`] in this process.
-pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &str) -> Result<Job> {
+pub(crate) async fn execute_refresh_column_async(
+    table: &NativeTable,
+    column: &str,
+) -> Result<Job<crate::function::RefreshColumnResult>> {
     // Validate before spawning so bad input is reported by this call rather
     // than only by the job.
     table.dataset.ensure_mutable()?;
@@ -129,9 +218,15 @@ pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &s
     let table = table.clone();
     let column = column.to_string();
     Ok(Job::spawned(tokio::spawn(async move {
-        execute_refresh_column(&table, &column).await?;
+        let execution = execute_refresh_column_with_source(&table, &column).await?;
         table.bump_freshness();
-        Ok(())
+        Ok(crate::function::RefreshColumnResult {
+            rows_assigned: execution.result.rows_filled,
+            rows_failed: 0,
+            rows_remaining: 0,
+            source_version: execution.source_version,
+            published_version: execution.published_version,
+        })
     })))
 }
 
@@ -141,11 +236,19 @@ pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &s
 /// un-compacted MemWAL tiers it cannot reach -- success would silently omit
 /// readable rows.
 async fn ensure_no_lsm_write_spec(table: &NativeTable) -> Result<()> {
-    // The catch-up flag outlives unset and marks retained SSTable rows.
-    let catchup = table.dataset.get().await?.manifest().reader_feature_flags
-        & lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP
-        != 0;
-    if catchup || table.get_lsm_write_spec().await?.is_some() {
+    use lance::dataset::mem_wal::DatasetMemWalExt;
+
+    // Unset drops the MemWAL index, so the spec alone stops describing a table
+    // whose SSTables still hold rows. The shard directories outlive it and are
+    // the durable evidence.
+    let retained_sstables = !table
+        .dataset
+        .get()
+        .await?
+        .list_mem_wal_latest_shard_ids()
+        .await?
+        .is_empty();
+    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "refresh_column is not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
@@ -169,6 +272,9 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
         })?;
     match declaration.kind {
         ComputedColumnKind::Sql { expression } => Ok(expression),
+        ComputedColumnKind::Function { .. } => Err(Error::NotSupported {
+            message: "registered Function columns are refreshed only by a remote server Job".into(),
+        }),
         ComputedColumnKind::Unrecognized { kind } => Err(Error::NotSupported {
             message: format!(
                 "computed column '{column}' is defined by '{kind}', which this version of \
@@ -182,7 +288,7 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
 ///
 /// Lance's dialect delimits with backticks, so a double-quoted name would
 /// parse as a string literal rather than a column.
-fn quote_identifier(name: &str) -> String {
+pub(crate) fn quote_identifier(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
@@ -194,12 +300,15 @@ fn evaluation_batch(
     mask_out: Option<&BooleanArray>,
 ) -> lance_core::Result<RecordBatch> {
     let mut columns = Vec::with_capacity(bound.roots.len());
+    let mut fields = Vec::with_capacity(bound.roots.len());
     for name in &bound.roots {
-        let column = batch.column_by_name(name).ok_or_else(|| {
+        let index = batch.schema_ref().index_of(name).map_err(|_| {
             lance_core::Error::invalid_input(format!(
                 "refreshing a computed column read no {name} column"
             ))
         })?;
+        let column = batch.column(index);
+        fields.push(batch.schema_ref().field(index).clone());
         // Rows outside the mask must not reach the expression: a value in a
         // deleted or already-filled row can be one it would choke on.
         columns.push(match mask_out {
@@ -208,7 +317,7 @@ fn evaluation_batch(
         });
     }
     Ok(RecordBatch::try_new_with_options(
-        bound.read_schema.clone(),
+        Arc::new(ArrowSchema::new(fields)),
         columns,
         &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
     )?)
@@ -229,6 +338,99 @@ fn evaluate(bound: &BoundExpression, batch: &RecordBatch) -> lance_core::Result<
     }
 }
 
+fn materialized_blob_ids(schema: &LanceSchema, paths: &[String]) -> Result<HashSet<u32>> {
+    paths
+        .iter()
+        .map(|path| {
+            let field = schema
+                .resolve(path)
+                .and_then(|fields| fields.last().copied())
+                .ok_or_else(|| Error::InvalidInput {
+                    message: format!("computed Blob input '{path}' no longer exists"),
+                })?;
+            if !field.is_blob_v2() {
+                return Err(Error::InvalidInput {
+                    message: format!("computed Blob input '{path}' is no longer Blob v2"),
+                });
+            }
+            u32::try_from(field.id).map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "computed Blob input '{path}' has invalid field id {}",
+                    field.id
+                ),
+            })
+        })
+        .collect()
+}
+
+fn configure_blob_inputs(
+    scanner: &mut lance::dataset::scanner::Scanner,
+    schema: &LanceSchema,
+    bound: &BoundExpression,
+    extra_blob_id: Option<u32>,
+) -> Result<()> {
+    let mut ids = materialized_blob_ids(schema, &bound.blob_paths)?;
+    ids.extend(extra_blob_id);
+    scanner.blob_handling(BlobHandling::SomeBlobsBinary(ids));
+    Ok(())
+}
+
+fn blob_array_from_binary(
+    array: &ArrayRef,
+    target_field: &ArrowField,
+) -> lance_core::Result<ArrayRef> {
+    let values = array
+        .as_any()
+        .downcast_ref::<LargeBinaryArray>()
+        .ok_or_else(|| {
+            lance_core::Error::invalid_input(format!(
+                "a Blob v2 computed output produced {}, expected LargeBinary",
+                array.data_type()
+            ))
+        })?;
+    let mut builder = lance::blob::BlobArrayBuilder::new(values.len());
+    for index in 0..values.len() {
+        if values.is_null(index) {
+            builder.push_null()?;
+        } else {
+            builder.push_bytes(values.value(index))?;
+        }
+    }
+    let minimal = builder.finish()?;
+    let minimal = minimal
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| lance_core::Error::internal("Blob builder returned a non-struct array"))?;
+    let DataType::Struct(target_fields) = target_field.data_type() else {
+        return Err(lance_core::Error::invalid_input(format!(
+            "Blob v2 output field '{}' has non-struct type {}",
+            target_field.name(),
+            target_field.data_type()
+        )));
+    };
+    let columns = target_fields
+        .iter()
+        .map(|field| match field.name().as_str() {
+            "data" | "uri" => minimal
+                .column_by_name(field.name())
+                .cloned()
+                .ok_or_else(|| {
+                    lance_core::Error::internal(format!("Blob builder omitted '{}'", field.name()))
+                }),
+            "position" | "size" => Ok(new_null_array(field.data_type(), minimal.len())),
+            name => Err(lance_core::Error::invalid_input(format!(
+                "Blob v2 output field '{}' has unsupported logical child '{name}'",
+                target_field.name()
+            ))),
+        })
+        .collect::<lance_core::Result<Vec<_>>>()?;
+    Ok(Arc::new(StructArray::try_new(
+        target_fields.clone(),
+        columns,
+        minimal.nulls().cloned(),
+    )?))
+}
+
 /// How many rows of one fragment would gain a value.
 ///
 /// Scans only the unfilled live rows -- deleted rows never reach the
@@ -247,6 +449,7 @@ async fn count_fragment_gains(
         .with_row_id()
         .filter(&format!("{} IS NULL", quote_identifier(column)))?
         .project(&bound.roots)?;
+    configure_blob_inputs(&mut scanner, dataset.schema(), bound, None)?;
 
     let mut gained = 0u64;
     let mut batches = scanner.try_into_stream().await?;
@@ -268,6 +471,7 @@ async fn fill_stream(
     fragment: &FileFragment,
     bound: Arc<BoundExpression>,
     column: &str,
+    output_is_blob: bool,
 ) -> Result<impl Stream<Item = lance_core::Result<RecordBatch>> + Send + use<>> {
     let mut projection: Vec<String> = bound.roots.clone();
     projection.push(column.to_string());
@@ -277,6 +481,20 @@ async fn fill_stream(
         .with_row_id()
         .include_deleted_rows()
         .project(&projection)?;
+    let output_blob_id = output_is_blob
+        .then(|| {
+            dataset
+                .schema()
+                .field(column)
+                .and_then(|field| u32::try_from(field.id).ok())
+        })
+        .flatten();
+    configure_blob_inputs(
+        &mut scanner,
+        dataset.schema(),
+        bound.as_ref(),
+        output_blob_id,
+    )?;
 
     let projected = Arc::new(ArrowSchema::new(vec![
         ArrowSchema::from(dataset.schema())
@@ -312,6 +530,11 @@ async fn fill_stream(
 
         let computed = evaluate(&bound, &evaluation_batch(&batch, &bound, Some(&keep))?)?;
         let merged = arrow_select::zip::zip(&fill, &computed, existing)?;
+        let merged = if output_is_blob {
+            blob_array_from_binary(&merged, projected.field(0))?
+        } else {
+            merged
+        };
         Ok(RecordBatch::try_new(projected.clone(), vec![merged])?)
     }))
 }
@@ -320,8 +543,12 @@ async fn fill_stream(
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{Int32Array, record_batch};
+    use arrow_array::{
+        Array, ArrayRef, Int32Array, LargeBinaryArray, RecordBatch, StructArray, record_batch,
+    };
+    use arrow_schema::Field as ArrowField;
     use futures::TryStreamExt;
+    use lance_core::ROW_ID;
 
     use crate::connect;
     use crate::query::{ExecutableQuery, QueryBase, Select};
@@ -342,7 +569,8 @@ mod tests {
             .version)
     }
 
-    async fn read(table: &Table, column: &str) -> Vec<Option<i32>> {
+    async fn read(table: &Table, column: &str) -> Vec<Option<i64>> {
+        use arrow_array::{Array, Int64Array};
         let batches = table
             .query()
             .select(Select::columns(&[column]))
@@ -352,15 +580,19 @@ mod tests {
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
-        let mut values: Vec<Option<i32>> = batches
+        let mut values: Vec<Option<i64>> = batches
             .iter()
             .flat_map(|batch| {
-                batch[column]
-                    .as_any()
-                    .downcast_ref::<Int32Array>()
-                    .unwrap()
-                    .iter()
-                    .collect::<Vec<_>>()
+                let array = &batch[column];
+                match array.as_any().downcast_ref::<Int32Array>() {
+                    Some(ints) => ints.iter().map(|v| v.map(i64::from)).collect::<Vec<_>>(),
+                    None => array
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .iter()
+                        .collect::<Vec<_>>(),
+                }
             })
             .collect();
         values.sort();
@@ -370,6 +602,117 @@ mod tests {
     async fn append(table: &Table, values: Vec<i32>) {
         let batch = record_batch!(("x", Int32, values)).unwrap();
         table.add(batch).execute().await.unwrap();
+    }
+
+    #[test]
+    fn test_blob_output_matches_complete_logical_field() {
+        let values: ArrayRef = Arc::new(LargeBinaryArray::from(vec![
+            Some(b"hello".as_slice()),
+            None,
+        ]));
+        let field = ArrowField::new(
+            "image",
+            lance_core::datatypes::BLOB_V2_LOGICAL_TYPE.clone(),
+            true,
+        );
+
+        let output = super::blob_array_from_binary(&values, &field).unwrap();
+        assert_eq!(output.data_type(), field.data_type());
+        let output = output.as_any().downcast_ref::<StructArray>().unwrap();
+        assert_eq!(output.column_by_name("position").unwrap().null_count(), 2);
+        assert_eq!(output.column_by_name("size").unwrap().null_count(), 2);
+    }
+
+    /// The gate's reproducer: `b = coalesce(a, 0)` refreshed before `a`
+    /// must not bake zeros from `a`'s placeholder null. It is refused, and
+    /// names the input, until `a` is filled -- after every append too.
+    #[tokio::test]
+    async fn test_dependent_refresh_refuses_an_unfilled_input() {
+        let table = table_with("dependent_refresh_order", vec![1, 2, 3]).await;
+        table
+            .add_columns()
+            .computed("a", "x + 1")
+            .computed("b", "coalesce(a, 0)")
+            .execute()
+            .await
+            .unwrap();
+
+        let err = table.refresh_column("b").await.unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("refresh 'a' first")),
+            "{err}"
+        );
+        assert_eq!(read(&table, "b").await, vec![None, None, None]);
+
+        assert_eq!(table.refresh_column("a").await.unwrap().rows_filled, 3);
+        assert_eq!(table.refresh_column("b").await.unwrap().rows_filled, 3);
+        assert_eq!(read(&table, "b").await, vec![Some(2), Some(3), Some(4)]);
+
+        append(&table, vec![10]).await;
+        assert!(table.refresh_column("b").await.is_err());
+        table.refresh_column("a").await.unwrap();
+        assert_eq!(table.refresh_column("b").await.unwrap().rows_filled, 1);
+        assert_eq!(
+            table.count_rows(Some("b = 0".to_string())).await.unwrap(),
+            0
+        );
+    }
+
+    /// Names that need quoting, and a nested input, survive the trip through
+    /// declaration metadata and the dependency check: the recorded inputs
+    /// are matched by name, never re-parsed as SQL.
+    #[tokio::test]
+    async fn test_dependent_refresh_handles_awkward_column_names() {
+        use arrow_array::{Int32Array, StructArray};
+        use arrow_schema::{DataType, Field, Fields};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let age_fields = Fields::from(vec![Field::new("age", DataType::Int32, true)]);
+        let meta = StructArray::new(
+            age_fields.clone(),
+            vec![Arc::new(Int32Array::from(vec![10, 20])) as _],
+            None,
+        );
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            Field::new("camelCase", DataType::Int32, true),
+            Field::new("with-hyphen", DataType::Int32, true),
+            Field::new("meta", DataType::Struct(age_fields), true),
+        ]));
+        let batch = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])) as _,
+                Arc::new(Int32Array::from(vec![100, 200])) as _,
+                Arc::new(meta) as _,
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("awkward_names", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .add_columns()
+            .computed("y", "`camelCase` * 2")
+            .computed("z", "coalesce(y, 0) + `with-hyphen` + meta.age")
+            .execute()
+            .await
+            .unwrap();
+        let z = crate::table::computed_columns::computed_columns(
+            table.schema().await.unwrap().as_ref(),
+        )
+        .into_iter()
+        .find(|c| c.name == "z")
+        .unwrap();
+        assert_eq!(z.inputs, vec!["meta.age", "with-hyphen", "y"]);
+
+        let err = table.refresh_column("z").await.unwrap_err();
+        assert!(err.to_string().contains("refresh 'y' first"), "{err}");
+        assert_eq!(table.refresh_column("y").await.unwrap().rows_filled, 2);
+        assert_eq!(table.refresh_column("z").await.unwrap().rows_filled, 2);
+        assert_eq!(read(&table, "z").await, vec![Some(112), Some(224)]);
     }
 
     #[tokio::test]
@@ -385,6 +728,17 @@ mod tests {
             read(&table, "doubled").await,
             vec![Some(2), Some(4), Some(6)]
         );
+
+        let no_op = table
+            .refresh_column_async("doubled")
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(no_op.rows_assigned, 0);
+        assert_eq!(no_op.source_version, 3);
+        assert_eq!(no_op.published_version, None);
     }
 
     /// Values written after the last refresh must be reachable by another one.
@@ -586,7 +940,7 @@ mod tests {
 
     /// A fragment spanning several scan batches exercises the streamed fill:
     /// the probe buffers only until the first gained value and the rest flows
-    /// through write_column a batch at a time.
+    /// through write_columns a batch at a time.
     #[tokio::test]
     async fn test_refresh_streams_a_multi_batch_fragment() {
         let values: Vec<i32> = (0..20_000).collect();
@@ -598,7 +952,8 @@ mod tests {
 
         let read_back = read(&table, "doubled").await;
         assert_eq!(read_back.len(), 20_000);
-        let mut expected: Vec<Option<i32>> = values.iter().map(|v| Some(v * 2)).collect();
+        let mut expected: Vec<Option<i64>> =
+            values.iter().map(|v| Some(i64::from(v * 2))).collect();
         expected.sort();
         assert_eq!(read_back, expected);
     }
@@ -635,7 +990,12 @@ mod tests {
 
         let job = table.refresh_column_async("doubled").await.unwrap();
         assert!(job.id().is_none(), "in-process jobs have no server id");
-        job.wait().await.unwrap();
+        let result = job.wait().await.unwrap();
+        assert_eq!(result.rows_assigned, 3);
+        assert_eq!(result.rows_failed, 0);
+        assert_eq!(result.rows_remaining, 0);
+        assert_eq!(result.source_version, 2);
+        assert_eq!(result.published_version, Some(3));
         assert_eq!(job.status().await.unwrap(), "finished");
         assert_eq!(
             read(&table, "doubled").await,
@@ -661,9 +1021,9 @@ mod tests {
         declare_doubled(&table).await.unwrap();
 
         let job = table.refresh_column_async("doubled").await.unwrap();
-        job.wait().await.unwrap();
+        let first = job.wait().await.unwrap();
         // A second wait after completion observes the same outcome.
-        job.wait().await.unwrap();
+        assert_eq!(job.wait().await.unwrap(), first);
         assert_eq!(job.status().await.unwrap(), "finished");
     }
 
@@ -918,7 +1278,6 @@ mod tests {
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
             .await
             .unwrap();
-        table.require_mem_wal_index_catchup().await.unwrap();
         let mut merge = table.merge_insert(&["x"]);
         merge
             .when_matched_update_all(None)
@@ -950,5 +1309,367 @@ mod tests {
 
         let err = table.refresh_column("embedding").await.unwrap_err();
         assert!(matches!(err, Error::NotSupported { message } if message.contains("udf")));
+    }
+
+    fn blob_batch(ids: Vec<i32>, payloads: Vec<Option<&[u8]>>) -> RecordBatch {
+        use arrow_array::Int32Array;
+        use arrow_schema::{Field, Schema};
+
+        let mut builder = lance::blob::BlobArrayBuilder::new(payloads.len());
+        for payload in payloads {
+            match payload {
+                Some(payload) => builder.push_bytes(payload).unwrap(),
+                None => builder.push_null().unwrap(),
+            }
+        }
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", arrow_schema::DataType::Int32, false),
+                crate::blob("image", true),
+            ])),
+            vec![Arc::new(Int32Array::from(ids)), builder.finish().unwrap()],
+        )
+        .unwrap()
+    }
+
+    async fn create_blob_table(path: &std::path::Path, batch: RecordBatch) -> Table {
+        let conn = connect(path.to_str().unwrap()).execute().await.unwrap();
+        conn.create_table("blobs", batch).execute().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_refresh_inherits_and_publishes_blob_output() {
+        use arrow_array::UInt64Array;
+        use lance_arrow::{
+            BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY, BLOB_INLINE_SIZE_THRESHOLD_META_KEY,
+        };
+        use lance_core::datatypes::BlobKind;
+
+        use crate::table::schema_evolution::FieldMetadataUpdate;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let table = create_blob_table(
+            tmp.path(),
+            blob_batch(
+                vec![1, 2, 3, 4],
+                vec![Some(b"hello"), Some(b"ab"), Some(b""), None],
+            ),
+        )
+        .await;
+        table
+            .add_columns()
+            .computed("image_copy", "image")
+            .execute()
+            .await
+            .unwrap();
+        table
+            .update_field_metadata(&[FieldMetadataUpdate::new("image_copy")
+                .set(BLOB_INLINE_SIZE_THRESHOLD_META_KEY, "1")
+                .set(BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY, "4")])
+            .await
+            .unwrap();
+
+        let first_refresh = table.refresh_column("image_copy").await.unwrap();
+        assert_eq!(first_refresh.rows_filled, 3);
+        assert_eq!(
+            table.blob_columns().await.unwrap(),
+            vec!["image".to_string(), "image_copy".to_string()]
+        );
+
+        let batches = table
+            .query()
+            .with_row_id()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert!(
+            batch
+                .column_by_name("image_copy")
+                .unwrap()
+                .as_any()
+                .is::<arrow_array::StructArray>()
+        );
+        let row_ids = batch
+            .column_by_name(ROW_ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        let original = table.fetch_blobs("image", &row_ids).await.unwrap();
+        let copied = table.fetch_blobs("image_copy", &row_ids).await.unwrap();
+        assert_eq!(original, copied);
+        let ids = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let files = table
+            .fetch_blob_files("image_copy", &row_ids)
+            .await
+            .unwrap();
+        let mut layouts = ids
+            .values()
+            .iter()
+            .copied()
+            .zip(files)
+            .map(|(id, file)| (id, file.and_then(|file| file.kind())))
+            .collect::<Vec<_>>();
+        layouts.sort_by_key(|(id, _)| *id);
+        assert_eq!(
+            layouts,
+            vec![
+                (1, Some(BlobKind::Dedicated)),
+                (2, Some(BlobKind::Packed)),
+                (3, Some(BlobKind::Inline)),
+                (4, None),
+            ]
+        );
+
+        table
+            .add(blob_batch(vec![5], vec![Some(b"appended")]))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .optimize(crate::table::OptimizeAction::Compact {
+                options: crate::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .refresh_column("image_copy")
+                .await
+                .unwrap()
+                .rows_filled,
+            1
+        );
+        assert_eq!(
+            table
+                .refresh_column("image_copy")
+                .await
+                .unwrap()
+                .rows_filled,
+            0
+        );
+
+        table.checkout(first_refresh.version).await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
+        assert_eq!(
+            table.blob_columns().await.unwrap(),
+            vec!["image".to_string(), "image_copy".to_string()]
+        );
+        table.checkout_latest().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_refresh_inherits_nested_struct_blob_input() {
+        use arrow_array::{Int32Array, StructArray, UInt64Array};
+        use arrow_schema::{DataType, Field, Fields, Schema};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut blob_builder = lance::blob::BlobArrayBuilder::new(2);
+        blob_builder.push_bytes(b"nested").unwrap();
+        blob_builder.push_null().unwrap();
+        let blob_field = crate::blob("image", true);
+        let metadata_fields = Fields::from(vec![blob_field.clone()]);
+        let metadata = StructArray::new(
+            metadata_fields.clone(),
+            vec![blob_builder.finish().unwrap()],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("metadata", DataType::Struct(metadata_fields), true),
+            ])),
+            vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(metadata)],
+        )
+        .unwrap();
+        let table = create_blob_table(tmp.path(), batch).await;
+        table
+            .add_columns()
+            .computed("payload_copy", "metadata.image")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            table
+                .refresh_column("payload_copy")
+                .await
+                .unwrap()
+                .rows_filled,
+            1
+        );
+        assert_eq!(
+            table.blob_columns().await.unwrap(),
+            vec!["metadata.image".to_string(), "payload_copy".to_string()]
+        );
+        let batches = table
+            .query()
+            .with_row_id()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let row_ids = batches[0]
+            .column_by_name(ROW_ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap()
+            .values();
+        let payloads = table.fetch_blobs("payload_copy", row_ids).await.unwrap();
+        assert_eq!(payloads.value(0), b"nested");
+        assert!(payloads.is_null(1));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_preserves_list_shape_when_materializing_blob_input() {
+        use arrow_array::{Int32Array, ListArray};
+        use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut blob_builder = lance::blob::BlobArrayBuilder::new(3);
+        blob_builder.push_bytes(b"a").unwrap();
+        blob_builder.push_bytes(b"bb").unwrap();
+        blob_builder.push_null().unwrap();
+        let item = Arc::new(crate::blob("item", true));
+        let images = ListArray::new(
+            item.clone(),
+            OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])),
+            blob_builder.finish().unwrap(),
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("images", DataType::List(item), true),
+            ])),
+            vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(images)],
+        )
+        .unwrap();
+        let table = create_blob_table(tmp.path(), batch).await;
+        table
+            .add_columns()
+            .computed("image_payloads", "images")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            table
+                .refresh_column("image_payloads")
+                .await
+                .unwrap()
+                .rows_filled,
+            2
+        );
+        let batches = table
+            .query()
+            .select(Select::columns(&["image_payloads"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let output = batches[0]
+            .column_by_name("image_payloads")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        assert_eq!(output.value_offsets(), &[0, 2, 3]);
+        assert!(output.values().as_any().is::<LargeBinaryArray>());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_inherits_external_blob_input() {
+        use arrow_array::{Int32Array, StringArray, UInt64Array};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = b"external-payload";
+        let path = tmp.path().join("payload.bin");
+        std::fs::write(&path, payload).unwrap();
+        let uri = url::Url::from_file_path(path).unwrap().to_string();
+        let conn = connect(tmp.path().join("db").to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_empty_table(
+                "external",
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    crate::blob("image", true),
+                ])),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("image", DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![Some(uri)])),
+            ],
+        )
+        .unwrap();
+        table
+            .add(batch)
+            .allow_external_blob_outside_bases(true)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .add_columns()
+            .computed("payload_copy", "image")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            table
+                .refresh_column("payload_copy")
+                .await
+                .unwrap()
+                .rows_filled,
+            1
+        );
+        let batches = table
+            .query()
+            .with_row_id()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let row_ids = batches[0]
+            .column_by_name(ROW_ID)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap()
+            .values();
+        let payloads = table.fetch_blobs("payload_copy", row_ids).await.unwrap();
+        assert_eq!(payloads.value(0), payload);
     }
 }
