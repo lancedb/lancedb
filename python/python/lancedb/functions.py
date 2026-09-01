@@ -1190,7 +1190,8 @@ class UdfDefinition:
     original Python function, which keeps local unit testing ordinary. By
     default remote execution invokes the callable once per row. A callable
     whose parameters are all annotated as ``pyarrow.Array`` receives whole
-    Arrow arrays and may return a ``pyarrow.Array`` instead.
+    Arrow arrays and returns a ``pyarrow.Array`` instead. This authoring choice
+    is independent of the internal artifact adapter in the registration request.
     """
 
     def __init__(

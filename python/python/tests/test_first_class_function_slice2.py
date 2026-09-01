@@ -848,6 +848,10 @@ def test_blob_fields_support_vectorized_pyarrow_arrays():
     assert signature.inputs[0].nullable is True
     assert signature.output.arrow_type == "blob_v2"
     assert signature.output.nullable is False
+    assert copy_blobs.registration_request.artifact.adapter.kind == (
+        "scalar_to_arrow_batch"
+    )
+    assert copy_blobs.registration_request.artifact.adapter.version == 1
 
     source = base64.b64decode(
         copy_blobs.registration_request.artifact.content.data
