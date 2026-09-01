@@ -7,18 +7,7 @@ use arrow::{
     datatypes::Schema,
     pyarrow::{PyArrowType, ToPyArrow},
 };
-use datafusion::{
-    dataframe::DataFrame as DfDataFrame,
-    datasource::provider_as_source,
-    execution::context::SessionContext,
-    logical_expr::{JoinType, LogicalPlanBuilder},
-};
-use datafusion_catalog::empty::EmptyTable;
-use datafusion_common::{Column, TableReference};
-use datafusion_expr::{Expr as DfExpr, SortExpr};
-use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
-use datafusion_substrait::{logical_plan::producer::to_substrait_plan, substrait::proto::Plan};
-use prost::Message;
+use lancedb::dataframe::{DataFrame, JoinType};
 use pyo3::{
     Bound, Py, PyAny, PyResult, Python, exceptions::PyValueError, pyclass, pyfunction, pymethods,
     types::PyBytes,
@@ -47,42 +36,19 @@ fn join_type(value: &str) -> PyResult<JoinType> {
 }
 
 pub(crate) fn plan_version(plan: &[u8]) -> PyResult<String> {
-    let plan = Plan::decode(plan).map_err(dataframe_error)?;
-    let version = plan
-        .version
-        .ok_or_else(|| PyValueError::new_err("Substrait plan does not contain a version"))?;
-    Ok(format!(
-        "{}.{}.{}",
-        version.major_number, version.minor_number, version.patch_number
-    ))
+    lancedb::dataframe::plan_version(plan).map_err(dataframe_error)
 }
 
-/// Native immutable DataFusion logical-plan wrapper used by the Python DataFrame API.
+/// Python binding around the language-neutral LanceDB DataFrame planner.
 #[pyclass(name = "NativeDataFrame", module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone)]
 pub struct NativeDataFrame {
-    inner: DfDataFrame,
+    inner: DataFrame,
 }
 
 impl NativeDataFrame {
-    fn wrap(result: datafusion_common::Result<DfDataFrame>) -> PyResult<Self> {
+    fn wrap(result: lancedb::Result<DataFrame>) -> PyResult<Self> {
         result.map(|inner| Self { inner }).map_err(dataframe_error)
-    }
-
-    fn encoded_plan(&self) -> PyResult<(Vec<u8>, String)> {
-        let (state, logical_plan) = self.inner.clone().into_parts();
-        let plan = to_substrait_plan(&logical_plan, &state).map_err(dataframe_error)?;
-        let version = plan
-            .version
-            .as_ref()
-            .map(|version| {
-                format!(
-                    "{}.{}.{}",
-                    version.major_number, version.minor_number, version.patch_number
-                )
-            })
-            .ok_or_else(|| PyValueError::new_err("generated Substrait plan has no version"))?;
-        Ok((plan.encode_to_vec(), version))
     }
 }
 
@@ -90,106 +56,66 @@ impl NativeDataFrame {
 impl NativeDataFrame {
     #[staticmethod]
     fn from_table(name: String, schema: PyArrowType<Schema>) -> PyResult<Self> {
-        let context = SessionContext::new();
-        let source = provider_as_source(Arc::new(EmptyTable::new(Arc::new(schema.0))));
-        let plan = LogicalPlanBuilder::scan(TableReference::bare(name), source, None)
-            .and_then(LogicalPlanBuilder::build)
-            .map_err(dataframe_error)?;
-        Ok(Self {
-            inner: DfDataFrame::new(context.state(), plan),
-        })
+        Self::wrap(DataFrame::from_table(name, Arc::new(schema.0)))
     }
 
     fn select(&self, expressions: Vec<PyExpr>) -> PyResult<Self> {
         Self::wrap(
             self.inner
-                .clone()
-                .select(expressions.into_iter().map(|expr| expr.0)),
+                .select(expressions.into_iter().map(|expr| expr.0).collect()),
         )
     }
 
     fn filter(&self, predicate: PyExpr) -> PyResult<Self> {
-        Self::wrap(self.inner.clone().filter(predicate.0))
+        Self::wrap(self.inner.filter(predicate.0))
     }
 
     fn aggregate(&self, groups: Vec<PyExpr>, aggregates: Vec<PyExpr>) -> PyResult<Self> {
-        Self::wrap(self.inner.clone().aggregate(
+        Self::wrap(self.inner.aggregate(
             groups.into_iter().map(|expr| expr.0).collect(),
             aggregates.into_iter().map(|expr| expr.0).collect(),
         ))
     }
 
     fn sort(&self, expressions: Vec<(PyExpr, bool, bool)>) -> PyResult<Self> {
-        let expressions: Vec<SortExpr> = expressions
-            .into_iter()
-            .map(|(expr, ascending, nulls_first)| expr.0.sort(ascending, nulls_first))
-            .collect();
-        Self::wrap(self.inner.clone().sort(expressions))
+        Self::wrap(
+            self.inner.sort(
+                expressions
+                    .into_iter()
+                    .map(|(expr, ascending, nulls_first)| (expr.0, ascending, nulls_first))
+                    .collect(),
+            ),
+        )
     }
 
     #[pyo3(signature = (count, offset=0))]
     fn limit(&self, count: usize, offset: usize) -> PyResult<Self> {
-        Self::wrap(self.inner.clone().limit(offset, Some(count)))
+        Self::wrap(self.inner.limit(count, offset))
     }
 
     fn distinct(&self) -> PyResult<Self> {
-        Self::wrap(self.inner.clone().distinct())
+        Self::wrap(self.inner.distinct())
     }
 
     fn alias(&self, name: &str) -> PyResult<Self> {
-        Self::wrap(self.inner.clone().alias(name))
+        Self::wrap(self.inner.alias(name))
     }
 
     fn column(&self, name: &str) -> PyResult<PyExpr> {
-        let field = self
-            .inner
-            .schema()
-            .qualified_field_with_unqualified_name(name)
-            .map_err(dataframe_error)?;
-        Ok(PyExpr(DfExpr::Column(Column::from(field))))
+        self.inner.column(name).map(PyExpr).map_err(dataframe_error)
     }
 
     fn with_column(&self, name: &str, expression: PyExpr) -> PyResult<Self> {
-        Self::wrap(self.inner.clone().with_column(name, expression.0))
+        Self::wrap(self.inner.with_column(name, expression.0))
     }
 
     #[pyo3(name = "drop")]
     fn drop_columns(&self, columns: Vec<String>) -> PyResult<Self> {
-        let columns = columns
-            .iter()
-            .map(|name| {
-                self.inner
-                    .schema()
-                    .qualified_field_with_unqualified_name(name)
-                    .map(Column::from)
-                    .map_err(dataframe_error)
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        Self::wrap(self.inner.clone().drop_columns(&columns))
+        Self::wrap(self.inner.drop_columns(&columns))
     }
 
     fn with_column_renamed(&self, old_name: String, new_name: &str) -> PyResult<Self> {
-        let old_column = self
-            .inner
-            .schema()
-            .qualified_field_with_unqualified_name(&old_name)
-            .map(Column::from)
-            .map_err(dataframe_error)?;
-        let projection = self
-            .inner
-            .schema()
-            .iter()
-            .map(|(qualifier, field)| {
-                let column = Column::new(qualifier.cloned(), field.name());
-                let expression = DfExpr::Column(column.clone());
-                if column == old_column {
-                    expression.alias_qualified(qualifier.cloned(), new_name)
-                } else {
-                    expression
-                }
-            })
-            .collect::<Vec<_>>();
-        Self::wrap(self.inner.clone().select(projection))
+        Self::wrap(self.inner.with_column_renamed(&old_name, new_name))
     }
 
     #[pyo3(signature = (other, left_on, right_on, how="inner"))]
@@ -200,92 +126,72 @@ impl NativeDataFrame {
         right_on: Vec<String>,
         how: &str,
     ) -> PyResult<Self> {
-        let left_on = left_on.iter().map(String::as_str).collect::<Vec<_>>();
-        let right_on = right_on.iter().map(String::as_str).collect::<Vec<_>>();
-        Self::wrap(self.inner.clone().join(
-            other.inner.clone(),
-            join_type(how)?,
-            &left_on,
-            &right_on,
-            None,
-        ))
+        Self::wrap(
+            self.inner
+                .join(&other.inner, &left_on, &right_on, join_type(how)?),
+        )
     }
 
     #[pyo3(signature = (other, all=true))]
     fn union(&self, other: &Self, all: bool) -> PyResult<Self> {
-        if all {
-            Self::wrap(self.inner.clone().union(other.inner.clone()))
-        } else {
-            Self::wrap(self.inner.clone().union_distinct(other.inner.clone()))
-        }
+        Self::wrap(self.inner.union(&other.inner, all))
     }
 
     #[pyo3(signature = (other, all=false))]
     fn intersect(&self, other: &Self, all: bool) -> PyResult<Self> {
-        if all {
-            Self::wrap(self.inner.clone().intersect(other.inner.clone()))
-        } else {
-            Self::wrap(self.inner.clone().intersect_distinct(other.inner.clone()))
-        }
+        Self::wrap(self.inner.intersect(&other.inner, all))
     }
 
     #[pyo3(signature = (other, all=false))]
     fn except_(&self, other: &Self, all: bool) -> PyResult<Self> {
-        if all {
-            Self::wrap(self.inner.clone().except(other.inner.clone()))
-        } else {
-            Self::wrap(self.inner.clone().except_distinct(other.inner.clone()))
-        }
+        Self::wrap(self.inner.except(&other.inner, all))
     }
 
     fn schema(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.inner
             .schema()
-            .as_arrow()
-            .clone()
             .to_pyarrow(py)
             .map(Bound::unbind)
+            .map_err(dataframe_error)
     }
 
     fn to_substrait(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
-        let (plan, _) = self.encoded_plan()?;
-        Ok(PyBytes::new(py, &plan).unbind())
+        let plan = self.inner.to_substrait().map_err(dataframe_error)?;
+        Ok(PyBytes::new(py, plan.bytes()).unbind())
     }
 
     fn to_substrait_with_version(&self, py: Python<'_>) -> PyResult<(Py<PyBytes>, String)> {
-        let (plan, version) = self.encoded_plan()?;
-        Ok((PyBytes::new(py, &plan).unbind(), version))
+        let plan = self.inner.to_substrait().map_err(dataframe_error)?;
+        let (bytes, version) = plan.into_parts();
+        Ok((PyBytes::new(py, &bytes).unbind(), version))
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "NativeDataFrame({})",
-            self.inner.logical_plan().display_indent()
-        )
+        format!("NativeDataFrame({})", self.inner.display())
     }
 }
 
 #[pyfunction]
 pub fn aggregate_sum(expr: PyExpr) -> PyExpr {
-    PyExpr(sum(expr.0))
+    PyExpr(lancedb::dataframe::aggregate_sum(expr.0))
 }
 
 #[pyfunction]
 pub fn aggregate_avg(expr: PyExpr) -> PyExpr {
-    PyExpr(avg(expr.0))
+    PyExpr(lancedb::dataframe::aggregate_avg(expr.0))
 }
 
 #[pyfunction]
 pub fn aggregate_min(expr: PyExpr) -> PyExpr {
-    PyExpr(min(expr.0))
+    PyExpr(lancedb::dataframe::aggregate_min(expr.0))
 }
 
 #[pyfunction]
 pub fn aggregate_max(expr: PyExpr) -> PyExpr {
-    PyExpr(max(expr.0))
+    PyExpr(lancedb::dataframe::aggregate_max(expr.0))
 }
 
 #[pyfunction]
 pub fn aggregate_count(expr: PyExpr) -> PyExpr {
-    PyExpr(count(expr.0))
+    PyExpr(lancedb::dataframe::aggregate_count(expr.0))
 }

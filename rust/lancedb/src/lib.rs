@@ -31,6 +31,7 @@
 //! - `gcs` - Enable Google Cloud Storage object store support.
 //! - `oss` - Enable Alibaba Cloud OSS object store support.
 //! - `remote` - Enable remote client to connect to LanceDB cloud.
+//! - `dataframe` - Enable the language-neutral DataFrame and Substrait planner.
 //! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
 //! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
 //! - `metrics` - Publish LanceDB's internal metrics through the
@@ -177,6 +178,8 @@ pub mod blob;
 pub mod connection;
 pub mod data;
 pub mod database;
+#[cfg(feature = "dataframe")]
+pub mod dataframe;
 pub mod dataloader;
 pub mod embeddings;
 pub mod error;

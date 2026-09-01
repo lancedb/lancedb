@@ -33,6 +33,8 @@ datafusion-physical-expr.workspace = true
 datafusion-sql.workspace = true
 datafusion-physical-plan.workspace = true
 datafusion.workspace = true
+datafusion-functions-aggregate = { workspace = true, optional = true }
+datafusion-substrait = { workspace = true, optional = true }
 object_store = { workspace = true }
 snafu = { workspace = true }
 half = { workspace = true }
@@ -156,6 +158,11 @@ remote = [
     "dep:urlencoding",
     "lance-namespace-impls/rest",
     "lance-namespace-impls/rest-adapter",
+]
+dataframe = [
+    "dep:datafusion-functions-aggregate",
+    "dep:datafusion-substrait",
+    "dep:prost",
 ]
 # Publish LanceDB's internal metrics (currently object store request counts,
 # bytes, latency, errors, and throttles) through the `metrics` crate facade,

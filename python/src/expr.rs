@@ -10,9 +10,8 @@
 use std::ops::{Add, Div, Mul, Not, Sub};
 
 use arrow::{datatypes::DataType, pyarrow::PyArrowType};
-use datafusion_common::ScalarValue;
 use lancedb::expr::{
-    DfExpr, col as ldb_col, contains, expr_cast, is_in, lit as df_lit, lower, upper,
+    DfExpr, ScalarValue, col as ldb_col, contains, expr_cast, is_in, lit as df_lit, lower, upper,
 };
 use pyo3::types::{PyBytes, PyDate, PyDateTime};
 use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
