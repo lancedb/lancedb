@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from dataclasses import dataclass
-from typing import Iterable, Union
+from typing import Iterable, Optional, Union
 
 import pyarrow as pa
 
@@ -207,7 +207,12 @@ class Expr:
         """Return True where this expression is between two inclusive bounds."""
         return Expr(self._inner.between(_coerce(low)._inner, _coerce(high)._inner))
 
-    def sort(self, *, ascending: bool = True, nulls_first: bool = True) -> "SortExpr":
+    def sort(
+        self,
+        *,
+        ascending: bool = True,
+        nulls_first: Optional[bool] = None,
+    ) -> "SortExpr":
         """Create a sort expression for :meth:`lancedb.dataframe.DataFrame.sort`."""
         return SortExpr(self, ascending=ascending, nulls_first=nulls_first)
 
@@ -290,7 +295,11 @@ class SortExpr:
 
     expr: Expr
     ascending: bool = True
-    nulls_first: bool = True
+    nulls_first: Optional[bool] = None
+
+    def __post_init__(self) -> None:
+        if self.nulls_first is None:
+            object.__setattr__(self, "nulls_first", not self.ascending)
 
 
 # ── free functions ────────────────────────────────────────────────────────────

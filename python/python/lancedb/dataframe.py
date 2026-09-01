@@ -85,9 +85,14 @@ class _DataFrameBase:
         sorts = []
         for value in expressions:
             if isinstance(value, SortExpr):
-                sorts.append((value.expr._inner, value.ascending, value.nulls_first))
+                nulls_first = (
+                    value.nulls_first
+                    if value.nulls_first is not None
+                    else not value.ascending
+                )
+                sorts.append((value.expr._inner, value.ascending, nulls_first))
             else:
-                sorts.append((_expression(value)._inner, True, True))
+                sorts.append((_expression(value)._inner, True, False))
         return self._wrap(self._inner.sort(sorts))
 
     def limit(self, count: int, offset: int = 0):

@@ -43,6 +43,10 @@ def test_dataframe_builds_substrait_plan(tmp_path):
     total = db.table("MyEvents").aggregate(None, F.sum(col("amount")).alias("total"))
     assert total.schema.names == ["total"]
 
+    assert col("amount").sort().nulls_first is False
+    assert col("amount").sort(ascending=False).nulls_first is True
+    assert "ASC NULLS LAST" in repr(db.table("MyEvents").sort("amount"))
+
 
 def test_dataframe_set_operations_build_plans(tmp_path):
     db = lancedb.connect(tmp_path)
