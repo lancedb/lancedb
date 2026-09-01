@@ -110,10 +110,21 @@ reader = db.execute_substrait(plan, default_namespace_path=["production"])
 ```
 
 ::: lancedb.dataframe.DataFrame
+    options:
+        inherited_members: true
 
 ::: lancedb.dataframe.AsyncDataFrame
+    options:
+        inherited_members: true
 
 ::: lancedb.sql_functions
+    options:
+        members:
+            - avg
+            - count
+            - max
+            - min
+            - sum
 
 ## Namespaces (Synchronous)
 

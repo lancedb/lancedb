@@ -487,7 +487,7 @@ class DBConnection(EnforceOverrides):
         return DataFrame(
             self,
             NativeDataFrame.from_table(name, table.schema),
-            namespace_path or ["public"],
+            namespace_path if namespace_path is not None else ["public"],
         )
 
     def open_table(
@@ -2083,7 +2083,7 @@ class AsyncConnection(object):
         return AsyncDataFrame(
             self,
             NativeDataFrame.from_table(name, await table.schema()),
-            namespace_path or ["public"],
+            namespace_path if namespace_path is not None else ["public"],
         )
 
     async def open_table(

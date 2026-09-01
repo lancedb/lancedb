@@ -207,7 +207,7 @@ class Expr:
         """Return True where this expression is between two inclusive bounds."""
         return Expr(self._inner.between(_coerce(low)._inner, _coerce(high)._inner))
 
-    def sort(self, *, ascending: bool = True, nulls_first: bool = False) -> "SortExpr":
+    def sort(self, *, ascending: bool = True, nulls_first: bool = True) -> "SortExpr":
         """Create a sort expression for :meth:`lancedb.dataframe.DataFrame.sort`."""
         return SortExpr(self, ascending=ascending, nulls_first=nulls_first)
 
@@ -288,7 +288,7 @@ class SortExpr:
 
     expr: Expr
     ascending: bool = True
-    nulls_first: bool = False
+    nulls_first: bool = True
 
 
 # ── free functions ────────────────────────────────────────────────────────────

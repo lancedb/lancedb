@@ -14,6 +14,7 @@ use datafusion::{
     logical_expr::{JoinType, LogicalPlanBuilder},
 };
 use datafusion_catalog::empty::EmptyTable;
+use datafusion_common::TableReference;
 use datafusion_expr::SortExpr;
 use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
 use datafusion_substrait::{logical_plan::producer::to_substrait_plan, substrait::proto::Plan};
@@ -35,9 +36,9 @@ fn join_type(value: &str) -> PyResult<JoinType> {
         "left" | "left_outer" => Ok(JoinType::Left),
         "right" | "right_outer" => Ok(JoinType::Right),
         "full" | "full_outer" => Ok(JoinType::Full),
-        "left_semi" => Ok(JoinType::LeftSemi),
+        "semi" | "left_semi" => Ok(JoinType::LeftSemi),
         "right_semi" => Ok(JoinType::RightSemi),
-        "left_anti" => Ok(JoinType::LeftAnti),
+        "anti" | "left_anti" => Ok(JoinType::LeftAnti),
         "right_anti" => Ok(JoinType::RightAnti),
         _ => Err(PyValueError::new_err(format!(
             "unsupported join type: {value}"
@@ -57,7 +58,7 @@ pub(crate) fn plan_version(plan: &[u8]) -> PyResult<String> {
 }
 
 /// Native immutable DataFusion logical-plan wrapper used by the Python DataFrame API.
-#[pyclass(name = "NativeDataFrame", from_py_object)]
+#[pyclass(name = "NativeDataFrame", module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone)]
 pub struct NativeDataFrame {
     inner: DfDataFrame,
@@ -91,7 +92,7 @@ impl NativeDataFrame {
     fn from_table(name: String, schema: PyArrowType<Schema>) -> PyResult<Self> {
         let context = SessionContext::new();
         let source = provider_as_source(Arc::new(EmptyTable::new(Arc::new(schema.0))));
-        let plan = LogicalPlanBuilder::scan(name, source, None)
+        let plan = LogicalPlanBuilder::scan(TableReference::bare(name), source, None)
             .and_then(LogicalPlanBuilder::build)
             .map_err(dataframe_error)?;
         Ok(Self {

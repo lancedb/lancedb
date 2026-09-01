@@ -50,6 +50,8 @@ class _DataFrameBase:
 
     def select(self, *expressions: Expression):
         """Project columns or expressions."""
+        if not expressions:
+            raise ValueError("select requires at least one expression")
         return self._wrap(
             self._inner.select([_expression(value)._inner for value in expressions])
         )
@@ -63,12 +65,19 @@ class _DataFrameBase:
 
     def aggregate(
         self,
-        group_by: Iterable[Expression],
-        aggregates: Iterable[Expr],
+        group_by: Optional[Union[Iterable[Expression], Expression]],
+        aggregates: Union[Iterable[Expr], Expr],
     ):
         """Group rows and calculate aggregate expressions."""
-        groups = [_expression(value)._inner for value in group_by]
-        aggregate_exprs = [value._inner for value in aggregates]
+        if group_by is None:
+            group_values = []
+        elif isinstance(group_by, (str, Expr)):
+            group_values = [group_by]
+        else:
+            group_values = list(group_by)
+        aggregate_values = [aggregates] if isinstance(aggregates, Expr) else aggregates
+        groups = [_expression(value)._inner for value in group_values]
+        aggregate_exprs = [value._inner for value in aggregate_values]
         return self._wrap(self._inner.aggregate(groups, aggregate_exprs))
 
     def sort(self, *expressions: Union[Expression, SortExpr]):
@@ -78,7 +87,7 @@ class _DataFrameBase:
             if isinstance(value, SortExpr):
                 sorts.append((value.expr._inner, value.ascending, value.nulls_first))
             else:
-                sorts.append((_expression(value)._inner, True, False))
+                sorts.append((_expression(value)._inner, True, True))
         return self._wrap(self._inner.sort(sorts))
 
     def limit(self, count: int, offset: int = 0):
@@ -140,20 +149,20 @@ class _DataFrameBase:
             self._inner.join(other._inner, keys(left_on), keys(right_on), how)
         )
 
-    def union(self, other: "_DataFrameBase", *, all: bool = True):
+    def union(self, other: "_DataFrameBase", distinct: bool = False):
         """Union two compatible plans."""
         self._validate_set_operation(other)
-        return self._wrap(self._inner.union(other._inner, all))
+        return self._wrap(self._inner.union(other._inner, not distinct))
 
-    def intersect(self, other: "_DataFrameBase", *, all: bool = False):
+    def intersect(self, other: "_DataFrameBase", distinct: bool = False):
         """Intersect two compatible plans."""
         self._validate_set_operation(other)
-        return self._wrap(self._inner.intersect(other._inner, all))
+        return self._wrap(self._inner.intersect(other._inner, not distinct))
 
-    def except_(self, other: "_DataFrameBase", *, all: bool = False):
+    def except_all(self, other: "_DataFrameBase", distinct: bool = False):
         """Remove rows present in another compatible plan."""
         self._validate_set_operation(other)
-        return self._wrap(self._inner.except_(other._inner, all))
+        return self._wrap(self._inner.except_(other._inner, not distinct))
 
     def _validate_set_operation(self, other: "_DataFrameBase") -> None:
         if self._connection is not other._connection:
@@ -165,6 +174,9 @@ class _DataFrameBase:
         """Serialize the current logical plan as a Substrait protobuf."""
         return self._inner.to_substrait()
 
+    def _to_substrait_with_version(self) -> tuple[bytes, str]:
+        return self._inner.to_substrait_with_version()
+
     def __repr__(self) -> str:
         return repr(self._inner)
 
@@ -174,15 +186,19 @@ class DataFrame(_DataFrameBase):
 
     def execute(self) -> pa.RecordBatchReader:
         """Submit this plan and return a blocking Arrow reader."""
+        plan, version = self._to_substrait_with_version()
         return self._connection.execute_substrait(
-            self.to_substrait(),
+            plan,
+            version=version,
             default_namespace_path=self._default_namespace_path,
         )
 
     def execute_async(self) -> SqlQuery:
         """Submit this plan and return its server-side query lifecycle handle."""
+        plan, version = self._to_substrait_with_version()
         return self._connection.execute_substrait_async(
-            self.to_substrait(),
+            plan,
+            version=version,
             default_namespace_path=self._default_namespace_path,
         )
 
@@ -192,15 +208,19 @@ class AsyncDataFrame(_DataFrameBase):
 
     async def execute(self) -> "AsyncRecordBatchReader":
         """Submit this plan and return an asynchronous Arrow reader."""
+        plan, version = self._to_substrait_with_version()
         return await self._connection.execute_substrait(
-            self.to_substrait(),
+            plan,
+            version=version,
             default_namespace_path=self._default_namespace_path,
         )
 
     async def execute_async(self) -> AsyncSqlQuery:
         """Submit this plan and return its server-side query lifecycle handle."""
+        plan, version = self._to_substrait_with_version()
         return await self._connection.execute_substrait_async(
-            self.to_substrait(),
+            plan,
+            version=version,
             default_namespace_path=self._default_namespace_path,
         )
 
