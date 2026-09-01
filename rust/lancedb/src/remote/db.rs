@@ -782,6 +782,23 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         client.submit(query, default_namespace_path).await
     }
 
+    async fn execute_substrait_async(
+        &self,
+        plan: &[u8],
+        version: &str,
+        default_namespace_path: &[String],
+    ) -> Result<crate::sql::Query> {
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".to_string(),
+            })?;
+        client
+            .submit_substrait(plan, version, default_namespace_path)
+            .await
+    }
+
     async fn describe_query(&self, query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
         let client = self
             .sql_client

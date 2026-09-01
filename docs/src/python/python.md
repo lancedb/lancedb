@@ -81,6 +81,40 @@ for batch in query.reader():
 # await query.cancel()
 ```
 
+## DataFrames and Substrait
+
+Build lazy DataFusion-style plans on the client and submit them to a remote
+Flight SQL endpoint as Substrait. Transformations are immutable and do not
+execute or fetch data. `execute` opens the result reader, while `execute_async`
+returns the same query lifecycle handle used by remote SQL. Use `to_substrait`
+when the serialized plan is needed directly:
+
+```python
+from lancedb import col
+from lancedb import sql_functions as F
+
+events = db.table("events", namespace_path=["production"])
+frame = (
+    events.filter(col("status") == "active")
+    .aggregate(["region"], [F.sum(col("amount")).alias("total")])
+    .sort(col("total").sort(ascending=False))
+    .limit(10)
+)
+
+reader = frame.execute()
+query = frame.execute_async()
+plan = frame.to_substrait()
+
+# Equivalent raw-plan submission:
+reader = db.execute_substrait(plan, default_namespace_path=["production"])
+```
+
+::: lancedb.dataframe.DataFrame
+
+::: lancedb.dataframe.AsyncDataFrame
+
+::: lancedb.sql_functions
+
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
@@ -176,6 +210,8 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 [select][lancedb.query.LanceQueryBuilder.select].
 
 ::: lancedb.expr.Expr
+
+::: lancedb.expr.SortExpr
 
 ::: lancedb.expr.col
 

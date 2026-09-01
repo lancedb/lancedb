@@ -117,6 +117,26 @@ impl PyExpr {
         Self(is_in(self.0.clone(), items))
     }
 
+    /// Assign an output name to the expression.
+    fn alias(&self, name: &str) -> Self {
+        Self(self.0.clone().alias(name))
+    }
+
+    /// Return true where the value is null.
+    fn is_null(&self) -> Self {
+        Self(self.0.clone().is_null())
+    }
+
+    /// Return true where the value is not null.
+    fn is_not_null(&self) -> Self {
+        Self(self.0.clone().is_not_null())
+    }
+
+    /// Return true where the value is between the lower and upper bounds.
+    fn between(&self, low: &Self, high: &Self) -> Self {
+        Self(self.0.clone().between(low.0.clone(), high.0.clone()))
+    }
+
     // ── type cast ────────────────────────────────────────────────────────────
 
     /// Cast the expression to `data_type`.

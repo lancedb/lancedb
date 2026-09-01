@@ -11,7 +11,9 @@ use arrow_array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
-use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
+use arrow_flight::sql::{
+    CommandStatementQuery, CommandStatementSubstraitPlan, ProstMessageExt, SubstraitPlan,
+};
 use arrow_flight::{
     Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
     FlightDescriptor, FlightEndpoint, FlightInfo, PollInfo,
@@ -187,14 +189,45 @@ impl SqlClient {
         query: &str,
         default_namespace_path: &[String],
     ) -> Result<Query> {
+        let command = CommandStatementQuery {
+            query: query.to_string(),
+            transaction_id: None,
+        };
+        self.submit_descriptor(
+            FlightDescriptor::new_cmd(command.as_any().encode_to_vec()),
+            default_namespace_path,
+        )
+        .await
+    }
+
+    pub(super) async fn submit_substrait(
+        &self,
+        plan: &[u8],
+        version: &str,
+        default_namespace_path: &[String],
+    ) -> Result<Query> {
+        let command = CommandStatementSubstraitPlan {
+            plan: Some(SubstraitPlan {
+                plan: plan.to_vec().into(),
+                version: version.to_string(),
+            }),
+            transaction_id: None,
+        };
+        self.submit_descriptor(
+            FlightDescriptor::new_cmd(command.as_any().encode_to_vec()),
+            default_namespace_path,
+        )
+        .await
+    }
+
+    async fn submit_descriptor(
+        &self,
+        descriptor: FlightDescriptor,
+        default_namespace_path: &[String],
+    ) -> Result<Query> {
         let timeout = self.inner.overall_timeout()?;
         with_overall_timeout(timeout, "SQL query submission", async {
             validate_namespace_path(default_namespace_path)?;
-            let command = CommandStatementQuery {
-                query: query.to_string(),
-                transaction_id: None,
-            };
-            let descriptor = FlightDescriptor::new_cmd(command.as_any().encode_to_vec());
             let poll_info = self.inner.poll(descriptor, default_namespace_path).await?;
             let query_id = Uuid::now_v7();
             let query = Arc::new(RemoteQuery::new(

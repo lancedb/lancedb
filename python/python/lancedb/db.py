@@ -47,6 +47,7 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
+from .dataframe import AsyncDataFrame, DataFrame
 from .job import AsyncJob, Job, _typed_job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -469,6 +470,26 @@ class DBConnection(EnforceOverrides):
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
 
+    def table(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> DataFrame:
+        """Create a lazy DataFrame plan that scans a table.
+
+        Only remote connections can execute the resulting plan. Local
+        connections may still build and serialize it.
+        """
+        from ._lancedb import NativeDataFrame
+
+        table = self.open_table(name, namespace_path=namespace_path)
+        return DataFrame(
+            self,
+            NativeDataFrame.from_table(name, table.schema),
+            namespace_path or ["public"],
+        )
+
     def open_table(
         self,
         name: str,
@@ -813,6 +834,32 @@ class DBConnection(EnforceOverrides):
         Local connections do not support SQL.
         """
         raise NotImplementedError("SQL is not supported for this connection type")
+
+    def execute_substrait(
+        self,
+        plan: bytes,
+        *,
+        version: Optional[str] = None,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute a serialized Substrait plan and return a blocking reader."""
+        return self.execute_substrait_async(
+            plan,
+            version=version,
+            default_namespace_path=default_namespace_path,
+        ).reader()
+
+    def execute_substrait_async(
+        self,
+        plan: bytes,
+        *,
+        version: Optional[str] = None,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> SqlQuery:
+        """Start a Substrait plan and return its query lifecycle handle."""
+        raise NotImplementedError(
+            "Substrait execution is not supported for this connection type"
+        )
 
     def describe_query(self, query_id: UUID) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
@@ -2023,6 +2070,22 @@ class AsyncConnection(object):
 
         return AsyncTable(new_table)
 
+    async def table(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncDataFrame:
+        """Create a lazy DataFrame plan that scans a table."""
+        from ._lancedb import NativeDataFrame
+
+        table = await self.open_table(name, namespace_path=namespace_path)
+        return AsyncDataFrame(
+            self,
+            NativeDataFrame.from_table(name, await table.schema()),
+            namespace_path or ["public"],
+        )
+
     async def open_table(
         self,
         name: str,
@@ -2393,6 +2456,37 @@ class AsyncConnection(object):
         return AsyncSqlQuery(
             await self._inner.execute_query_async(
                 query,
+                default_namespace_path=default_namespace_path,
+            )
+        )
+
+    async def execute_substrait(
+        self,
+        plan: bytes,
+        *,
+        version: Optional[str] = None,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute a serialized Substrait plan and return an async reader."""
+        submitted = await self.execute_substrait_async(
+            plan,
+            version=version,
+            default_namespace_path=default_namespace_path,
+        )
+        return await submitted.reader()
+
+    async def execute_substrait_async(
+        self,
+        plan: bytes,
+        *,
+        version: Optional[str] = None,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncSqlQuery:
+        """Start a Substrait plan and return its query lifecycle handle."""
+        return AsyncSqlQuery(
+            await self._inner.execute_substrait_async(
+                plan,
+                version=version,
                 default_namespace_path=default_namespace_path,
             )
         )

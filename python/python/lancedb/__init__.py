@@ -19,7 +19,9 @@ from urllib.parse import urlparse
 from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
-from .expr import Expr, col, lit, func
+from .expr import Expr, SortExpr, col, lit, func
+from .dataframe import AsyncDataFrame, DataFrame
+from . import sql_functions
 from .schema import blob, vector
 from .job import AsyncJob, Job
 from .sql import AsyncQuery as AsyncSqlQuery

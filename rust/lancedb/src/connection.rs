@@ -332,6 +332,42 @@ pub struct ExecuteQueryAsyncBuilder {
     default_namespace_path: Vec<String>,
 }
 
+/// Builder for asynchronously executing a Substrait plan on a remote database.
+pub struct ExecuteSubstraitAsyncBuilder {
+    parent: Arc<dyn Database>,
+    plan: Vec<u8>,
+    version: String,
+    default_namespace_path: Vec<String>,
+}
+
+impl ExecuteSubstraitAsyncBuilder {
+    fn new(parent: Arc<dyn Database>, plan: Vec<u8>, version: String) -> Self {
+        Self {
+            parent,
+            plan,
+            version,
+            default_namespace_path: vec!["public".to_string()],
+        }
+    }
+
+    /// Set the namespace used for unqualified table names.
+    pub fn default_namespace_path<I, S>(mut self, path: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Start the plan and return its asynchronous query handle.
+    pub async fn execute(self) -> Result<crate::sql::Query> {
+        self.parent
+            .execute_substrait_async(&self.plan, &self.version, &self.default_namespace_path)
+            .await
+    }
+}
+
 impl ExecuteQueryAsyncBuilder {
     fn new(parent: Arc<dyn Database>, query: String) -> Self {
         Self {
@@ -473,6 +509,18 @@ impl Connection {
     /// ```
     pub fn execute_query_async(&self, query: impl Into<String>) -> ExecuteQueryAsyncBuilder {
         ExecuteQueryAsyncBuilder::new(self.internal.clone(), query.into())
+    }
+
+    /// Start executing a serialized Substrait plan on a remote LanceDB database.
+    ///
+    /// `version` is the Substrait specification version used to encode `plan`.
+    /// Local connections return [`Error::NotSupported`].
+    pub fn execute_substrait_async(
+        &self,
+        plan: impl Into<Vec<u8>>,
+        version: impl Into<String>,
+    ) -> ExecuteSubstraitAsyncBuilder {
+        ExecuteSubstraitAsyncBuilder::new(self.internal.clone(), plan.into(), version.into())
     }
 
     /// Describe a submitted SQL query by its connection-scoped id.

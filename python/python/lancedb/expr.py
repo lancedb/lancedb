@@ -21,13 +21,14 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from dataclasses import dataclass
 from typing import Iterable, Union
 
 import pyarrow as pa
 
 from lancedb._lancedb import PyExpr, expr_col, expr_lit, expr_func
 
-__all__ = ["Expr", "col", "lit", "func"]
+__all__ = ["Expr", "SortExpr", "col", "lit", "func"]
 
 _STR_TO_PA_TYPE: dict = {
     "bool": pa.bool_(),
@@ -190,6 +191,26 @@ class Expr:
         inner = [_coerce(v)._inner for v in values]
         return Expr(self._inner.isin(inner))
 
+    def alias(self, name: str) -> "Expr":
+        """Assign an output name to this expression."""
+        return Expr(self._inner.alias(name))
+
+    def is_null(self) -> "Expr":
+        """Return True where this expression is null."""
+        return Expr(self._inner.is_null())
+
+    def is_not_null(self) -> "Expr":
+        """Return True where this expression is not null."""
+        return Expr(self._inner.is_not_null())
+
+    def between(self, low: ExprLike, high: ExprLike) -> "Expr":
+        """Return True where this expression is between two inclusive bounds."""
+        return Expr(self._inner.between(_coerce(low)._inner, _coerce(high)._inner))
+
+    def sort(self, *, ascending: bool = True, nulls_first: bool = False) -> "SortExpr":
+        """Create a sort expression for :meth:`lancedb.dataframe.DataFrame.sort`."""
+        return SortExpr(self, ascending=ascending, nulls_first=nulls_first)
+
     # ── type cast ────────────────────────────────────────────────────────────
 
     def cast(self, data_type: Union[str, "pa.DataType"]) -> "Expr":
@@ -259,6 +280,15 @@ class Expr:
 
     def __repr__(self) -> str:
         return f"Expr({self._inner.to_sql()})"
+
+
+@dataclass(frozen=True)
+class SortExpr:
+    """An expression with sort direction and null ordering."""
+
+    expr: Expr
+    ascending: bool = True
+    nulls_first: bool = False
 
 
 # ── free functions ────────────────────────────────────────────────────────────
