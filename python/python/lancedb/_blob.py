@@ -25,6 +25,7 @@ BLOB_MODE_TO_HANDLING = {
 }
 
 ROW_ID_FIELD_NAME = "_lance_row_id"
+QUERY_VERSION_METADATA_KEY = b"lancedb.query_version"
 
 FetchBlobsSync = Callable[[str, pa.Table], pa.Array | pa.ChunkedArray]
 FetchBlobsAsync = Callable[[str, pa.Table], Awaitable[pa.Array | pa.ChunkedArray]]
@@ -392,7 +393,7 @@ def _leaf_struct_column(tbl: pa.Table, path: str) -> pa.StructArray:
 
 def _query_version_from_table(hits: pa.Table) -> Optional[int]:
     metadata = hits.schema.metadata or {}
-    raw = metadata.get(b"lancedb.query_version")
+    raw = metadata.get(QUERY_VERSION_METADATA_KEY)
     if raw is None:
         raw = metadata.get("lancedb.query_version")
     if raw is None:
@@ -400,6 +401,12 @@ def _query_version_from_table(hits: pa.Table) -> Optional[int]:
     if isinstance(raw, bytes):
         raw = raw.decode()
     return int(raw)
+
+
+def _stamp_query_version(tbl: pa.Table, version: int) -> pa.Table:
+    metadata = dict(tbl.schema.metadata or {})
+    metadata[QUERY_VERSION_METADATA_KEY] = str(version).encode()
+    return tbl.replace_schema_metadata(metadata)
 
 
 def _normalize_blob_row_ids(

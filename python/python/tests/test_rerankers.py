@@ -557,6 +557,78 @@ def test_empty_result_reranker():
         )
 
 
+def _hybrid_versioned_inputs(fts_version, vector_version):
+    vector = pa.table(
+        {
+            "id": [18],
+            "_rowid": pa.array([180], type=pa.uint64()),
+            "_distance": pa.array([0.1], type=pa.float32()),
+        }
+    ).replace_schema_metadata({b"lancedb.query_version": str(vector_version).encode()})
+    fts = pa.table(
+        {
+            "id": [17],
+            "_rowid": pa.array([170], type=pa.uint64()),
+            "_score": pa.array([0.9], type=pa.float32()),
+        }
+    ).replace_schema_metadata({b"lancedb.query_version": str(fts_version).encode()})
+    return fts, vector
+
+
+def test_hybrid_rejects_different_query_versions():
+    from lancedb.query import LanceHybridQueryBuilder
+
+    fts, vector = _hybrid_versioned_inputs(17, 18)
+
+    with pytest.raises(RuntimeError, match="different table versions"):
+        LanceHybridQueryBuilder._combine_hybrid_results(
+            fts,
+            vector,
+            "score",
+            "hello",
+            RRFReranker(),
+            10,
+            True,
+        )
+
+
+def test_hybrid_rejects_missing_query_version():
+    from lancedb.query import LanceHybridQueryBuilder
+
+    fts, vector = _hybrid_versioned_inputs(17, 17)
+    vector = vector.replace_schema_metadata(None)
+
+    with pytest.raises(RuntimeError, match="missing lancedb.query_version"):
+        LanceHybridQueryBuilder._combine_hybrid_results(
+            fts,
+            vector,
+            "score",
+            "hello",
+            RRFReranker(),
+            10,
+            True,
+        )
+
+
+def test_hybrid_stamps_verified_query_version():
+    from lancedb.query import LanceHybridQueryBuilder
+
+    fts, vector = _hybrid_versioned_inputs(17, 17)
+
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts,
+        vector,
+        "score",
+        "hello",
+        RRFReranker(),
+        10,
+        True,
+    )
+
+    assert set(result["id"].to_pylist()) == {17, 18}
+    assert result.schema.metadata[b"lancedb.query_version"] == b"17"
+
+
 def test_empty_hybrid_result_reranker():
     """Test that hybrid search with empty results after filtering doesn't crash.
 

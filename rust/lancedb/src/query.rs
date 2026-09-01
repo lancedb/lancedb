@@ -29,9 +29,9 @@ use datafusion_physical_plan::{
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
-use lance::dataset::ROW_ID;
 /// Re-export Lance ColumnOrdering type for use in query ordering
 pub use lance::dataset::scanner::ColumnOrdering;
+use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
 use lance_datafusion::exec::{execute_plan, format_plan as format_analyzed_plan};
 use lance_index::scalar::FullTextSearchQuery;
@@ -42,6 +42,7 @@ use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
 use crate::table::BaseTable;
+use crate::utils::{MaxBatchLengthStream, TimeoutStream};
 use crate::{ApproxMode, DistanceType};
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},

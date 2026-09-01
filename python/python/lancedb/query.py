@@ -48,6 +48,8 @@ from ._blob import (
     blob_auto_row_id_for_scan,
     blob_v2_projection_sources,
     finalize_blob_query_table,
+    _query_version_from_table,
+    _stamp_query_version,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
     validate_blob_mode,
@@ -103,6 +105,33 @@ def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
         f"to_pandas(), but {reason}. Use a plain scan query or remove blob "
         "columns from the projection."
     )
+
+
+def _verified_hybrid_query_version(
+    fts_results: pa.Table, vector_results: pa.Table
+) -> Optional[int]:
+    versions: dict[str, int] = {}
+    for name, results in (
+        ("full-text", fts_results),
+        ("vector", vector_results),
+    ):
+        if results.num_rows == 0 or "_rowid" not in results.column_names:
+            continue
+        version = _query_version_from_table(results)
+        if version is None:
+            raise RuntimeError(
+                f"{name} hybrid query results contain _rowid but are missing "
+                "lancedb.query_version"
+            )
+        versions[name] = version
+
+    distinct_versions = set(versions.values())
+    if len(distinct_versions) > 1:
+        details = ", ".join(f"{name}={version}" for name, version in versions.items())
+        raise RuntimeError(
+            f"hybrid query results were served from different table versions: {details}"
+        )
+    return next(iter(distinct_versions), None)
 
 
 def _query_is_plain_scan(query: Query) -> bool:
@@ -283,12 +312,14 @@ def _finish_plain_scan_pandas(
     blob_mode: BlobMode,
     blob_sources: dict[str, str],
     fetch_blobs: FetchBlobsSync,
+    producing_version: int,
     strip_auto_row_id: bool,
     flatten: Optional[Union[int, bool]],
     **kwargs,
 ) -> pd.DataFrame:
     if blob_sources:
         tbl = _scanner_to_table(scanner)
+        tbl = _stamp_query_version(tbl, producing_version)
         tbl = replace_v2_blob_columns_with_bytes_sync(tbl, blob_sources, fetch_blobs)
         if strip_auto_row_id and "_rowid" in tbl.column_names:
             tbl = tbl.drop_columns(["_rowid"])
@@ -312,12 +343,14 @@ async def _finish_plain_scan_pandas_async(
     blob_mode: BlobMode,
     blob_sources: dict[str, str],
     fetch_blobs: FetchBlobsAsync,
+    producing_version: int,
     strip_auto_row_id: bool,
     flatten: Optional[Union[int, bool]],
     **kwargs,
 ) -> pd.DataFrame:
     if blob_sources:
         tbl = _scanner_to_table(scanner)
+        tbl = _stamp_query_version(tbl, producing_version)
         tbl = await replace_v2_blob_columns_with_bytes(tbl, blob_sources, fetch_blobs)
         if strip_auto_row_id and "_rowid" in tbl.column_names:
             tbl = tbl.drop_columns(["_rowid"])
@@ -1567,6 +1600,7 @@ class LanceQueryBuilder(ABC):
             blob_mode=blob_mode,
             blob_sources=blob_sources,
             fetch_blobs=self._table.fetch_blobs,
+            producing_version=dataset.version,
             strip_auto_row_id=blob_auto_row_id,
             flatten=flatten,
             **kwargs,
@@ -2287,6 +2321,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         with_row_ids: bool,
         offset: Optional[int] = None,
     ) -> pa.Table:
+        query_version = _verified_hybrid_query_version(fts_results, vector_results)
+
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
             fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
@@ -2363,6 +2399,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             results = results.set_column(score_i, "_score", original_scores)
 
         results = results.slice(offset=offset or 0, length=limit)
+
+        if query_version is not None and "_rowid" in results.column_names:
+            results = _stamp_query_version(results, query_version)
 
         if not with_row_ids:
             results = results.drop(["_rowid"])
@@ -3087,6 +3126,7 @@ class AsyncQueryBase(object):
             blob_mode=blob_mode,
             blob_sources=blob_sources,
             fetch_blobs=self._table.fetch_blobs,
+            producing_version=dataset.version,
             strip_auto_row_id=blob_auto_row_id,
             flatten=flatten,
             **kwargs,

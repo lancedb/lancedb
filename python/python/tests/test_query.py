@@ -316,6 +316,36 @@ def test_plain_scan_query_to_pandas_blob_bytes_projection(tmp_db, blob_schema):
     assert "_rowid" not in df.columns
 
 
+def test_plain_scan_blob_bytes_uses_scanner_snapshot(tmp_db, monkeypatch):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_plain_scan_blob_snapshot",
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")]),
+    )
+    table.add([{"id": 1, "blob": b"fragment-one"}])
+    table.add([{"id": 2, "blob": b"fragment-two"}])
+    producing_version = table.version
+    assert len(table.to_lance().get_fragments()) == 2
+
+    observed_versions = []
+    original_fetch = table.fetch_blobs
+
+    def compact_then_fetch(column, hits):
+        observed_versions.append(int(hits.schema.metadata[b"lancedb.query_version"]))
+        table.optimize()
+        return original_fetch(column, hits)
+
+    monkeypatch.setattr(table, "fetch_blobs", compact_then_fetch)
+
+    df = table.search().select(["id", "blob"]).to_pandas(blob_mode="bytes")
+
+    assert df.sort_values("id")["blob"].tolist() == [
+        b"fragment-one",
+        b"fragment-two",
+    ]
+    assert observed_versions == [producing_version]
+
+
 @pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
 def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
     tmp_db, monkeypatch, blob_mode
@@ -443,6 +473,39 @@ async def test_async_plain_scan_query_to_pandas_blob_bytes_projection(
 
     _assert_blob_bytes_projection(df)
     assert "_rowid" not in df.columns
+
+
+@pytest.mark.asyncio
+async def test_async_plain_scan_blob_bytes_uses_scanner_snapshot(
+    tmp_db_async, monkeypatch
+):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_plain_scan_blob_snapshot",
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")]),
+    )
+    await table.add([{"id": 1, "blob": b"fragment-one"}])
+    await table.add([{"id": 2, "blob": b"fragment-two"}])
+    producing_version = await table.version()
+    assert len((await table.to_lance()).get_fragments()) == 2
+
+    observed_versions = []
+    original_fetch = table.fetch_blobs
+
+    async def compact_then_fetch(column, hits):
+        observed_versions.append(int(hits.schema.metadata[b"lancedb.query_version"]))
+        await table.optimize()
+        return await original_fetch(column, hits)
+
+    monkeypatch.setattr(table, "fetch_blobs", compact_then_fetch)
+
+    df = await table.query().select(["id", "blob"]).to_pandas(blob_mode="bytes")
+
+    assert df.sort_values("id")["blob"].tolist() == [
+        b"fragment-one",
+        b"fragment-two",
+    ]
+    assert observed_versions == [producing_version]
 
 
 @pytest.mark.asyncio
