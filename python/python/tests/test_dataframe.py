@@ -127,6 +127,12 @@ def test_dataframe_direct_execution_uses_connection(tmp_path):
     )
 
 
+def test_dataframe_exports_are_public():
+    assert {"DataFrame", "AsyncDataFrame", "SortExpr", "sql_functions"} <= set(
+        lancedb.__all__
+    )
+
+
 @pytest.mark.asyncio
 async def test_async_dataframe_direct_execution(tmp_path):
     db = lancedb.connect(tmp_path)

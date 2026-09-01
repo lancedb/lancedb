@@ -566,6 +566,7 @@ async def connect_async(
 
 
 __all__ = [
+    "AsyncDataFrame",
     "AsyncMaterializedView",
     "MaterializedView",
     "MaterializedViewDefinition",
@@ -590,14 +591,17 @@ __all__ = [
     "BlobType",
     "vector",
     "DBConnection",
+    "DataFrame",
     "Job",
     "QueryDescription",
     "SqlQuery",
+    "SortExpr",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
     "LsmWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",
+    "sql_functions",
     "__version__",
 ]
