@@ -668,6 +668,167 @@ def test_blob_fields_use_the_scalar_function_semantic_type():
     assert signature.output.arrow_type == "blob_v2"
 
 
+def test_whole_named_struct_function_can_include_a_blob_result_field():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=pa.field(
+            "payload",
+            pa.struct(
+                [
+                    pa.field("mime_type", pa.string(), nullable=False),
+                    lancedb.blob("image", nullable=False),
+                ]
+            ),
+            nullable=False,
+        ),
+    )
+    def inspect_blob(image):
+        return {"mime_type": "image/png", "image": image}
+
+    output = inspect_blob.registration_request.signature.output
+    assert output.kind == "named_struct"
+    assert [(field.name, field.arrow_type) for field in output.fields] == [
+        ("mime_type", "utf8"),
+        ("image", "blob_v2"),
+    ]
+
+
+def test_struct_blob_signature_fields_preserve_exact_metadata_and_nullability():
+    nested_input = pa.field(
+        "payload",
+        pa.struct(
+            [
+                pa.field("mime_type", pa.string(), nullable=False),
+                pa.field(
+                    "nested",
+                    pa.struct([lancedb.blob("image", nullable=True)]),
+                    nullable=True,
+                ),
+            ]
+        ),
+        nullable=True,
+    )
+    nested_output = pa.field(
+        "result",
+        pa.struct(
+            [
+                pa.field("mime_type", pa.string(), nullable=False),
+                pa.field(
+                    "nested",
+                    pa.struct([lancedb.blob("image", nullable=True)]),
+                    nullable=False,
+                ),
+            ]
+        ),
+        nullable=False,
+    )
+
+    @udf(input_schema=pa.schema([nested_input]), output_schema=nested_output)
+    def copy_payload(payload):
+        return payload
+
+    signature = copy_payload.registration_request.signature
+    input_type = json.loads(signature.inputs[0].arrow_type)
+    assert input_type["fields"][1]["nullable"] is True
+    input_blob = input_type["fields"][1]["type"]["fields"][0]
+    assert input_blob["nullable"] is True
+    assert input_blob["metadata"] == {"ARROW:extension:name": "lance.blob.v2"}
+
+    assert signature.output.kind == "named_struct"
+    nested_result = next(
+        field for field in signature.output.fields if field.name == "nested"
+    )
+    output_type = json.loads(nested_result.arrow_type)
+    output_blob = output_type["fields"][0]
+    assert output_blob["nullable"] is True
+    assert output_blob["metadata"] == {"ARROW:extension:name": "lance.blob.v2"}
+
+
+def test_struct_blob_signature_supports_multiple_struct_levels():
+    recursive = pa.field(
+        "value",
+        pa.struct(
+            [
+                pa.field(
+                    "level_1",
+                    pa.struct(
+                        [
+                            pa.field(
+                                "level_2",
+                                pa.struct([lancedb.blob("image", nullable=False)]),
+                                nullable=False,
+                            )
+                        ]
+                    ),
+                    nullable=False,
+                )
+            ]
+        ),
+        nullable=False,
+    )
+
+    @udf(
+        input_schema=pa.schema([recursive]),
+        output_schema=pa.field("size", pa.int64(), nullable=False),
+    )
+    def blob_size(value):
+        return len(value["level_1"]["level_2"]["image"])
+
+    encoded = json.loads(blob_size.registration_request.signature.inputs[0].arrow_type)
+    blob = encoded["fields"][0]["type"]["fields"][0]["type"]["fields"][0]
+    assert blob["metadata"]["ARROW:extension:name"] == "lance.blob.v2"
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [
+        pa.list_(lancedb.blob("item", nullable=False)),
+        pa.large_list(lancedb.blob("item", nullable=False)),
+        pa.list_(lancedb.blob("item", nullable=False), 2),
+        pa.map_(pa.string(), lancedb.blob("value", nullable=False).type),
+    ],
+)
+def test_blob_signature_rejects_collection_ancestors(data_type):
+    with pytest.raises(
+        TypeError,
+        match="Blob v2 fields nested under collection types are not supported",
+    ):
+
+        @udf(
+            input_schema=pa.schema([pa.field("value", data_type, nullable=False)]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+        def blob_size(value):
+            return len(value)
+
+
+def test_blob_signature_rejects_collection_below_a_struct():
+    nested = pa.field(
+        "value",
+        pa.struct(
+            [
+                pa.field(
+                    "images",
+                    pa.list_(lancedb.blob("item", nullable=False)),
+                    nullable=False,
+                )
+            ]
+        ),
+        nullable=False,
+    )
+    with pytest.raises(
+        TypeError,
+        match="Blob v2 fields nested under collection types are not supported",
+    ):
+
+        @udf(
+            input_schema=pa.schema([nested]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+        def blob_size(value):
+            return len(value["images"])
+
+
 def test_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -727,22 +888,6 @@ def test_blob_marker_rejects_invalid_storage_layout():
         )
         def blob_size(image):
             return len(image)
-
-
-def test_nested_blob_signature_field_has_a_clear_error():
-    nested = pa.field(
-        "value",
-        pa.struct([lancedb.blob("image", nullable=False)]),
-        nullable=False,
-    )
-    with pytest.raises(TypeError, match="nested Blob v2 fields are not supported"):
-
-        @udf(
-            input_schema=pa.schema([nested]),
-            output_schema=pa.field("size", pa.int64(), nullable=False),
-        )
-        def blob_size(value):
-            return len(value["image"])
 
 
 def test_nested_non_blob_extension_is_not_silently_unwrapped():

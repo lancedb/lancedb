@@ -521,6 +521,12 @@ class RefreshColumnResult(_RemoteValue):
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
+_ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
+_BLOB_V2_EXTENSION_NAME = "lance.blob.v2"
+_NESTED_BLOB_COLLECTION_ERROR = (
+    "unsupported Arrow type for Function signature: Blob v2 fields nested under "
+    "collection types are not supported"
+)
 
 
 _GRAMMAR_PRIMITIVES = (
@@ -591,6 +597,19 @@ def _validate_exact_arrow_field(field: pa.Field) -> None:
                 "unsupported Arrow type for Function signature: lance.blob.v2 "
                 f"requires a supported Blob storage layout, got {field}"
             )
+        metadata = {
+            (key.decode() if isinstance(key, bytes) else key): (
+                value.decode() if isinstance(value, bytes) else value
+            )
+            for key, value in (field.metadata or {}).items()
+        }
+        if metadata and metadata != {
+            _ARROW_EXTENSION_NAME_KEY: _BLOB_V2_EXTENSION_NAME
+        }:
+            raise TypeError(
+                "unsupported Arrow type for Function signature: lance.blob.v2 "
+                "field metadata must contain only its canonical extension marker"
+            )
     elif field.metadata:
         raise TypeError(
             "unsupported Arrow type for Function signature: field metadata "
@@ -655,23 +674,84 @@ def _canonical_arrow_field(field: pa.Field) -> str:
     return _canonical_arrow_type(field.type)
 
 
-def _exact_arrow_field(field: pa.Field) -> dict[str, Any]:
+def _blob_storage_type(field: pa.Field) -> pa.DataType:
+    data_type = field.type
+    if isinstance(data_type, pa.ExtensionType):
+        return data_type.storage_type
+    return data_type
+
+
+def _exact_blob_storage_type(field: pa.Field) -> dict[str, Any]:
+    storage = _blob_storage_type(field)
+    if not pa.types.is_struct(storage):
+        raise TypeError(
+            "unsupported Arrow type for Function signature: lance.blob.v2 "
+            "requires struct storage"
+        )
+    return {
+        "type": "struct",
+        "fields": [
+            {
+                "name": child.name,
+                "nullable": child.nullable,
+                "type": (
+                    {"type": "large_binary"}
+                    if pa.types.is_large_binary(child.type)
+                    else _exact_arrow_type(child.type)
+                ),
+            }
+            for child in storage
+        ],
+    }
+
+
+def _data_type_has_blob_v2(data_type: pa.DataType) -> bool:
+    if pa.types.is_struct(data_type):
+        return any(
+            _is_blob_v2_field(field) or _data_type_has_blob_v2(field.type)
+            for field in data_type
+        )
+    if (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    ):
+        field = data_type.value_field
+        return _is_blob_v2_field(field) or _data_type_has_blob_v2(field.type)
+    if pa.types.is_map(data_type):
+        return any(
+            _is_blob_v2_field(field) or _data_type_has_blob_v2(field.type)
+            for field in (data_type.key_field, data_type.item_field)
+        )
+    return False
+
+
+def _exact_arrow_field(
+    field: pa.Field, *, inside_collection: bool = False
+) -> dict[str, Any]:
     _validate_exact_arrow_field(field)
     if _is_blob_v2_field(field):
-        raise TypeError(
-            "unsupported Arrow type for Function signature: nested Blob v2 "
-            "fields are not supported; declare Blob parameters or named result "
-            "fields directly"
-        )
+        if inside_collection:
+            raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+        return {
+            "name": field.name,
+            "nullable": field.nullable,
+            "type": _exact_blob_storage_type(field),
+            "metadata": {
+                _ARROW_EXTENSION_NAME_KEY: _BLOB_V2_EXTENSION_NAME,
+            },
+        }
     value = {
         "name": field.name,
         "nullable": field.nullable,
-        "type": _exact_arrow_type(field.type),
+        "type": _exact_arrow_type(field.type, inside_collection=inside_collection),
     }
     return value
 
 
-def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
+def _exact_arrow_type(
+    data_type: pa.DataType, *, inside_collection: bool = False
+) -> dict[str, Any]:
     for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
             return {"type": name}
@@ -685,7 +765,10 @@ def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
             )
         return {
             "type": "struct",
-            "fields": [_exact_arrow_field(field) for field in fields],
+            "fields": [
+                _exact_arrow_field(field, inside_collection=inside_collection)
+                for field in fields
+            ],
         }
     if (
         pa.types.is_list(data_type)
@@ -710,11 +793,15 @@ def _exact_arrow_type(data_type: pa.DataType) -> dict[str, Any]:
                 if pa.types.is_large_list(data_type)
                 else "fixed_size_list"
             ),
-            "fields": [_exact_arrow_field(data_type.value_field)],
+            "fields": [
+                _exact_arrow_field(data_type.value_field, inside_collection=True)
+            ],
         }
         if pa.types.is_fixed_size_list(data_type):
             value["length"] = data_type.list_size
         return value
+    if pa.types.is_map(data_type) and _data_type_has_blob_v2(data_type):
+        raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
     raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
 
 
