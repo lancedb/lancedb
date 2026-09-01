@@ -820,11 +820,13 @@ def test_table_create_indices():
         scalar_req = received_requests[0]
         assert "name" in scalar_req
         assert scalar_req["name"] == "custom_scalar_idx"
+        assert scalar_req["replace"] is False
 
         # Check FTS index request has custom name
         fts_req = received_requests[1]
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
+        assert fts_req["replace"] is False
         assert fts_req["block_size"] == 256
         assert fts_req["custom_stop_words"] == ["cloud"]
 
@@ -832,6 +834,7 @@ def test_table_create_indices():
         vector_req = received_requests[2]
         assert "name" in vector_req
         assert vector_req["name"] == "custom_vector_idx"
+        assert "replace" not in vector_req
 
         table.wait_for_index(["custom_scalar_idx"], timedelta(seconds=2))
         table.wait_for_index(
@@ -1104,6 +1107,9 @@ def test_remote_create_index_new_api():
             table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
+            table.create_index(
+                "vector", config=IvfPq(distance_type="l2"), replace=False
+            )
 
         # Legacy index_type="IVF_RQ" routes to IvfRq config under the hood.
         with pytest.warns(DeprecationWarning, match="create_index"):
@@ -1113,15 +1119,17 @@ def test_remote_create_index_new_api():
                 num_partitions=8,
             )
 
-        assert len(received_requests) == 5
+        assert len(received_requests) == 6
         assert [req["column"] for req in received_requests] == [
             "vector",
             "category",
             "text",
             "vector",
             "vector",
+            "vector",
         ]
         assert received_requests[2]["block_size"] == 256
+        assert received_requests[4]["replace"] is False
 
 
 def test_table_wait_for_index_timeout():
