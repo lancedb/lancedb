@@ -22,7 +22,7 @@ arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-ipc.workspace = true
 arrow-flight = { workspace = true, optional = true }
-prost = { version = "0.14", optional = true }
+prost = { workspace = true, optional = true }
 chrono = { workspace = true }
 datafusion-catalog.workspace = true
 datafusion-common.workspace = true
