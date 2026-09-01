@@ -92,6 +92,16 @@ def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
     assert dotted.with_column_renamed("left.value", "value").schema.names == ["value"]
     assert dotted.drop("left.value").schema.names == []
 
+    right_key = DataFrame(
+        db,
+        NativeDataFrame.from_table(
+            "right_key", pa.schema([pa.field("id", pa.int64())])
+        ),
+        ["public"],
+    )
+    dotted_join = dotted.join(right_key, left_on="left.value", right_on="id")
+    assert dotted_join.to_substrait()
+
     with pytest.raises(ValueError, match="missing"):
         dotted.with_column_renamed("missing", "value")
     with pytest.raises(ValueError, match="missing"):

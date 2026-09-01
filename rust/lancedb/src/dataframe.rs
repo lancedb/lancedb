@@ -232,15 +232,21 @@ impl DataFrame {
         right_on: &[String],
         how: JoinType,
     ) -> Result<Self> {
-        let left_on = left_on.iter().map(String::as_str).collect::<Vec<_>>();
-        let right_on = right_on.iter().map(String::as_str).collect::<Vec<_>>();
-        Self::wrap(self.inner.clone().join(
-            other.inner.clone(),
-            how.into(),
-            &left_on,
-            &right_on,
-            None,
-        ))
+        if left_on.len() != right_on.len() {
+            return Err(Error::InvalidInput {
+                message: "left and right join key counts must match".to_string(),
+            });
+        }
+        let predicates = left_on
+            .iter()
+            .zip(right_on)
+            .map(|(left, right)| Ok(self.column(left)?.eq(other.column(right)?)))
+            .collect::<Result<Vec<_>>>()?;
+        Self::wrap(
+            self.inner
+                .clone()
+                .join_on(other.inner.clone(), how.into(), predicates),
+        )
     }
 
     /// Union two compatible plans, preserving duplicates when `all` is true.
@@ -431,5 +437,20 @@ mod tests {
         );
         assert!(frame.drop_columns(&["left.value".to_string()]).is_ok());
         assert!(frame.drop_columns(&["missing".to_string()]).is_err());
+
+        let right = DataFrame::from_table(
+            "right",
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)])),
+        )
+        .unwrap();
+        let joined = frame
+            .join(
+                &right,
+                &["left.value".to_string()],
+                &["id".to_string()],
+                JoinType::Inner,
+            )
+            .unwrap();
+        assert!(!joined.to_substrait().unwrap().bytes().is_empty());
     }
 }
