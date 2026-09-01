@@ -183,7 +183,7 @@ impl NativeDataFrame {
                 let column = Column::new(qualifier.cloned(), field.name());
                 let expression = DfExpr::Column(column.clone());
                 if column == old_column {
-                    expression.alias(new_name)
+                    expression.alias_qualified(qualifier.cloned(), new_name)
                 } else {
                     expression
                 }
