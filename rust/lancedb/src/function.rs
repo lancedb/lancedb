@@ -459,8 +459,11 @@ pub struct FunctionArtifactContent {
 /// Internal execution adapter selected for a Python callable artifact.
 ///
 /// This is part of the executor request envelope, not the user-facing UDF
-/// authoring mode. Python annotations distinguish row-wise callables from
-/// callables that consume and return Arrow arrays.
+/// authoring mode. For version 1, the executor selects vectorized execution
+/// when every callable parameter is annotated as `pyarrow.Array`; it passes one
+/// Arrow array per declared input and requires an Arrow array matching the
+/// declared output. Other callables are invoked row by row. Both modes use the
+/// same internal adapter kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonAdapterSpec {
     pub kind: String,

@@ -827,6 +827,8 @@ def test_blob_signature_rejects_collection_below_a_struct():
         )
         def blob_size(value):
             return len(value["images"])
+
+
 def test_blob_fields_support_vectorized_pyarrow_arrays():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
