@@ -1374,6 +1374,7 @@ def query_test_table(query_handler, *, server_version=Version("0.1.0")):
 
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.send_header("x-lancedb-version", "1")
             request.end_headers()
 
             with pa.ipc.new_file(request.wfile, schema=data.schema) as f:
