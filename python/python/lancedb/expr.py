@@ -30,7 +30,7 @@ from lancedb._lancedb import PyExpr, expr_col, expr_lit, expr_func
 
 __all__ = ["Expr", "SortExpr", "col", "lit", "func"]
 
-_STR_TO_PA_TYPE: dict = {
+_STR_TO_PA_TYPE: dict[str, pa.DataType] = {
     "bool": pa.bool_(),
     "boolean": pa.bool_(),
     "int8": pa.int8(),
@@ -226,13 +226,15 @@ class Expr:
         """
         if isinstance(data_type, str):
             try:
-                data_type = _STR_TO_PA_TYPE[data_type]
+                resolved_data_type = _STR_TO_PA_TYPE[data_type]
             except KeyError:
                 raise ValueError(
                     f"unsupported data type: '{data_type}'. Supported: "
                     f"{', '.join(_STR_TO_PA_TYPE)}"
                 )
-        return Expr(self._inner.cast(data_type))
+        else:
+            resolved_data_type = data_type
+        return Expr(self._inner.cast(resolved_data_type))
 
     # ── named comparison helpers (alternative to operators) ──────────────────
 
