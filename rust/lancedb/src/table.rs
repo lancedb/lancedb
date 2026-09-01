@@ -719,8 +719,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "blob_columns is not supported on this table type".into(),
         })
     }
-    /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
-    async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
+    /// Materialize blob bytes for `_rowid` values.
+    ///
+    /// Pass `version` for the dataset checkout that produced those addresses.
+    async fn fetch_blobs(
+        &self,
+        _column: &str,
+        _row_ids: &[u64],
+        _version: Option<u64>,
+    ) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
             message: "fetch_blobs is not supported on this table type".into(),
         })
@@ -740,6 +747,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         _column: &str,
         _row_ids: &[u64],
+        _version: Option<u64>,
     ) -> Result<Vec<Option<BlobFile>>> {
         Err(Error::NotSupported {
             message: "fetch_blob_files is not supported on this table type".into(),
@@ -1192,6 +1200,9 @@ impl Table {
     /// valid empty blobs contain empty byte strings. Prefer
     /// [`Self::fetch_blob_files`] for large selections.
     ///
+    /// A bare list of `_rowid` values resolves against HEAD. Query results that
+    /// stamp `lancedb.query_version` use that dataset version automatically.
+    ///
     /// ```
     /// use arrow_array::UInt64Array;
     /// use futures::TryStreamExt;
@@ -1222,7 +1233,22 @@ impl Table {
         column: impl AsRef<str>,
         row_ids: &[u64],
     ) -> Result<LargeBinaryArray> {
-        self.inner.fetch_blobs(column.as_ref(), row_ids).await
+        self.inner.fetch_blobs(column.as_ref(), row_ids, None).await
+    }
+
+    /// Load blob bytes using row addresses from `version`.
+    ///
+    /// `_rowid` values returned by a query are relative to the dataset version
+    /// that produced them.
+    pub async fn fetch_blobs_at_version(
+        &self,
+        column: impl AsRef<str>,
+        row_ids: &[u64],
+        version: u64,
+    ) -> Result<LargeBinaryArray> {
+        self.inner
+            .fetch_blobs(column.as_ref(), row_ids, Some(version))
+            .await
     }
 
     /// Materialize row-specific ranges from a blob v2 column.
@@ -1287,7 +1313,24 @@ impl Table {
         column: impl AsRef<str>,
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
-        self.inner.fetch_blob_files(column.as_ref(), row_ids).await
+        self.inner
+            .fetch_blob_files(column.as_ref(), row_ids, None)
+            .await
+    }
+
+    /// Open lazy blob handles using row addresses from `version`.
+    ///
+    /// `_rowid` values returned by a query are relative to the dataset version
+    /// that produced them.
+    pub async fn fetch_blob_files_at_version(
+        &self,
+        column: impl AsRef<str>,
+        row_ids: &[u64],
+        version: u64,
+    ) -> Result<Vec<Option<BlobFile>>> {
+        self.inner
+            .fetch_blob_files(column.as_ref(), row_ids, Some(version))
+            .await
     }
 
     /// Insert new records into this Table
@@ -3030,6 +3073,16 @@ impl NativeTable {
         Ok(dataset.manifest().clone())
     }
 
+    /// Open the dataset at `version` without changing this table's checkout.
+    async fn dataset_at(&self, version: Option<u64>) -> Result<Arc<lance::Dataset>> {
+        let current = self.dataset.get().await?;
+        match version {
+            None => Ok(current),
+            Some(requested) if requested == current.version().version => Ok(current),
+            Some(requested) => Ok(Arc::new(current.checkout_version(requested).await?)),
+        }
+    }
+
     /// Update key-value pairs in config.
     pub async fn update_config(
         &self,
@@ -3480,8 +3533,13 @@ impl BaseTable for NativeTable {
         Ok(crate::blob::blob_column_names(schema.as_ref()))
     }
 
-    async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
-        let dataset = self.dataset.get().await?;
+    async fn fetch_blobs(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+        version: Option<u64>,
+    ) -> Result<LargeBinaryArray> {
+        let dataset = self.dataset_at(version).await?;
         crate::blob::take_blobs_aligned(&dataset, column, row_ids).await
     }
 
@@ -3498,8 +3556,9 @@ impl BaseTable for NativeTable {
         &self,
         column: &str,
         row_ids: &[u64],
+        version: Option<u64>,
     ) -> Result<Vec<Option<BlobFile>>> {
-        let dataset = self.dataset.get().await?;
+        let dataset = self.dataset_at(version).await?;
         crate::blob::take_blob_files_aligned(&dataset, column, row_ids).await
     }
 

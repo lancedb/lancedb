@@ -3,9 +3,10 @@
 
 use std::sync::Arc;
 
+use arrow_array::types::Float32Type;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, Int64Array, LargeBinaryArray, RecordBatch, StringArray,
-    StructArray, UInt64Array, new_null_array,
+    Array, ArrayRef, BinaryArray, FixedSizeListArray, Int64Array, LargeBinaryArray, RecordBatch,
+    StringArray, StructArray, UInt64Array, new_null_array,
 };
 use arrow_schema::{DataType, Field, Fields, Schema};
 use futures::TryStreamExt;
@@ -20,7 +21,8 @@ use lancedb::{
     database::listing::{
         ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
     },
-    query::{ExecutableQuery, QueryBase},
+    index::{Index, vector::IvfFlatIndexBuilder},
+    query::{ExecutableQuery, QUERY_VERSION_META_KEY, QueryBase, Select},
     table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions},
 };
 use tempfile::tempdir;
@@ -111,7 +113,7 @@ async fn query_image_struct(table: &Table) -> StructArray {
 }
 
 #[tokio::test]
-async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Result<()> {
+async fn declaring_blob_column_bumps_format_without_stable_row_ids() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = db
@@ -120,7 +122,7 @@ async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Resu
         .await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
 
@@ -179,7 +181,7 @@ async fn creating_with_blob_data_bumps_format() -> Result<()> {
     let table = db.create_table("t", batch).execute().await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
     assert_eq!(table.count_rows(None).await?, 1);
     Ok(())
 }
@@ -305,7 +307,7 @@ async fn namespace_create_applies_blob_defaults() -> Result<()> {
         .await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
 
@@ -401,6 +403,33 @@ async fn collect_row_ids(table: &Table) -> Result<Vec<u64>> {
         .to_vec())
 }
 
+async fn collect_row_ids_and_version(table: &Table) -> Result<(Vec<u64>, u64)> {
+    let batches = table
+        .query()
+        .with_row_id()
+        .execute()
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+    let version = batch
+        .schema()
+        .metadata
+        .get(QUERY_VERSION_META_KEY)
+        .expect("query with _rowid stamps lancedb.query_version")
+        .parse::<u64>()
+        .unwrap();
+    let ids = batch
+        .column_by_name("_rowid")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap()
+        .values()
+        .to_vec();
+    Ok((ids, version))
+}
+
 async fn collect_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
     let batches = table
         .query()
@@ -482,7 +511,7 @@ async fn fetch_blobs_round_trips_nested_blob_column() -> Result<()> {
     let table = db.create_table("t", batch).execute().await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
 
     let ids = collect_row_ids(&table).await?;
     let bytes = table.fetch_blobs("info.blob", &ids).await?;
@@ -653,11 +682,13 @@ async fn fetch_blob_ranges_validates_requests() -> Result<()> {
     assert!(err.to_string().contains("offset + length overflowed"));
 
     let err = table
-        .fetch_blob_ranges("image", [BlobRangeRequest::new(u64::MAX, 0, 1)])
+        .fetch_blob_ranges("image", [BlobRangeRequest::new(1u64 << 32, 0, 1)])
         .await
         .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+    assert!(
+        err.to_string().contains("non-existent fragment"),
+        "got: {err}"
+    );
     Ok(())
 }
 
@@ -689,8 +720,11 @@ async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
 
-    let err = table.fetch_blobs("image", &[u64::MAX]).await.unwrap_err();
-    assert!(err.to_string().contains("row IDs"));
+    let err = table.fetch_blobs("image", &[1u64 << 32]).await.unwrap_err();
+    assert!(
+        err.to_string().contains("non-existent fragment"),
+        "got: {err}"
+    );
     Ok(())
 }
 
@@ -700,23 +734,22 @@ async fn fetch_blob_apis_reject_mixed_valid_and_missing_row_ids() -> Result<()> 
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
     let row_id = collect_row_ids(&table).await?[0];
-    let row_ids = [u64::MAX, row_id];
+    let row_ids = [1u64 << 32, row_id];
 
-    let err = table.fetch_blobs("image", &row_ids).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
-
-    let err = table.fetch_blob_files("image", &row_ids).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+    assert!(
+        table.fetch_blobs("image", &row_ids).await.is_err(),
+        "mixed valid and missing row ids must not return a partial blob selection"
+    );
+    assert!(
+        table.fetch_blob_files("image", &row_ids).await.is_err(),
+        "mixed valid and missing row ids must not return a partial blob selection"
+    );
 
     let requests = row_ids.map(|row_id| BlobRangeRequest::new(row_id, 0, 1));
-    let err = table
-        .fetch_blob_ranges("image", requests)
-        .await
-        .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+    assert!(
+        table.fetch_blob_ranges("image", requests).await.is_err(),
+        "mixed valid and missing row ids must not return a partial blob selection"
+    );
     Ok(())
 }
 
@@ -918,7 +951,7 @@ async fn fetch_blobs_after_delete() -> Result<()> {
 }
 
 #[tokio::test]
-async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<()> {
+async fn held_query_rowids_resolve_on_producing_version_after_compact() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"frag-one".as_slice())]).await?;
@@ -926,9 +959,9 @@ async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<
         .add(binary_input_batch(&[2], &[Some(b"frag-two".as_slice())]))
         .execute()
         .await?;
+    assert!(!uses_stable_row_ids(&table).await);
 
-    let pairs_before = collect_id_rowid(&table).await?;
-    let ids_before: Vec<u64> = pairs_before.iter().map(|(_, rowid)| *rowid).collect();
+    let (ids_before, query_version) = collect_row_ids_and_version(&table).await?;
 
     table
         .optimize(OptimizeAction::Compact {
@@ -937,28 +970,53 @@ async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<
         })
         .await?;
 
-    let bytes_after = table.fetch_blobs("image", &ids_before).await?;
-    assert_eq!(bytes_after.len(), 2);
-    for (i, (id, _)) in pairs_before.iter().enumerate() {
-        match id {
-            1 => assert_eq!(bytes_after.value(i), b"frag-one"),
-            2 => assert_eq!(bytes_after.value(i), b"frag-two"),
-            _ => unreachable!(),
-        }
-    }
+    assert!(
+        table.fetch_blobs("image", &ids_before).await.is_err(),
+        "held _rowid against HEAD after compact without SRID must fail"
+    );
 
-    let ranges = ids_before
+    let bytes_after = table
+        .fetch_blobs_at_version("image", &ids_before, query_version)
+        .await?;
+    assert_eq!(bytes_after.len(), 2);
+    let mut got: Vec<&[u8]> = (0..bytes_after.len())
+        .map(|i| bytes_after.value(i))
+        .collect();
+    got.sort();
+    assert_eq!(got, [b"frag-one".as_slice(), b"frag-two".as_slice()]);
+
+    let requery_ids = collect_row_ids(&table).await?;
+    let ranges = requery_ids
         .iter()
         .map(|row_id| BlobRangeRequest::new(*row_id, 5, 3));
     let ranges_after = table.fetch_blob_ranges("image", ranges).await?;
     assert_eq!(ranges_after.len(), 2);
-    for (i, (id, _)) in pairs_before.iter().enumerate() {
-        match id {
-            1 => assert_eq!(ranges_after.value(i), b"one"),
-            2 => assert_eq!(ranges_after.value(i), b"two"),
-            _ => unreachable!(),
-        }
-    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn held_rowids_against_head_survive_compact_with_stable_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+        .execute()
+        .await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"frag-one".as_slice())]).await?;
+    table
+        .add(binary_input_batch(&[2], &[Some(b"frag-two".as_slice())]))
+        .execute()
+        .await?;
+    assert!(uses_stable_row_ids(&table).await);
+
+    let ids_before = collect_row_ids(&table).await?;
+    table
+        .optimize(OptimizeAction::Compact {
+            options: CompactionOptions::default(),
+            remap_options: None,
+        })
+        .await?;
+    let bytes_after = table.fetch_blobs("image", &ids_before).await?;
+    assert_eq!(bytes_after.len(), 2);
     Ok(())
 }
 
@@ -1552,5 +1610,226 @@ async fn malformed_string_uri_is_rejected_at_write() -> Result<()> {
 
     assert!(err.to_string().contains("not a uri"), "got: {err}");
     assert_eq!(table.count_rows(None).await?, 0);
+    Ok(())
+}
+
+async fn compact_defer_index_remap(table: &Table) -> Result<()> {
+    table
+        .optimize(OptimizeAction::Compact {
+            options: CompactionOptions {
+                target_rows_per_fragment: 2_000,
+                defer_index_remap: true,
+                ..Default::default()
+            },
+            remap_options: None,
+        })
+        .await?;
+    Ok(())
+}
+
+fn rowids_and_version_from_batches(rows: &[RecordBatch]) -> (Vec<u64>, u64) {
+    let batch = arrow_select::concat::concat_batches(&rows[0].schema(), rows).unwrap();
+    let version = batch
+        .schema()
+        .metadata
+        .get(QUERY_VERSION_META_KEY)
+        .expect("query with _rowid stamps lancedb.query_version")
+        .parse::<u64>()
+        .unwrap();
+    let ids = batch
+        .column_by_name("_rowid")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap()
+        .values()
+        .to_vec();
+    (ids, version)
+}
+
+async fn vector_search_rowids_and_version(table: &Table, query: &[f32]) -> Result<(Vec<u64>, u64)> {
+    let rows = table
+        .vector_search(query)?
+        .with_row_id()
+        .limit(10)
+        .execute()
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    Ok(rowids_and_version_from_batches(&rows))
+}
+
+async fn index_rowids_without_head_take(table: &Table, query: &[f32]) -> Result<(Vec<u64>, u64)> {
+    let rows = table
+        .vector_search(query)?
+        .select(Select::columns(&["_distance"]))
+        .fast_search()
+        .with_row_id()
+        .limit(10)
+        .execute()
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    Ok(rowids_and_version_from_batches(&rows))
+}
+
+async fn two_fragment_vector_blob_table(db: &Connection, name: &str) -> Result<Table> {
+    let vector_type =
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2);
+    let table = db
+        .create_empty_table(
+            name,
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("vector", vector_type.clone(), true),
+                blob("image", true),
+            ])),
+        )
+        .execute()
+        .await?;
+    let write_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("vector", vector_type, true),
+        Field::new("image", DataType::LargeBinary, true),
+    ]));
+    table
+        .add(
+            RecordBatch::try_new(
+                write_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1_i64])),
+                    Arc::new(
+                        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                            [Some(vec![Some(1.0), Some(0.0)])],
+                            2,
+                        ),
+                    ),
+                    Arc::new(LargeBinaryArray::from_iter_values([b"frag-one".as_slice()])),
+                ],
+            )
+            .unwrap(),
+        )
+        .execute()
+        .await?;
+    table
+        .add(
+            RecordBatch::try_new(
+                write_schema,
+                vec![
+                    Arc::new(Int64Array::from(vec![2_i64])),
+                    Arc::new(
+                        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                            [Some(vec![Some(0.0), Some(1.0)])],
+                            2,
+                        ),
+                    ),
+                    Arc::new(LargeBinaryArray::from_iter_values([b"frag-two".as_slice()])),
+                ],
+            )
+            .unwrap(),
+        )
+        .execute()
+        .await?;
+    Ok(table)
+}
+
+#[tokio::test]
+async fn query_with_row_id_stamps_open_dataset_version() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+    let head = table.version().await?;
+    let (_, version) = collect_row_ids_and_version(&table).await?;
+    assert_eq!(version, head);
+    Ok(())
+}
+
+#[tokio::test]
+async fn held_search_rowids_resolve_on_producing_version_after_compact() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = two_fragment_vector_blob_table(&db, "photos").await?;
+    assert!(!uses_stable_row_ids(&table).await);
+
+    let (ids, version) = vector_search_rowids_and_version(&table, &[1.0_f32, 0.0]).await?;
+
+    table
+        .optimize(OptimizeAction::Compact {
+            options: CompactionOptions::default(),
+            remap_options: None,
+        })
+        .await?;
+    assert!(
+        table.fetch_blobs("image", &ids).await.is_err(),
+        "held search ids against HEAD after compact must fail without SRID"
+    );
+    let bytes = table.fetch_blobs_at_version("image", &ids, version).await?;
+    let mut got: Vec<&[u8]> = (0..bytes.len()).map(|i| bytes.value(i)).collect();
+    got.sort();
+    assert_eq!(got, [b"frag-one".as_slice(), b"frag-two".as_slice()]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_index_rowids_fail_on_stamped_head_after_defer_remap() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = two_fragment_vector_blob_table(&db, "photos").await?;
+    assert!(!uses_stable_row_ids(&table).await);
+
+    table
+        .create_index(
+            &["vector"],
+            Index::IvfFlat(
+                IvfFlatIndexBuilder::default()
+                    .num_partitions(1)
+                    .sample_rate(1),
+            ),
+        )
+        .execute()
+        .await?;
+
+    let (ids_before, _) = index_rowids_without_head_take(&table, &[1.0_f32, 0.0]).await?;
+    compact_defer_index_remap(&table).await?;
+
+    let head_ids = collect_row_ids(&table).await?;
+    let head_version = table.version().await?;
+    let (search_ids, search_version) =
+        index_rowids_without_head_take(&table, &[1.0_f32, 0.0]).await?;
+
+    assert_eq!(search_version, head_version);
+    let mut search_sorted = search_ids.clone();
+    search_sorted.sort_unstable();
+    let mut before_sorted = ids_before.clone();
+    before_sorted.sort_unstable();
+    let mut head_sorted = head_ids.clone();
+    head_sorted.sort_unstable();
+    assert_ne!(
+        before_sorted, head_sorted,
+        "pre-compact index addresses must differ from a HEAD scan after defer compact"
+    );
+
+    let stale_ids = if search_sorted == before_sorted {
+        assert_ne!(search_sorted, head_sorted);
+        search_ids
+    } else {
+        assert_eq!(search_sorted, head_sorted);
+        assert_eq!(
+            table
+                .fetch_blobs_at_version("image", &search_ids, search_version)
+                .await?
+                .len(),
+            search_ids.len()
+        );
+        ids_before
+    };
+
+    let stamped_head = table
+        .fetch_blobs_at_version("image", &stale_ids, search_version)
+        .await;
+    assert!(
+        stamped_head.is_err(),
+        "stale row addresses must fail on stamped HEAD, got {stamped_head:?}"
+    );
     Ok(())
 }

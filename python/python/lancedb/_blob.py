@@ -390,17 +390,31 @@ def _leaf_struct_column(tbl: pa.Table, path: str) -> pa.StructArray:
     return column
 
 
+def _query_version_from_table(hits: pa.Table) -> Optional[int]:
+    metadata = hits.schema.metadata or {}
+    raw = metadata.get(b"lancedb.query_version")
+    if raw is None:
+        raw = metadata.get("lancedb.query_version")
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    return int(raw)
+
+
 def _normalize_blob_row_ids(
     row_ids: Union[list[int], pa.Table], blob_column: str
-) -> list[int]:
+) -> tuple[list[int], Optional[int]]:
     if isinstance(row_ids, pa.Table):
-        return read_row_ids_from_hits(row_ids, blob_column)
+        return read_row_ids_from_hits(row_ids, blob_column), _query_version_from_table(
+            row_ids
+        )
     if isinstance(row_ids, (pa.Array, pa.ChunkedArray)):
         raise ValueError(
             "pass a query table with _rowid, not a column array "
             "(use fetch_blobs('image', hits), not fetch_blobs('image', hits['image']))"
         )
-    return list(row_ids)
+    return list(row_ids), None
 
 
 def _wrap_blob_files(handles: Iterable[object]) -> list[Optional[BlobFile]]:

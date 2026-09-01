@@ -359,6 +359,7 @@ impl<S: HttpSend> RemoteTable<S> {
         &self,
         column: &str,
         row_ids: &[u64],
+        producing_version: Option<u64>,
     ) -> Result<LargeBinaryArray> {
         // Empty requests do not require blob-route support.
         if row_ids.is_empty() {
@@ -371,7 +372,7 @@ impl<S: HttpSend> RemoteTable<S> {
         }
         let read_snapshot = self.snapshot_read_state().await;
         let mut body = serde_json::json!({
-            "version": read_snapshot.version,
+            "version": producing_version.or(read_snapshot.version),
             "column": column,
             "row_ids": row_ids,
         });
@@ -448,6 +449,7 @@ impl<S: HttpSend> RemoteTable<S> {
         &self,
         column: &str,
         row_ids: &[u64],
+        producing_version: Option<u64>,
     ) -> Result<Vec<Option<BlobFile>>> {
         // Empty requests do not require blob-route support.
         if row_ids.is_empty() {
@@ -471,7 +473,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 let requester: Arc<dyn BlobRangeRequester> = Arc::new(TableBlobRangeRequester {
                     client: self.client.clone(),
                     path,
-                    version: read_snapshot.version,
+                    version: producing_version.or(read_snapshot.version),
                     branch: self.branch.clone(),
                     freshness: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
                     parent_freshness: self.freshness.clone(),
@@ -668,7 +670,7 @@ mod tests {
         let table = mock_remote_blob_table(requests.clone());
 
         let mut files = table
-            .fetch_blob_files_impl("image", &[10, 20])
+            .fetch_blob_files_impl("image", &[10, 20], None)
             .await
             .unwrap();
 
@@ -687,7 +689,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap()
             .pop()
@@ -723,7 +725,7 @@ mod tests {
 
         table.checkout(5).await.unwrap();
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap()
             .pop()
@@ -743,7 +745,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap()
             .pop()
@@ -767,7 +769,7 @@ mod tests {
         let table = mock_remote_blob_table(requests.clone());
 
         let mut files = table
-            .fetch_blob_files_impl("image", &[10, 20, 30])
+            .fetch_blob_files_impl("image", &[10, 20, 30], None)
             .await
             .unwrap();
 
@@ -796,7 +798,7 @@ mod tests {
         );
 
         let error = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap_err();
         assert!(
@@ -823,7 +825,7 @@ mod tests {
         );
 
         let error = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap_err();
         assert!(
@@ -844,7 +846,7 @@ mod tests {
             Some(Version::new(0, 4, 9)),
         );
         let error = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap_err();
         assert!(matches!(error, Error::NotSupported { .. }));
@@ -883,7 +885,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap()
             .pop()
@@ -923,7 +925,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap()
             .pop()
@@ -974,7 +976,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap()
             .pop()
@@ -1001,7 +1003,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap()
             .pop()
@@ -1078,7 +1080,10 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table
+            .fetch_blob_files_impl("image", &[10], None)
+            .await
+            .unwrap();
         let file = files.remove(0).unwrap();
 
         assert_eq!(file.size(), PAYLOAD.len() as u64);
@@ -1093,7 +1098,10 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table
+            .fetch_blob_files_impl("image", &[10], None)
+            .await
+            .unwrap();
         let file = files.remove(0).unwrap();
         let probe_requests = requests.lock().unwrap().len();
 
@@ -1118,7 +1126,10 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table
+            .fetch_blob_files_impl("image", &[10], None)
+            .await
+            .unwrap();
         let file = files.remove(0).unwrap();
         let probe_requests = requests.lock().unwrap().len();
 
@@ -1169,7 +1180,10 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table
+            .fetch_blob_files_impl("image", &[10], None)
+            .await
+            .unwrap();
         let file = files.remove(0).unwrap();
 
         let error = file.read_range(1..3).await.unwrap_err();
@@ -1184,10 +1198,13 @@ mod tests {
             Some(Version::new(0, 4, 9)),
         );
 
-        let files = table.fetch_blob_files_impl("image", &[]).await.unwrap();
+        let files = table
+            .fetch_blob_files_impl("image", &[], None)
+            .await
+            .unwrap();
         assert!(files.is_empty());
 
-        let blobs = table.fetch_blobs_impl("image", &[]).await.unwrap();
+        let blobs = table.fetch_blobs_impl("image", &[], None).await.unwrap();
         assert_eq!(blobs.len(), 0);
     }
 
@@ -1259,7 +1276,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .fetch_blob_files_impl("image", &[10], None)
             .await
             .unwrap()
             .pop()
@@ -1304,7 +1321,10 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table
+            .fetch_blob_files_impl("image", &[10], None)
+            .await
+            .unwrap();
         let file = files.remove(0).unwrap();
         let error = file.read_range(1..3).await.unwrap_err();
         assert!(error.to_string().contains("206"), "got: {error}");

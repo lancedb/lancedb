@@ -1100,6 +1100,27 @@ def test_fetch_blob_files_nested_path_seek():
     assert handle.read() == b"beta"
 
 
+def test_blob_query_stamps_query_version():
+    table = _blob_table("stamp", [{"id": 1, "image": b"x"}])
+    hits = table.search().to_arrow()
+    assert (hits.schema.metadata or {}).get(b"lancedb.query_version") is not None
+
+
+def test_fetch_blobs_query_result_after_compact_without_stable_row_ids(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("t", schema=schema)
+    table.add([{"id": 1, "image": b"frag-one"}])
+    table.add([{"id": 2, "image": b"frag-two"}])
+    hits = table.search().to_arrow()
+    row_ids = read_row_ids_from_hits(hits, "image")
+    table.optimize()
+    blobs = table.fetch_blobs("image", hits)
+    assert sorted(blobs.to_pylist()) == [b"frag-one", b"frag-two"]
+    with pytest.raises(RuntimeError):
+        table.fetch_blobs("image", row_ids)
+
+
 def test_fetch_blobs_survives_sort_after_query():
     table = _blob_table(
         "sort_survives",

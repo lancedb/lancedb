@@ -1791,6 +1791,10 @@ class Table(ABC):
         The result has the same length and order as ``row_ids``. Null blobs
         produce null slots; valid empty blobs produce ``b""``.
 
+        A query table with ``_rowid`` and ``lancedb.query_version`` resolves
+        those addresses on the producing dataset version. A bare
+        ``list[int]`` of row ids resolves against HEAD.
+
         Convenience for small payloads. For large values use
         :meth:`fetch_blob_files`.
         """
@@ -6614,7 +6618,7 @@ class AsyncTable:
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> pa.LargeBinaryArray:
         return await self._inner.fetch_blobs(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column, *_normalize_blob_row_ids(row_ids, column)
         )
 
     async def fetch_blob_ranges(
@@ -6628,7 +6632,7 @@ class AsyncTable:
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> "list[Optional[BlobFile]]":
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids, column)
+            column, *_normalize_blob_row_ids(row_ids, column)
         )
         return _wrap_blob_files(handles)
 

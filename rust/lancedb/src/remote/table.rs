@@ -2667,16 +2667,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.blob_columns_impl().await
     }
 
-    async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
-        self.fetch_blobs_impl(column, row_ids).await
+    async fn fetch_blobs(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+        version: Option<u64>,
+    ) -> Result<LargeBinaryArray> {
+        self.fetch_blobs_impl(column, row_ids, version).await
     }
 
     async fn fetch_blob_files(
         &self,
         column: &str,
         row_ids: &[u64],
+        version: Option<u64>,
     ) -> Result<Vec<Option<BlobFile>>> {
-        self.fetch_blob_files_impl(column, row_ids).await
+        self.fetch_blob_files_impl(column, row_ids, version).await
     }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
@@ -4982,6 +4988,45 @@ mod tests {
         table.checkout(42).await.unwrap();
 
         assert_eq!(table.fetch_blobs("image", &[10]).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_sends_an_explicit_producing_version() {
+        let ipc = one_row_blob_ipc_stream("image");
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(br#"{"version": 42, "schema": {"fields": []}}"#.to_vec())
+                    .unwrap(),
+                "/v1/table/my_table/fetch_blobs/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(
+                        body["version"], 17,
+                        "an explicit producing version must win over the table checkout"
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(ipc.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            },
+        );
+
+        table.checkout(42).await.unwrap();
+
+        assert_eq!(
+            table
+                .fetch_blobs_at_version("image", &[10], 17)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

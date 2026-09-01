@@ -1278,18 +1278,26 @@ impl Table {
     }
 
     /// Read blob bytes for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids))]
+    ///
+    /// Pass ``version`` for the dataset checkout that produced those addresses.
+    #[pyo3(signature = (column, row_ids, version=None))]
     pub fn fetch_blobs(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
+        version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let blobs: LargeBinaryArray = inner
-                .fetch_blobs(column.as_str(), &row_ids)
-                .await
-                .infer_error()?;
+            let blobs: LargeBinaryArray = match version {
+                Some(version) => {
+                    inner
+                        .fetch_blobs_at_version(column.as_str(), &row_ids, version)
+                        .await
+                }
+                None => inner.fetch_blobs(column.as_str(), &row_ids).await,
+            }
+            .infer_error()?;
             Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
         })
     }
@@ -1316,18 +1324,26 @@ impl Table {
     }
 
     /// Open lazy blob handles for `row_ids` from blob v2 column `column`.
-    #[pyo3(signature = (column, row_ids))]
+    ///
+    /// Pass ``version`` for the dataset checkout that produced those addresses.
+    #[pyo3(signature = (column, row_ids, version=None))]
     pub fn fetch_blob_files(
         self_: PyRef<'_, Self>,
         column: String,
         row_ids: Vec<u64>,
+        version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let handles = inner
-                .fetch_blob_files(column.as_str(), &row_ids)
-                .await
-                .infer_error()?;
+            let handles = match version {
+                Some(version) => {
+                    inner
+                        .fetch_blob_files_at_version(column.as_str(), &row_ids, version)
+                        .await
+                }
+                None => inner.fetch_blob_files(column.as_str(), &row_ids).await,
+            }
+            .infer_error()?;
             Ok(handles
                 .into_iter()
                 .map(|handle| {

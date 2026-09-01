@@ -13,7 +13,7 @@ use arrow_array::{
     make_array,
     types::{Int64Type, UInt64Type},
 };
-use arrow_schema::{DataType, SchemaRef};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::TaskContext;
 use datafusion_expr::{Expr, col, lit};
@@ -27,9 +27,9 @@ use datafusion_physical_plan::{
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
+use lance::dataset::ROW_ID;
 /// Re-export Lance ColumnOrdering type for use in query ordering
 pub use lance::dataset::scanner::ColumnOrdering;
-use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
 use lance_datafusion::exec::{execute_plan, format_plan as format_analyzed_plan};
 use lance_index::scalar::FullTextSearchQuery;
@@ -40,7 +40,6 @@ use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
 use crate::table::BaseTable;
-use crate::utils::{MaxBatchLengthStream, TimeoutStream};
 use crate::{ApproxMode, DistanceType};
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
@@ -50,6 +49,27 @@ use crate::{
 mod hybrid;
 
 pub(crate) const DEFAULT_TOP_K: usize = 10;
+
+/// Schema metadata written on query results that include `_rowid`.
+///
+/// `_rowid` values returned by a query are relative to the dataset version
+/// that produced them.
+pub const QUERY_VERSION_META_KEY: &str = "lancedb.query_version";
+
+/// Dataset version stamped on a query result schema, if present.
+pub fn query_version_from_schema(schema: &Schema) -> Option<u64> {
+    schema
+        .metadata
+        .get(QUERY_VERSION_META_KEY)
+        .and_then(|value| value.parse().ok())
+}
+
+/// Stamp the producing dataset version onto a result schema that includes `_rowid`.
+pub fn stamp_query_version(schema: SchemaRef, version: u64) -> SchemaRef {
+    let mut metadata = schema.metadata().clone();
+    metadata.insert(QUERY_VERSION_META_KEY.to_string(), version.to_string());
+    Arc::new(schema.as_ref().clone().with_metadata(metadata))
+}
 
 /// Which columns should be retrieved from the database
 #[derive(Debug, Clone)]
@@ -1414,17 +1434,18 @@ impl VectorQuery {
     ) -> Result<SendableRecordBatchStream> {
         let max_batch_length = options.max_batch_length as usize;
         let internal_options = options.without_output_batch_length_limit();
-        // clone query and specify we want to include row IDs, which can be needed for reranking
-        let mut fts_query = Query::new(self.parent.clone());
+        let snapshot = self.parent.query_snapshot().await?;
+        let snapshot_version = snapshot.version().await?;
+        let mut fts_query = Query::new(snapshot.clone());
         fts_query.request = self.request.base.clone();
         fts_query = fts_query.with_row_id();
 
         let mut vector_query = self.clone().with_row_id();
-
+        vector_query.parent = snapshot;
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
             fts_query.execute_with_options(internal_options.clone()),
-            vector_query.inner_execute_with_options(internal_options)
+            vector_query.execute_vector_query(internal_options)
         )?;
 
         let (fts_results, vec_results) = try_join!(
@@ -1435,6 +1456,14 @@ impl VectorQuery {
         // try to get the schema to use when combining batches.
         // if either
         let (fts_schema, vec_schema) = hybrid::query_schemas(&fts_results, &vec_results);
+        debug_assert!(
+            query_version_from_schema(fts_schema.as_ref())
+                .is_none_or(|version| version == snapshot_version)
+        );
+        debug_assert!(
+            query_version_from_schema(vec_schema.as_ref())
+                .is_none_or(|version| version == snapshot_version)
+        );
 
         // concatenate all the batches together
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
@@ -1477,24 +1506,26 @@ impl VectorQuery {
 
         if !self.request.base.with_row_id {
             results = results.drop_column(ROW_ID)?;
+        } else {
+            let schema = stamp_query_version(results.schema(), snapshot_version);
+            results = RecordBatch::try_new(schema, results.columns().to_vec()).map_err(|e| {
+                Error::Runtime {
+                    message: e.to_string(),
+                }
+            })?;
         }
 
         Ok(single_batch_stream(results, max_batch_length))
     }
 
-    async fn inner_execute_with_options(
+    async fn execute_vector_query(
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
-        let plan = self.create_plan(options.clone()).await?;
-        let inner = execute_plan(plan, Default::default())?;
-        let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
-        let inner = if let Some(timeout) = options.timeout {
-            TimeoutStream::new_boxed(inner, timeout)
-        } else {
-            inner
-        };
-        Ok(DatasetRecordBatchStream::new(inner).into())
+        let query = AnyQuery::VectorQuery(self.request.clone());
+        Ok(SendableRecordBatchStream::from(
+            self.parent.clone().query(&query, options).await?,
+        ))
     }
 }
 
@@ -1534,7 +1565,10 @@ impl ExecutableQuery for VectorQuery {
             return Ok(hybrid_result);
         }
 
-        self.inner_execute_with_options(options).await
+        let query = AnyQuery::VectorQuery(self.request.clone());
+        Ok(SendableRecordBatchStream::from(
+            self.parent.clone().query(&query, options).await?,
+        ))
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
@@ -2294,6 +2328,25 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{Table, connect, database::CreateTableMode, index::Index};
+
+    #[test]
+    fn query_version_from_schema_reads_stamped_metadata() {
+        let schema = ArrowSchema::new(vec![ArrowField::new("id", DataType::Int32, false)])
+            .with_metadata(
+                [(QUERY_VERSION_META_KEY.to_string(), "7".to_string())]
+                    .into_iter()
+                    .collect(),
+            );
+        assert_eq!(query_version_from_schema(&schema), Some(7));
+        assert_eq!(
+            query_version_from_schema(&ArrowSchema::new(vec![ArrowField::new(
+                "id",
+                DataType::Int32,
+                false
+            )])),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn test_setters_getters() {

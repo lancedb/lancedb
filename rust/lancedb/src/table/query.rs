@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 mod lsm;
 
@@ -11,17 +13,23 @@ use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
+    stamp_query_version,
 };
 use crate::utils::{MaxBatchLengthStream, TimeoutStream, default_vector_column};
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
-use arrow_array::Array;
-use arrow_schema::{DataType, Schema};
+use arrow_array::{Array, RecordBatch};
+use arrow_schema::{DataType, Schema, SchemaRef};
+use datafusion_common::Result as DataFusionResult;
 use datafusion_common::{Column, DataFusionError, SchemaError};
+use datafusion_execution::RecordBatchStream;
 use datafusion_physical_plan::ExecutionPlan;
+use datafusion_physical_plan::SendableRecordBatchStream;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
+use futures::Stream;
+use lance::Dataset;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
@@ -113,6 +121,11 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     if query.base().use_lsm.is_some() || query.base().take_offsets.is_some() {
         return true;
     }
+    // QueryTable does not return the dataset version it served. `_rowid` addresses
+    // are only valid on that version, so those queries run locally.
+    if query.base().with_row_id {
+        return true;
+    }
     matches!(
         query,
         AnyQuery::VectorQuery(VectorQueryRequest {
@@ -137,7 +150,10 @@ async fn execute_generic_query(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<DatasetRecordBatchStream> {
-    let plan = create_plan(table, query, options.clone()).await?;
+    let dataset = table.dataset.get().await?;
+    let query_version = dataset.version().version;
+    let with_row_id = query.base().with_row_id;
+    let plan = create_plan_on_dataset(table, dataset, query, options.clone()).await?;
     let inner = execute_plan(plan, Default::default())?;
     let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
     let inner = if let Some(timeout) = options.timeout {
@@ -145,11 +161,60 @@ async fn execute_generic_query(
     } else {
         inner
     };
+    let inner = if with_row_id {
+        QueryVersionStream::new_boxed(inner, query_version)
+    } else {
+        inner
+    };
     Ok(DatasetRecordBatchStream::new(inner))
+}
+
+/// Carries the dataset version of this read on results that include `_rowid`.
+/// Those addresses are only valid on that version.
+struct QueryVersionStream {
+    inner: SendableRecordBatchStream,
+    schema: SchemaRef,
+}
+
+impl QueryVersionStream {
+    fn new_boxed(inner: SendableRecordBatchStream, version: u64) -> SendableRecordBatchStream {
+        let schema = stamp_query_version(inner.schema(), version);
+        Box::pin(Self { inner, schema })
+    }
+}
+
+impl RecordBatchStream for QueryVersionStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
+impl Stream for QueryVersionStream {
+    type Item = DataFusionResult<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(batch))) => Poll::Ready(Some(
+                RecordBatch::try_new(self.schema.clone(), batch.columns().to_vec())
+                    .map_err(|e| datafusion_common::DataFusionError::Execution(e.to_string())),
+            )),
+            other => other,
+        }
+    }
 }
 
 pub async fn create_plan(
     table: &NativeTable,
+    query: &AnyQuery,
+    options: QueryExecutionOptions,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let dataset = table.dataset.get().await?;
+    create_plan_on_dataset(table, dataset, query, options).await
+}
+
+async fn create_plan_on_dataset(
+    table: &NativeTable,
+    ds_ref: Arc<Dataset>,
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -166,8 +231,6 @@ pub async fn create_plan(
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query),
     };
     query.base.check_filter()?;
-
-    let ds_ref = table.dataset.get().await?;
 
     // MemWAL read routing driven by `use_lsm`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
@@ -260,8 +323,15 @@ pub async fn create_plan(
                     let mut sub_query = query.clone();
                     sub_query.query_vector = vec![query_vector];
                     let options_ref = options.clone();
+                    let ds_ref = ds_ref.clone();
                     async move {
-                        create_plan(table, &AnyQuery::VectorQuery(sub_query), options_ref).await
+                        create_plan_on_dataset(
+                            table,
+                            ds_ref,
+                            &AnyQuery::VectorQuery(sub_query),
+                            options_ref,
+                        )
+                        .await
                     }
                 })
                 .collect::<Vec<_>>();
@@ -1300,6 +1370,48 @@ mod tests {
 
         assert_eq!(count, 1);
         assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_with_row_id_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::query::QUERY_VERSION_META_KEY;
+        use crate::table::query::execute_query;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        let table = conn
+            .create_table("test_row_id_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let query = AnyQuery::Query(QueryRequest {
+            with_row_id: true,
+            ..Default::default()
+        });
+        let stream = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            batches[0]
+                .schema()
+                .metadata
+                .contains_key(QUERY_VERSION_META_KEY)
+        );
     }
 
     #[tokio::test]

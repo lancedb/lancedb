@@ -7,7 +7,7 @@
 //! raw `Binary` / `LargeBinary` into the blob struct layout. Queries return
 //! small descriptors, not bytes.
 //!
-//! Blob tables require Lance file format >= 2.2 and stable row ids at create.
+//! Blob tables require Lance file format >= 2.2. Stable row ids stay opt-in.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -324,6 +324,8 @@ pub(crate) fn blob_column_names(schema: &Schema) -> Vec<String> {
 }
 
 /// Bumps storage format to at least [`LanceFileVersion::V2_2`] for blob schemas.
+///
+/// This only selects a storage format. It does not enable stable row ids.
 pub(crate) fn ensure_blob_storage_version(schema: &Schema, params: &mut WriteParams) {
     if !has_blob_columns(schema) {
         return;
@@ -504,6 +506,7 @@ mod tests {
             params.data_storage_version.unwrap().resolve(),
             ConcreteFileVersion::V2_2
         );
+        assert!(!params.enable_stable_row_ids);
     }
 
     #[test]
