@@ -10,7 +10,8 @@ from datafusion.substrait import Serde
 import lancedb
 from lancedb import col
 from lancedb import sql_functions as F
-from lancedb.dataframe import AsyncDataFrame
+from lancedb._lancedb import NativeDataFrame
+from lancedb.dataframe import AsyncDataFrame, DataFrame
 
 
 def test_dataframe_builds_substrait_plan(tmp_path):
@@ -76,8 +77,13 @@ def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
     assert joined.schema.names == ["left_value", "right_value"]
     assert joined.to_substrait()
 
-    db.create_table("dotted", [{"left.value": 10}])
-    dotted = db.table("dotted")
+    dotted = DataFrame(
+        db,
+        NativeDataFrame.from_table(
+            "dotted", pa.schema([pa.field("left.value", pa.int64())])
+        ),
+        ["public"],
+    )
     assert dotted.select(dotted.col("left.value")).schema.names == ["left.value"]
 
 
