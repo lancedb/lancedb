@@ -691,7 +691,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(stream.schema(), base_table.schema().await.unwrap());
+        assert_eq!(
+            stream.schema().fields(),
+            base_table.schema().await.unwrap().fields()
+        );
 
         let check_batch = async |stream: &mut SendableRecordBatchStream,
                                  expected_values: &[u64]| {

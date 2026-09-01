@@ -739,7 +739,7 @@ def test_fetch_blob_ranges_validates_requests():
     with pytest.raises(ValueError, match="offset \\+ length overflowed"):
         table.fetch_blob_ranges("image", [(row_id, 2**64 - 1, 1)])
 
-    with pytest.raises(ValueError, match="row IDs"):
+    with pytest.raises(ValueError, match="non-existent fragment"):
         table.fetch_blob_ranges("image", [(2**64 - 1, 0, 1)])
 
 
@@ -1117,7 +1117,7 @@ def test_fetch_blobs_query_result_after_compact_without_stable_row_ids(tmp_path)
     table.optimize()
     blobs = table.fetch_blobs("image", hits)
     assert sorted(blobs.to_pylist()) == [b"frag-one", b"frag-two"]
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="non-existent fragment"):
         table.fetch_blobs("image", row_ids)
 
 
