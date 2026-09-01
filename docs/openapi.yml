@@ -446,6 +446,15 @@ paths:
               properties:
                 column:
                   type: string
+                name:
+                  type: string
+                  description: Optional name for the created index.
+                replace:
+                  type: boolean
+                  default: true
+                  description: |
+                    Whether to replace an existing index with the same resolved
+                    name. Defaults to true.
                 metric_type:
                   type: string
                   nullable: false

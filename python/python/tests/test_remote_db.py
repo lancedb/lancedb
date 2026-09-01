@@ -820,11 +820,13 @@ def test_table_create_indices():
         scalar_req = received_requests[0]
         assert "name" in scalar_req
         assert scalar_req["name"] == "custom_scalar_idx"
+        assert scalar_req["replace"] is False
 
         # Check FTS index request has custom name
         fts_req = received_requests[1]
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
+        assert fts_req["replace"] is False
         assert fts_req["block_size"] == 256
         assert fts_req["custom_stop_words"] == ["cloud"]
 
@@ -832,6 +834,7 @@ def test_table_create_indices():
         vector_req = received_requests[2]
         assert "name" in vector_req
         assert vector_req["name"] == "custom_vector_idx"
+        assert "replace" not in vector_req
 
         table.wait_for_index(["custom_scalar_idx"], timedelta(seconds=2))
         table.wait_for_index(
