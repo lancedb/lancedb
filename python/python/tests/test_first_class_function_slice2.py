@@ -827,6 +827,32 @@ def test_blob_signature_rejects_collection_below_a_struct():
         )
         def blob_size(value):
             return len(value["images"])
+def test_blob_fields_support_vectorized_pyarrow_arrays():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("result", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return pa.array(
+            [value.as_py() if value.is_valid else b"" for value in image],
+            type=pa.large_binary(),
+        )
+
+    values = pa.array([b"large blob", b"", None], type=pa.large_binary())
+    result = copy_blobs(values)
+    assert isinstance(result, pa.LargeBinaryArray)
+    assert result.to_pylist() == [b"large blob", b"", b""]
+
+    signature = copy_blobs.registration_request.signature
+    assert signature.inputs[0].arrow_type == "blob_v2"
+    assert signature.inputs[0].nullable is True
+    assert signature.output.arrow_type == "blob_v2"
+    assert signature.output.nullable is False
+
+    source = base64.b64decode(
+        copy_blobs.registration_request.artifact.content.data
+    ).decode("utf-8")
+    assert "def copy_blobs(image: pa.Array) -> pa.Array:" in source
 
 
 def test_named_struct_function_can_include_a_blob_result_field():
