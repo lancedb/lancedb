@@ -11,6 +11,7 @@ import warnings
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from time import sleep
 from typing import List
 from unittest.mock import patch
@@ -334,6 +335,21 @@ async def test_update_async(mem_db_async: AsyncConnection):
     assert update_res.rows_updated == 1
     assert update_res.version == 5
     assert await table.count_rows("id == 10") == 1
+
+
+@pytest.mark.asyncio
+async def test_update_expr_filter_literals_async(mem_db_async: AsyncConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = await mem_db_async.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = await table.update({"result": value}, where=col("field") == value)
+        assert update_res.rows_updated == 1
+
+    assert (await table.to_arrow())["result"].to_pylist() == values
 
 
 def test_create_table(mem_db: DBConnection):
@@ -2343,6 +2359,148 @@ def test_update(mem_db: DBConnection):
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
 
 
+def test_update_expr_filter_literals(mem_db: DBConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = mem_db.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = table.update(where=col("field") == value, values={"result": value})
+        assert update_res.rows_updated == 1
+
+    assert table.to_arrow()["result"].to_pylist() == values
+
+
+def test_update_expr_filter_preserves_typed_semantics(mem_db: DBConnection):
+    low = Decimal("1.234567890123456789")
+    high = Decimal("1.234567890123456790")
+    decimal_schema = pa.schema(
+        [("val", pa.decimal128(19, 18)), ("result", pa.string())]
+    )
+    decimal_table = mem_db.create_table(
+        "update_expr_decimal",
+        pa.table(
+            {"val": [low, high], "result": ["old", "old"]},
+            schema=decimal_schema,
+        ),
+    )
+    predicate = col("val") < lit(high)
+    assert decimal_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    keyword_table = mem_db.create_table(
+        "update_expr_keyword", [{"null": 1, "result": "old"}]
+    )
+    predicate = col("null") == 1
+    assert keyword_table.search().where(predicate).to_arrow().num_rows == 1
+    result = keyword_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    empty_in_table = mem_db.create_table(
+        "update_expr_empty_in", [{"id": 1, "result": "old"}]
+    )
+    predicate = col("id").isin([])
+    assert empty_in_table.search().where(predicate).to_arrow().num_rows == 0
+    result = empty_in_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
+
+    marker = "__lancedb_binary_placeholder_0__"
+    binary_schema = pa.schema(
+        [("payload", pa.binary()), ("text", pa.string()), ("result", pa.string())]
+    )
+    binary_table = mem_db.create_table(
+        "update_expr_binary",
+        pa.table(
+            {
+                "payload": [b"\x01", b"\x02"],
+                "text": ["other", marker],
+                "result": ["old", "old"],
+            },
+            schema=binary_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) | (col("text") == marker)
+    assert binary_table.search().where(predicate).to_arrow().num_rows == 2
+    result = binary_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    nonfinite_table = mem_db.create_table(
+        "update_expr_nonfinite",
+        [{"x": 1.0, "result": "old"}, {"x": 2.0, "result": "old"}],
+    )
+    predicate = col("x") < float("inf")
+    assert nonfinite_table.search().where(predicate).to_arrow().num_rows == 2
+    result = nonfinite_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    float16_table = mem_db.create_table(
+        "update_expr_float16",
+        [{"x": 1.0, "result": "old"}, {"x": 3.0, "result": "old"}],
+    )
+    predicate = col("x").cast(pa.float16()) < 2.0
+    assert float16_table.search().where(predicate).to_arrow().num_rows == 1
+    result = float16_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    string_cast_table = mem_db.create_table(
+        "update_expr_string_cast",
+        [{"x": 1, "result": "old"}, {"x": 2, "result": "old"}],
+    )
+    predicate = col("x").cast("string") == "1"
+    assert string_cast_table.search().where(predicate).to_arrow().num_rows == 1
+    result = string_cast_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    quoted_identifier_schema = pa.schema(
+        [("payload", pa.binary()), ("odd'name", pa.int64()), ("result", pa.string())]
+    )
+    quoted_identifier_table = mem_db.create_table(
+        "update_expr_quoted_identifier",
+        pa.table(
+            {"payload": [b"\x01"], "odd'name": [1], "result": ["old"]},
+            schema=quoted_identifier_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) & (col("odd'name") == 1)
+    assert quoted_identifier_table.search().where(predicate).to_arrow().num_rows == 1
+    result = quoted_identifier_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    decimal256_schema = pa.schema(
+        [("val", pa.decimal256(40, 2)), ("result", pa.string())]
+    )
+    decimal256_table = mem_db.create_table(
+        "update_expr_decimal256",
+        pa.table(
+            {
+                "val": [Decimal("1.00"), Decimal("3.00")],
+                "result": ["old", "old"],
+            },
+            schema=decimal256_schema,
+        ),
+    )
+    predicate = col("val") < lit(Decimal("2.00")).cast(pa.decimal256(40, 2))
+    assert decimal256_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal256_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    binary_empty_table = mem_db.create_table(
+        "update_expr_binary_empty",
+        pa.table(
+            {"payload": [b"\x01", b"\x02"], "result": ["old", "old"]},
+            schema=pa.schema([("payload", pa.binary()), ("result", pa.string())]),
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")).isin([])
+    assert binary_empty_table.search().where(predicate).to_arrow().num_rows == 0
+    assert predicate.to_sql() == "false"
+    result = binary_empty_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
+
+
 def test_update_with_arrow_scalar(mem_db: DBConnection):
     schema = pa.schema({"id": pa.int64(), "vector": pa.list_(pa.float32(), 4)})
     table = mem_db.create_table("my_table", schema=schema)
@@ -3927,6 +4085,29 @@ def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
     table = db.create_table("computed_mixed", [{"x": 1}])
     with pytest.raises(ValueError):
         table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
+
+
+def test_computed_column_blob_projection_inherits_semantics(tmp_path):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_column_blob", schema=schema)
+    table.add(
+        [
+            {"id": 1, "image": b"hello"},
+            {"id": 2, "image": b""},
+            {"id": 3, "image": None},
+        ]
+    )
+
+    table.add_columns(computed={"image_copy": "image", "second_copy": "image_copy"})
+    assert table.refresh_column("image_copy").rows_filled == 2
+    assert table.refresh_column("second_copy").rows_filled == 2
+    assert table.blob_columns() == ["image", "image_copy", "second_copy"]
+
+    hits = table.search().with_row_id(True).limit(10).to_arrow()
+    rows = sorted(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+    copied = table.fetch_blobs("second_copy", [row_id for _, row_id in rows])
+    assert copied.to_pylist() == [b"hello", b"", None]
 
 
 @pytest.mark.asyncio

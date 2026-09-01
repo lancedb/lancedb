@@ -72,8 +72,7 @@ export type FieldLike =
     };
 
 export type DataLike =
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  | import("apache-arrow").Data<Struct<any>>
+  | import("apache-arrow").Data
   | {
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
       type: any;
@@ -82,6 +81,7 @@ export type DataLike =
       stride: number;
       nullable: boolean;
       children: DataLike[];
+      dictionary?: { data: readonly DataLike[] };
       get nullCount(): number;
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
       values: Buffers<any>[BufferType.DATA];

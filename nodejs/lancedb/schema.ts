@@ -406,10 +406,11 @@ function matchingFields(fields: Field[], tree: FieldTree): Field[] {
           field.name,
           new Struct(matchingFields(struct.children, value)),
           field.nullable,
+          field.metadata,
         ),
       );
     } else {
-      matches.push(new Field(field.name, value as DataType, field.nullable));
+      matches.push(field);
     }
   }
   return matches;

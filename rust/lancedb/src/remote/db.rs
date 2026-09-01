@@ -533,6 +533,11 @@ struct RemoteListJobsResponse {
     page_token: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct RemoteDropFunctionResponse {
+    dropped: bool,
+}
+
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -581,6 +586,20 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         response.json().await.err_to_http(request_id)
+    }
+
+    async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
+        let req = self
+            .client
+            .post("/v1/functions/drop")
+            .json(&serde_json::json!({
+                "name": name,
+                "version": version,
+            }));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let response: RemoteDropFunctionResponse = response.json().await.err_to_http(request_id)?;
+        Ok(response.dropped)
     }
 
     fn job(&self, job_id: &str) -> Result<crate::job::Job> {
@@ -2687,6 +2706,25 @@ mod tests {
         let version = conn.get_function("embed", "fv_01K3EXACT").await.unwrap();
         assert_eq!(version.name(), "embed");
         assert_eq!(version.version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_drop_function_sends_exact_version_and_decodes_replay() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/functions/drop");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
+            );
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"dropped":false}"#)
+                .unwrap()
+        });
+        assert!(!conn.drop_function("embed", "fv_01K3EXACT").await.unwrap());
     }
 
     #[tokio::test]
