@@ -89,6 +89,13 @@ def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
         ["public"],
     )
     assert dotted.select(dotted.col("left.value")).schema.names == ["left.value"]
+    assert dotted.with_column_renamed("left.value", "value").schema.names == ["value"]
+    assert dotted.drop("left.value").schema.names == []
+
+    with pytest.raises(ValueError, match="missing"):
+        dotted.with_column_renamed("missing", "value")
+    with pytest.raises(ValueError, match="missing"):
+        dotted.drop("missing")
 
 
 def test_dataframe_direct_execution_uses_connection(tmp_path):

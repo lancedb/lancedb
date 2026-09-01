@@ -155,11 +155,41 @@ impl NativeDataFrame {
 
     #[pyo3(name = "drop")]
     fn drop_columns(&self, columns: Vec<String>) -> PyResult<Self> {
+        let columns = columns
+            .iter()
+            .map(|name| {
+                self.inner
+                    .schema()
+                    .qualified_field_with_unqualified_name(name)
+                    .map(Column::from)
+                    .map_err(dataframe_error)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         Self::wrap(self.inner.clone().drop_columns(&columns))
     }
 
     fn with_column_renamed(&self, old_name: String, new_name: &str) -> PyResult<Self> {
-        Self::wrap(self.inner.clone().with_column_renamed(old_name, new_name))
+        let old_column = self
+            .inner
+            .schema()
+            .qualified_field_with_unqualified_name(&old_name)
+            .map(Column::from)
+            .map_err(dataframe_error)?;
+        let projection = self
+            .inner
+            .schema()
+            .iter()
+            .map(|(qualifier, field)| {
+                let column = Column::new(qualifier.cloned(), field.name());
+                let expression = DfExpr::Column(column.clone());
+                if column == old_column {
+                    expression.alias(new_name)
+                } else {
+                    expression
+                }
+            })
+            .collect::<Vec<_>>();
+        Self::wrap(self.inner.clone().select(projection))
     }
 
     #[pyo3(signature = (other, left_on, right_on, how="inner"))]
