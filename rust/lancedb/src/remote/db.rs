@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -604,6 +604,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn list_functions(&self) -> Result<Vec<FunctionVersion>> {
         let mut functions = Vec::new();
         let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
         loop {
             let mut body = serde_json::json!({ "include_definition": true });
             if let Some(token) = &page_token {
@@ -612,18 +613,27 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let req = self.client.post("/v1/functions/list").json(&body);
             let (request_id, response) = self.client.send(req).await?;
             let response = self.client.check_response(&request_id, response).await?;
+            let status = response.status();
             let response: RemoteListFunctionsResponse =
-                response.json().await.err_to_http(request_id)?;
+                response.json().await.err_to_http(request_id.clone())?;
             functions.extend(
                 response
                     .functions
                     .into_iter()
                     .map(|listed| listed.definition),
             );
-            page_token = response.page_token;
-            if page_token.is_none() {
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
                 break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(Error::Http {
+                    source: "Function listing response repeated a page_token".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
             }
+            page_token = Some(next_page_token);
         }
         Ok(functions)
     }
@@ -2791,6 +2801,74 @@ mod tests {
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name(), "embed");
         assert_eq!(functions[0].version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_list_functions_stops_on_an_empty_page_token() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert!(body.get("page_token").is_none());
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"functions": [], "page_token": ""}"#)
+                .unwrap()
+        });
+
+        let functions = conn.list_functions().await.unwrap();
+        assert!(functions.is_empty());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_list_functions_rejects_a_page_token_cycle() {
+        let page = Arc::new(AtomicUsize::new(0));
+        let requests = page.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let next_page_token = match page.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(body.get("page_token").is_none());
+                    "one"
+                }
+                1 => {
+                    assert_eq!(body["page_token"], "one");
+                    "two"
+                }
+                2 => {
+                    assert_eq!(body["page_token"], "two");
+                    "one"
+                }
+                page => panic!("unexpected page: {page}"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "functions": [],
+                        "page_token": next_page_token,
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+
+        let error = conn.list_functions().await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                Error::Http {
+                    status_code: Some(http::StatusCode::OK),
+                    ..
+                }
+            ),
+            "got {error:?}"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
