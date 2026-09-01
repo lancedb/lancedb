@@ -307,6 +307,10 @@ pub trait Database:
     ) -> Result<crate::function::FunctionVersion> {
         function_catalog_not_supported()
     }
+    /// List every published immutable Function version in the remote catalog.
+    async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
+        function_catalog_not_supported()
+    }
     /// Drop one exact immutable Function version from the remote catalog.
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
