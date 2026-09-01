@@ -41,10 +41,10 @@ impl Query {
         })
     }
 
-    pub fn result(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn reader(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let stream = inner.result().await.infer_error()?;
+            let stream = inner.reader().await.infer_error()?;
             Ok(RecordBatchStream::new(stream))
         })
     }

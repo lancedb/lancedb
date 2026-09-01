@@ -325,14 +325,14 @@ pub struct CloneTableBuilder {
     request: CloneTableRequest,
 }
 
-/// Builder for submitting a SQL statement to a remote database.
-pub struct SubmitQueryBuilder {
+/// Builder for asynchronously executing a SQL statement on a remote database.
+pub struct ExecuteQueryAsyncBuilder {
     parent: Arc<dyn Database>,
     query: String,
     default_namespace_path: Vec<String>,
 }
 
-impl SubmitQueryBuilder {
+impl ExecuteQueryAsyncBuilder {
     fn new(parent: Arc<dyn Database>, query: String) -> Self {
         Self {
             parent,
@@ -354,10 +354,10 @@ impl SubmitQueryBuilder {
         self
     }
 
-    /// Submit the statement and return its asynchronous query handle.
+    /// Start the statement and return its asynchronous query handle.
     pub async fn execute(self) -> Result<crate::sql::Query> {
         self.parent
-            .submit_query(&self.query, &self.default_namespace_path)
+            .execute_query_async(&self.query, &self.default_namespace_path)
             .await
     }
 }
@@ -445,10 +445,10 @@ impl Connection {
         &self.internal
     }
 
-    /// Submit SQL to a remote LanceDB database.
+    /// Start executing SQL on a remote LanceDB database.
     ///
     /// The query can reference tables in other databases with SQL dot notation.
-    /// Use [`SubmitQueryBuilder::default_namespace_path`] to avoid qualifying
+    /// Use [`ExecuteQueryAsyncBuilder::default_namespace_path`] to avoid qualifying
     /// tables in the default namespace. Local connections return
     /// [`Error::NotSupported`].
     ///
@@ -459,20 +459,20 @@ impl Connection {
     /// use futures::TryStreamExt;
     ///
     /// let query = db
-    ///     .submit_query("SELECT * FROM events LIMIT 10")
+    ///     .execute_query_async("SELECT * FROM events LIMIT 10")
     ///     .default_namespace_path(["public"])
     ///     .execute()
     ///     .await?;
     /// println!("query id: {}", query.id());
-    /// let mut batches = query.result().await?;
+    /// let mut batches = query.reader().await?;
     /// while let Some(batch) = batches.try_next().await? {
     ///     println!("received {} rows", batch.num_rows());
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub fn submit_query(&self, query: impl Into<String>) -> SubmitQueryBuilder {
-        SubmitQueryBuilder::new(self.internal.clone(), query.into())
+    pub fn execute_query_async(&self, query: impl Into<String>) -> ExecuteQueryAsyncBuilder {
+        ExecuteQueryAsyncBuilder::new(self.internal.clone(), query.into())
     }
 
     /// Describe a submitted SQL query by its connection-scoped id.
@@ -1503,7 +1503,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            connection.submit_query("SELECT 1").execute().await,
+            connection.execute_query_async("SELECT 1").execute().await,
             Err(Error::NotSupported { .. })
         ));
         assert!(matches!(

@@ -27,13 +27,13 @@ pub struct QueryDescription {
 pub(crate) trait QueryHandle: Send + Sync {
     fn id(&self) -> &str;
     async fn describe(&self) -> Result<QueryDescription>;
-    async fn result(&self) -> Result<SendableRecordBatchStream>;
+    async fn reader(&self) -> Result<SendableRecordBatchStream>;
     async fn cancel(&self) -> Result<()>;
 }
 
 /// A handle to a submitted SQL query.
 ///
-/// The handle can be inspected, awaited for its Arrow result, or cancelled.
+/// The handle can be inspected, opened as an Arrow reader, or cancelled.
 /// Dropping it does not cancel the server-side query.
 /// Identifier lookup is scoped to the connection that submitted the query and
 /// is not a durable resume mechanism.
@@ -66,7 +66,7 @@ impl Query {
         self.handle.describe().await
     }
 
-    /// Return a stream of Arrow record batches as they become available.
+    /// Wait for the initial result stream and return its Arrow record batches.
     ///
     /// The stream can begin yielding partial results before query execution is
     /// complete. It continues polling for newly available result endpoints
@@ -74,8 +74,8 @@ impl Query {
     ///
     /// Results are single-consumer. Calling this method more than once on the
     /// same handle returns an error.
-    pub async fn result(&self) -> Result<SendableRecordBatchStream> {
-        self.handle.result().await
+    pub async fn reader(&self) -> Result<SendableRecordBatchStream> {
+        self.handle.reader().await
     }
 
     /// Request cancellation of the query.

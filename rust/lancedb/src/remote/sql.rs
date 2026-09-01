@@ -1165,7 +1165,7 @@ impl QueryHandle for RemoteQueryHandle {
         self.query.describe().await
     }
 
-    async fn result(&self) -> Result<SendableRecordBatchStream> {
+    async fn reader(&self) -> Result<SendableRecordBatchStream> {
         let timeout = self.query.client.overall_timeout()?;
         if self
             .result_started
@@ -1592,7 +1592,7 @@ mod tests {
     }
 
     async fn collect_result(query: &Query) -> Result<Vec<RecordBatch>> {
-        query.result().await?.try_collect().await
+        query.reader().await?.try_collect().await
     }
 
     #[derive(Debug)]
@@ -2099,13 +2099,13 @@ mod tests {
         assert_eq!(first_description.status, "finished");
         assert_eq!(first_description.progress, Some(1.0));
         let first_result = collect_result(&first).await.unwrap();
-        assert!(first.result().await.is_err());
+        assert!(first.reader().await.is_err());
 
         let incremental = client
             .submit("SELECT incremental", &["public".to_string()])
             .await
             .unwrap();
-        let mut incremental_result = incremental.result().await.unwrap();
+        let mut incremental_result = incremental.reader().await.unwrap();
         let first_incremental_batch =
             tokio::time::timeout(Duration::from_millis(100), incremental_result.try_next())
                 .await
@@ -2128,7 +2128,7 @@ mod tests {
         let continuation_count_before = first_continuation_count.load(Ordering::SeqCst);
         let interrupted_result_task = {
             let interrupted_result = interrupted_result.clone();
-            tokio::spawn(async move { interrupted_result.result().await })
+            tokio::spawn(async move { interrupted_result.reader().await })
         };
         tokio::time::timeout(Duration::from_millis(100), async {
             while first_continuation_count.load(Ordering::SeqCst) == continuation_count_before {
@@ -2155,7 +2155,7 @@ mod tests {
             .unwrap();
         let tracked_dropped_reader = client.queries.get(dropped_reader.id()).unwrap();
         let continuation_count_before = first_continuation_count.load(Ordering::SeqCst);
-        let dropped_result_stream = dropped_reader.result().await.unwrap();
+        let dropped_result_stream = dropped_reader.reader().await.unwrap();
         tokio::time::timeout(Duration::from_millis(100), async {
             while first_continuation_count.load(Ordering::SeqCst) == continuation_count_before {
                 tokio::task::yield_now().await;
@@ -2186,7 +2186,7 @@ mod tests {
             .submit("SELECT empty", &["public".to_string()])
             .await
             .unwrap();
-        let empty_result = empty.result().await.unwrap();
+        let empty_result = empty.reader().await.unwrap();
         assert_eq!(empty_result.schema(), expected.schema());
         let empty_result = empty_result.try_collect::<Vec<_>>().await.unwrap();
 
@@ -2238,7 +2238,7 @@ mod tests {
         cancelled.cancel().await.unwrap();
         assert_eq!(cancelled.describe().await.unwrap().status, "cancelled");
         assert!(matches!(
-            cancelled.result().await,
+            cancelled.reader().await,
             Err(Error::JobCancelled { .. })
         ));
 
@@ -2295,7 +2295,7 @@ mod tests {
                 .unwrap(),
             Err(Error::JobCancelled { .. })
         ));
-        assert!(slow_get.result().await.is_err());
+        assert!(slow_get.reader().await.is_err());
 
         let restored = Arc::new(
             RemoteQuery::new(
@@ -2374,7 +2374,7 @@ mod tests {
             .unwrap();
         assert_eq!(cancel_race.describe().await.unwrap().status, "finished");
         assert_eq!(cancel_race_result, vec![expected.clone()]);
-        assert!(cancel_race.result().await.is_err());
+        assert!(cancel_race.reader().await.is_err());
 
         let no_info = Arc::new(
             client

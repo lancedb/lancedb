@@ -91,12 +91,12 @@ fn parse_default_namespace_path(path: Option<Bound<'_, PyAny>>) -> PyResult<Vec<
         Some(path) => {
             if !path.is_instance_of::<PyList>() {
                 return Err(PyValueError::new_err(
-                    "Connection.submit_query default_namespace_path must be a list",
+                    "Connection.execute_query_async default_namespace_path must be a list",
                 ));
             }
             path.extract::<Vec<String>>().map_err(|_| {
                 PyValueError::new_err(
-                    "Connection.submit_query default_namespace_path components must be strings",
+                    "Connection.execute_query_async default_namespace_path components must be strings",
                 )
             })
         }
@@ -127,7 +127,7 @@ impl Connection {
     }
 
     #[pyo3(signature = (query, *, default_namespace_path=None))]
-    pub fn submit_query<'a>(
+    pub fn execute_query_async<'a>(
         self_: PyRef<'a, Self>,
         query: String,
         default_namespace_path: Option<Bound<'_, PyAny>>,
@@ -136,7 +136,7 @@ impl Connection {
         let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
         future_into_py(self_.py(), async move {
             let operation = inner
-                .submit_query(query)
+                .execute_query_async(query)
                 .default_namespace_path(default_namespace_path);
             operation
                 .execute()

@@ -28,13 +28,14 @@ class AsyncQuery:
         """Get a point-in-time description of the query."""
         return await self._inner.describe()
 
-    async def result(self) -> AsyncRecordBatchReader:
-        """Stream Arrow record batches as they become available.
+    async def reader(self) -> AsyncRecordBatchReader:
+        """Wait for the initial result stream and return its Arrow reader.
 
         Results are single-consumer. Calling this method more than once on the
-        same query raises an error.
+        same query raises an error. Later batches are streamed as they become
+        available without waiting for the full query to finish.
         """
-        return AsyncRecordBatchReader(await self._inner.result())
+        return AsyncRecordBatchReader(await self._inner.reader())
 
     async def cancel(self) -> None:
         """Request cancellation of the query."""
@@ -56,13 +57,14 @@ class Query:
         """Get a point-in-time description of the query."""
         return LOOP.run(self._inner.describe())
 
-    def result(self) -> pa.RecordBatchReader:
-        """Return a blocking reader that streams available Arrow batches.
+    def reader(self) -> pa.RecordBatchReader:
+        """Wait for the initial result stream and return a blocking reader.
 
         Results are single-consumer. Calling this method more than once on the
-        same query raises an error.
+        same query raises an error. Later batches block only until they become
+        available, without waiting for the full query to finish.
         """
-        reader = LOOP.run(self._inner.result())
+        reader = LOOP.run(self._inner.reader())
 
         def next_batch():
             try:

@@ -71,6 +71,7 @@ import deprecation
 
 if TYPE_CHECKING:
     import pyarrow as pa
+    from .arrow import AsyncRecordBatchReader
     from .pydantic import LanceModel
 
     from ._lancedb import Connection as LanceDbConnection
@@ -783,13 +784,30 @@ class DBConnection(EnforceOverrides):
             "job_history is not supported for this connection type"
         )
 
-    def submit_query(
+    def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute SQL and return a blocking Arrow reader.
+
+        This submits through :meth:`execute_query_async` and waits until the
+        initial result stream is readable. It does not wait for the full query
+        to finish.
+        """
+        return self.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        ).reader()
+
+    def execute_query_async(
         self,
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
     ) -> SqlQuery:
-        """Submit SQL to a remote database.
+        """Start executing SQL and return its query handle.
 
         Local connections do not support SQL.
         """
@@ -2341,20 +2359,38 @@ class AsyncConnection(object):
         """
         return await self._inner.job_history(job_id)
 
-    async def submit_query(
+    async def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute SQL and return an asynchronous Arrow reader.
+
+        This submits through :meth:`execute_query_async` and waits until the
+        initial result stream is readable. It does not wait for the full query
+        to finish.
+        """
+        submitted = await self.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        )
+        return await submitted.reader()
+
+    async def execute_query_async(
         self,
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
     ) -> AsyncSqlQuery:
-        """Submit SQL to a remote database.
+        """Start executing SQL and return its query handle.
 
         The database from ``connect_async`` is used for unqualified database
         references. The namespace defaults to ``["public"]``. Local
         connections raise ``NotImplementedError``.
         """
         return AsyncSqlQuery(
-            await self._inner.submit_query(
+            await self._inner.execute_query_async(
                 query,
                 default_namespace_path=default_namespace_path,
             )

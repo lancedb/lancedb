@@ -33,11 +33,11 @@ is also an [asynchronous API client](#connections-asynchronous).
 Submit SQL against a remote LanceDB database through the connection.
 The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
-and namespaces available to the same deployment. Submission returns a query
-handle immediately; use it to inspect progress, stream Arrow record batches as
-they become available, or cancel the query. The SQL client is initialized by
-the first submitted query and retained for the lifetime of the remote
-connection. Query ids are random,
+and namespaces available to the same deployment. `execute_query` returns a
+reader as soon as its initial result stream is available. `execute_query_async`
+returns a query handle immediately; use it to inspect progress, open a reader,
+or cancel the query. The SQL client is initialized by the first query and
+retained for the lifetime of the remote connection. Query ids are random,
 connection-scoped references rather than encoded SQL or durable resume tokens:
 
 ```python
@@ -49,7 +49,7 @@ db = lancedb.connect(
     host_override="https://api.example.com",
     sql_host_override="grpc+tls://sql.example.com:10026",
 )
-query = db.submit_query(
+reader = db.execute_query(
     """
     SELECT events.id, accounts.name
     FROM analytics.public.events AS events
@@ -57,15 +57,20 @@ query = db.submit_query(
     """,
     default_namespace_path=["public"],
 )
+for batch in reader:
+    print(batch.num_rows)
+
+query = db.execute_query_async("SELECT * FROM events")
 print(query.id)
 print(query.describe().status)
-for batch in query.result():
+for batch in query.reader():
     print(batch.num_rows)
 
 # The async connection exposes the same lifecycle without blocking:
-# query = await db.submit_query("SELECT * FROM events")
+# reader = await db.execute_query("SELECT * FROM events")
+# query = await db.execute_query_async("SELECT * FROM events")
 # description = await db.describe_query(query.id)
-# async for batch in await query.result():
+# async for batch in await query.reader():
 #     print(batch.num_rows)
 # await query.cancel()
 ```

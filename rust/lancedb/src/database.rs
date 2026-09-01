@@ -340,8 +340,8 @@ pub trait Database:
     async fn job_history(&self, _job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
         job_op_not_supported("job_history")
     }
-    /// Submit a SQL statement to a remote database.
-    async fn submit_query(
+    /// Start executing a SQL statement on a remote database.
+    async fn execute_query_async(
         &self,
         _query: &str,
         _default_namespace_path: &[String],

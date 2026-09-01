@@ -795,13 +795,13 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.job_history(job_id))
 
     @override
-    def submit_query(
+    def execute_query_async(
         self,
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
     ) -> SqlQuery:
-        """Submit SQL through this remote connection.
+        """Start executing SQL through this remote connection.
 
         Unqualified tables use this connection's database and the
         ``["public"]`` namespace by default. Fully qualified table names may
@@ -809,7 +809,7 @@ class RemoteDBConnection(DBConnection):
         """
         return SqlQuery(
             LOOP.run(
-                self._conn.submit_query(
+                self._conn.execute_query_async(
                     query,
                     default_namespace_path=default_namespace_path,
                 )

@@ -768,7 +768,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .map_err(Into::into)
     }
 
-    async fn submit_query(
+    async fn execute_query_async(
         &self,
         query: &str,
         default_namespace_path: &[String],
