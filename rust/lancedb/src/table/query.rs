@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 mod lsm;
 
@@ -13,22 +11,18 @@ use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
-    stamp_query_version,
+    wrap_query_version_stream,
 };
 use crate::utils::{MaxBatchLengthStream, TimeoutStream, default_vector_column};
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
-use arrow_array::{Array, RecordBatch};
-use arrow_schema::{DataType, Schema, SchemaRef};
-use datafusion_common::Result as DataFusionResult;
+use arrow_array::Array;
+use arrow_schema::{DataType, Schema};
 use datafusion_common::{Column, DataFusionError, SchemaError};
-use datafusion_execution::RecordBatchStream;
 use datafusion_physical_plan::ExecutionPlan;
-use datafusion_physical_plan::SendableRecordBatchStream;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
-use futures::Stream;
 use lance::Dataset;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
@@ -162,45 +156,11 @@ async fn execute_generic_query(
         inner
     };
     let inner = if with_row_id {
-        QueryVersionStream::new_boxed(inner, query_version)
+        wrap_query_version_stream(inner, query_version)
     } else {
         inner
     };
     Ok(DatasetRecordBatchStream::new(inner))
-}
-
-/// Carries the dataset version of this read on results that include `_rowid`.
-/// Those addresses are only valid on that version.
-struct QueryVersionStream {
-    inner: SendableRecordBatchStream,
-    schema: SchemaRef,
-}
-
-impl QueryVersionStream {
-    fn new_boxed(inner: SendableRecordBatchStream, version: u64) -> SendableRecordBatchStream {
-        let schema = stamp_query_version(inner.schema(), version);
-        Box::pin(Self { inner, schema })
-    }
-}
-
-impl RecordBatchStream for QueryVersionStream {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-}
-
-impl Stream for QueryVersionStream {
-    type Item = DataFusionResult<RecordBatch>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(batch))) => Poll::Ready(Some(
-                RecordBatch::try_new(self.schema.clone(), batch.columns().to_vec())
-                    .map_err(|e| datafusion_common::DataFusionError::Execution(e.to_string())),
-            )),
-            other => other,
-        }
-    }
 }
 
 pub async fn create_plan(

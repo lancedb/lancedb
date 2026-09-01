@@ -737,6 +737,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         _column: &str,
         _requests: &[BlobRangeRequest],
+        _version: Option<u64>,
     ) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
             message: "fetch_blob_ranges is not supported on this table type".into(),
@@ -1288,7 +1289,23 @@ impl Table {
     ) -> Result<LargeBinaryArray> {
         let requests = requests.into_iter().collect::<Vec<_>>();
         self.inner
-            .fetch_blob_ranges(column.as_ref(), &requests)
+            .fetch_blob_ranges(column.as_ref(), &requests, None)
+            .await
+    }
+
+    /// Materialize blob-local ranges using row addresses from `version`.
+    ///
+    /// `_rowid` values returned by a query are relative to the dataset version
+    /// that produced them.
+    pub async fn fetch_blob_ranges_at_version(
+        &self,
+        column: impl AsRef<str>,
+        requests: impl IntoIterator<Item = BlobRangeRequest>,
+        version: u64,
+    ) -> Result<LargeBinaryArray> {
+        let requests = requests.into_iter().collect::<Vec<_>>();
+        self.inner
+            .fetch_blob_ranges(column.as_ref(), &requests, Some(version))
             .await
     }
 
@@ -3547,8 +3564,9 @@ impl BaseTable for NativeTable {
         &self,
         column: &str,
         requests: &[BlobRangeRequest],
+        version: Option<u64>,
     ) -> Result<LargeBinaryArray> {
-        let dataset = self.dataset.get().await?;
+        let dataset = self.dataset_at(version).await?;
         crate::blob::take_blob_ranges_aligned(&dataset, column, requests).await
     }
 

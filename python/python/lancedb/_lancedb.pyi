@@ -405,6 +405,7 @@ class Table:
         self,
         column: str,
         requests: List[Tuple[int, int, int]],
+        version: Optional[int] = None,
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_files(
         self, column: str, row_ids: list[int], version: Optional[int] = None

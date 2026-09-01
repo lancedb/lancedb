@@ -39,15 +39,24 @@ trait BlobRangeRequester: Send + Sync + std::fmt::Debug {
 }
 
 #[derive(Debug)]
+enum BlobRangeFreshnessContext {
+    Live {
+        local: Arc<std::sync::Mutex<FreshnessState>>,
+        parent: Arc<std::sync::Mutex<FreshnessState>>,
+        parent_request: FreshnessHeaders,
+        read_consistency_interval: Option<Duration>,
+    },
+    /// Exact historical read pinned to `version`; never touches live freshness.
+    Historical,
+}
+
+#[derive(Debug)]
 struct TableBlobRangeRequester<S: HttpSend> {
     client: RestfulLanceDbClient<S>,
     path: String,
     version: Option<u64>,
     branch: Option<String>,
-    freshness: Arc<std::sync::Mutex<FreshnessState>>,
-    parent_freshness: Arc<std::sync::Mutex<FreshnessState>>,
-    parent_freshness_request: FreshnessHeaders,
-    read_consistency_interval: Option<Duration>,
+    freshness: BlobRangeFreshnessContext,
 }
 
 #[async_trait::async_trait]
@@ -57,11 +66,35 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
         range_header: &str,
         mode: RangeRequestMode,
     ) -> Result<(String, Response)> {
-        let freshness_request =
-            freshness_headers_snapshot(&self.freshness, self.read_consistency_interval);
-        let mut request = freshness_request
-            .apply(self.client.get(&self.path))
-            .header(header::RANGE, range_header);
+        let (mut request, live_freshness) = match &self.freshness {
+            BlobRangeFreshnessContext::Live {
+                local,
+                parent,
+                parent_request,
+                read_consistency_interval,
+            } => {
+                let freshness_request =
+                    freshness_headers_snapshot(local, *read_consistency_interval);
+                let request = freshness_request
+                    .apply(self.client.get(&self.path))
+                    .header(header::RANGE, range_header);
+                (
+                    request,
+                    Some((
+                        freshness_request,
+                        local.clone(),
+                        parent.clone(),
+                        *parent_request,
+                    )),
+                )
+            }
+            BlobRangeFreshnessContext::Historical => (
+                self.client
+                    .get(&self.path)
+                    .header(header::RANGE, range_header),
+                None,
+            ),
+        };
         if let Some(version) = self.version {
             request = request.query(&[("version", version)]);
         }
@@ -76,9 +109,10 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
             return Ok((request_id, response));
         }
         let response = self.client.check_response(&request_id, response).await?;
-        freshness_request.observe_headers(&self.freshness, response.headers());
-        self.parent_freshness_request
-            .observe_headers(&self.parent_freshness, response.headers());
+        if let Some((freshness_request, local, parent, parent_request)) = live_freshness {
+            freshness_request.observe_headers(&local, response.headers());
+            parent_request.observe_headers(&parent, response.headers());
+        }
         Ok((request_id, response))
     }
 }
@@ -382,9 +416,12 @@ impl<S: HttpSend> RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/fetch_blobs/", self.identifier))
             .json(&body);
-        let (request_id, response) = self
-            .send_with_freshness(request, true, read_snapshot.freshness)
-            .await?;
+        let (request_id, response) = if producing_version.is_some() {
+            self.send_unfenced(request, true).await?
+        } else {
+            self.send_with_freshness(request, true, read_snapshot.freshness)
+                .await?
+        };
         let mut stream = self.read_arrow_response(&request_id, response).await?;
 
         let mut blob_chunks: Vec<Arc<dyn Array>> = Vec::new();
@@ -475,10 +512,16 @@ impl<S: HttpSend> RemoteTable<S> {
                     path,
                     version: producing_version.or(read_snapshot.version),
                     branch: self.branch.clone(),
-                    freshness: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
-                    parent_freshness: self.freshness.clone(),
-                    parent_freshness_request: read_snapshot.freshness,
-                    read_consistency_interval: self.client.read_consistency_interval,
+                    freshness: if producing_version.is_some() {
+                        BlobRangeFreshnessContext::Historical
+                    } else {
+                        BlobRangeFreshnessContext::Live {
+                            local: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
+                            parent: self.freshness.clone(),
+                            parent_request: read_snapshot.freshness,
+                            read_consistency_interval: self.client.read_consistency_interval,
+                        }
+                    },
                 });
                 requester
             })
@@ -698,6 +741,108 @@ mod tests {
 
         assert_eq!(file.read_range(5..12).await.unwrap(), &PAYLOAD[5..12]);
         assert!(requests.lock().unwrap().contains(&"bytes=5-11".to_string()));
+    }
+
+    #[tokio::test]
+    async fn historical_blob_file_range_reads_omit_live_freshness_floors() {
+        let range_requests = Arc::new(StdMutex::new(Vec::new()));
+        let captured = range_requests.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .header("x-lancedb-version", "100")
+                    .body(r#"{"version":100,"schema":{"fields":[]}}"#.as_bytes().to_vec())
+                    .unwrap(),
+                "/v1/table/my_table/blob/image/10/bytes" => {
+                    captured.lock().unwrap().push((
+                        request.url().query().unwrap_or_default().to_string(),
+                        request.headers().clone(),
+                    ));
+                    range_response(&request, PAYLOAD)
+                }
+                path => panic!("unexpected path: {path}"),
+            },
+            Some(Version::new(0, 5, 0)),
+        );
+
+        table.schema().await.unwrap();
+        let file = table
+            .fetch_blob_files_impl("image", &[10], Some(17))
+            .await
+            .unwrap()
+            .pop()
+            .flatten()
+            .unwrap();
+        file.read_range(0..4).await.unwrap();
+
+        let requests = range_requests.lock().unwrap();
+        let (query, headers) = requests.last().unwrap();
+        assert!(query.contains("version=17"));
+        assert!(!headers.contains_key("x-lancedb-min-version"));
+        assert!(!headers.contains_key("x-lancedb-min-read-version"));
+        assert!(!headers.contains_key("x-lancedb-min-timestamp"));
+    }
+
+    #[tokio::test]
+    async fn live_blob_files_keep_independent_local_freshness_state() {
+        let range_requests = Arc::new(StdMutex::new(Vec::new()));
+        let captured = range_requests.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                let path = request.url().path();
+                let row_id = if path.contains("/10/bytes") { 10 } else { 20 };
+                let range = request
+                    .headers()
+                    .get(header::RANGE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                captured
+                    .lock()
+                    .unwrap()
+                    .push((row_id, range.clone(), request.headers().clone()));
+
+                let version = match (row_id, range.as_str()) {
+                    (10, "bytes=0-0") => 10,
+                    (20, "bytes=0-0") => 20,
+                    (10, _) => 100,
+                    (20, _) => 20,
+                    _ => unreachable!(),
+                };
+                let mut response = range_response(&request, PAYLOAD);
+                response.headers_mut().insert(
+                    "x-lancedb-version",
+                    reqwest::header::HeaderValue::from_str(&version.to_string()).unwrap(),
+                );
+                response
+            },
+            Some(Version::new(0, 5, 0)),
+        );
+
+        let mut files = table
+            .fetch_blob_files_impl("image", &[10, 20], None)
+            .await
+            .unwrap();
+        let first = files.remove(0).unwrap();
+        let second = files.remove(0).unwrap();
+        first.read_range(1..3).await.unwrap();
+        second.read_range(1..3).await.unwrap();
+
+        let requests = range_requests.lock().unwrap();
+        let (_, _, second_read_headers) = requests
+            .iter()
+            .find(|(row_id, range, _)| *row_id == 20 && range == "bytes=1-2")
+            .unwrap();
+        assert_eq!(
+            second_read_headers
+                .get("x-lancedb-min-read-version")
+                .unwrap(),
+            "20"
+        );
     }
 
     #[tokio::test]

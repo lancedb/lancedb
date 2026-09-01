@@ -1303,11 +1303,14 @@ impl Table {
     }
 
     /// Read row-specific blob-local byte ranges in one planned operation.
-    #[pyo3(signature = (column, requests))]
+    ///
+    /// Pass ``version`` for the dataset checkout that produced those addresses.
+    #[pyo3(signature = (column, requests, version=None))]
     pub fn fetch_blob_ranges(
         self_: PyRef<'_, Self>,
         column: String,
         requests: Vec<(u64, u64, u64)>,
+        version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -1315,10 +1318,15 @@ impl Table {
                 .into_iter()
                 .map(|(row_id, offset, length)| BlobRangeRequest::new(row_id, offset, length))
                 .collect::<Vec<_>>();
-            let blobs: LargeBinaryArray = inner
-                .fetch_blob_ranges(column, requests)
-                .await
-                .infer_error()?;
+            let blobs: LargeBinaryArray = match version {
+                Some(version) => {
+                    inner
+                        .fetch_blob_ranges_at_version(column, requests, version)
+                        .await
+                }
+                None => inner.fetch_blob_ranges(column, requests).await,
+            }
+            .infer_error()?;
             Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
         })
     }

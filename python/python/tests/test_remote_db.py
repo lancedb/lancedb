@@ -2353,6 +2353,7 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
             response_table = blob_query_response_table()
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.send_header("x-lancedb-version", "17")
             request.end_headers()
             with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)
@@ -2432,6 +2433,7 @@ def test_remote_blob_query_survives_a_server_that_ignores_the_row_id_request():
             response_table = blob_query_response_table().drop_columns(["_rowid"])
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.send_header("x-lancedb-version", "17")
             request.end_headers()
             with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)

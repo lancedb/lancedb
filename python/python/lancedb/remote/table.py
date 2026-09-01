@@ -1130,7 +1130,9 @@ class RemoteTable(Table):
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
-    def fetch_blob_ranges(self, column: str, requests) -> pa.LargeBinaryArray:
+    def fetch_blob_ranges(
+        self, column: str, requests, version: Optional[int] = None
+    ) -> pa.LargeBinaryArray:
         raise NotImplementedError(
             "fetch_blob_ranges() is not supported on LanceDB Cloud"
         )

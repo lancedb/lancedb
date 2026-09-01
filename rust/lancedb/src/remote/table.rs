@@ -17,7 +17,9 @@ use crate::index::IndexStatistics;
 use crate::index::scalar::FtsQuery;
 use crate::index::waiter::wait_for_index;
 use crate::job::Job;
-use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::query::{
+    QueryFilter, QueryRequest, Select, VectorQueryRequest, wrap_query_version_stream,
+};
 use crate::remote::job::RemoteJob;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
@@ -240,6 +242,14 @@ fn track_read_version_for_generation(
     if state.generation == generation {
         state.min_read_version = Some(state.min_read_version.map_or(version, |v| v.max(version)));
     }
+}
+
+fn version_from_response_headers(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(&VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|version| *version != 0)
 }
 
 /// A backfill job whose successful wait establishes a read-freshness
@@ -1327,6 +1337,8 @@ impl<S: HttpSend> RemoteTable<S> {
         query: &AnyQuery,
         options: &QueryExecutionOptions,
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
+        let query = query.canonicalized()?;
+        let with_row_id = query.base().with_row_id;
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/query/", self.identifier));
@@ -1340,38 +1352,80 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         let read_snapshot = self.snapshot_read_state().await;
-        let query_bodies = self.prepare_query_bodies(query, read_snapshot.version)?;
+        let query_bodies = self.prepare_query_bodies(&query, read_snapshot.version)?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
             .into_iter()
             .map(|body| request.try_clone().unwrap().json(&body))
             .collect();
 
-        let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self
-                .send_with_freshness(req, true, read_snapshot.freshness)
-                .await?;
-            self.read_arrow_response(&request_id, response).await
-        });
-        let streams = futures::future::try_join_all(futures);
-
-        if let Some(timeout) = options.timeout {
+        let streams_future =
+            futures::future::try_join_all(requests.into_iter().map(|req| async move {
+                let (request_id, response) = self
+                    .send_with_freshness(req, true, read_snapshot.freshness)
+                    .await?;
+                let served_version = version_from_response_headers(response.headers());
+                let stream = self.read_arrow_response(&request_id, response).await?;
+                Result::<(Option<u64>, SendableRecordBatchStream)>::Ok((served_version, stream))
+            }));
+        let results = if let Some(timeout) = options.timeout {
             let timeout_future = tokio::time::sleep(timeout);
             tokio::pin!(timeout_future);
-            tokio::pin!(streams);
+            tokio::pin!(streams_future);
             tokio::select! {
                 _ = &mut timeout_future => {
-                    Err(Error::Other {
+                    return Err(Error::Other {
                         message: format!("Query timeout after {} ms", timeout.as_millis()),
                         source: None,
-                    })
+                    });
                 }
-                result = &mut streams => {
-                    Ok(result?)
-                }
+                result = streams_future => result?,
             }
         } else {
-            Ok(streams.await?)
+            streams_future.await?
+        };
+
+        let results = results
+            .into_iter()
+            .map(|(served_version, stream)| (served_version.or(read_snapshot.version), stream))
+            .collect::<Vec<_>>();
+
+        if with_row_id {
+            let effective_versions = results
+                .iter()
+                .map(|(version, _)| {
+                    version.ok_or_else(|| Error::Other {
+                        message: format!(
+                            "query response with _rowid is missing the {VERSION_HEADER} header"
+                        ),
+                        source: None,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if let Some(first) = effective_versions.first()
+                && effective_versions.iter().any(|version| version != first)
+            {
+                return Err(Error::Other {
+                    message: format!(
+                        "query sub-requests were served at different dataset versions: {effective_versions:?}"
+                    ),
+                    source: None,
+                });
+            }
         }
+
+        let streams = results
+            .into_iter()
+            .map(|(effective_version, stream)| {
+                if with_row_id {
+                    // Checked above for every result when row ids were requested.
+                    wrap_query_version_stream(stream, effective_version.unwrap())
+                } else {
+                    stream
+                }
+            })
+            .collect();
+
+        Ok(streams)
     }
 
     fn prepare_query_bodies(
@@ -5030,6 +5084,213 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_fetch_blobs_at_historical_version_omits_live_freshness_floors() {
+        let ipc = one_row_blob_ipc_stream("image");
+        let fetch_headers = Arc::new(std::sync::Mutex::new(None));
+        let captured = fetch_headers.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .header("x-lancedb-version", "100")
+                    .body(br#"{"version": 100, "schema": {"fields": []}}"#.to_vec())
+                    .unwrap(),
+                "/v1/table/my_table/fetch_blobs/" => {
+                    *captured.lock().unwrap() = Some(request.headers().clone());
+                    let body = request_body_json(&request);
+                    assert_eq!(body["version"], 17);
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(ipc.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            },
+        );
+
+        table.schema().await.unwrap();
+
+        assert_eq!(
+            table
+                .fetch_blobs_at_version("image", &[10], 17)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let headers = fetch_headers.lock().unwrap().take().unwrap();
+        assert!(!headers.contains_key("x-lancedb-min-version"));
+        assert!(!headers.contains_key("x-lancedb-min-read-version"));
+        assert!(!headers.contains_key("x-lancedb-min-timestamp"));
+    }
+
+    async fn execute_row_id_query_with_versions(
+        response_versions: Vec<Option<u64>>,
+        pinned_version: Option<u64>,
+    ) -> Result<Vec<Option<u64>>> {
+        use crate::query::query_version_from_schema;
+        use arrow_array::{Float32Array, UInt64Array};
+        use lance::dataset::ROW_ID;
+
+        let response_index = Arc::new(AtomicUsize::new(0));
+        let response_index_ref = response_index.clone();
+        let versions = Arc::new(response_versions);
+        let versions_ref = versions.clone();
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                ROW_ID,
+                DataType::UInt64,
+                false,
+            )])),
+            vec![Arc::new(UInt64Array::from(vec![10]))],
+        )
+        .unwrap();
+
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+                let index = response_index_ref.fetch_add(1, Ordering::SeqCst);
+                let mut response = http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE);
+                if let Some(version) = versions_ref[index] {
+                    response = response.header(VERSION_HEADER, version);
+                }
+                response.body(write_ipc_file(&data)).unwrap()
+            },
+            Some(semver::Version::new(0, 1, 0)),
+        );
+        *table.version.write().await = pinned_version;
+
+        let mut query = VectorQueryRequest::default();
+        query.base.with_row_id = true;
+        query.query_vector = versions
+            .iter()
+            .map(|_| Arc::new(Float32Array::from(vec![0.1, 0.2])) as _)
+            .collect();
+        let streams = table
+            .execute_query(
+                &AnyQuery::VectorQuery(query),
+                &QueryExecutionOptions::default(),
+            )
+            .await?;
+
+        Ok(streams
+            .iter()
+            .map(|stream| query_version_from_schema(stream.schema().as_ref()))
+            .collect())
+    }
+
+    #[tokio::test]
+    async fn test_query_with_row_id_stamps_served_version() {
+        use crate::query::{QUERY_VERSION_META_KEY, query_version_from_schema};
+        use arrow_array::UInt64Array;
+        use futures::TryStreamExt;
+        use lance::dataset::ROW_ID;
+
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int32, false),
+                Field::new(ROW_ID, DataType::UInt64, false),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(UInt64Array::from(vec![10, 20])),
+            ],
+        )
+        .unwrap();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .header("x-lancedb-version", "17")
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let stream = table
+            .query()
+            .with_row_id()
+            .limit(10)
+            .execute()
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(query_version_from_schema(batch.schema().as_ref()), Some(17));
+        assert_eq!(
+            batch
+                .schema()
+                .metadata
+                .get(QUERY_VERSION_META_KEY)
+                .map(String::as_str),
+            Some("17")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_query_with_row_id_requires_a_producing_version() {
+        let error = execute_row_id_query_with_versions(vec![None], None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing the x-lancedb-version header"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pinned_query_with_row_id_uses_requested_version_when_header_is_missing() {
+        let versions = execute_row_id_query_with_versions(vec![None], Some(17))
+            .await
+            .unwrap();
+        assert_eq!(versions, vec![Some(17)]);
+    }
+
+    #[tokio::test]
+    async fn test_multi_request_query_with_row_id_rejects_a_missing_version() {
+        let error = execute_row_id_query_with_versions(vec![Some(17), None], None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing the x-lancedb-version header"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multi_request_query_with_row_id_rejects_different_versions() {
+        let error = execute_row_id_query_with_versions(vec![Some(17), Some(18)], None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("served at different dataset versions"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multi_request_query_with_row_id_stamps_every_stream() {
+        let versions = execute_row_id_query_with_versions(vec![Some(17), Some(17)], None)
+            .await
+            .unwrap();
+        assert_eq!(versions, vec![Some(17), Some(17)]);
+    }
+
+    #[tokio::test]
     async fn test_fetch_blobs_sends_the_checked_out_branch() {
         use lance::dataset::refs::Ref;
         let ipc = one_row_blob_ipc_stream("image");
@@ -5650,6 +5911,7 @@ mod tests {
             http::Response::builder()
                 .status(200)
                 .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .header(VERSION_HEADER, "17")
                 .body(response_body)
                 .unwrap()
         });
@@ -5857,6 +6119,7 @@ mod tests {
                 http::Response::builder()
                     .status(200)
                     .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                    .header(VERSION_HEADER, "17")
                     .body(response_body)
                     .unwrap()
             });

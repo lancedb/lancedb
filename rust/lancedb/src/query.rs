@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
@@ -15,17 +16,18 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
-use datafusion_execution::TaskContext;
+use datafusion_execution::{RecordBatchStream, TaskContext};
 use datafusion_expr::{Expr, col, lit};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+    SendableRecordBatchStream as DfSendableRecordBatchStream,
     coalesce_partitions::CoalescePartitionsExec,
     execution_plan::{Boundedness, EmissionType},
     limit::GlobalLimitExec,
     stream::RecordBatchStreamAdapter,
 };
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, stream, try_join};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
 use lance::dataset::ROW_ID;
 /// Re-export Lance ColumnOrdering type for use in query ordering
@@ -69,6 +71,48 @@ pub fn stamp_query_version(schema: SchemaRef, version: u64) -> SchemaRef {
     let mut metadata = schema.metadata().clone();
     metadata.insert(QUERY_VERSION_META_KEY.to_string(), version.to_string());
     Arc::new(schema.as_ref().clone().with_metadata(metadata))
+}
+
+/// Carries the dataset version of this read on results that include `_rowid`.
+/// Those addresses are only valid on that version.
+struct QueryVersionStream {
+    inner: DfSendableRecordBatchStream,
+    schema: SchemaRef,
+}
+
+impl QueryVersionStream {
+    fn new_boxed(inner: DfSendableRecordBatchStream, version: u64) -> DfSendableRecordBatchStream {
+        let schema = stamp_query_version(inner.schema(), version);
+        Box::pin(Self { inner, schema })
+    }
+}
+
+impl RecordBatchStream for QueryVersionStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
+impl Stream for QueryVersionStream {
+    type Item = DataFusionResult<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(batch))) => Poll::Ready(Some(
+                RecordBatch::try_new(self.schema.clone(), batch.columns().to_vec())
+                    .map_err(|e| datafusion_common::DataFusionError::Execution(e.to_string())),
+            )),
+            other => other,
+        }
+    }
+}
+
+/// Stamp the producing dataset version onto every batch in a query result stream.
+pub(crate) fn wrap_query_version_stream(
+    inner: DfSendableRecordBatchStream,
+    version: u64,
+) -> DfSendableRecordBatchStream {
+    QueryVersionStream::new_boxed(inner, version)
 }
 
 /// Which columns should be retrieved from the database

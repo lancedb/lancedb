@@ -756,8 +756,11 @@ async def test_async_fetch_blob_ranges():
     await table.add([{"id": 1, "image": b"abcdefghij"}])
     hits = await table.query().with_row_id().to_arrow()
     row_id = hits["_rowid"][0].as_py()
+    version = await table.version()
 
-    ranges = await table.fetch_blob_ranges("image", [(row_id, 1, 3), (row_id, 6, 2)])
+    ranges = await table.fetch_blob_ranges(
+        "image", [(row_id, 1, 3), (row_id, 6, 2)], version=version
+    )
 
     assert ranges.to_pylist() == [b"bcd", b"gh"]
 
@@ -1114,11 +1117,16 @@ def test_fetch_blobs_query_result_after_compact_without_stable_row_ids(tmp_path)
     table.add([{"id": 2, "image": b"frag-two"}])
     hits = table.search().to_arrow()
     row_ids = read_row_ids_from_hits(hits, "image")
+    query_version = int(hits.schema.metadata[b"lancedb.query_version"])
     table.optimize()
     blobs = table.fetch_blobs("image", hits)
     assert sorted(blobs.to_pylist()) == [b"frag-one", b"frag-two"]
     with pytest.raises(ValueError, match="non-existent fragment"):
         table.fetch_blobs("image", row_ids)
+
+    requests = [(row_id, 5, 3) for row_id in row_ids]
+    ranges = table.fetch_blob_ranges("image", requests, version=query_version)
+    assert sorted(ranges.to_pylist()) == [b"one", b"two"]
 
 
 def test_fetch_blobs_survives_sort_after_query():

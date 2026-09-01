@@ -1804,6 +1804,7 @@ class Table(ABC):
         self,
         column: str,
         requests: Sequence[Tuple[int, int, int]],
+        version: Optional[int] = None,
     ) -> pa.LargeBinaryArray:
         """Materialize row-specific byte ranges from a blob v2 column.
 
@@ -1812,8 +1813,10 @@ class Table(ABC):
         The result has the same length and order as ``requests``; null blobs
         produce null slots and empty ranges on non-null blobs produce ``b""``.
 
-        Row IDs can be obtained from a query with ``with_row_id(True)``. This
-        API is currently supported only by local tables.
+        Row IDs can be obtained from a query with ``with_row_id(True)``. Pass
+        that query's producing dataset version as ``version`` if the table may
+        have advanced since the query. This API is currently supported only by
+        local tables.
         """
 
     @abstractmethod
@@ -2676,8 +2679,9 @@ class LanceTable(Table):
         self,
         column: str,
         requests: Sequence[Tuple[int, int, int]],
+        version: Optional[int] = None,
     ) -> pa.LargeBinaryArray:
-        return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
+        return LOOP.run(self._table.fetch_blob_ranges(column, list(requests), version))
 
     def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]
@@ -6625,8 +6629,9 @@ class AsyncTable:
         self,
         column: str,
         requests: Sequence[Tuple[int, int, int]],
+        version: Optional[int] = None,
     ) -> pa.LargeBinaryArray:
-        return await self._inner.fetch_blob_ranges(column, list(requests))
+        return await self._inner.fetch_blob_ranges(column, list(requests), version)
 
     async def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]

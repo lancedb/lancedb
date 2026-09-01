@@ -985,12 +985,18 @@ async fn held_query_rowids_resolve_on_producing_version_after_compact() -> Resul
     got.sort();
     assert_eq!(got, [b"frag-one".as_slice(), b"frag-two".as_slice()]);
 
-    let requery_ids = collect_row_ids(&table).await?;
-    let ranges = requery_ids
+    let ranges = ids_before
         .iter()
         .map(|row_id| BlobRangeRequest::new(*row_id, 5, 3));
-    let ranges_after = table.fetch_blob_ranges("image", ranges).await?;
+    let ranges_after = table
+        .fetch_blob_ranges_at_version("image", ranges, query_version)
+        .await?;
     assert_eq!(ranges_after.len(), 2);
+    let mut got: Vec<&[u8]> = (0..ranges_after.len())
+        .map(|i| ranges_after.value(i))
+        .collect();
+    got.sort();
+    assert_eq!(got, [b"one".as_slice(), b"two".as_slice()]);
     Ok(())
 }
 
