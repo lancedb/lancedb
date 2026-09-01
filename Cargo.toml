@@ -52,9 +52,7 @@ datafusion-functions-aggregate = "54.0.0"
 datafusion-physical-plan = "54.0.0"
 datafusion-physical-expr = "54.0.0"
 datafusion-sql = "54.0.0"
-datafusion-substrait = { version = "54.0.0", default-features = false, features = [
-    "protoc",
-] }
+datafusion-substrait = { version = "54.0.0", default-features = false }
 env_logger = "0.11"
 half = { "version" = "2.7.1", default-features = false, features = [
     "num-traits",
