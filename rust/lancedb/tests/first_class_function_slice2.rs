@@ -28,17 +28,6 @@ fn registration_request_matches_shared_canonical_golden() {
     );
 }
 
-#[test]
-fn registration_request_accepts_the_vectorized_arrow_array_adapter() {
-    let request = FunctionRegistrationRequest::from_json(
-        &fixture("remote_function_registration_request.json")
-            .replace("scalar_to_arrow_batch", "arrow_arrays"),
-    )
-    .expect("vectorized registration request");
-    assert_eq!(request.artifact.adapter.kind, "arrow_arrays");
-    assert_eq!(request.artifact.adapter.version, 1);
-}
-
 #[tokio::test]
 async fn local_function_catalog_operations_return_stable_not_supported() {
     let directory = tempfile::tempdir().unwrap();

@@ -456,11 +456,11 @@ pub struct FunctionArtifactContent {
     pub data: String,
 }
 
-/// Execution adapter selected for a Python callable artifact.
+/// Internal execution adapter selected for a Python callable artifact.
 ///
-/// `scalar_to_arrow_batch` invokes a public scalar callable once per row.
-/// `arrow_arrays` invokes a vectorized callable once per batch with one Arrow
-/// array per declared input. Adapter versions define the callable ABI.
+/// The adapter converts the public scalar callable to the Arrow batch ABI
+/// used by the remote executor. It is part of the request envelope, not a
+/// public batch-UDF authoring mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonAdapterSpec {
     pub kind: String,
