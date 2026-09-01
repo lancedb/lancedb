@@ -666,12 +666,16 @@ def test_table_create_indices():
             index_type="IVF_PQ", num_indexed_rows=1000, num_unindexed_rows=0
         )
 
-        if request.path == "/v1/table/test/create_index/":
+        if request.path in (
+            "/v1/table/test/create_index/",
+            "/v1/table/test/create_index_if_not_exists/",
+        ):
             # Capture the request body to validate name parameter
             content_len = int(request.headers.get("Content-Length", 0))
             if content_len > 0:
                 body = request.rfile.read(content_len)
                 body_data = json.loads(body)
+                body_data["_path"] = request.path
                 received_requests.append(body_data)
             request.send_response(200)
             request.end_headers()
@@ -793,18 +797,23 @@ def test_table_create_indices():
 
         # Check scalar index request has custom name
         scalar_req = received_requests[0]
+        assert scalar_req["_path"] == "/v1/table/test/create_index_if_not_exists/"
         assert "name" in scalar_req
         assert scalar_req["name"] == "custom_scalar_idx"
+        assert scalar_req["replace"] is False
 
         # Check FTS index request has custom name
         fts_req = received_requests[1]
+        assert fts_req["_path"] == "/v1/table/test/create_index_if_not_exists/"
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
+        assert fts_req["replace"] is False
         assert fts_req["block_size"] == 256
         assert fts_req["custom_stop_words"] == ["cloud"]
 
         # Check vector index request has custom name
         vector_req = received_requests[2]
+        assert vector_req["_path"] == "/v1/table/test/create_index/"
         assert "name" in vector_req
         assert vector_req["name"] == "custom_vector_idx"
 
