@@ -589,16 +589,13 @@ fn canonical_input_arrow_type(field: &JsonArrowField) -> Result<String> {
         .and_then(|metadata| metadata.get(ARROW_EXT_NAME_KEY))
         .map(String::as_str)
         == Some(BLOB_V2_EXT_NAME);
-    if is_blob_v2 {
+    if is_blob_v2 || field.r#type.fields.is_some() {
         let arrow_field = lance_namespace::schema::convert_json_arrow_field(field)
             .map_err(|e| invalid_function(format!("invalid Function input field: {e}")))?;
-        if !has_supported_blob_v2_layout(&arrow_field) {
-            return Err(invalid_function(format!(
-                "Function input '{}' has an invalid Blob v2 storage layout",
-                arrow_field.name()
-            )));
+        validate_function_blob_nesting(&arrow_field, false)?;
+        if is_blob_v2 {
+            return Ok(FUNCTION_BLOB_V2_TYPE.to_string());
         }
-        return Ok(FUNCTION_BLOB_V2_TYPE.to_string());
     }
     if field.r#type.fields.is_none() && field.r#type.length.is_none() {
         Ok(field.r#type.r#type.clone())
@@ -615,6 +612,34 @@ fn has_supported_blob_v2_layout(field: &ArrowField) -> bool {
             field.data_type(),
             DataType::Struct(fields) if BlobV2Layout::classify(fields).is_some()
         )
+}
+
+fn validate_function_blob_nesting(field: &ArrowField, inside_collection: bool) -> Result<()> {
+    if field.is_blob_v2() {
+        if inside_collection {
+            return Err(invalid_function(format!(
+                "Function field '{}' nests Blob v2 under a collection, which Function signatures do not support",
+                field.name()
+            )));
+        }
+        if !has_supported_blob_v2_layout(field) {
+            return Err(invalid_function(format!(
+                "Function field '{}' has an invalid Blob v2 storage layout",
+                field.name()
+            )));
+        }
+        return Ok(());
+    }
+    match field.data_type() {
+        DataType::Struct(fields) => fields
+            .iter()
+            .try_for_each(|field| validate_function_blob_nesting(field, inside_collection)),
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => validate_function_blob_nesting(field, true),
+        _ => Ok(()),
+    }
 }
 
 /// `fixed_size_list<item, size>` -> (`item`, `size`); the comma must sit outside
@@ -697,21 +722,22 @@ fn parse_output_arrow_type(raw: &str) -> Result<JsonArrowDataType> {
 }
 
 fn function_output_field(name: &str, nullable: bool, raw: &str) -> Result<JsonArrowField> {
-    if raw == FUNCTION_BLOB_V2_TYPE {
-        return lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
-            crate::blob(name, nullable),
-        ]))
+    let field = if raw == FUNCTION_BLOB_V2_TYPE {
+        lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![crate::blob(
+            name, nullable,
+        )]))
         .map_err(|e| invalid_function(format!("could not encode Blob v2 output field: {e}")))?
         .fields
         .into_iter()
         .next()
-        .ok_or_else(|| invalid_function("Blob v2 output field is missing"));
-    }
-    Ok(JsonArrowField::new(
-        name.to_string(),
-        nullable,
-        parse_output_arrow_type(raw)?,
-    ))
+        .ok_or_else(|| invalid_function("Blob v2 output field is missing"))?
+    } else {
+        JsonArrowField::new(name.to_string(), nullable, parse_output_arrow_type(raw)?)
+    };
+    let arrow_field = lance_namespace::schema::convert_json_arrow_field(&field)
+        .map_err(|e| invalid_function(format!("invalid Function output field: {e}")))?;
+    validate_function_blob_nesting(&arrow_field, false)?;
+    Ok(field)
 }
 
 fn function_output_field_matches(expected: &ArrowField, actual: &ArrowField) -> bool {
@@ -2719,6 +2745,28 @@ mod tests {
         .unwrap()
     }
 
+    fn exact_arrow_type(field: ArrowField) -> String {
+        let json =
+            lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![field])).unwrap();
+        serde_json::to_string(json.fields[0].r#type.as_ref()).unwrap()
+    }
+
+    fn single_input_application(path: &str) -> FunctionApplication {
+        FunctionApplication::from_json(
+            &serde_json::json!({
+                "function": {"name": "inspect", "version": "fv_nested_blob"},
+                "inputs": [{
+                    "parameter": "value",
+                    "kind": "column",
+                    "value": {"path": path}
+                }],
+                "output": {"kind": "scalar", "arrow_type": "int64", "nullable": false}
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
     fn binding_from_plan(plan: &FunctionDeclarationPlan) -> FunctionBinding {
         let inputs = plan
             .input_bindings
@@ -3156,6 +3204,128 @@ mod tests {
         };
         assert!(fields[0].is_blob_v2());
         assert_eq!(fields[1].data_type(), &DataType::Int32);
+    }
+
+    #[test]
+    fn test_struct_blob_input_preserves_exact_schema_and_nullability() {
+        let payload = ArrowField::new(
+            "payload",
+            DataType::Struct(Fields::from(vec![
+                ArrowField::new("mime_type", DataType::Utf8, false),
+                ArrowField::new(
+                    "nested",
+                    DataType::Struct(Fields::from(vec![crate::blob("image", true)])),
+                    true,
+                ),
+            ])),
+            true,
+        );
+        let plan = plan_function_application(
+            &ArrowSchema::new(vec![payload]),
+            &single_input_application("payload"),
+            Some("size"),
+        )
+        .unwrap();
+
+        let declared: JsonArrowDataType =
+            serde_json::from_str(&plan.input_bindings[0].arrow_type).unwrap();
+        let DataType::Struct(fields) =
+            lance_namespace::schema::convert_json_arrow_type(&declared).unwrap()
+        else {
+            panic!("expected a struct Function input")
+        };
+        assert!(fields[1].is_nullable());
+        let DataType::Struct(nested) = fields[1].data_type() else {
+            panic!("expected a recursive struct Function input")
+        };
+        assert!(nested[0].is_blob_v2());
+        assert!(nested[0].is_nullable());
+
+        let exact = lance_namespace::schema::convert_json_arrow_schema(&plan.input_schema).unwrap();
+        let DataType::Struct(fields) = exact.field(0).data_type() else {
+            panic!("expected exact input schema to retain the struct")
+        };
+        let DataType::Struct(nested) = fields[1].data_type() else {
+            panic!("expected exact input schema to retain the nested struct")
+        };
+        assert!(nested[0].is_blob_v2());
+    }
+
+    #[test]
+    fn test_recursive_blob_result_plans_one_whole_named_struct_column() {
+        let details_type = exact_arrow_type(ArrowField::new(
+            "details",
+            DataType::Struct(Fields::from(vec![crate::blob("image", true)])),
+            false,
+        ));
+        let application = FunctionApplication::from_json(
+            &serde_json::json!({
+                "function": {"name": "inspect", "version": "fv_nested_blob"},
+                "inputs": [],
+                "output": {
+                    "kind": "named_struct",
+                    "fields": [
+                        {"name": "mime_type", "arrow_type": "utf8", "nullable": false},
+                        {"name": "details", "arrow_type": details_type, "nullable": false}
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let plan = plan_function_application(&ArrowSchema::empty(), &application, Some("payload"))
+            .unwrap();
+
+        assert_eq!(plan.outputs.len(), 1);
+        assert_eq!(plan.outputs[0].result_field, WHOLE_RESULT_FIELD);
+        let schema =
+            lance_namespace::schema::convert_json_arrow_schema(&plan.output_schema).unwrap();
+        assert_eq!(schema.field(0).name(), "payload");
+        let DataType::Struct(fields) = schema.field(0).data_type() else {
+            panic!("whole named result must be one struct column")
+        };
+        assert_eq!(
+            fields.iter().map(|field| field.name()).collect::<Vec<_>>(),
+            ["mime_type", "details"]
+        );
+        let DataType::Struct(details) = fields[1].data_type() else {
+            panic!("expected recursive result struct")
+        };
+        assert!(details[0].is_blob_v2());
+        assert!(!fields.iter().any(|field| field.name() == "payload"));
+    }
+
+    #[test]
+    fn test_blob_children_under_collections_are_rejected() {
+        let collections = vec![
+            DataType::List(Arc::new(crate::blob("item", false))),
+            DataType::LargeList(Arc::new(crate::blob("item", false))),
+            DataType::FixedSizeList(Arc::new(crate::blob("item", false)), 2),
+            DataType::Map(
+                Arc::new(ArrowField::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        ArrowField::new("key", DataType::Utf8, false),
+                        crate::blob("value", false),
+                    ])),
+                    false,
+                )),
+                false,
+            ),
+        ];
+        for data_type in collections {
+            let schema = ArrowSchema::new(vec![ArrowField::new("value", data_type, false)]);
+            let error = plan_function_application(
+                &schema,
+                &single_input_application("value"),
+                Some("size"),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("under a collection"),
+                "got: {error}"
+            );
+        }
     }
 
     #[test]
