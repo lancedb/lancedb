@@ -753,6 +753,26 @@ class DBConnection(EnforceOverrides):
             "cancel_job is not supported for this connection type"
         )
 
+    def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
+
+        The job's workers drain and it stays parked until resumed. Returns
+        "pausing", "already_paused", or "committing" -- a job finalizing its
+        results cannot be parked; retry shortly.
+        """
+        raise NotImplementedError("pause_job is not supported for this connection type")
+
+    def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Its workers pick their work back up from checkpoints. Returns
+        "resumed", "still_pausing" -- the pause's worker drain is not
+        confirmed yet; retry shortly -- or "not_paused".
+        """
+        raise NotImplementedError(
+            "resume_job is not supported for this connection type"
+        )
+
     def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
         """The lifecycle event history of a server-side job, as Arrow batches.
 
@@ -1449,6 +1469,22 @@ class LanceDBConnection(DBConnection):
         success.
         """
         return LOOP.run(self._conn.cancel_job(job_id))
+
+    @override
+    def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
+
+        Returns "pausing", "already_paused", or "committing".
+        """
+        return LOOP.run(self._conn.pause_job(job_id))
+
+    @override
+    def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Returns "resumed", "still_pausing", or "not_paused".
+        """
+        return LOOP.run(self._conn.resume_job(job_id))
 
     @override
     def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
@@ -2280,6 +2316,23 @@ class AsyncConnection(object):
         success.
         """
         return await self._inner.cancel_job(job_id)
+
+    async def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
+
+        The job's workers drain and it stays parked until resumed. Returns
+        "pausing", "already_paused", or "committing" -- a job finalizing its
+        results cannot be parked; retry shortly.
+        """
+        return await self._inner.pause_job(job_id)
+
+    async def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Its workers pick their work back up from checkpoints. Returns
+        "resumed", "still_pausing" -- retry shortly -- or "not_paused".
+        """
+        return await self._inner.resume_job(job_id)
 
     async def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
         """The lifecycle event history of a server-side job, as Arrow batches.

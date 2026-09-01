@@ -24,7 +24,7 @@ use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, Database, DatabaseOptions, JobDescription, JobInfo, OpenTableRequest,
-    ReadConsistency, TableNamesRequest,
+    PauseJobStatus, ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -588,6 +588,18 @@ impl Connection {
     /// server accepted the cancellation, false if no such job exists.
     pub async fn cancel_job(&self, job_id: impl AsRef<str>) -> Result<bool> {
         self.internal.cancel_job(job_id.as_ref()).await
+    }
+
+    /// Pause a server-side job by id. Its workers drain and it stays parked
+    /// until resumed; see [`PauseJobStatus`] for the outcomes.
+    pub async fn pause_job(&self, job_id: impl AsRef<str>) -> Result<PauseJobStatus> {
+        self.internal.pause_job(job_id.as_ref()).await
+    }
+
+    /// Resume a paused server-side job by id. Its workers pick their work
+    /// back up from checkpoints; see [`ResumeJobStatus`] for the outcomes.
+    pub async fn resume_job(&self, job_id: impl AsRef<str>) -> Result<ResumeJobStatus> {
+        self.internal.resume_job(job_id.as_ref()).await
     }
 
     /// The lifecycle event history of a server-side job (all jobs when

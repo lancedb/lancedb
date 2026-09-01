@@ -235,6 +235,29 @@ pub struct JobDescription {
     pub failure: Option<crate::error::JobFailure>,
 }
 
+/// The server's answer to a pause request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseJobStatus {
+    /// The pause was accepted; workers drain and the job stays parked.
+    Pausing,
+    /// The job was already paused, so a repeated pause changed nothing.
+    AlreadyPaused,
+    /// The job is finalizing its results and cannot be parked right now.
+    /// The commit is the short tail of a long job; retry shortly.
+    Committing,
+}
+
+/// The server's answer to a resume request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeJobStatus {
+    /// The job re-entered the queue and will run again.
+    Resumed,
+    /// The pause's worker drain is not confirmed yet; retry shortly.
+    StillPausing,
+    /// The job was not paused, so there was nothing to resume.
+    NotPaused,
+}
+
 fn job_op_not_supported<T>(what: &str) -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: format!("{} is not supported by this database", what),
@@ -330,6 +353,16 @@ pub trait Database:
     /// already-terminal job is a no-op success.
     async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
         job_op_not_supported("cancel_job")
+    }
+    /// Pause a job by id. The job's workers drain and it stays parked until
+    /// resumed; see [`PauseJobStatus`] for the outcomes.
+    async fn pause_job(&self, _job_id: &str) -> Result<PauseJobStatus> {
+        job_op_not_supported("pause_job")
+    }
+    /// Resume a paused job by id. It re-enters the queue and its workers pick
+    /// their work back up from checkpoints; see [`ResumeJobStatus`].
+    async fn resume_job(&self, _job_id: &str) -> Result<ResumeJobStatus> {
+        job_op_not_supported("resume_job")
     }
     /// The lifecycle event history of a job (all jobs when `job_id` is
     /// `None`), as recorded Arrow batches.

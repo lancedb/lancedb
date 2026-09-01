@@ -73,6 +73,28 @@ pub(super) struct ReportedFailure {
     retryable: Option<bool>,
 }
 
+/// Forward-compatible `/v1/jobs/pause` wire envelope.
+#[derive(Deserialize)]
+pub(super) struct PauseJobResponse {
+    /// False when the job was already paused, so a repeated pause changed
+    /// nothing.
+    #[serde(default)]
+    pub(super) paused: bool,
+    /// The job is finalizing its results and cannot be parked right now.
+    #[serde(default)]
+    pub(super) committing: bool,
+}
+
+/// Forward-compatible `/v1/jobs/resume` wire envelope.
+#[derive(Deserialize)]
+pub(super) struct ResumeJobResponse {
+    #[serde(default)]
+    pub(super) resumed: bool,
+    /// The pause's worker drain is not confirmed yet.
+    #[serde(default)]
+    pub(super) still_pausing: bool,
+}
+
 /// Forward-compatible `/v1/jobs/describe` wire envelope.
 #[derive(Deserialize)]
 pub(super) struct DescribeJobResponse {
