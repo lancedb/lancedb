@@ -477,6 +477,34 @@ impl Connection {
         self.get_inner()?.cancel_job(&job_id).await.default_error()
     }
 
+    /// Pause a server-side job by id: its workers drain and it stays parked
+    /// until resumed. Returns "pausing", "already_paused", or "committing".
+    #[napi(catch_unwind)]
+    pub async fn pause_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self.get_inner()?.pause_job(&job_id).await.default_error()?;
+        Ok(match status {
+            lancedb::database::PauseJobStatus::Pausing => "pausing".to_string(),
+            lancedb::database::PauseJobStatus::AlreadyPaused => "already_paused".to_string(),
+            lancedb::database::PauseJobStatus::Committing => "committing".to_string(),
+        })
+    }
+
+    /// Resume a paused server-side job by id. Returns "resumed",
+    /// "still_pausing", or "not_paused".
+    #[napi(catch_unwind)]
+    pub async fn resume_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self
+            .get_inner()?
+            .resume_job(&job_id)
+            .await
+            .default_error()?;
+        Ok(match status {
+            lancedb::database::ResumeJobStatus::Resumed => "resumed".to_string(),
+            lancedb::database::ResumeJobStatus::StillPausing => "still_pausing".to_string(),
+            lancedb::database::ResumeJobStatus::NotPaused => "not_paused".to_string(),
+        })
+    }
+
     /// The lifecycle event history of a server-side job (all jobs when
     /// `job_id` is null), as an Arrow IPC stream buffer. Empty when there is
     /// no history.

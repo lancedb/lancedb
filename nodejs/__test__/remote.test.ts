@@ -987,6 +987,22 @@ describe("remote connection jobs surface", () => {
             res
               .writeHead(200, { "Content-Type": "application/json" })
               .end('{"job_id": "job-1"}');
+          } else if (req.url === "/v1/jobs/pause") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end('{"job_id": "job-1", "paused": true}');
+          } else if (req.url === "/v1/jobs/resume") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end('{"job_id": "job-1", "resumed": false, "still_pausing": true}');
           } else if (req.url === "/v1/jobs/query_events") {
             res
               .writeHead(200, {
@@ -1014,6 +1030,9 @@ describe("remote connection jobs surface", () => {
 
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
+
+        expect(await db.pauseJob("job-1")).toEqual("pausing");
+        expect(await db.resumeJob("job-1")).toEqual("still_pausing");
 
         const history = await db.jobHistory("job-1");
         expect(history.numRows).toEqual(2);
