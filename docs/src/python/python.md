@@ -67,9 +67,15 @@ for batch in query.reader():
     print(batch.num_rows)
 
 # The async connection exposes the same lifecycle without blocking:
-# reader = await db.execute_query("SELECT * FROM events")
-# query = await db.execute_query_async("SELECT * FROM events")
-# description = await db.describe_query(query.id)
+# async_db = await lancedb.connect_async(
+#     "db://analytics",
+#     api_key="ldb_...",
+#     host_override="https://api.example.com",
+#     sql_host_override="grpc+tls://sql.example.com:10026",
+# )
+# reader = await async_db.execute_query("SELECT * FROM events")
+# query = await async_db.execute_query_async("SELECT * FROM events")
+# description = await async_db.describe_query(query.id)
 # async for batch in await query.reader():
 #     print(batch.num_rows)
 # await query.cancel()
