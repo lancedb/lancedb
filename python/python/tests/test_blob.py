@@ -756,7 +756,7 @@ async def test_async_fetch_blob_ranges():
     await table.add([{"id": 1, "image": b"abcdefghij"}])
     hits = await table.query().with_row_id().to_arrow()
     row_id = hits["_rowid"][0].as_py()
-    version = await table.version()
+    version = int(hits.schema.metadata[b"lancedb.query_version"])
 
     ranges = await table.fetch_blob_ranges(
         "image", [(row_id, 1, 3), (row_id, 6, 2)], version=version

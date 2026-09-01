@@ -1386,8 +1386,22 @@ impl<S: HttpSend> RemoteTable<S> {
 
         let results = results
             .into_iter()
-            .map(|(served_version, stream)| (served_version.or(read_snapshot.version), stream))
-            .collect::<Vec<_>>();
+            .map(|(served_version, stream)| {
+                let effective_version = match (read_snapshot.version, served_version) {
+                    (Some(requested), Some(served)) if requested != served => {
+                        return Err(Error::Other {
+                            message: format!(
+                                "query requested dataset version {requested} but was served version {served}"
+                            ),
+                            source: None,
+                        });
+                    }
+                    (Some(requested), _) => Some(requested),
+                    (None, served) => served,
+                };
+                Ok((effective_version, stream))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         if with_row_id {
             let effective_versions = results
@@ -5254,6 +5268,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(versions, vec![Some(17)]);
+    }
+
+    #[tokio::test]
+    async fn test_pinned_query_rejects_different_served_version() {
+        let error = execute_row_id_query_with_versions(vec![Some(18)], Some(17))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requested dataset version 17 but was served version 18"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
