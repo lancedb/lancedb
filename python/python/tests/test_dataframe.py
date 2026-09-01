@@ -71,11 +71,11 @@ def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
     db.create_table("events", [{"id": 1, "value": 10}])
 
     source = db.table("events")
-    left = source.alias("left")
-    right = source.alias("right")
+    left = source.alias("left").with_column_renamed("value", "renamed")
+    right = source.alias("right").with_column_renamed("value", "renamed")
     joined = left.join(right, on="id").select(
-        left.col("value").alias("left_value"),
-        right.column("value").alias("right_value"),
+        left.col("renamed").alias("left_value"),
+        right.column("renamed").alias("right_value"),
     )
 
     assert joined.schema.names == ["left_value", "right_value"]
