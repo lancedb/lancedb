@@ -55,6 +55,15 @@ def test_dataframe_set_operations_build_plans(tmp_path):
     left = db.table("left")
     right = db.table("right")
 
+    assert (
+        left._inner.intersect(right._inner).to_substrait()
+        == left.intersect(right).to_substrait()
+    )
+    assert (
+        left._inner.except_(right._inner).to_substrait()
+        == left.except_all(right).to_substrait()
+    )
+
     for frame in [
         left.union(right),
         left.union(right, distinct=True),

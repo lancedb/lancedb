@@ -137,12 +137,12 @@ impl NativeDataFrame {
         Self::wrap(self.inner.union(&other.inner, all))
     }
 
-    #[pyo3(signature = (other, all=false))]
+    #[pyo3(signature = (other, all=true))]
     fn intersect(&self, other: &Self, all: bool) -> PyResult<Self> {
         Self::wrap(self.inner.intersect(&other.inner, all))
     }
 
-    #[pyo3(signature = (other, all=false))]
+    #[pyo3(signature = (other, all=true))]
     fn except_(&self, other: &Self, all: bool) -> PyResult<Self> {
         Self::wrap(self.inner.except(&other.inner, all))
     }
