@@ -1107,6 +1107,9 @@ def test_remote_create_index_new_api():
             table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
+            table.create_index(
+                "vector", config=IvfPq(distance_type="l2"), replace=False
+            )
 
         # Legacy index_type="IVF_RQ" routes to IvfRq config under the hood.
         with pytest.warns(DeprecationWarning, match="create_index"):
@@ -1116,15 +1119,17 @@ def test_remote_create_index_new_api():
                 num_partitions=8,
             )
 
-        assert len(received_requests) == 5
+        assert len(received_requests) == 6
         assert [req["column"] for req in received_requests] == [
             "vector",
             "category",
             "text",
             "vector",
             "vector",
+            "vector",
         ]
         assert received_requests[2]["block_size"] == 256
+        assert received_requests[4]["replace"] is False
 
 
 def test_table_wait_for_index_timeout():
