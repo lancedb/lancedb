@@ -22,6 +22,7 @@ import pytest
 
 import lancedb
 from lancedb.functions import (
+    PythonAdapterSpec,
     PythonRuntimeSpec,
     UdfDefinition,
     _canonical_arrow_type,
@@ -848,11 +849,31 @@ def test_blob_fields_support_vectorized_pyarrow_arrays():
     assert signature.inputs[0].nullable is True
     assert signature.output.arrow_type == "blob_v2"
     assert signature.output.nullable is False
+    assert copy_blobs.registration_request.artifact.adapter == PythonAdapterSpec(
+        kind="arrow_arrays", version=1
+    )
 
     source = base64.b64decode(
         copy_blobs.registration_request.artifact.content.data
     ).decode("utf-8")
     assert "def copy_blobs(image: pa.Array) -> pa.Array:" in source
+
+
+def test_vectorized_udf_requires_a_complete_array_contract():
+    with pytest.raises(TypeError, match="every parameter and the return value"):
+
+        @udf(
+            input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+            output_schema=lancedb.blob("result", nullable=False),
+        )
+        def missing_array_output(image: pa.Array):
+            return image
+
+    with pytest.raises(TypeError, match="require input_schema and output_schema"):
+
+        @udf
+        def missing_array_schema(image: pa.Array) -> pa.Array:
+            return image
 
 
 def test_named_struct_function_can_include_a_blob_result_field():

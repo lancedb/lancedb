@@ -874,6 +874,28 @@ def _callable_parameters(function: Callable[..., Any]) -> tuple[inspect.Paramete
     return parameters
 
 
+def _python_adapter(
+    function: Callable[..., Any], parameters: tuple[inspect.Parameter, ...]
+) -> PythonAdapterSpec:
+    try:
+        annotations = get_type_hints(function, include_extras=True)
+    except Exception as error:
+        raise TypeError(f"failed to resolve Function annotations: {error}") from error
+
+    input_is_array = [
+        annotations.get(parameter.name) is pa.Array for parameter in parameters
+    ]
+    output_is_array = annotations.get("return") is pa.Array
+    if any(input_is_array) or output_is_array:
+        if not parameters or not all(input_is_array) or not output_is_array:
+            raise TypeError(
+                "vectorized Function callables must annotate every parameter and "
+                "the return value as pyarrow.Array"
+            )
+        return PythonAdapterSpec(kind="arrow_arrays", version=1)
+    return PythonAdapterSpec(kind="scalar_to_arrow_batch", version=1)
+
+
 def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutput:
     if isinstance(output, pa.Schema):
         if output.metadata:
@@ -1229,6 +1251,12 @@ class UdfDefinition:
             for key, value in environment.items()
         ):
             raise TypeError("Function env keys and values must be strings")
+        parameters = _callable_parameters(function)
+        adapter = _python_adapter(function, parameters)
+        if adapter.kind == "arrow_arrays" and input_schema is None:
+            raise TypeError(
+                "vectorized Function callables require input_schema and output_schema"
+            )
         signature = _infer_signature(function, input_schema, output_schema)
         source = _package_source(function)
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
@@ -1252,10 +1280,7 @@ class UdfDefinition:
                     encoding="base64",
                     data=base64.b64encode(source).decode("ascii"),
                 ),
-                adapter=PythonAdapterSpec(
-                    kind="scalar_to_arrow_batch",
-                    version=1,
-                ),
+                adapter=adapter,
             ),
             signature=signature,
             runtime=runtime,
