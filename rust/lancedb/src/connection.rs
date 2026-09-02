@@ -485,9 +485,9 @@ impl Connection {
     /// return [`Error::NotSupported`].
     pub async fn describe_query(
         &self,
-        query_id: impl AsRef<str>,
+        query_id: uuid::Uuid,
     ) -> Result<crate::sql::QueryDescription> {
-        self.internal.describe_query(query_id.as_ref()).await
+        self.internal.describe_query(query_id).await
     }
 
     /// Get the names of all tables in the database
@@ -1507,7 +1507,7 @@ mod tests {
             Err(Error::NotSupported { .. })
         ));
         assert!(matches!(
-            connection.describe_query("query-id").await,
+            connection.describe_query(uuid::Uuid::nil()).await,
             Err(Error::NotSupported { .. })
         ));
     }

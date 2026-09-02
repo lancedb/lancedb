@@ -492,7 +492,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
     assert!(pre_dispatch_timeout.cancel().await.is_err());
     assert_ne!(
         pre_dispatch_timeout.describe().await.unwrap().status,
-        "cancelled"
+        QueryStatus::Cancelled
     );
 
     let rejected_cancel = timeout_client
@@ -503,7 +503,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
     assert!(rejected_cancel.cancel().await.is_err());
     assert_ne!(
         rejected_cancel.describe().await.unwrap().status,
-        "cancelled"
+        QueryStatus::Cancelled
     );
 
     let unspecified_cancel = timeout_client
@@ -514,7 +514,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
     assert!(unspecified_cancel.cancel().await.is_err());
     assert_ne!(
         unspecified_cancel.describe().await.unwrap().status,
-        "cancelled"
+        QueryStatus::Cancelled
     );
     assert_eq!(
         collect_result(&unspecified_cancel).await.unwrap(),

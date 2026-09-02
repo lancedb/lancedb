@@ -92,7 +92,7 @@ def test_local_connection_rejects_sql(tmp_path):
     with pytest.raises(NotImplementedError, match="SQL"):
         connection.execute_query_async("SELECT 1")
     with pytest.raises(NotImplementedError, match="SQL"):
-        connection.describe_query("query-id")
+        connection.describe_query("00000000-0000-0000-0000-000000000000")
 
 
 @pytest.mark.asyncio
@@ -103,7 +103,7 @@ async def test_local_async_connection_rejects_sql(tmp_path):
     with pytest.raises(NotImplementedError, match="SQL"):
         await connection.execute_query_async("SELECT 1")
     with pytest.raises(NotImplementedError, match="SQL"):
-        await connection.describe_query("query-id")
+        await connection.describe_query("00000000-0000-0000-0000-000000000000")
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_async_namespace_connection_rejects_sql(tmp_path):
     with pytest.raises(NotImplementedError, match="SQL"):
         await connection.execute_query_async("SELECT 1")
     with pytest.raises(NotImplementedError, match="SQL"):
-        await connection.describe_query("query-id")
+        await connection.describe_query("00000000-0000-0000-0000-000000000000")
 
 
 @pytest.mark.parametrize(

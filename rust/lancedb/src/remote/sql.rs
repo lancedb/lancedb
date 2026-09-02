@@ -674,7 +674,7 @@ impl RemoteQuery {
 
     fn cancelled_error(&self) -> Error {
         Error::JobCancelled {
-            job_id: Some(self.id.clone()),
+            job_id: Some(self.id.to_string()),
         }
     }
 

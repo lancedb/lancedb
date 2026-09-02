@@ -151,6 +151,9 @@ impl Connection {
         query_id: String,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let query_id = uuid::Uuid::parse_str(&query_id).map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!("Invalid SQL query id: {err}"))
+        })?;
         future_into_py(self_.py(), async move {
             inner
                 .describe_query(query_id)
