@@ -644,16 +644,37 @@ def _align_list_value_field(
     )
 
 
+def _arrow_json_storage_type(input_type: pa.DataType) -> Optional[pa.DataType]:
+    """The storage type arrow.json would use for ``input_type``.
+
+    Returns None if the type cannot hold JSON text.
+    """
+    if pa.types.is_string(input_type) or pa.types.is_string_view(input_type):
+        return pa.string()
+    if pa.types.is_large_string(input_type):
+        return pa.large_string()
+    return None
+
+
 def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
-    # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
-    # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
-    # input to that storage type here merely relabels the raw JSON bytes as
+    # LanceDB exposes stored JSON columns as lance.json (JSONB-backed LargeBinary), but
+    # casting the input to that storage type here merely relabels the raw JSON bytes as
     # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
-    if (
-        _field_extension_name(field) == "arrow.json"
-        and _field_extension_name(target_field) == "lance.json"
-    ):
-        return field
+    if _field_extension_name(target_field) == "lance.json":
+        if _field_extension_name(field) == "arrow.json":
+            return field
+        # Plain JSON text, which is what pyarrow infers for a column of `str`, only
+        # needs the arrow.json label.
+        json_storage = _arrow_json_storage_type(field.type)
+        if json_storage is not None:
+            # Labelled through metadata rather than pa.json_(), which only exists on newer
+            # PyArrow; Lance reads the extension name off the field either way.
+            return pa.field(
+                field.name,
+                json_storage,
+                field.nullable,
+                {"ARROW:extension:name": "arrow.json"},
+            )
     if pa.types.is_struct(target_field.type):
         if pa.types.is_struct(field.type):
             new_type = pa.struct(

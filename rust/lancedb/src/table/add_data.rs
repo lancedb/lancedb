@@ -1187,4 +1187,78 @@ mod tests {
             }
         }
     }
+
+    /// JSON text with no arrow.json label - what pyarrow infers for a column of `str` - is
+    /// encoded as JSONB rather than stored verbatim, at the top level and inside a struct.
+    #[tokio::test]
+    async fn test_add_unlabelled_json_strings() {
+        use arrow_array::{Array, cast::AsArray};
+        use arrow_schema::Fields;
+
+        let table_schema = Arc::new(Schema::new(vec![
+            lance_arrow::json::json_field("data", true),
+            Field::new(
+                "info",
+                DataType::Struct(vec![lance_arrow::json::json_field("value", true)].into()),
+                true,
+            ),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_strings", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let nested_children: Fields = vec![Field::new("value", DataType::Utf8, true)].into();
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("data", DataType::Utf8, true),
+            Field::new("info", DataType::Struct(nested_children.clone()), true),
+        ]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec![
+                    Some(r#"{"a": 1}"#),
+                    None,
+                ])),
+                Arc::new(arrow_array::StructArray::new(
+                    nested_children,
+                    vec![Arc::new(arrow_array::StringArray::from(vec![
+                        Some(r#"{"b": 2}"#),
+                        None,
+                    ]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let data = batch.column_by_name("data").unwrap().as_string::<i32>();
+        assert_eq!(data.value(0), r#"{"a":1}"#);
+        assert!(data.is_null(1));
+
+        let nested = batch
+            .column_by_name("info")
+            .unwrap()
+            .as_struct()
+            .column_by_name("value")
+            .unwrap()
+            .as_string::<i32>();
+        assert_eq!(nested.value(0), r#"{"b":2}"#);
+        assert!(nested.is_null(1));
+    }
 }

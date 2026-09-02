@@ -3018,6 +3018,55 @@ def test_add_all_null_json_batch_sync(mem_db: DBConnection):
     assert table.to_arrow()["j"].to_pylist() == [None]
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([None], [None]),
+        ([None, '{"k": 1}'], [None, '{"k":1}']),
+        (['{"k": 2}'], ['{"k":2}']),
+    ],
+)
+async def test_add_list_of_dicts_to_json_column(
+    mem_db_async: AsyncConnection, values, expected
+):
+    schema = pa.schema([pa.field("id", pa.int64()), pa.field("value", pa.json_())])
+    table = await mem_db_async.create_table("json_list_add", schema=schema)
+
+    await table.add([{"id": idx, "value": value} for idx, value in enumerate(values)])
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert [row["value"] for row in rows] == expected
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_list_of_dicts_to_nested_json_column(
+    mem_db_async: AsyncConnection,
+):
+    json_field = pa.field("value", pa.json_())
+    info_field = pa.field("info", pa.struct([json_field]))
+    info = pa.StructArray.from_arrays(
+        [pa.array(['{"seed": 0}'], type=pa.json_())], fields=[json_field]
+    )
+    seed = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), info],
+        schema=pa.schema([pa.field("id", pa.int64()), info_field]),
+    )
+    table = await mem_db_async.create_table("nested_json_list_add", data=seed)
+
+    await table.add([{"id": 1, "info": {"value": '{"k": 1}'}}])
+    await table.add([{"id": 2, "info": {"value": '{"k": 2}'}}], on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 0, "info": {"value": '{"seed":0}'}},
+        {"id": 1, "info": {"value": '{"k":1}'}},
+        {"id": 2, "info": {"value": '{"k":2}'}},
+    ]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str

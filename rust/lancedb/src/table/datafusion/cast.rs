@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_cast::can_cast_types;
@@ -14,8 +15,8 @@ use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
-use lance_arrow::FieldExt;
-use lance_arrow::json::{is_arrow_json_field, is_json_field};
+use lance_arrow::json::{ARROW_JSON_EXT_NAME, is_arrow_json_field, is_json_field};
+use lance_arrow::{ARROW_EXT_NAME_KEY, FieldExt};
 
 use super::blob_coerce::coerce_blob_expr;
 use crate::{Error, Result};
@@ -68,16 +69,37 @@ fn build_field_exprs(
         let input_field = &input_fields[input_idx];
         let input_expr = get_input_expr(input_idx);
 
-        // Special case: input is arrow.json (PyArrow pa.json_() extension type backed by
-        // Utf8/LargeUtf8) and the table field is lance.json (backed by LargeBinary).
-        // Lance-core's write path already handles the arrow.json → lance.json conversion
-        // (including JSONB encoding), so we pass the expression through unchanged and let
-        // lance-core deal with it. Attempting to cast Utf8 → LargeBinary here would
-        // produce a field whose metadata still identifies it as arrow.json, which then
-        // causes a schema-mismatch error inside lance-core.
-        if is_arrow_json_field(input_field) && is_json_field(table_field) {
-            result.push((input_expr, Arc::clone(input_field) as FieldRef));
-            continue;
+        // A json column (lance.json, backed by LargeBinary) is written as JSON text labelled
+        // arrow.json: lance-core's write path does the JSONB encoding, and only for columns
+        // carrying that label. Casting the text to LargeBinary here would instead store the raw
+        // text where JSONB is expected.
+        if is_json_field(table_field) {
+            // PyArrow's pa.json_() arrives already labelled, so pass it straight through.
+            if is_arrow_json_field(input_field) {
+                result.push((input_expr, Arc::clone(input_field) as FieldRef));
+                continue;
+            }
+
+            // Unlabelled JSON text (what pyarrow infers for a column of `str`) only needs the
+            // label. It goes on the cast's target field rather than the field we return here,
+            // because DataFusion derives the projection's output schema from
+            // `PhysicalExpr::return_field`.
+            if let Some(storage) = arrow_json_storage_type(input_field.data_type()) {
+                let labelled: FieldRef = Arc::new(
+                    Field::new(table_field.name(), storage, table_field.is_nullable())
+                        .with_metadata(HashMap::from([(
+                            ARROW_EXT_NAME_KEY.to_string(),
+                            ARROW_JSON_EXT_NAME.to_string(),
+                        )])),
+                );
+                let expr = Arc::new(CastExpr::new_with_target_field(
+                    input_expr,
+                    labelled.clone(),
+                    None,
+                ));
+                result.push((expr, labelled));
+                continue;
+            }
         }
 
         // Blob columns accept raw binary on write; exact matches pass through below.
@@ -182,6 +204,16 @@ fn build_field_exprs(
     }
 
     Ok(result)
+}
+
+// The storage type arrow.json would use for `input`, or None if it cannot hold JSON text.
+fn arrow_json_storage_type(input: &DataType) -> Option<DataType> {
+    match input {
+        // arrow.json only recognises Utf8 and LargeUtf8 storage, so a view has to be cast.
+        DataType::Utf8 | DataType::Utf8View => Some(DataType::Utf8),
+        DataType::LargeUtf8 => Some(DataType::LargeUtf8),
+        _ => None,
+    }
 }
 
 // The field's metadata is attached to the literal itself, because DataFusion derives the
@@ -744,6 +776,107 @@ mod tests {
         assert_eq!(v0, r#"{"x": 1}"#);
         assert!(result.column(0).is_null(1));
         assert_eq!(v2, r#"{"y": 2}"#);
+    }
+
+    /// Plain JSON text (what pyarrow infers for a column of `str`, and what a caller writing
+    /// JSON by hand supplies) has to be labelled arrow.json so lance-core encodes it as JSONB.
+    /// Casting it to the table field's LargeBinary storage type would store the raw text.
+    #[rstest::rstest]
+    #[case::utf8(DataType::Utf8, DataType::Utf8)]
+    #[case::large_utf8(DataType::LargeUtf8, DataType::LargeUtf8)]
+    #[case::utf8_view(DataType::Utf8View, DataType::Utf8)]
+    #[tokio::test]
+    async fn test_unlabelled_string_into_lance_json_gets_arrow_json_label(
+        #[case] input_type: DataType,
+        #[case] expected_type: DataType,
+    ) {
+        use lance_arrow::json::{is_arrow_json_field, json_field};
+
+        let table_schema = Schema::new(vec![json_field("data", true)]);
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new("data", input_type, true)]));
+        let values = vec![Some(r#"{"x": 1}"#), None];
+        let input_array = arrow_cast::cast(
+            &StringArray::from(values) as &dyn arrow_array::Array,
+            input_schema.field(0).data_type(),
+        )
+        .unwrap();
+        let input_batch = RecordBatch::try_new(input_schema, vec![input_array]).unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("data").unwrap().clone();
+        assert_eq!(out_field.data_type(), &expected_type);
+        assert!(
+            is_arrow_json_field(&out_field),
+            "output field must be labelled arrow.json, got {:?}",
+            out_field.metadata()
+        );
+
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 2);
+        assert_eq!(result.column(0).null_count(), 1);
+    }
+
+    /// The same, for a json column nested inside a struct: the struct is rebuilt from its
+    /// children, so the label has to travel on the child field.
+    #[tokio::test]
+    async fn test_unlabelled_struct_child_into_lance_json_gets_arrow_json_label() {
+        use lance_arrow::json::{is_arrow_json_field, json_field};
+
+        let table_schema = Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(
+                vec![
+                    Field::new("id", DataType::Int64, true),
+                    json_field("value", true),
+                ]
+                .into(),
+            ),
+            true,
+        )]);
+
+        let input_children: Fields = vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("value", DataType::Utf8, true),
+        ]
+        .into();
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StructArray::new(
+                input_children,
+                vec![
+                    Arc::new(Int64Array::from(vec![1, 2])),
+                    Arc::new(StringArray::from(vec![Some(r#"{"a": 1}"#), None])),
+                ],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("info").unwrap().clone();
+        let DataType::Struct(out_children) = out_field.data_type() else {
+            panic!("expected a struct, got {}", out_field.data_type());
+        };
+        let value = out_children.iter().find(|f| f.name() == "value").unwrap();
+        assert!(
+            is_arrow_json_field(value),
+            "nested field must be labelled arrow.json, got {:?}",
+            value.metadata()
+        );
+
+        let result = collect(projected).await;
+        let info: &StructArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(info.column_by_name("value").unwrap().null_count(), 1);
     }
 
     /// An all-null column comes through as `DataType::Null` (pyarrow infers that for a batch
