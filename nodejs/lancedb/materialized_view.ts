@@ -21,6 +21,8 @@ export interface MaterializedViewDefinition {
   inputs: string[];
   /** Namespace holding the source table; empty is the root namespace. */
   sourceNamespace: string[];
+  /** View columns a registered Function fills after each refresh. */
+  functionColumns: string[];
 }
 
 /**
@@ -80,8 +82,16 @@ export function definitionFromMetadata(
   }
   // biome-ignore lint/suspicious/noExplicitAny: raw JSON
   const value: any = JSON.parse(raw);
-  // "namespaced_select" keeps older readers from resolving the source at root.
-  if (value.kind !== "select" && value.kind !== "namespaced_select") {
+  // Each kind is a version boundary: "namespaced_select" keeps older readers
+  // from resolving the source at root, and the "function_*" kinds keep them
+  // from reporting a view with server-filled columns as malformed.
+  const kinds = [
+    "select",
+    "namespaced_select",
+    "function_select",
+    "namespaced_function_select",
+  ];
+  if (!kinds.includes(value.kind)) {
     throw new Error(
       `materialized view '${name}' is defined by '${value.kind}', which this ` +
         "version of lancedb cannot refresh",
@@ -107,6 +117,7 @@ export function definitionFromMetadata(
     limit,
     inputs: value.inputs ?? [],
     sourceNamespace: value.source_namespace ?? [],
+    functionColumns: value.function_columns ?? [],
   };
 }
 

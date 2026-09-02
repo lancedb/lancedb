@@ -296,6 +296,21 @@ def test_namespaced_select_kind_is_read_and_unknown_kinds_are_refused():
     )
     assert definition.source_table == "people"
     assert definition.source_namespace == ["ns"]
+    assert definition.function_columns == []
+
+    # "function_select" carries columns the server fills after refresh.
+    with_functions = _definition_from_schema(
+        schema_with(
+            {
+                "kind": "function_select",
+                "source_table": "people",
+                "projections": [{"output": "name", "expression": "name"}],
+                "function_columns": ["emb"],
+            }
+        ),
+        "v",
+    )
+    assert with_functions.function_columns == ["emb"]
 
     with pytest.raises(NotImplementedError, match="cannot refresh"):
         _definition_from_schema(
