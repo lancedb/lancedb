@@ -789,6 +789,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .ok_or_else(|| Error::NotSupported {
                 message: "SQL is unavailable for this remote database client".to_string(),
             })?;
+        let query_id = uuid::Uuid::parse_str(query_id).map_err(|err| Error::InvalidInput {
+            message: format!("Invalid SQL query id: {err}"),
+        })?;
         client.describe(query_id).await
     }
 

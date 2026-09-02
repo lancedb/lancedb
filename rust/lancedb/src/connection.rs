@@ -480,7 +480,7 @@ impl Connection {
     /// This performs one bounded status poll using state retained by this
     /// connection. Running state with a live query handle is not evicted;
     /// abandoned state has bounded retention, and server expiration is
-    /// honored. Terminal state is retained briefly when capacity permits.
+    /// honored. Terminal state is retained briefly.
     /// Query ids are not portable to another connection. Local connections
     /// return [`Error::NotSupported`].
     pub async fn describe_query(

@@ -80,8 +80,8 @@ impl QueryDescription {
 impl From<lancedb::sql::QueryDescription> for QueryDescription {
     fn from(description: lancedb::sql::QueryDescription) -> Self {
         Self {
-            id: description.id,
-            status: description.status,
+            id: description.id.to_string(),
+            status: description.status.as_str().to_string(),
             progress: description.progress,
             expires_at: description.expires_at,
         }

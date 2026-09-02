@@ -7,17 +7,44 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 use crate::{Result, arrow::SendableRecordBatchStream};
+
+/// The externally visible lifecycle state of a submitted SQL query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryStatus {
+    /// The server is still executing the query.
+    Running,
+    /// The server has made the complete result available.
+    Finished,
+    /// The server accepted cancellation but has not confirmed it yet.
+    Cancelling,
+    /// The server confirmed cancellation.
+    Cancelled,
+}
+
+impl QueryStatus {
+    /// Return the stable lowercase representation used by language bindings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Finished => "finished",
+            Self::Cancelling => "cancelling",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
 
 /// A point-in-time description of a submitted SQL query.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryDescription {
     /// The stable, connection-scoped identifier assigned when the query was submitted.
-    pub id: String,
-    /// The lifecycle state: `running`, `finished`, `cancelling`, or `cancelled`.
-    pub status: String,
-    /// Server-reported completion progress, when known.
+    pub id: Uuid,
+    /// The server-visible lifecycle state.
+    pub status: QueryStatus,
+    /// Server-reported completion progress, when known. Values are in `[0.0, 1.0]`,
+    /// with `1.0` meaning complete.
     pub progress: Option<f64>,
     /// When the server may stop accepting this query's continuation token.
     pub expires_at: Option<DateTime<Utc>>,
@@ -25,7 +52,7 @@ pub struct QueryDescription {
 
 #[async_trait]
 pub(crate) trait QueryHandle: Send + Sync {
-    fn id(&self) -> &str;
+    fn id(&self) -> Uuid;
     async fn describe(&self) -> Result<QueryDescription>;
     async fn reader(&self) -> Result<SendableRecordBatchStream>;
     async fn cancel(&self) -> Result<()>;
@@ -57,7 +84,7 @@ impl Query {
     }
 
     /// Return the stable, connection-scoped identifier for this query.
-    pub fn id(&self) -> &str {
+    pub fn id(&self) -> Uuid {
         self.handle.id()
     }
 
