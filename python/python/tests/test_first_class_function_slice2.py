@@ -160,7 +160,13 @@ def _execute_registered_array_udf_v1(request: dict, batch: pa.RecordBatch) -> pa
         "version": 1,
     }
     source = base64.b64decode(request["artifact"]["content"]["data"])
-    namespace: dict = {}
+    namespace = {
+        "pa": pa,
+        "pyarrow": pa,
+        "Array": pa.Array,
+        "RecordBatch": pa.RecordBatch,
+        "typing": typing,
+    }
     exec(compile(source, "<registered-udf>", "exec"), namespace)
     function = namespace[request["artifact"]["entrypoint"]]
     parameters = tuple(inspect.signature(function).parameters.values())
