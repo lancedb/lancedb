@@ -667,8 +667,8 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
         # needs the arrow.json label.
         json_storage = _arrow_json_storage_type(field.type)
         if json_storage is not None:
-            # Labelled through metadata rather than pa.json_(), which only exists on newer
-            # PyArrow; Lance reads the extension name off the field either way.
+            # Labelled through metadata rather than pa.json_(), which only exists on
+            # newer PyArrow; Lance reads the extension name off the field either way.
             return pa.field(
                 field.name,
                 json_storage,

@@ -3067,6 +3067,35 @@ async def test_add_list_of_dicts_to_nested_json_column(
     ]
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_list_of_dicts_to_json_list_column(mem_db_async: AsyncConnection):
+    """JSON inside a list must be JSONB-encoded, not stored as the raw text.
+
+    Storing raw text appends without error but leaves the column unreadable, so the
+    round trip is checked with a filter as well as by value.
+    """
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("docs", pa.list_(pa.field("item", pa.json_()))),
+        ]
+    )
+    table = await mem_db_async.create_table("json_list_add", schema=schema)
+
+    await table.add([{"id": 1, "docs": ['{"k": 1}', '{"k": 2}']}])
+    await table.add([{"id": 2, "docs": ['{"k": 3}']}], on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 1, "docs": ['{"k":1}', '{"k":2}']},
+        {"id": 2, "docs": ['{"k":3}']},
+    ]
+
+    matched = await table.query().where("json_extract(docs[1], '$.k') = 3").to_arrow()
+    assert matched.column("id").to_pylist() == [2]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
