@@ -3,6 +3,7 @@
 
 import * as http from "http";
 import { RequestListener } from "http";
+import packageJson = require("../package.json");
 import {
   ClientConfig,
   Connection,
@@ -70,7 +71,13 @@ async function withMockDatabase(
   try {
     await callback(db);
   } finally {
-    server.close();
+    // `close()` alone leaves the port bound until keep-alive sockets drain, so
+    // a single failing test would cascade into EADDRINUSE for every test after
+    // it. Destroy the connections and wait for the port to actually be free.
+    await new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      server.close(() => resolve());
+    });
   }
 }
 
@@ -131,7 +138,7 @@ describe("remote connection", () => {
       (req, res) => {
         expect(req.headers["x-api-key"]).toEqual("fake");
         expect(req.headers["user-agent"]).toEqual(
-          `LanceDB-Node-Client/${process.env.npm_package_version}`,
+          `LanceDB-Node-Client/${packageJson.version}`,
         );
 
         const body = JSON.stringify({ tables: [] });

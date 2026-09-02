@@ -595,6 +595,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<String>;
+    /// Whether [`BaseTable::analyze_plan`] is provided by a remote service.
+    ///
+    /// Client-side query wrappers use this to preserve backend metrics and
+    /// distributed-analysis options instead of replacing them with a local plan.
+    #[doc(hidden)]
+    fn analyze_plan_is_remote(&self) -> bool {
+        false
+    }
 
     /// Add new records to the table.
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
@@ -750,8 +758,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Declare computed columns, each defined by a SQL expression.
     ///
     /// Where the declaration is planned depends on the backend: a local table
-    /// validates and types the expression itself, a remote one sends the text
-    /// for the server to plan.
+    /// validates and types the expression itself, while a remote one sends the
+    /// expression for the server to plan.
     async fn add_computed_columns(
         &self,
         _columns: &[(String, String)],
@@ -1498,7 +1506,9 @@ impl Table {
     ///
     /// * `on` One or more columns to join on.  This is how records from the
     ///   source table and target table are matched.  Typically this is some
-    ///   kind of key or id column.
+    ///   kind of key or id column.  Several columns match on the composite
+    ///   key: a source row updates a target row only when it agrees on every
+    ///   one of them.
     ///
     /// # Examples
     ///
@@ -1652,9 +1662,9 @@ impl Table {
     /// Offsets are useful for sampling as the set of all valid offsets is easily
     /// known in advance to be [0, len(table)).
     ///
-    /// No guarantees are made regarding the order in which results are returned.  If you
-    /// desire an output order that matches the order of the given offsets, you will need
-    /// to add the row offset column to the output and align it yourself.
+    /// No guarantees are made regarding the order in which results are returned.
+    /// Repeated offsets produce repeated rows, which makes this method suitable for
+    /// sampling with replacement.
     ///
     /// Parameters
     /// ----------
@@ -5762,6 +5772,13 @@ mod tests {
             .sum();
         assert!(index_bytes > 0);
         assert_eq!(with_index, data_only + index_bytes);
+
+        // Release builds reject unstable overlay datasets unless explicitly opted in.
+        if !lance_table::feature_flags::can_read_dataset(
+            lance_table::feature_flags::FLAG_UNSTABLE_DATA_OVERLAY_FILES,
+        ) {
+            return;
+        }
 
         // Commit an overlay file supplying new `foo` values for the first three
         // rows of fragment 0. There is no high-level API that writes overlays

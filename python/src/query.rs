@@ -323,6 +323,7 @@ impl<'py> IntoPyObject<'py> for PyQueryVectors {
 pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub take_offsets: Option<Vec<u64>>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
@@ -353,6 +354,7 @@ impl From<AnyQuery> for PyQueryRequest {
             AnyQuery::Query(query_request) => Self {
                 limit: query_request.limit,
                 offset: query_request.offset,
+                take_offsets: query_request.take_offsets,
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
@@ -381,6 +383,7 @@ impl From<AnyQuery> for PyQueryRequest {
             AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
+                take_offsets: vector_query.base.take_offsets,
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
                 select_source_columns: PySelect::source_columns(&vector_query.base.select),

@@ -479,24 +479,49 @@ def test_remote_permutation_is_picklable():
                 match = re.search(
                     r"_rowoffset\s+in\s+\((.*?)\)", body["filter"], re.IGNORECASE
                 )
-                offsets = [int(o.strip()) for o in match.group(1).split(",")]
+                offsets = list(
+                    dict.fromkeys(int(o.strip()) for o in match.group(1).split(","))
+                )
             else:
                 offsets = list(range(len(rows)))
-            table = pa.table({"a": [rows[offset] for offset in offsets]})
+            columns = body.get("columns") or ["a"]
+            table = pa.table(
+                {
+                    column: (
+                        [rows[offset] for offset in offsets]
+                        if column == "a"
+                        else offsets
+                    )
+                    for column in columns
+                }
+            )
 
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()
             with pa.ipc.new_file(request.wfile, schema=table.schema) as writer:
-                writer.write_table(table)
+                writer.write_table(table, max_chunksize=2)
         else:
             request.send_response(404)
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        permutation = Permutation.identity(db.open_table("test"))
+        table = db.open_table("test")
+        assert table.take_offsets([0, 2, 0, 4]).to_list() == [
+            {"a": 0},
+            {"a": 0},
+            {"a": 2},
+            {"a": 4},
+        ]
+
+        permutation = Permutation.identity(table)
         restored = pickle.loads(pickle.dumps(permutation))
-        assert restored.__getitems__([0, 2, 4]) == [{"a": 0}, {"a": 2}, {"a": 4}]
+        assert restored.__getitems__([0, 2, 0, 4]) == [
+            {"a": 0},
+            {"a": 2},
+            {"a": 0},
+            {"a": 4},
+        ]
 
 
 def test_create_table_exist_ok():
@@ -795,11 +820,13 @@ def test_table_create_indices():
         scalar_req = received_requests[0]
         assert "name" in scalar_req
         assert scalar_req["name"] == "custom_scalar_idx"
+        assert scalar_req["replace"] is False
 
         # Check FTS index request has custom name
         fts_req = received_requests[1]
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
+        assert fts_req["replace"] is False
         assert fts_req["block_size"] == 256
         assert fts_req["custom_stop_words"] == ["cloud"]
 
@@ -807,6 +834,7 @@ def test_table_create_indices():
         vector_req = received_requests[2]
         assert "name" in vector_req
         assert vector_req["name"] == "custom_vector_idx"
+        assert "replace" not in vector_req
 
         table.wait_for_index(["custom_scalar_idx"], timedelta(seconds=2))
         table.wait_for_index(
@@ -1079,6 +1107,9 @@ def test_remote_create_index_new_api():
             table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
+            table.create_index(
+                "vector", config=IvfPq(distance_type="l2"), replace=False
+            )
 
         # Legacy index_type="IVF_RQ" routes to IvfRq config under the hood.
         with pytest.warns(DeprecationWarning, match="create_index"):
@@ -1088,15 +1119,17 @@ def test_remote_create_index_new_api():
                 num_partitions=8,
             )
 
-        assert len(received_requests) == 5
+        assert len(received_requests) == 6
         assert [req["column"] for req in received_requests] == [
             "vector",
             "category",
             "text",
             "vector",
             "vector",
+            "vector",
         ]
         assert received_requests[2]["block_size"] == 256
+        assert received_requests[4]["replace"] is False
 
 
 def test_table_wait_for_index_timeout():

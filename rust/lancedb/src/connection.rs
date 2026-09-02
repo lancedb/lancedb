@@ -523,6 +523,43 @@ impl Connection {
             .await
     }
 
+    /// List every published immutable Function version in the remote catalog.
+    ///
+    /// Results are ordered by Function name then version. The client walks all
+    /// server pages before returning. Local databases return
+    /// [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn list_functions(
+    /// #     connection: &lancedb::Connection,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// for function in connection.list_functions().await? {
+    ///     println!("{} {}", function.name(), function.version());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
+        self.internal.list_functions().await
+    }
+
+    /// Drop one exact immutable Function version from the remote catalog.
+    ///
+    /// Returns `true` when the server appended a Dropped transition and
+    /// `false` for an idempotent replay. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn drop_function(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<bool> {
+        self.internal
+            .drop_function(name.as_ref(), version.as_ref())
+            .await
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.

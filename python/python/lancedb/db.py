@@ -712,6 +712,34 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
+    def list_functions(self) -> List[FunctionVersion]:
+        """List every published immutable Function version.
+
+        Results are ordered by Function name then version. Local connections
+        raise ``NotImplementedError``.
+
+        Examples
+        --------
+        List the identities available to use in Function-backed columns:
+
+        ```python
+        [(function.name, function.version) for function in db.list_functions()]
+        ```
+        """
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
+
+    def drop_function(self, name: str, *, version: str) -> bool:
+        """Drop one exact immutable Function version from the remote catalog.
+
+        Returns True when the version changed to Dropped and False for an
+        idempotent replay. Local connections raise NotImplementedError.
+        """
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
+
     def job(self, job_id: str) -> Job:
         """A [Job][lancedb.job.Job] handle for a server-side job by id.
 
@@ -1412,6 +1440,14 @@ class LanceDBConnection(DBConnection):
     @override
     def get_function(self, name: str, *, version: str) -> FunctionVersion:
         return LOOP.run(self._conn.get_function(name, version=version))
+
+    @override
+    def list_functions(self) -> List[FunctionVersion]:
+        return LOOP.run(self._conn.list_functions())
+
+    @override
+    def drop_function(self, name: str, *, version: str) -> bool:
+        return LOOP.run(self._conn.drop_function(name, version=version))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -2242,6 +2278,21 @@ class AsyncConnection(object):
     async def get_function(self, name: str, *, version: str) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""
         return FunctionVersion.from_json(await self._inner.get_function(name, version))
+
+    async def list_functions(self) -> List[FunctionVersion]:
+        """List every published immutable Function version.
+
+        Results are ordered by Function name then version. Local connections
+        raise ``NotImplementedError``.
+        """
+        return [
+            FunctionVersion.from_json(value)
+            for value in await self._inner.list_functions()
+        ]
+
+    async def drop_function(self, name: str, *, version: str) -> bool:
+        """Drop one exact immutable Function version from the remote catalog."""
+        return await self._inner.drop_function(name, version)
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""

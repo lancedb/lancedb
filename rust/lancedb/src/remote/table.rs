@@ -40,8 +40,8 @@ use crate::table::{
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
-    resolve_arrow_field_path, resolve_arrow_fts_field_path, supported_btree_data_type,
-    supported_vector_data_type,
+    MaxBatchLengthStream, TimeoutStream, resolve_arrow_field_path, resolve_arrow_fts_field_path,
+    supported_btree_data_type, supported_vector_data_type,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -72,7 +72,7 @@ use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -526,6 +526,10 @@ impl<S: HttpSend> RemoteTable<S> {
         let mut body = serde_json::json!({
             "column": canonical_column
         });
+
+        if !index.replace {
+            body["replace"] = false.into();
+        }
 
         // Add name parameter if provided (for backwards compatibility, only include if Some)
         if let Some(ref name) = index.name {
@@ -2022,6 +2026,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    fn analyze_plan_is_remote(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         &self.name
     }
@@ -2594,6 +2601,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        if let AnyQuery::Query(request) = query
+            && let Some(offsets) = &request.take_offsets
+        {
+            return crate::query::create_take_offsets_plan(self, request, offsets, options, false)
+                .await;
+        }
+
         let streams = self.execute_query(query, &options).await?;
         if streams.len() == 1 {
             let stream = streams.into_iter().next().unwrap();
@@ -2612,6 +2626,27 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
+        if let AnyQuery::Query(request) = query
+            && let Some(offsets) = &request.take_offsets
+        {
+            let plan = crate::query::create_take_offsets_plan(
+                self,
+                request,
+                offsets,
+                options.clone(),
+                false,
+            )
+            .await?;
+            let inner = execute_plan(plan, Default::default())?;
+            let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
+            let inner = if let Some(timeout) = options.timeout {
+                TimeoutStream::new_boxed(inner, timeout)
+            } else {
+                inner
+            };
+            return Ok(DatasetRecordBatchStream::new(inner));
+        }
+
         let streams = self.execute_query(query, &options).await?;
 
         if streams.len() == 1 {
@@ -2649,6 +2684,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
+        if let AnyQuery::Query(request) = query
+            && let Some(offsets) = &request.take_offsets
+        {
+            return crate::query::explain_take_offsets_plan(self, request, offsets, verbose).await;
+        }
+
         let base_request = self
             .client
             .post(&format!("/v1/table/{}/explain_plan/", self.identifier));
@@ -2701,6 +2742,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<String> {
+        let prepared_query = if let AnyQuery::Query(request) = query
+            && request.take_offsets.is_some()
+        {
+            Some(AnyQuery::Query(
+                crate::query::prepare_take_offsets_request(self, request).await?,
+            ))
+        } else {
+            None
+        };
+        let query = prepared_query.as_ref().unwrap_or(query);
+
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/analyze_plan/", self.identifier));
@@ -3180,8 +3232,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.schema().await?.as_ref(),
             "schema evolution",
         )?;
-        // The server plans the declaration: expression validation, type
-        // inference and the persisted binding all happen there.
+        // The server plans the declaration against its table schema, including
+        // Blob v2 semantics inherited by a direct field projection.
         let entries = columns
             .iter()
             .map(
@@ -3599,7 +3651,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct MergeInsertRequest {
-    on: String,
+    // Sent as one repeated `on` query parameter per column, which is how the
+    // namespace spec encodes an array-valued `on`. serde_urlencoded (which
+    // reqwest's `query()` uses) cannot serialize a sequence nested in a struct,
+    // so this field is emitted separately by [`Self::on_query_params`].
+    #[serde(skip_serializing)]
+    on: Vec<String>,
     when_matched_update_all: bool,
     when_matched_update_all_filt: Option<String>,
     when_not_matched_insert_all: bool,
@@ -3615,6 +3672,17 @@ pub struct MergeInsertRequest {
     use_lsm: Option<bool>,
 }
 
+impl MergeInsertRequest {
+    /// The `on` columns as repeated query parameters: `?on=a&on=b`.
+    ///
+    /// A single column serializes to `?on=a`, exactly what clients sent before
+    /// `on` became a list, so a server that predates composite keys sees no
+    /// change from a single-column caller.
+    pub(crate) fn on_query_params(&self) -> Vec<(&str, &str)> {
+        self.on.iter().map(|col| ("on", col.as_str())).collect()
+    }
+}
+
 fn is_true(b: &bool) -> bool {
     *b
 }
@@ -3627,12 +3695,15 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             return Err(Error::InvalidInput {
                 message: "MergeInsertBuilder missing required 'on' field".into(),
             });
-        } else if value.on.len() > 1 {
-            return Err(Error::NotSupported {
-                message: "MergeInsertBuilder only supports a single 'on' column".into(),
+        }
+        // The server rejects a repeated column with a 400; catching it here
+        // names the offending column and costs no round trip.
+        let mut seen = HashSet::with_capacity(value.on.len());
+        if let Some(dup) = value.on.iter().find(|col| !seen.insert(*col)) {
+            return Err(Error::InvalidInput {
+                message: format!("MergeInsertBuilder 'on' column '{dup}' is repeated"),
             });
         }
-        let on = value.on[0].clone();
 
         let when_matched_update_all_filt = match value.when_matched_update_all_filt {
             Some(MergeFilter::Sql(sql)) => Some(sql),
@@ -3656,7 +3727,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             };
 
         Ok(Self {
-            on,
+            on: value.on,
             when_matched_update_all: value.when_matched_update_all,
             when_matched_update_all_filt,
             when_not_matched_insert_all: value.when_not_matched_insert_all,
@@ -3690,7 +3761,7 @@ mod tests {
     };
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
-    use futures::{StreamExt, TryFutureExt, future::BoxFuture};
+    use futures::{StreamExt, TryFutureExt, TryStreamExt, future::BoxFuture};
     use lance_index::scalar::inverted::{DocumentGranularity, query::MatchQuery};
     use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
     use reqwest::Body;
@@ -4498,6 +4569,76 @@ mod tests {
             assert_eq!(result.num_inserted_rows, 3);
             assert_eq!(result.num_updated_rows, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_composite_key() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
+
+            // One repeated `on` per column, in the order the caller gave them.
+            let on = request
+                .url()
+                .query_pairs()
+                .filter(|(key, _)| key == "on")
+                .map(|(_, value)| value.into_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(on, vec!["shard_key".to_string(), "id".to_string()]);
+
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["when_matched_update_all"], "true");
+            assert_eq!(params["when_not_matched_insert_all"], "true");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43, "num_deleted_rows": 0, "num_inserted_rows": 3, "num_updated_rows": 0}"#)
+                .unwrap()
+        });
+
+        let mut merge = table.merge_insert(&["shard_key", "id"]);
+        merge.when_matched_update_all(None);
+        merge.when_not_matched_insert_all();
+        let result = table.base_table().merge_insert(merge, data).await.unwrap();
+
+        assert_eq!(result.num_inserted_rows, 3);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_rejects_repeated_on_column() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let table = Table::new_with_handler::<&str>("my_table", |request| {
+            panic!("Unexpected request: {}", request.url());
+        });
+
+        let merge = table.merge_insert(&["id", "id"]);
+        let err = table
+            .base_table()
+            .merge_insert(merge, data)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("'id' is repeated")),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -5612,6 +5753,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_take_offsets_explain_plan_does_not_execute_query() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/explain_plan/");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#""RemoteLookupExec""#)
+                .unwrap()
+        });
+
+        let explained = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(crate::query::Select::columns(&["id"]))
+            .limit(3)
+            .explain_plan(false)
+            .await
+            .unwrap();
+
+        assert!(explained.contains("GlobalLimitExec"));
+        assert!(explained.contains("TakeRestoreExec"));
+        assert!(!explained.contains("CoalescePartitionsExec"));
+        assert!(explained.contains("RemoteLookupExec"));
+    }
+
+    #[tokio::test]
+    async fn test_converted_take_request_restores_remote_occurrences() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["columns"], json!(["id", "_rowoffset"]));
+
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("_rowoffset", DataType::UInt64, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![5])),
+                    Arc::new(arrow_array::UInt64Array::from(vec![5])),
+                ],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let request = table
+            .take_offsets(vec![5, 5])
+            .select(crate::query::Select::columns(&["id"]))
+            .into_request();
+        let batches = table
+            .base_table()
+            .query(&AnyQuery::Query(request), QueryExecutionOptions::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert!(
+            batches
+                .iter()
+                .all(|batch| batch.schema().fields().len() == 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_analyze_plan_delegates_to_remote() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/analyze_plan/");
+            assert_eq!(
+                request
+                    .url()
+                    .query_pairs()
+                    .find(|(key, _)| key == "distributed_metrics"),
+                Some(("distributed_metrics".into(), "per_worker".into()))
+            );
+
+            http::Response::builder()
+                .status(200)
+                .body(r#""Remote analyzed plan: worker metrics""#)
+                .unwrap()
+        });
+
+        let analyzed = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(crate::query::Select::columns(&["id"]))
+            .limit(3)
+            .analyze_plan_with_options(QueryExecutionOptions {
+                analyze_plan_distributed_metrics: AnalyzePlanDistributedMetrics::PerWorker,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(analyzed, "Remote analyzed plan: worker metrics");
+    }
+
+    #[tokio::test]
     async fn test_query_structured_fts() {
         let table =
             Table::new_with_handler_version("my_table", semver::Version::new(0, 6, 0), |request| {
@@ -5734,9 +5983,8 @@ mod tests {
             ))
             .execute()
             .await;
-        let err = match result {
-            Ok(_) => panic!("legacy remote query unexpectedly succeeded"),
-            Err(err) => err,
+        let Err(err) = result else {
+            panic!("legacy remote query unexpectedly succeeded")
         };
 
         assert!(
@@ -6076,6 +6324,40 @@ mod tests {
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_create_index_forwards_replace_false_on_existing_route() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => {
+                    let body = request.body().unwrap().as_bytes().unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["replace"], json!(false));
+
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .replace(false)
+            .execute()
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -7388,8 +7670,8 @@ mod tests {
         assert_eq!(result.version, if old_server { 0 } else { 43 });
     }
 
-    /// A declaration is sent as `{name, computed}` entries for the server to
-    /// plan; the client never types the expression itself.
+    /// A declaration is sent as `{name, computed}` for the server to plan; the
+    /// client never types the expression itself.
     #[tokio::test]
     async fn test_add_computed_columns_sends_the_expression() {
         let table = Table::new_with_handler("my_table", |request| match request.url().path() {
@@ -7463,6 +7745,93 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.version, 8);
+    }
+
+    #[tokio::test]
+    async fn test_add_function_column_allows_an_existing_binding() {
+        let binding = crate::function::FunctionBinding::from_json(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        let binding_metadata = crate::table::computed_columns::function_bindings_metadata(
+            std::slice::from_ref(&binding),
+        )
+        .unwrap();
+        let mut fields = vec![
+            Field::new("title", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ];
+        fields.extend(binding.outputs().iter().map(|output| {
+            let data_type = match output.arrow_type.as_str() {
+                "utf8" => DataType::Utf8,
+                "int64" => DataType::Int64,
+                other => panic!("unexpected fixture output type {other}"),
+            };
+            Field::new(&output.output_name, data_type, true).with_metadata(
+                crate::table::computed_columns::function_computed_column_metadata(
+                    binding.binding_id(),
+                    output.output_ordinal,
+                    &["title".into(), "body".into()],
+                ),
+            )
+        }));
+        let schema = Schema::new_with_metadata(
+            fields,
+            HashMap::from([(
+                crate::table::computed_columns::FUNCTION_BINDINGS_META_KEY.to_string(),
+                binding_metadata,
+            )]),
+        );
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/add_columns/" => {
+                    let actual: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(
+                        actual["new_columns"],
+                        serde_json::json!([
+                            {"name":"secondary_text","all_null":true},
+                            {"name":"secondary_token_count","all_null":true}
+                        ])
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":10}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {path}"),
+            });
+        let application = crate::function::FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"text_features","version":"fv_01K3TEXT"},
+                "inputs":[
+                    {"parameter":"title","kind":"column","value":{"path":"title"}},
+                    {"parameter":"body","kind":"column","value":{"path":"body"}}
+                ],
+                "output":{"kind":"named_struct","fields":[
+                    {"name":"normalized_text","arrow_type":"utf8","nullable":false},
+                    {"name":"token_count","arrow_type":"int64","nullable":false}
+                ]},
+                "columns":{
+                    "normalized_text":"secondary_text",
+                    "token_count":"secondary_token_count"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let result = table
+            .add_columns()
+            .function(application)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 10);
     }
 
     #[tokio::test]

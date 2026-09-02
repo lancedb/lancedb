@@ -227,7 +227,7 @@ pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<
 
 pub(crate) struct ResolvedFtsField {
     pub canonical_path: String,
-    pub field: Field,
+    pub terminal_field: Field,
     pub list_depth: usize,
 }
 
@@ -309,7 +309,7 @@ pub(crate) fn resolve_lance_fts_field_path(
     );
     Ok(ResolvedFtsField {
         canonical_path,
-        field: Field::from(field),
+        terminal_field: Field::from(terminal),
         list_depth,
     })
 }
@@ -375,7 +375,7 @@ pub(crate) fn resolve_arrow_fts_field_path(
             message: format!("Invalid schema: {}", e),
         })?;
     let resolved = resolve_lance_fts_field_path(&lance_schema, column)?;
-    Ok((resolved.canonical_path, resolved.field))
+    Ok((resolved.canonical_path, resolved.terminal_field))
 }
 
 pub fn supported_btree_data_type(dtype: &DataType) -> bool {
@@ -647,8 +647,9 @@ mod tests {
             Field::new("docs", text_list(), true),
         ]);
 
-        let (path, _) = resolve_arrow_fts_field_path(&schema, "docs.content").unwrap();
+        let (path, field) = resolve_arrow_fts_field_path(&schema, "docs.content").unwrap();
         assert_eq!(path, "docs.content");
+        assert_eq!(field.data_type(), &DataType::Utf8);
 
         let lance_schema = lance_core::datatypes::Schema::try_from(&schema).unwrap();
         let field_id = lance_schema
