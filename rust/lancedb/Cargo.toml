@@ -22,7 +22,7 @@ arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-ipc.workspace = true
 arrow-flight = { workspace = true, optional = true }
-prost = { workspace = true, optional = true }
+prost.workspace = true
 chrono = { workspace = true }
 datafusion-catalog.workspace = true
 datafusion-common.workspace = true
@@ -33,7 +33,7 @@ datafusion-physical-expr.workspace = true
 datafusion-sql.workspace = true
 datafusion-physical-plan.workspace = true
 datafusion.workspace = true
-datafusion-functions-aggregate = { workspace = true, optional = true }
+datafusion-functions-aggregate.workspace = true
 object_store = { workspace = true }
 snafu = { workspace = true }
 half = { workspace = true }
@@ -98,10 +98,10 @@ tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-datafusion-substrait = { workspace = true, optional = true, features = ["protoc"] }
+datafusion-substrait = { workspace = true, features = ["protoc"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-datafusion-substrait = { workspace = true, optional = true }
+datafusion-substrait.workspace = true
 
 [dev-dependencies]
 anyhow = "1"
@@ -156,18 +156,12 @@ huggingface = [
 dynamodb = ["lance/dynamodb", "aws"]
 remote = [
     "dep:arrow-flight",
-    "dep:prost",
     "dep:reqwest",
     "dep:http",
     "dep:tonic",
     "dep:urlencoding",
     "lance-namespace-impls/rest",
     "lance-namespace-impls/rest-adapter",
-]
-dataframe = [
-    "dep:datafusion-functions-aggregate",
-    "dep:datafusion-substrait",
-    "dep:prost",
 ]
 # Publish LanceDB's internal metrics (currently object store request counts,
 # bytes, latency, errors, and throttles) through the `metrics` crate facade,

@@ -18,7 +18,7 @@ crate-type = ["cdylib"]
 arrow = { workspace = true, features = ["pyarrow"] }
 async-trait.workspace = true
 bytes.workspace = true
-lancedb = { workspace = true, features = ["dataframe"] }
+lancedb.workspace = true
 lance-core.workspace = true
 lance-namespace.workspace = true
 lance-namespace-impls.workspace = true

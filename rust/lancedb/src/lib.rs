@@ -178,7 +178,6 @@ pub mod blob;
 pub mod connection;
 pub mod data;
 pub mod database;
-#[cfg(feature = "dataframe")]
 pub mod dataframe;
 pub mod dataloader;
 pub mod embeddings;
