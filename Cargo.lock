@@ -5614,6 +5614,7 @@ dependencies = [
  "serde_json",
  "snafu 0.8.9",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
