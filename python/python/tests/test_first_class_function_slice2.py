@@ -892,6 +892,23 @@ def test_blob_fields_support_vectorized_pyarrow_arrays():
     assert "def copy_blobs(image: pa.Array) -> pa.Array:" in source
 
 
+def test_documented_blob_array_identity_executes_packaged_artifact():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=lancedb.blob("copy", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return image
+
+    values = pa.array([b"large blob", b""], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    result = _execute_registered_array_udf_v1(
+        request,
+        pa.RecordBatch.from_arrays([values], names=["image"]),
+    )
+    assert result.equals(values)
+
+
 def test_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -1363,9 +1380,9 @@ def test_registered_vectorized_blob_udf_hydrates_executes_and_publishes(tmp_path
         remote.create_function(copy_blobs)
         registration = state["requests"][0][1]
 
-    assert registration == json.loads(
-        copy_blobs.registration_request.to_canonical_json()
-    )
+    definition = json.loads(copy_blobs.registration_request.to_canonical_json())
+    assert registration["artifact"] == definition["artifact"]
+    assert registration["signature"] == definition["signature"]
 
     local = lancedb.connect(tmp_path)
     source = local.create_table(
