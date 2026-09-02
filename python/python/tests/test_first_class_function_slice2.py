@@ -1369,11 +1369,13 @@ def test_registered_vectorized_blob_udf_hydrates_executes_and_publishes(tmp_path
         ),
     )
     source.add(
-        [
-            {"id": 0, "image": b"large blob"},
-            {"id": 1, "image": b""},
-            {"id": 2, "image": None},
-        ]
+        pa.Table.from_arrays(
+            [
+                pa.array([0, 1, 2], type=pa.int64()),
+                pa.array([b"large blob", b"", None], type=pa.large_binary()),
+            ],
+            names=["id", "image"],
+        )
     )
     input_hits = (
         source.search()
@@ -1397,7 +1399,10 @@ def test_registered_vectorized_blob_udf_hydrates_executes_and_publishes(tmp_path
         ),
     )
     published.add(
-        [{"id": row, "copy": value} for row, value in enumerate(result.to_pylist())]
+        pa.Table.from_arrays(
+            [pa.array(range(len(result)), type=pa.int64()), result],
+            names=["id", "copy"],
+        )
     )
     output_hits = (
         published.search()
