@@ -159,6 +159,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 
 ::: lancedb.query.FullTextOperator
 
+::: lancedb.query.DocumentGranularity
+
 ::: lancedb.query.Occur
 
 ## Embeddings
@@ -221,9 +223,13 @@ tokens = list(
 Blob columns store large binary values out of line so they can be read lazily
 instead of being materialized with the rest of the row.
 
-::: lancedb.blob
+`lancedb.BlobType` is `lance.blob.BlobType` when pylance is installed. Without
+pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
+still work. Queries return descriptors. Call
+[`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
+[`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
 
-::: lancedb.BlobType
+::: lancedb.blob
 
 ::: lancedb._blob.BlobFile
     options:

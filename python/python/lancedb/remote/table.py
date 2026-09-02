@@ -36,6 +36,7 @@ from lancedb._lancedb import (
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
+from lancedb.expr import Expr
 from lancedb.index import (
     FTS,
     BTree,
@@ -61,11 +62,20 @@ from lancedb.table import _normalize_progress
 
 from ..query import (
     AnalyzePlanDistributedMetrics,
+    DocumentGranularity,
     LanceQueryBuilder,
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
 )
-from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
+from ..table import (
+    AsyncTable,
+    BlobMode,
+    Branches,
+    IndexStatistics,
+    Query,
+    Table,
+    Tags,
+)
 from ..types import BaseTokenizerType
 
 
@@ -349,6 +359,7 @@ class RemoteTable(Table):
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         block_size: int = 128,
+        document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -371,6 +382,7 @@ class RemoteTable(Table):
             ngram_max_length=ngram_max_length,
             prefix_only=prefix_only,
             block_size=block_size,
+            document_granularity=document_granularity,
         )
         LOOP.run(
             self._table.create_index(
@@ -536,6 +548,7 @@ class RemoteTable(Table):
         LOOP.run(
             self._table.create_index(
                 column,
+                replace=replace,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -860,7 +873,7 @@ class RemoteTable(Table):
 
     def update(
         self,
-        where: Optional[str] = None,
+        where: Optional[Union[str, Expr]] = None,
         values: Optional[dict] = None,
         *,
         values_sql: Optional[Dict[str, str]] = None,
@@ -871,9 +884,11 @@ class RemoteTable(Table):
 
         Parameters
         ----------
-        where: str, optional
-            The SQL where clause to use when updating rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        where: str or [Expr][lancedb.expr.Expr], optional
+            The filter condition. Can be a SQL string or a type-safe
+            [Expr][lancedb.expr.Expr] built with [col][lancedb.expr.col] and
+            [lit][lancedb.expr.lit]. The filter must not be empty, or it will
+            error.
         values: dict, optional
             The values to update. The keys are the column names and the values
             are the values to set.

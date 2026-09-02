@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -86,6 +86,10 @@ impl ServerVersion {
 
     pub fn support_blobs(&self) -> bool {
         self.0 >= semver::Version::new(0, 5, 0)
+    }
+
+    pub fn support_fts_document_granularity(&self) -> bool {
+        self.0 >= semver::Version::new(0, 6, 0)
     }
 }
 
@@ -529,6 +533,24 @@ struct RemoteListJobsResponse {
     page_token: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct RemoteListedFunctionVersion {
+    definition: FunctionVersion,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListFunctionsResponse {
+    #[serde(default)]
+    functions: Vec<RemoteListedFunctionVersion>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteDropFunctionResponse {
+    dropped: bool,
+}
+
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -577,6 +599,57 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         response.json().await.err_to_http(request_id)
+    }
+
+    async fn list_functions(&self) -> Result<Vec<FunctionVersion>> {
+        let mut functions = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let mut body = serde_json::json!({ "include_definition": true });
+            if let Some(token) = &page_token {
+                body["page_token"] = serde_json::Value::String(token.clone());
+            }
+            let req = self.client.post("/v1/functions/list").json(&body);
+            let (request_id, response) = self.client.send(req).await?;
+            let response = self.client.check_response(&request_id, response).await?;
+            let status = response.status();
+            let response: RemoteListFunctionsResponse =
+                response.json().await.err_to_http(request_id.clone())?;
+            functions.extend(
+                response
+                    .functions
+                    .into_iter()
+                    .map(|listed| listed.definition),
+            );
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(Error::Http {
+                    source: "Function listing response repeated a page_token".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(functions)
+    }
+
+    async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
+        let req = self
+            .client
+            .post("/v1/functions/drop")
+            .json(&serde_json::json!({
+                "name": name,
+                "version": version,
+            }));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let response: RemoteDropFunctionResponse = response.json().await.err_to_http(request_id)?;
+        Ok(response.dropped)
     }
 
     fn job(&self, job_id: &str) -> Result<crate::job::Job> {
@@ -2683,6 +2756,138 @@ mod tests {
         let version = conn.get_function("embed", "fv_01K3EXACT").await.unwrap();
         assert_eq!(version.name(), "embed");
         assert_eq!(version.version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_list_functions_requests_definitions_and_paginates() {
+        const VERSION: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let version: serde_json::Value = serde_json::from_str(VERSION).unwrap();
+        let page = Arc::new(AtomicUsize::new(0));
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/functions/list");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["include_definition"], true);
+            match page.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(body.get("page_token").is_none());
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"functions": [], "page_token": "next"}"#.to_string())
+                        .unwrap()
+                }
+                _ => {
+                    assert_eq!(body["page_token"], "next");
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            serde_json::json!({
+                                "functions": [{
+                                    "name": "embed",
+                                    "version": "fv_01K3EXACT",
+                                    "definition": version.clone(),
+                                }],
+                            })
+                            .to_string(),
+                        )
+                        .unwrap()
+                }
+            }
+        });
+        let functions = conn.list_functions().await.unwrap();
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name(), "embed");
+        assert_eq!(functions[0].version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_list_functions_stops_on_an_empty_page_token() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert!(body.get("page_token").is_none());
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"functions": [], "page_token": ""}"#)
+                .unwrap()
+        });
+
+        let functions = conn.list_functions().await.unwrap();
+        assert!(functions.is_empty());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_list_functions_rejects_a_page_token_cycle() {
+        let page = Arc::new(AtomicUsize::new(0));
+        let requests = page.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let next_page_token = match page.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(body.get("page_token").is_none());
+                    "one"
+                }
+                1 => {
+                    assert_eq!(body["page_token"], "one");
+                    "two"
+                }
+                2 => {
+                    assert_eq!(body["page_token"], "two");
+                    "one"
+                }
+                page => panic!("unexpected page: {page}"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "functions": [],
+                        "page_token": next_page_token,
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+
+        let error = conn.list_functions().await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                Error::Http {
+                    status_code: Some(http::StatusCode::OK),
+                    ..
+                }
+            ),
+            "got {error:?}"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_drop_function_sends_exact_version_and_decodes_replay() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/functions/drop");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
+            );
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"dropped":false}"#)
+                .unwrap()
+        });
+        assert!(!conn.drop_function("embed", "fv_01K3EXACT").await.unwrap());
     }
 
     #[tokio::test]

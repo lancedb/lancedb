@@ -13,7 +13,7 @@ use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_file::version::LanceFileVersion;
-use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+use lance_io::object_store::{ReadDirOptions, StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -281,6 +281,22 @@ impl std::fmt::Display for ListingDatabase {
 }
 
 const LANCE_EXTENSION: &str = "lance";
+
+/// The table a listed child of the database names, or `None` if the child is not a table.
+///
+/// A table is the directory `<name>.lance`; a loose file or any other directory under the
+/// database prefix belongs to something else. `dir_suffix` is `.lance`, built once by the
+/// caller rather than per child.
+/// The table a listed child directory holds, or `None` if it is not a table at all.
+///
+/// Only directories are considered, so a loose object named like a table is not one.
+fn table_name(location: &object_store::path::Path, dir_suffix: &str) -> Option<String> {
+    location
+        .filename()?
+        .strip_suffix(dir_suffix)
+        .map(String::from)
+        .filter(|name| !name.is_empty())
+}
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
 
@@ -944,51 +960,72 @@ impl Database for ListingDatabase {
         Ok(f)
     }
 
+    /// List the tables in the database, a page at a time.
+    ///
+    /// The page_token is opaque, unlike the `start_after` parameter of [`Self::table_names()`].
+    ///
+    /// When there are no more results, the returned page_token will be None.
+    ///
+    /// `limit` is the maximum number of tables to return in the response. But it is possible
+    /// for the response to contain fewer than `limit` tables, even when there are more tables
+    /// to return. Clients should check the returned page_token to determine if there are
+    /// more results, rather than relying on the number of tables returned.
+    ///
+    /// The order that results are returned in not guaranteed to be stable across calls,
+    /// so clients should not rely on it.
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
             return self.namespace_database().list_tables(request).await;
         }
-        let mut f = self
-            .object_store
-            .read_dir(self.base_path.clone())
-            .await?
-            .iter()
-            .map(Path::new)
-            .filter(|path| {
-                let is_lance = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == LANCE_EXTENSION);
-                is_lance.unwrap_or(false)
-            })
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
-            .collect::<Vec<String>>();
-        f.sort();
+        let limit = request.limit.map(|limit| limit.max(0) as usize);
+        let dir_suffix = format!(".{LANCE_EXTENSION}");
+        let mut tables = Vec::new();
+        let mut page_token = request.page_token.filter(|token| !token.is_empty());
 
-        // Handle pagination with page_token
-        if let Some(ref page_token) = request.page_token {
-            let index = f
-                .iter()
-                .position(|name| name.as_str() > page_token.as_str())
-                .unwrap_or(f.len());
-            f.drain(0..index);
+        // A page of nothing: the store rejects a limit of zero, and no table was handed over
+        // for a token to resume after.
+        if limit == Some(0) {
+            return Ok(ListTablesResponse {
+                context: None,
+                tables,
+                page_token: None,
+            });
         }
 
-        // Determine if there's a next page. The token is the last name of this page,
-        // not the first of the next one: the next page resumes strictly after the
-        // token, so naming the next page's first entry would skip it.
-        let next_page_token = match request.limit {
-            Some(limit) if f.len() > limit as usize => {
-                f.truncate(limit as usize);
-                f.last().cloned()
+        loop {
+            // Ask only for what the page still has room for, so a database holding more
+            // than one page costs one request per page rather than one per table.
+            let listing = self
+                .object_store
+                .read_dir_page(
+                    self.base_path.clone(),
+                    ReadDirOptions {
+                        page_token: page_token.take(),
+                        limit: limit.map(|limit| limit - tables.len()),
+                    },
+                )
+                .await?;
+            page_token = listing.page_token;
+            // Only child directories can be tables, and the store already separates them
+            // out, so the objects in the page are not looked at.
+            tables.extend(
+                listing
+                    .result
+                    .common_prefixes
+                    .iter()
+                    .filter_map(|location| table_name(location, &dir_suffix)),
+            );
+            // Children that are not tables leave the page short of the limit, so keep
+            // going until the page is full or the database runs out.
+            if page_token.is_none() || limit.is_none_or(|limit| tables.len() >= limit) {
+                break;
             }
-            _ => None,
-        };
+        }
 
         Ok(ListTablesResponse {
             context: None,
-            tables: f,
-            page_token: next_page_token,
+            tables,
+            page_token,
         })
     }
 
@@ -1476,13 +1513,189 @@ mod tests {
     use crate::table::{AnyQuery, WriteOptions};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
-    use futures::{TryStreamExt, stream::once};
+    use futures::{TryStreamExt, future::try_join_all, stream::once};
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio::sync::Barrier;
     use tokio::time::timeout;
+
+    async fn create_tables(db: &ListingDatabase, names: &[&str]) {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        for name in names {
+            db.create_table(CreateTableRequest {
+                name: name.to_string(),
+                namespace_path: vec![],
+                data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    /// Every table in the database, taken `limit` at a time, which is how a caller walks a
+    /// listing: the token ends the walk, never a short page.
+    async fn walk(db: &ListingDatabase, limit: Option<i32>) -> Vec<String> {
+        let mut seen = Vec::new();
+        let mut page_token = None;
+        loop {
+            let page = db
+                .list_tables(ListTablesRequest {
+                    limit,
+                    page_token,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            seen.extend(page.tables);
+            page_token = page.page_token;
+            if page_token.is_none() {
+                return seen;
+            }
+            assert!(
+                seen.len() < 100,
+                "the walk is serving tables more than once"
+            );
+        }
+    }
+
+    /// Paging with the returned token has to visit every table exactly once, whatever the
+    /// page size, with nothing lost or repeated at a boundary.
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn test_list_tables_pages_over_every_table_once(#[values(1, 2, 3, 5, 10)] limit: i32) {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b", "c", "d", "e"]).await;
+
+        assert_eq!(walk(&db, Some(limit)).await, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    /// The token is opaque: it is whatever resumes the store the database sits on, not a
+    /// table name. Callers hand it back and nothing else.
+    ///
+    /// Nothing validates a token, so one invented by a caller is read as a position rather
+    /// than refused — which is why the token has to come back from a previous page.
+    #[tokio::test]
+    async fn test_the_page_token_is_not_a_table_name() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b", "c"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a"]);
+        let token = page.page_token.expect("two tables are still to come");
+        assert_ne!(token, "a");
+
+        // Handing it back is the only thing a caller does with it, and it resumes.
+        let rest = db
+            .list_tables(ListTablesRequest {
+                page_token: Some(token),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rest.tables, vec!["b", "c"]);
+    }
+
+    /// A limit the listing does not fill leaves no token behind, so a caller paging by token
+    /// stops without asking for an empty page.
+    #[tokio::test]
+    async fn test_a_listing_that_runs_out_has_no_token() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(10),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a", "b"]);
+        assert_eq!(page.page_token, None);
+    }
+
+    /// An empty page token means "from the start", which is how a client looping on a token
+    /// spells its first request.
+    #[tokio::test]
+    async fn test_an_empty_page_token_lists_from_the_start() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                page_token: Some(String::new()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a", "b"]);
+    }
+
+    /// Listing follows the order the object store lists directories in, so a name that
+    /// extends another comes first: the `-` of `users-archive.lance` sorts below the `.` of
+    /// `users.lance`. Pagination pushes its cursor into the list request, so it cannot report
+    /// an order other than the one it resumes in.
+    #[tokio::test]
+    async fn test_listing_order_follows_the_store_not_the_table_name() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["users", "users-archive", "users.old"]).await;
+
+        assert_eq!(
+            walk(&db, None).await,
+            vec!["users-archive", "users", "users.old"]
+        );
+        // And paging reports the same order, so a walk sees each table once.
+        assert_eq!(
+            walk(&db, Some(1)).await,
+            vec!["users-archive", "users", "users.old"]
+        );
+    }
+
+    /// Only directories named `<name>.lance` are tables; loose files and other directories
+    /// under the database prefix are not. A page spent on them is filled from the next one,
+    /// so a page holding only non-tables does not read as an empty database.
+    #[tokio::test]
+    async fn test_listing_ignores_non_table_children() {
+        let (tempdir, db) = setup_database().await;
+        create_tables(&db, &["real"]).await;
+        std::fs::write(tempdir.path().join("aaa-loose.lance"), b"not a table").unwrap();
+        create_dir_all(tempdir.path().join("aaa-scratch")).unwrap();
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["real"]);
+    }
+
+    #[tokio::test]
+    async fn listing_ignores_empty_table_name() {
+        let (tempdir, db) = setup_database().await;
+        create_dir_all(tempdir.path().join(".lance")).unwrap();
+        let page = db.list_tables(ListTablesRequest::default()).await.unwrap();
+        assert!(
+            page.tables.is_empty(),
+            "invalid empty table name was listed"
+        );
+    }
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
         let tempdir = tempdir().unwrap();
@@ -1612,6 +1825,59 @@ mod tests {
             1,
             "expected one manifest conflict, got {results:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_open_table_reuses_connection_object_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let session = Arc::new(lance::session::Session::default());
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session.clone()),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let before = session.store_registry().stats();
+        let opened_tables = try_join_all((0..32).map(|_| {
+            db.open_table(OpenTableRequest {
+                name: "test".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+        }))
+        .await
+        .unwrap();
+        let after = session.store_registry().stats();
+
+        assert_eq!(opened_tables.len(), 32);
+        assert_eq!(after.misses, before.misses);
+        assert_eq!(after.active_stores, before.active_stores);
+        assert!(after.hits >= before.hits + 32);
     }
 
     #[tokio::test]

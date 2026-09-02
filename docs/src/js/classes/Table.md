@@ -676,9 +676,17 @@ List all the versions of the table
 abstract mergeInsert(on): MergeInsertBuilder
 ```
 
+Create a [MergeInsertBuilder](MergeInsertBuilder.md), which combines new data with the
+existing table in a single transaction — inserting, updating and deleting
+rows depending on how they match.
+
 #### Parameters
 
 * **on**: `string` \| `string`[]
+    The column, or columns, to match source rows against target
+    rows on. Typically a key or id column. Several columns match on the
+    composite key: a source row updates a target row only when it agrees on
+    every one of them.
 
 #### Returns
 
@@ -942,7 +950,7 @@ Get the schema of the table.
 abstract search(
    query,
    queryType?,
-   ftsColumns?): Query | VectorQuery
+   ftsColumns?): Query | VectorQuery | AutoQuery
 ```
 
 Create a search query to find the nearest neighbors
@@ -964,7 +972,7 @@ of the given query
 
 #### Returns
 
-[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md)
+[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md) \| [`AutoQuery`](AutoQuery.md)
 
 ***
 
@@ -1291,6 +1299,18 @@ abstract updateFieldMetadata(updates): Promise<UpdateFieldMetadataResult>
 ```
 
 Update per-field (column) metadata.
+
+The following keys are treated specially, by convention, and should be
+used when appropriate:
+
+- `lancedb:description`: for a human-readable description of a field.
+- `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+  names the tag category; e.g. `lancedb:tag:model: "clip"`.
+- `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+  `feature_v2` might be in the same logical column.
+- `lancedb:status`: for status options (`production`, `candidate`,
+  `deprecated`, `archived`) to designate the current life cycle state of
+  this column.
 
 #### Parameters
 
