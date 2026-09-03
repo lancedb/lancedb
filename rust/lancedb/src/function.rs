@@ -582,8 +582,9 @@ pub struct InputBinding {
 
 /// Ordered result-field to table-field mapping for a Function binding.
 ///
-/// Assignment state is not part of the Slice 1 client contract. During the
-/// NULL transition there is no public Lance cell-flag identifier to persist.
+/// `nullable` describes the logical Function result. Physical computed-column
+/// fields remain nullable while unassigned; at least one logically non-nullable
+/// mapping is therefore required to distinguish an assigned row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputMapping {
     pub result_field: String,
