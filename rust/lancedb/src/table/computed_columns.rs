@@ -865,7 +865,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 output.output_name
             ))
         })?;
-        if field.name() != &output.output_name || !field.is_nullable() || output.nullable {
+        if field.name() != &output.output_name || !field.is_nullable() {
             return Err(invalid_function(format!(
                 "Function output '{}' no longer matches binding '{}'",
                 output.output_name,
@@ -925,6 +925,12 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             .map_err(|e| invalid_function(format!("invalid Function output schema: {e}")))?;
             output_fields.push(json.fields.into_iter().next().unwrap());
         }
+    }
+    if binding.outputs().iter().all(|output| output.nullable) {
+        return Err(invalid_function(format!(
+            "Function binding '{}' has no non-nullable assignment field",
+            binding.binding_id()
+        )));
     }
     let output_schema = JsonArrowSchema::new(output_fields);
     let output_schema = serde_json::to_value(output_schema).map_err(|e| {
@@ -1081,9 +1087,9 @@ pub(crate) fn plan_function_application(
                     "named-struct Function result field names must be unique",
                 ));
             }
-            if output.fields.iter().any(|field| field.nullable) {
+            if output.fields.iter().all(|field| field.nullable) {
                 return Err(invalid_function(
-                    "Function logical outputs must be non-nullable during NULL assignment",
+                    "named-struct Function output must contain at least one non-nullable field",
                 ));
             }
             let unknown = application
@@ -1107,7 +1113,9 @@ pub(crate) fn plan_function_application(
                 let fields = output
                     .fields
                     .iter()
-                    .map(|field| function_output_field(&field.name, false, &field.arrow_type))
+                    .map(|field| {
+                        function_output_field(&field.name, field.nullable, &field.arrow_type)
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 let mut data_type = JsonArrowDataType::new("struct".to_string());
                 data_type.fields = Some(fields);
@@ -2876,6 +2884,30 @@ mod tests {
     }
 
     #[test]
+    fn test_binding_preserves_nullable_outputs_with_an_assignment_field() {
+        let mut raw_binding: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        raw_binding["outputs"][0]["nullable"] = Value::Bool(true);
+        let binding: FunctionBinding = serde_json::from_value(raw_binding.clone()).unwrap();
+        ensure_binding_matches_schema(
+            &valid_function_binding_schema(true, true, &binding),
+            &binding,
+        )
+        .unwrap();
+
+        raw_binding["outputs"][1]["nullable"] = Value::Bool(true);
+        let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
+        let error = ensure_binding_matches_schema(
+            &valid_function_binding_schema(true, true, &binding),
+            &binding,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("non-nullable assignment field"));
+    }
+
+    #[test]
     fn test_nullable_function_input_cannot_bind_to_non_nullable_parameter() {
         let mut raw_binding: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
@@ -3092,6 +3124,34 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn test_named_struct_plan_preserves_nullable_result_fields() {
+        let mut value = serde_json::to_value(named_struct_application("{}")).unwrap();
+        value["output"]["fields"][0]["nullable"] = Value::Bool(true);
+        let application = FunctionApplication::from_json(&value.to_string()).unwrap();
+
+        let expanded =
+            plan_function_application(&function_input_schema(), &application, None).unwrap();
+        assert!(
+            expanded
+                .output_schema
+                .fields
+                .iter()
+                .all(|field| field.nullable)
+        );
+
+        let whole =
+            plan_function_application(&function_input_schema(), &application, Some("features"))
+                .unwrap();
+        let fields = whole.output_schema.fields[0]
+            .r#type
+            .fields
+            .as_ref()
+            .unwrap();
+        assert!(fields[0].nullable);
+        assert!(!fields[1].nullable);
     }
 
     #[test]

@@ -911,8 +911,10 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
 
     if not fields:
         raise ValueError("named-struct Function output must contain at least one field")
-    if any(field.nullable for field in fields):
-        raise ValueError("Function output fields must be non-nullable")
+    if all(field.nullable for field in fields):
+        raise ValueError(
+            "named-struct Function output must contain at least one non-nullable field"
+        )
     for field in fields:
         _validate_exact_arrow_field(field)
     names = [field.name for field in fields]
@@ -924,7 +926,7 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
             FunctionResultField(
                 name=field.name,
                 arrow_type=_canonical_arrow_field(field),
-                nullable=False,
+                nullable=field.nullable,
             )
             for field in fields
         ),
@@ -1307,8 +1309,9 @@ def udf(
 
     Input and output signatures are inferred from supported annotations. For
     Arrow types annotations cannot express precisely, pass ``input_schema``
-    and ``output_schema`` together. Nullable outputs are rejected because V1
-    uses physical NULL to represent unassigned computed-column rows.
+    and ``output_schema`` together. Scalar outputs must be non-nullable. A
+    named-struct output may contain nullable fields when at least one sibling
+    remains non-nullable to represent assigned computed-column rows.
 
     Parameters
     ----------
@@ -1320,8 +1323,9 @@ def udf(
         Explicit input fields in the exact order of the callable parameters.
         Must be provided together with ``output_schema``.
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
-        Explicit scalar or named-struct output. Must be non-nullable and be
-        provided together with ``input_schema``.
+        Explicit scalar or named-struct output. Scalar outputs must be
+        non-nullable; a named struct must contain at least one non-nullable
+        field. Must be provided together with ``input_schema``.
     pip : sequence of str, optional
         Pip requirements for the remote environment.
     conda : sequence of str, optional
