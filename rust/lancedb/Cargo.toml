@@ -21,6 +21,8 @@ arrow-select = { workspace = true }
 arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-ipc.workspace = true
+arrow-flight = { workspace = true, optional = true }
+prost = { version = "0.14", optional = true }
 chrono = { workspace = true }
 datafusion-catalog.workspace = true
 datafusion-common.workspace = true
@@ -77,6 +79,7 @@ reqwest = { version = "0.12.0", default-features = false, features = [
     "rustls-tls-native-roots",
     "stream",
 ], optional = true }
+tonic = { workspace = true, optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
 urlencoding = { version = "2", optional = true }
 uuid = { workspace = true, features = ["v5"] }
@@ -145,8 +148,11 @@ huggingface = [
 ]
 dynamodb = ["lance/dynamodb", "aws"]
 remote = [
+    "dep:arrow-flight",
+    "dep:prost",
     "dep:reqwest",
     "dep:http",
+    "dep:tonic",
     "dep:urlencoding",
     "lance-namespace-impls/rest",
     "lance-namespace-impls/rest-adapter",

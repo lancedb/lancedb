@@ -11,6 +11,7 @@ pub(crate) mod db;
 pub(crate) mod job;
 pub mod oauth;
 mod retry;
+pub(crate) mod sql;
 pub(crate) mod table;
 pub(crate) mod util;
 

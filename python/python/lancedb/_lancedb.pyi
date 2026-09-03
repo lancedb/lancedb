@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
+from uuid import UUID
 
 import pyarrow as pa
 
@@ -158,6 +159,13 @@ class Connection(object):
     async def job_history(
         self, job_id: Optional[str] = None
     ) -> List[pa.RecordBatch]: ...
+    async def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> SqlQuery: ...
+    async def describe_query(self, query_id: UUID) -> QueryDescription: ...
     async def create_table(
         self,
         name: str,
@@ -273,6 +281,23 @@ class JobDescription:
     def spec_json(self) -> Optional[str]: ...
     @property
     def failure(self) -> Optional[JobFailureInfo]: ...
+
+class SqlQuery:
+    @property
+    def id(self) -> UUID: ...
+    async def describe(self) -> QueryDescription: ...
+    async def reader(self) -> RecordBatchStream: ...
+    async def cancel(self) -> None: ...
+
+class QueryDescription:
+    @property
+    def id(self) -> UUID: ...
+    @property
+    def status(self) -> str: ...
+    @property
+    def progress(self) -> Optional[float]: ...
+    @property
+    def expires_at(self) -> Optional[datetime]: ...
 
 class Table:
     def name(self) -> str: ...
@@ -452,6 +477,7 @@ async def connect(
     api_key: Optional[str],
     region: Optional[str],
     host_override: Optional[str],
+    sql_host_override: Optional[str],
     read_consistency_interval: Optional[float],
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]],
     storage_options: Optional[Dict[str, str]],

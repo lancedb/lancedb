@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import sys
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
 from urllib.parse import urlparse
+from uuid import UUID
 import warnings
 
 if sys.version_info >= (3, 12):
@@ -25,6 +26,8 @@ from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
+from ..sql import Query as SqlQuery
+from ..sql import QueryDescription
 from ..materialized_view import MaterializedView, SelectArg
 
 if TYPE_CHECKING:
@@ -116,6 +119,7 @@ class RemoteDBConnection(DBConnection):
         read_timeout: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         read_consistency_interval: Optional[timedelta] = None,
+        sql_host_override: Optional[str] = None,
     ):
         """Connect to a remote LanceDB database."""
         if isinstance(client_config, dict):
@@ -161,6 +165,7 @@ class RemoteDBConnection(DBConnection):
         self.api_key = api_key
         self.region = region
         self.host_override = host_override
+        self.sql_host_override = sql_host_override
         self.storage_options = storage_options
         self.db_name = parsed.netloc
 
@@ -175,6 +180,7 @@ class RemoteDBConnection(DBConnection):
                 api_key=api_key,
                 region=region,
                 host_override=host_override,
+                sql_host_override=sql_host_override,
                 client_config=client_config,
                 storage_options=storage_options,
                 read_consistency_interval=read_consistency_interval,
@@ -193,6 +199,7 @@ class RemoteDBConnection(DBConnection):
                 "api_key": self.api_key,
                 "region": self.region,
                 "host_override": self.host_override,
+                "sql_host_override": self.sql_host_override,
                 "client_config": _client_config_to_dict(self.client_config),
                 "storage_options": self.storage_options,
             }
@@ -787,6 +794,37 @@ class RemoteDBConnection(DBConnection):
         Lists history across all jobs when `job_id` is None.
         """
         return LOOP.run(self._conn.job_history(job_id))
+
+    @override
+    def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> SqlQuery:
+        """Start executing SQL through this remote connection.
+
+        Unqualified tables use this connection's database and the
+        ``["public"]`` namespace by default. Fully qualified table names may
+        reference other databases available to the same deployment.
+        """
+        return SqlQuery(
+            LOOP.run(
+                self._conn.execute_query_async(
+                    query,
+                    default_namespace_path=default_namespace_path,
+                )
+            )
+        )
+
+    @override
+    def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        return LOOP.run(
+            self._conn.describe_query(
+                query_id,
+            )
+        )
 
     @override
     def namespace_client(self) -> LanceNamespace:

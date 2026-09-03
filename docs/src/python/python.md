@@ -28,6 +28,59 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.Session
 
+## Remote SQL
+
+Submit SQL against a remote LanceDB database through the connection.
+The connected database and `default_namespace_path=["public"]` are used for
+unqualified tables. Fully qualified references can still query other databases
+and namespaces available to the same deployment. `execute_query` returns a
+reader as soon as its initial result stream is available. `execute_query_async`
+returns a query handle immediately; use it to inspect progress, open a reader,
+or cancel the query. The SQL client is initialized by the first query and
+retained for the lifetime of the remote connection. Query ids are random,
+connection-scoped references rather than encoded SQL or durable resume tokens:
+
+```python
+import lancedb
+
+db = lancedb.connect(
+    "db://analytics",
+    api_key="ldb_...",
+    host_override="https://api.example.com",
+    sql_host_override="grpc+tls://sql.example.com:10026",
+)
+reader = db.execute_query(
+    """
+    SELECT events.id, accounts.name
+    FROM analytics.public.events AS events
+    JOIN users.public.accounts AS accounts ON events.user_id = accounts.id
+    """,
+    default_namespace_path=["public"],
+)
+for batch in reader:
+    print(batch.num_rows)
+
+query = db.execute_query_async("SELECT * FROM events")
+print(query.id)
+print(query.describe().status)
+for batch in query.reader():
+    print(batch.num_rows)
+
+# The async connection exposes the same lifecycle without blocking:
+# async_db = await lancedb.connect_async(
+#     "db://analytics",
+#     api_key="ldb_...",
+#     host_override="https://api.example.com",
+#     sql_host_override="grpc+tls://sql.example.com:10026",
+# )
+# reader = await async_db.execute_query("SELECT * FROM events")
+# query = await async_db.execute_query_async("SELECT * FROM events")
+# description = await async_db.describe_query(query.id)
+# async for batch in await query.reader():
+#     print(batch.num_rows)
+# await query.cancel()
+```
+
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
@@ -101,6 +154,12 @@ listing a storage directory.
 ::: lancedb.job.Job
 
 ::: lancedb.job.AsyncJob
+
+::: lancedb.sql.Query
+
+::: lancedb.sql.AsyncQuery
+
+::: lancedb.sql.QueryDescription
 
 ## Materialized Views (Synchronous)
 

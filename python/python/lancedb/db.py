@@ -19,6 +19,7 @@ from typing import (
     Optional,
     Union,
 )
+from uuid import UUID
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -47,6 +48,9 @@ from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
 from .job import AsyncJob, Job, _typed_job
+from .sql import AsyncQuery as AsyncSqlQuery
+from .sql import Query as SqlQuery
+from .sql import QueryDescription
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
@@ -68,6 +72,7 @@ import deprecation
 
 if TYPE_CHECKING:
     import pyarrow as pa
+    from .arrow import AsyncRecordBatchReader
     from .pydantic import LanceModel
 
     from ._lancedb import Connection as LanceDbConnection
@@ -780,6 +785,39 @@ class DBConnection(EnforceOverrides):
             "job_history is not supported for this connection type"
         )
 
+    def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute SQL and return a blocking Arrow reader.
+
+        This submits through :meth:`execute_query_async` and waits until the
+        initial result stream is readable. It does not wait for the full query
+        to finish.
+        """
+        return self.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        ).reader()
+
+    def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> SqlQuery:
+        """Start executing SQL and return its query handle.
+
+        Local connections do not support SQL.
+        """
+        raise NotImplementedError("SQL is not supported for this connection type")
+
+    def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        raise NotImplementedError("SQL is not supported for this connection type")
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -872,6 +910,7 @@ class LanceDBConnection(DBConnection):
         async def do_connect():
             return await lancedb_connect(
                 sanitize_uri(uri),
+                None,
                 None,
                 None,
                 None,
@@ -2320,6 +2359,47 @@ class AsyncConnection(object):
         Lists history across all jobs when `job_id` is None.
         """
         return await self._inner.job_history(job_id)
+
+    async def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute SQL and return an asynchronous Arrow reader.
+
+        This submits through :meth:`execute_query_async` and waits until the
+        initial result stream is readable. It does not wait for the full query
+        to finish.
+        """
+        submitted = await self.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        )
+        return await submitted.reader()
+
+    async def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncSqlQuery:
+        """Start executing SQL and return its query handle.
+
+        The database from ``connect_async`` is used for unqualified database
+        references. The namespace defaults to ``["public"]``. Local
+        connections raise ``NotImplementedError``.
+        """
+        return AsyncSqlQuery(
+            await self._inner.execute_query_async(
+                query,
+                default_namespace_path=default_namespace_path,
+            )
+        )
+
+    async def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

@@ -39,6 +39,7 @@ arrow-ord = "58.0.0"
 arrow-schema = "58.0.0"
 arrow-select = "58.0.0"
 arrow-cast = "58.0.0"
+arrow-flight = { version = "58.0.0", features = ["flight-sql-experimental"] }
 async-trait = "0"
 bytes = "1"
 datafusion = { version = "54.0.0", default-features = false }
@@ -71,7 +72,8 @@ serde = "1"
 serde_json = "1"
 tempfile = "3.5.0"
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
-uuid = { version = "1.7.0", features = ["v4"] }
+tonic = { version = "0.14", features = ["tls-native-roots", "tls-ring"] }
+uuid = { version = "1.7.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [profile.ci]

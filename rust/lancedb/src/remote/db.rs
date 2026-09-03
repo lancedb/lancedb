@@ -33,6 +33,7 @@ use crate::table::BaseTable;
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
 };
+use super::sql::SqlClient;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
@@ -97,6 +98,7 @@ pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
 pub const OPT_REMOTE_API_KEY: &str = "remote_database_api_key";
 pub const OPT_REMOTE_REGION: &str = "remote_database_region";
 pub const OPT_REMOTE_HOST_OVERRIDE: &str = "remote_database_host_override";
+pub const OPT_REMOTE_SQL_HOST_OVERRIDE: &str = "remote_database_sql_host_override";
 // TODO: add support for configuring client config via key/value options
 
 #[derive(Clone, Debug, Default)]
@@ -212,6 +214,7 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     namespace_context_provider: Option<Arc<dyn DynamicContextProvider>>,
     /// TLS configuration for mTLS support
     tls_config: Option<super::client::TlsConfig>,
+    sql_client: Option<SqlClient>,
 }
 
 #[derive(Clone)]
@@ -269,22 +272,35 @@ impl DynamicContextProvider for NamespaceHeaderProviderContext {
     }
 }
 
+pub struct RemoteHostOverrides {
+    pub rest: Option<String>,
+    pub sql: Option<String>,
+}
+
 impl RemoteDatabase {
-    pub fn try_new(
+    pub(crate) fn try_new(
         uri: &str,
         api_key: &str,
         region: &str,
-        host_override: Option<String>,
+        host_overrides: RemoteHostOverrides,
         client_config: ClientConfig,
         options: RemoteOptions,
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
+        let sql_client = SqlClient::new(
+            parsed.db_name.clone(),
+            parsed.db_prefix.clone(),
+            api_key.to_string(),
+            host_overrides.rest.clone(),
+            host_overrides.sql,
+            client_config.clone(),
+        );
         let header_map = RestfulLanceDbClient::<Sender>::default_headers(
             api_key,
             region,
             &parsed.db_name,
-            host_override.is_some(),
+            host_overrides.rest.is_some(),
             &options,
             parsed.db_prefix.as_deref(),
             &client_config,
@@ -312,7 +328,7 @@ impl RemoteDatabase {
         let client = RestfulLanceDbClient::try_new(
             &parsed,
             region,
-            host_override,
+            host_overrides.rest,
             header_map,
             client_config.clone(),
             read_consistency_interval,
@@ -330,6 +346,7 @@ impl RemoteDatabase {
             namespace_headers,
             namespace_context_provider,
             tls_config: client_config.tls_config,
+            sql_client: Some(sql_client),
         })
     }
 }
@@ -427,6 +444,7 @@ mod test_utils {
                 namespace_headers: HashMap::new(),
                 namespace_context_provider: None,
                 tls_config: None,
+                sql_client: None,
             }
         }
 
@@ -449,6 +467,7 @@ mod test_utils {
                 namespace_headers: config.extra_headers.clone(),
                 namespace_context_provider,
                 tls_config: config.tls_config.clone(),
+                sql_client: None,
             }
         }
     }
@@ -747,6 +766,30 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         reader
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    async fn execute_query_async(
+        &self,
+        query: &str,
+        default_namespace_path: &[String],
+    ) -> Result<crate::sql::Query> {
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".to_string(),
+            })?;
+        client.submit(query, default_namespace_path).await
+    }
+
+    async fn describe_query(&self, query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".to_string(),
+            })?;
+        client.describe(query_id).await
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
