@@ -1170,6 +1170,8 @@ def udf(
         selects one compatible GPU for each worker. The requirement is part of
         the immutable Function version.
 
+    Notes
+    -----
     The packaged artifact is a snapshot: the function source plus exactly
     the module-level names it references (modules as imports, importable
     classes and functions as imports, literals inline). Code that reaches the

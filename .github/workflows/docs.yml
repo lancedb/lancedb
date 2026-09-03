@@ -18,11 +18,9 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+# The build executes checked-out code, so keep its token read-only.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Allow one concurrent run per ref, so PR builds don't cancel a deployment of main
 concurrency:
@@ -72,9 +70,6 @@ jobs:
         working-directory: docs
         run: |
           PYTHONPATH=. mkdocs build --strict
-      - name: Setup Pages
-        if: github.event_name != 'pull_request'
-        uses: actions/configure-pages@v5
       - name: Upload artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
@@ -84,11 +79,16 @@ jobs:
   deploy:
     needs: build
     if: github.event_name != 'pull_request'
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-24.04
     steps:
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
