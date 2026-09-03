@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import sys
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
 from urllib.parse import urlparse
+from uuid import UUID
 import warnings
 
 if sys.version_info >= (3, 12):
@@ -817,7 +818,7 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def describe_query(self, query_id: str) -> QueryDescription:
+    def describe_query(self, query_id: UUID) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         return LOOP.run(
             self._conn.describe_query(

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from uuid import UUID
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -1477,7 +1478,7 @@ class AsyncLanceNamespaceDBConnection:
             default_namespace_path=default_namespace_path,
         )
 
-    async def describe_query(self, query_id: str) -> QueryDescription:
+    async def describe_query(self, query_id: UUID) -> QueryDescription:
         """Describe a submitted SQL query when supported."""
         return await self._inner.describe_query(query_id)
 

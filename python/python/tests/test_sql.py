@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from uuid import UUID
+
 import pytest
 import pyarrow as pa
 
@@ -11,9 +13,11 @@ from lancedb.db import AsyncConnection
 from lancedb.remote.db import RemoteDBConnection
 from lancedb.sql import AsyncQuery, Query
 
+NIL_QUERY_ID = UUID(int=0)
+
 
 class FakeNativeQuery:
-    id = "query-id"
+    id = UUID("0198f1b2-c3d4-7e5f-8123-456789abcdef")
 
     async def reader(self):
         return pa.table({"value": [1, 2]})
@@ -46,6 +50,12 @@ def test_sql_is_connection_scoped():
     assert hasattr(remote_connection(), "execute_query")
     assert hasattr(remote_connection(), "execute_query_async")
     assert hasattr(remote_connection(), "describe_query")
+
+
+def test_query_id_is_uuid():
+    query = AsyncQuery(FakeNativeQuery())
+    assert isinstance(query.id, UUID)
+    assert Query(query).id == query.id
 
 
 def test_connection_serializes_sql_host_override():
@@ -92,7 +102,7 @@ def test_local_connection_rejects_sql(tmp_path):
     with pytest.raises(NotImplementedError, match="SQL"):
         connection.execute_query_async("SELECT 1")
     with pytest.raises(NotImplementedError, match="SQL"):
-        connection.describe_query("00000000-0000-0000-0000-000000000000")
+        connection.describe_query(NIL_QUERY_ID)
 
 
 @pytest.mark.asyncio
@@ -103,7 +113,7 @@ async def test_local_async_connection_rejects_sql(tmp_path):
     with pytest.raises(NotImplementedError, match="SQL"):
         await connection.execute_query_async("SELECT 1")
     with pytest.raises(NotImplementedError, match="SQL"):
-        await connection.describe_query("00000000-0000-0000-0000-000000000000")
+        await connection.describe_query(NIL_QUERY_ID)
 
 
 @pytest.mark.asyncio
@@ -114,7 +124,12 @@ async def test_async_namespace_connection_rejects_sql(tmp_path):
     with pytest.raises(NotImplementedError, match="SQL"):
         await connection.execute_query_async("SELECT 1")
     with pytest.raises(NotImplementedError, match="SQL"):
-        await connection.describe_query("00000000-0000-0000-0000-000000000000")
+        await connection.describe_query(NIL_QUERY_ID)
+
+
+def test_describe_query_requires_uuid():
+    with pytest.raises(TypeError, match="UUID"):
+        remote_connection().describe_query(str(NIL_QUERY_ID))
 
 
 @pytest.mark.parametrize(

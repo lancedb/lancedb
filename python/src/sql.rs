@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use pyo3::{Bound, PyAny, PyRef, PyResult, pyclass, pymethods};
+use uuid::Uuid;
 
 use crate::arrow::RecordBatchStream;
 use crate::error::PythonErrorExt;
@@ -26,8 +27,8 @@ impl Query {
 #[pymethods]
 impl Query {
     #[getter]
-    pub fn id(&self) -> String {
-        self.inner.id().to_string()
+    pub fn id(&self) -> Uuid {
+        self.inner.id()
     }
 
     pub fn describe(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
@@ -61,7 +62,7 @@ impl Query {
 #[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct QueryDescription {
-    id: String,
+    id: Uuid,
     status: String,
     progress: Option<f64>,
     expires_at: Option<DateTime<Utc>>,
@@ -80,8 +81,8 @@ impl QueryDescription {
 impl From<lancedb::sql::QueryDescription> for QueryDescription {
     fn from(description: lancedb::sql::QueryDescription) -> Self {
         Self {
-            id: description.id.to_string(),
-            status: description.status.as_str().to_string(),
+            id: description.id,
+            status: description.status.to_string(),
             progress: description.progress,
             expires_at: description.expires_at,
         }

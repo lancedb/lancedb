@@ -3,6 +3,8 @@
 
 """Handles to SQL queries running on a remote database."""
 
+from uuid import UUID
+
 import pyarrow as pa
 
 from lancedb.background_loop import LOOP
@@ -20,7 +22,7 @@ class AsyncQuery:
         self._inner = inner
 
     @property
-    def id(self) -> str:
+    def id(self) -> UUID:
         """The stable identifier scoped to the connection that submitted it."""
         return self._inner.id
 
@@ -49,7 +51,7 @@ class Query:
         self._inner = inner
 
     @property
-    def id(self) -> str:
+    def id(self) -> UUID:
         """The stable identifier scoped to the connection that submitted it."""
         return self._inner.id
 

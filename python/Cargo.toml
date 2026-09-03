@@ -28,7 +28,7 @@ env_logger.workspace = true
 log.workspace = true
 # Maturin enables extension-module mode for Python builds. Keeping it out of
 # Cargo features lets Rust unit tests link against libpython.
-pyo3 = { version = "0.28", features = ["abi3-py310", "chrono"] }
+pyo3 = { version = "0.28", features = ["abi3-py310", "chrono", "uuid"] }
 chrono.workspace = true
 pyo3-async-runtimes = { version = "0.28", features = [
     "attributes",

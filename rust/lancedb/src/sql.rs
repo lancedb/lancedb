@@ -3,7 +3,7 @@
 
 //! Handles to SQL queries running on a remote database.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -24,15 +24,14 @@ pub enum QueryStatus {
     Cancelled,
 }
 
-impl QueryStatus {
-    /// Return the stable lowercase representation used by language bindings.
-    pub fn as_str(self) -> &'static str {
-        match self {
+impl fmt::Display for QueryStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
             Self::Running => "running",
             Self::Finished => "finished",
             Self::Cancelling => "cancelling",
             Self::Cancelled => "cancelled",
-        }
+        })
     }
 }
 
@@ -108,5 +107,18 @@ impl Query {
     /// Request cancellation of the query.
     pub async fn cancel(&self) -> Result<()> {
         self.handle.cancel().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QueryStatus;
+
+    #[test]
+    fn query_status_display_is_stable() {
+        assert_eq!(QueryStatus::Running.to_string(), "running");
+        assert_eq!(QueryStatus::Finished.to_string(), "finished");
+        assert_eq!(QueryStatus::Cancelling.to_string(), "cancelling");
+        assert_eq!(QueryStatus::Cancelled.to_string(), "cancelled");
     }
 }

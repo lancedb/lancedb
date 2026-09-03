@@ -19,6 +19,7 @@ from typing import (
     Optional,
     Union,
 )
+from uuid import UUID
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -813,7 +814,7 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("SQL is not supported for this connection type")
 
-    def describe_query(self, query_id: str) -> QueryDescription:
+    def describe_query(self, query_id: UUID) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         raise NotImplementedError("SQL is not supported for this connection type")
 
@@ -2396,7 +2397,7 @@ class AsyncConnection(object):
             )
         )
 
-    async def describe_query(self, query_id: str) -> QueryDescription:
+    async def describe_query(self, query_id: UUID) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         return await self._inner.describe_query(query_id)
 
