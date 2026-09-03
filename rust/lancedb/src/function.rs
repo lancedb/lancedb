@@ -15,6 +15,9 @@ use serde_json::Value;
 
 use crate::{Error, Result};
 
+/// Semantic Function type for a Blob v2 value.
+pub const FUNCTION_BLOB_V2_TYPE: &str = "blob_v2";
+
 fn invalid_json(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
         message: format!("invalid remote Function JSON: {error}"),

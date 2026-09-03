@@ -548,6 +548,7 @@ class RemoteTable(Table):
         LOOP.run(
             self._table.create_index(
                 column,
+                replace=replace,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,

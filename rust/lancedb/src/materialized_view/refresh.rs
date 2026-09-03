@@ -170,6 +170,7 @@ pub(crate) async fn execute_refresh(
     let (replanned, mut planned_fields, _renames) = super::plan(
         source_schema,
         &definition.source_table,
+        &definition.source_namespace,
         &projections,
         definition.filter.as_deref(),
         definition.limit,
@@ -590,7 +591,7 @@ async fn open_source(view: &Table, definition: &MaterializedViewDefinition) -> R
     let source = database
         .open_table(OpenTableRequest {
             name: definition.source_table.clone(),
-            namespace_path: Vec::new(),
+            namespace_path: definition.source_namespace.clone(),
             index_cache_size: None,
             lance_read_params: None,
             location: None,
@@ -2919,6 +2920,7 @@ mod tests {
 
         let replacement = crate::materialized_view::MaterializedViewDefinition {
             source_table: "src".into(),
+            source_namespace: Vec::new(),
             projections: vec![
                 crate::materialized_view::ViewProjection {
                     output: "x".into(),
@@ -2958,6 +2960,7 @@ mod tests {
 
         let narrower = crate::materialized_view::MaterializedViewDefinition {
             source_table: "src".into(),
+            source_namespace: Vec::new(),
             projections: vec![crate::materialized_view::ViewProjection {
                 output: "x".into(),
                 expression: "x".into(),

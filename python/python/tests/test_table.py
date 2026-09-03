@@ -2682,6 +2682,43 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_composite_key(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table(
+            {
+                "shard": ["a", "a", "b"],
+                "id": [1, 2, 1],
+                "val": ["x", "y", "z"],
+            }
+        ),
+    )
+
+    # ("a", 1) matches an existing row and updates it. ("b", 2) agrees with an
+    # existing row on each key column separately but on neither pair, so it is
+    # an insert.
+    new_data = pa.table({"shard": ["a", "b"], "id": [1, 2], "val": ["X", "W"]})
+    res = (
+        table.merge_insert(["shard", "id"])
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+    assert res.num_updated_rows == 1
+    assert res.num_inserted_rows == 1
+
+    expected = pa.table(
+        {
+            "shard": ["a", "a", "b", "b"],
+            "id": [1, 2, 1, 2],
+            "val": ["X", "y", "z", "W"],
+        }
+    )
+    assert table.to_arrow().sort_by([("shard", "ascending"), ("id", "ascending")]) == (
+        expected
+    )
+
+
 def test_merge_insert_nullable_pandas_into_pydantic_schema(mem_db: DBConnection):
     # Regression test for https://github.com/lancedb/lancedb/issues/2366
     pd = pytest.importorskip("pandas")

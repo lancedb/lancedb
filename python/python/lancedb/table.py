@@ -1547,7 +1547,9 @@ class Table(ABC):
         on: Union[str, Iterable[str]]
             A column (or columns) to join on.  This is how records from the
             source table and target table are matched.  Typically this is some
-            kind of key or id column.
+            kind of key or id column.  Passing several columns matches on the
+            composite key: a source row updates a target row only when it
+            agrees on every one of them.
 
         Examples
         --------
@@ -1678,9 +1680,9 @@ class Table(ABC):
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.  If
-        you desire an output order that matches the order of the given offsets, you will
-        need to add the row offset column to the output and align it yourself.
+        No guarantees are made regarding the order in which results are returned.
+        Repeated offsets produce repeated rows, which makes this method suitable for
+        sampling with replacement.
 
         Parameters
         ----------
@@ -4090,6 +4092,7 @@ class LanceTable(Table):
             )
             and not self._route_pushdown_to_rust
             and self.current_branch() is None
+            and query.take_offsets is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -5700,7 +5703,9 @@ class AsyncTable:
         on: Union[str, Iterable[str]]
             A column (or columns) to join on.  This is how records from the
             source table and target table are matched.  Typically this is some
-            kind of key or id column.
+            kind of key or id column.  Passing several columns matches on the
+            composite key: a source row updates a target row only when it
+            agrees on every one of them.
 
         Examples
         --------
@@ -5983,7 +5988,23 @@ class AsyncTable:
 
     def _sync_query_to_async(
         self, query: Query
-    ) -> AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery | AsyncQuery:
+    ) -> (
+        AsyncHybridQuery
+        | AsyncFTSQuery
+        | AsyncVectorQuery
+        | AsyncQuery
+        | AsyncTakeQuery
+    ):
+        if query.take_offsets is not None:
+            take_query = self.take_offsets(query.take_offsets)
+            if query.columns:
+                take_query = take_query.select(query.columns)
+            if query.use_lsm is not None:
+                take_query = take_query.use_lsm(query.use_lsm)
+            if query.with_row_id:
+                take_query = take_query.with_row_id()
+            return take_query
+
         async_query = self.query()
         if query.limit is not None:
             async_query = async_query.limit(query.limit)
@@ -6048,6 +6069,7 @@ class AsyncTable:
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
+            and query.take_offsets is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -6544,6 +6566,9 @@ class AsyncTable:
 
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
+
+        No guarantees are made regarding the order in which results are returned.
+        Repeated offsets produce repeated rows.
 
         Parameters
         ----------
