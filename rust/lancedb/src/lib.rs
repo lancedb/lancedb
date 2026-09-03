@@ -23,6 +23,11 @@
 //! cargo add lancedb
 //! ```
 //!
+//! Use the Arrow crates re-exported from [`arrow`] when building schemas, arrays, and
+//! record batches for LanceDB. Arrow types from different crate versions are distinct
+//! Rust types, so declaring independent `arrow-array` or `arrow-schema` dependencies
+//! can cause type errors if their versions do not match LanceDB's dependencies.
+//!
 //! ## Crate Features
 //!
 //! - `aws` - Enable AWS S3 object store support.
@@ -85,9 +90,11 @@
 //!
 //! ```rust
 //! # use std::sync::Arc;
-//! use arrow_array::{RecordBatch, RecordBatchIterator};
-//! use arrow_schema::{DataType, Field, Schema};
-//! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
+//! use lancedb::arrow::arrow_array::{RecordBatch, RecordBatchIterator};
+//! use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
+//! # use lancedb::arrow::arrow_array::{
+//! #     FixedSizeListArray, Float32Array, Int32Array, types::Float32Type,
+//! # };
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
@@ -132,9 +139,11 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
-//! #   RecordBatchIterator, Int32Array};
-//! # use arrow_schema::{Schema, Field, DataType};
+//! # use lancedb::arrow::arrow_array::{
+//! #     FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator,
+//! #     types::Float32Type,
+//! # };
+//! # use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
 //! use lancedb::index::Index;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
