@@ -20,7 +20,10 @@ repos:
     hooks:
       - id: local-biome-check
         name: biome check
-        entry: npx @biomejs/biome@1.8.3 check --config-path nodejs/biome.json nodejs/
+        # Use the biome from nodejs/package.json rather than a separately
+        # pinned one: the two drifted apart and disagreed on formatting, so
+        # this hook rejected code that `pnpm lint` accepted.
+        entry: nodejs/node_modules/.bin/biome check --config-path nodejs/biome.json nodejs/
         language: system
         types: [text]
         files: "nodejs/.*"

@@ -8,7 +8,9 @@
 //! the rows from a source table that correspond to row IDs stored in a separate table.
 
 use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
-use crate::dataloader::permutation::builder::SRC_ROW_ID_COL;
+use crate::dataloader::permutation::builder::{
+    BASE_BRANCH_CONFIG_KEY, BASE_VERSION_CONFIG_KEY, SRC_ROW_ID_COL,
+};
 use crate::dataloader::permutation::split::SPLIT_ID_COLUMN;
 use crate::error::Error;
 use crate::query::{
@@ -23,12 +25,13 @@ use arrow_array::{RecordBatch, UInt64Array};
 use arrow_schema::SchemaRef;
 use datafusion_expr::{Expr, col, lit};
 use futures::{StreamExt, TryStreamExt};
+use lance::dataset::refs::MAIN_BRANCH;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::io::RecordBatchStream;
 use lance_arrow::RecordBatchExt;
 use lance_core::ROW_ID;
 use lance_core::error::LanceOptionExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Reads a permutation of a source table based on row IDs stored in a separate table
@@ -69,6 +72,10 @@ impl PermutationReader {
         permutation_table: Option<Arc<dyn BaseTable>>,
         split: u64,
     ) -> Result<Self> {
+        let base_table = match &permutation_table {
+            Some(permutation_table) => Self::pin_base_table(base_table, permutation_table).await?,
+            None => base_table,
+        };
         let mut slf = Self {
             base_table,
             permutation_table,
@@ -87,6 +94,34 @@ impl PermutationReader {
             });
         }
         Ok(slf)
+    }
+
+    /// Pins the base table to the version the permutation was built against.
+    /// Permutations written before that was recorded carry no key and stay unpinned.
+    async fn pin_base_table(
+        base_table: Arc<dyn BaseTable>,
+        permutation_table: &Arc<dyn BaseTable>,
+    ) -> Result<Arc<dyn BaseTable>> {
+        let schema = permutation_table.schema().await?;
+        let Some(raw) = schema.metadata.get(BASE_VERSION_CONFIG_KEY) else {
+            return Ok(base_table);
+        };
+        let version = raw.parse::<u64>().map_err(|e| Error::InvalidInput {
+            message: format!(
+                "Permutation table has an unreadable {} of {:?}: {}",
+                BASE_VERSION_CONFIG_KEY, raw, e
+            ),
+        })?;
+        // The recorded branch, not the handle's: a worker reopens by name and lands
+        // on main, and version numbers are per-branch.
+        let branch = schema
+            .metadata
+            .get(BASE_BRANCH_CONFIG_KEY)
+            .map(String::as_str)
+            .unwrap_or(MAIN_BRANCH);
+        base_table
+            .checkout_branch_version(branch, Some(version))
+            .await
     }
 
     pub async fn try_from_tables(
@@ -199,7 +234,14 @@ impl PermutationReader {
             .expect_ok()?
             .values();
 
-        let in_list: Vec<Expr> = row_ids.iter().map(|id| lit(*id)).collect();
+        let mut unique_row_ids = HashSet::with_capacity(num_rows);
+        let in_list: Vec<Expr> = row_ids
+            .iter()
+            .copied()
+            .filter(|row_id| unique_row_ids.insert(*row_id))
+            .map(lit)
+            .collect();
+        let num_unique_row_ids = unique_row_ids.len();
 
         let base_query = QueryRequest {
             filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
@@ -212,7 +254,7 @@ impl PermutationReader {
             .query(
                 &AnyQuery::Query(base_query),
                 QueryExecutionOptions {
-                    max_batch_length: num_rows as u32,
+                    max_batch_length: num_unique_row_ids as u32,
                     ..Default::default()
                 },
             )
@@ -227,9 +269,9 @@ impl PermutationReader {
             });
         }
 
-        if batches.iter().map(|b| b.num_rows()).sum::<usize>() != num_rows {
+        if batches.iter().map(|b| b.num_rows()).sum::<usize>() != num_unique_row_ids {
             return Err(Error::InvalidInput {
-                message: "Base table returned different number of rows than the number of row IDs"
+                message: "Base table returned a different number of rows than the number of unique row IDs"
                     .to_string(),
             });
         }
@@ -469,6 +511,7 @@ impl PermutationReader {
             let table = Table::from(self.base_table.clone());
             let batches = table
                 .take_offsets(offsets.to_vec())
+                .preserve_order()
                 .select(selection.clone())
                 .execute()
                 .await?
@@ -511,9 +554,13 @@ mod tests {
     use lance_datagen::{BatchCount, RowCount};
     use rand::seq::SliceRandom;
 
+    // Aliased: `test_utils::datagen` exports a trait of the same name.
+    use crate::arrow::LanceDbDatagenExt as _;
     use crate::{
         Table,
         arrow::SendableRecordBatchStream,
+        connect,
+        dataloader::permutation::builder::PermutationBuilder,
         query::{ExecutableQuery, QueryBase},
         test_utils::datagen::{LanceDbDatagenExt, virtual_table},
     };
@@ -543,6 +590,58 @@ mod tests {
             column,
         )
         .await
+    }
+
+    /// Compaction moves row addresses, so the reader must read the pinned version.
+    #[tokio::test]
+    async fn test_reader_pins_base_version() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let data = lance_datagen::gen_batch()
+            .col("idx", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(20), BatchCount::from(1));
+        let base_table = db.create_table("base_tbl", data).execute().await.unwrap();
+
+        let permutation_table = PermutationBuilder::new(base_table.clone())
+            .build()
+            .await
+            .unwrap();
+
+        base_table.delete("true").await.unwrap();
+        base_table
+            .optimize(crate::table::OptimizeAction::All)
+            .await
+            .unwrap();
+        assert_eq!(base_table.count_rows(None).await.unwrap(), 0);
+
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            permutation_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let values = collect_from_stream::<Int32Type>(
+            reader
+                .read(
+                    Select::Columns(vec!["idx".to_string()]),
+                    QueryExecutionOptions::default(),
+                )
+                .await
+                .unwrap(),
+            "idx",
+        )
+        .await;
+        assert_eq!(
+            values.len(),
+            20,
+            "reader should still see the pinned version"
+        );
     }
 
     #[tokio::test]
@@ -712,10 +811,10 @@ mod tests {
         .unwrap();
 
         // Take offsets in reverse order and verify returned rows match that order
-        let offsets = vec![5, 3, 1, 0];
+        let offsets = vec![5, 3, 5, 1, 0];
         let batch = reader.take_offsets(&offsets, Select::All).await.unwrap();
 
-        assert_eq!(batch.num_rows(), 4);
+        assert_eq!(batch.num_rows(), 5);
 
         let idx_values = batch
             .column(0)
@@ -727,6 +826,52 @@ mod tests {
             .map(|&o| row_ids[o as usize] as i32)
             .collect();
         assert_eq!(idx_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_preserves_repeated_rows_in_permutation() {
+        let base_table = lance_datagen::gen_batch()
+            .col("idx", lance_datagen::array::step::<Int32Type>())
+            .into_mem_table("tbl", RowCount::from(5), BatchCount::from(1))
+            .await;
+        let base_row_ids = collect_column::<UInt64Type>(&base_table, "_rowid").await;
+        let permutation_row_ids = vec![
+            base_row_ids[3],
+            base_row_ids[1],
+            base_row_ids[3],
+            base_row_ids[2],
+        ];
+        let permutation_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("row_id", DataType::UInt64, false),
+                Field::new(SPLIT_ID_COLUMN, DataType::UInt64, false),
+            ])),
+            vec![
+                Arc::new(UInt64Array::from(permutation_row_ids)),
+                Arc::new(UInt64Array::from(vec![0; 4])),
+            ],
+        )
+        .unwrap();
+        let permutation_table = virtual_table("row_ids", &permutation_batch).await;
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            permutation_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let batch = reader
+            .take_offsets(&[0, 1, 2, 3], Select::All)
+            .await
+            .unwrap();
+        let idx_values = batch
+            .column(0)
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+
+        assert_eq!(idx_values, vec![3, 1, 3, 2]);
     }
 
     #[tokio::test]
@@ -792,17 +937,17 @@ mod tests {
             .unwrap();
 
         // With no permutation table, take_offsets uses the base table directly
-        let offsets = vec![0, 2, 4, 6];
+        let offsets = vec![0, 2, 0, 4, 6];
         let batch = reader.take_offsets(&offsets, Select::All).await.unwrap();
 
-        assert_eq!(batch.num_rows(), 4);
+        assert_eq!(batch.num_rows(), 5);
 
         let idx_values = batch
             .column(0)
             .as_primitive::<Int32Type>()
             .values()
             .to_vec();
-        assert_eq!(idx_values, vec![0, 2, 4, 6]);
+        assert_eq!(idx_values, vec![0, 2, 0, 4, 6]);
     }
 
     #[tokio::test]

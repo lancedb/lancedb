@@ -523,6 +523,43 @@ impl Connection {
             .await
     }
 
+    /// List every published immutable Function version in the remote catalog.
+    ///
+    /// Results are ordered by Function name then version. The client walks all
+    /// server pages before returning. Local databases return
+    /// [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn list_functions(
+    /// #     connection: &lancedb::Connection,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// for function in connection.list_functions().await? {
+    ///     println!("{} {}", function.name(), function.version());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
+        self.internal.list_functions().await
+    }
+
+    /// Drop one exact immutable Function version from the remote catalog.
+    ///
+    /// Returns `true` when the server appended a Dropped transition and
+    /// `false` for an idempotent replay. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn drop_function(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<bool> {
+        self.internal
+            .drop_function(name.as_ref(), version.as_ref())
+            .await
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.
@@ -1677,6 +1714,50 @@ mod tests {
         let tables = db.table_names().limit(7).execute().await.unwrap();
 
         assert_eq!(tables, names[..7]);
+    }
+
+    #[tokio::test]
+    async fn test_list_tables_walks_page_boundaries() {
+        let tc = new_test_connection().await.unwrap();
+        if tc.is_remote {
+            // What resumes a page is the server's to decide, and asserting it here would be
+            // asserting the server's contract rather than this one.
+            return;
+        }
+        let db = tc.connection;
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        let mut names = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let name = uuid::Uuid::new_v4().to_string();
+            names.push(name.clone());
+            db.create_empty_table(name, schema.clone())
+                .execute()
+                .await
+                .unwrap();
+        }
+        names.sort();
+
+        // Walking in pages has to reach every table exactly once, with nothing lost at a
+        // page boundary.
+        let mut seen = Vec::with_capacity(names.len());
+        let mut page_token = None;
+        loop {
+            let page = db
+                .list_tables(ListTablesRequest {
+                    id: Some(Vec::new()),
+                    limit: Some(2),
+                    page_token,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            seen.extend(page.tables);
+            page_token = page.page_token.filter(|token| !token.is_empty());
+            if page_token.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, names);
     }
 
     #[tokio::test]

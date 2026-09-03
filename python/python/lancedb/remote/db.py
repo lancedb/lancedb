@@ -750,6 +750,14 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.get_function(name, version=version))
 
     @override
+    def list_functions(self) -> List[FunctionVersion]:
+        return LOOP.run(self._conn.list_functions())
+
+    @override
+    def drop_function(self, name: str, *, version: str) -> bool:
+        return LOOP.run(self._conn.drop_function(name, version=version))
+
+    @override
     def list_jobs(self) -> List["JobInfo"]:
         """List server-side jobs across the database's tables."""
         return LOOP.run(self._conn.list_jobs())

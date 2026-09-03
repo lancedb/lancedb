@@ -816,7 +816,7 @@ def test_drop_table_async(tmp_db: lancedb.DBConnection):
     job = tmp_db.drop_table_async("test")
     assert job.id is None
     assert job.status() == "finished"
-    job.wait()
+    assert job.wait() is None
     assert tmp_db.table_names() == []
 
     tmp_db.create_table("test", data=data)
@@ -832,7 +832,7 @@ async def test_drop_table_async_connection(tmp_db_async: lancedb.AsyncConnection
     job = await tmp_db_async.drop_table_async("test")
     assert job.id is None
     assert await job.status() == "finished"
-    await job.wait()
+    assert await job.wait() is None
     assert await tmp_db_async.table_names() == []
 
 

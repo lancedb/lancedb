@@ -675,6 +675,21 @@ def test_distance_range(table: lancedb.table.Table):
     assert res["_distance"].to_pylist() == [min_dist, max_dist]
 
 
+@pytest.mark.parametrize("expression", ["1 - _distance", "1.0 - _distance"])
+def test_select_arithmetic_with_distance(table, expression):
+    result = (
+        table.search([10, 10])
+        .select({"similarity": expression, "_distance": "_distance"})
+        .distance_type("cosine")
+        .to_arrow()
+    )
+
+    assert result.schema.field("similarity").type == pa.float32()
+    assert result["similarity"].to_pylist() == pytest.approx(
+        [1 - distance for distance in result["_distance"].to_pylist()]
+    )
+
+
 @pytest.mark.asyncio
 async def test_distance_range_async(table_async: AsyncTable):
     q = [0, 0]
@@ -895,6 +910,23 @@ def test_query_builder_batches(table):
     rs_list = rs_list[0].to_pandas()
     assert rs_list["id"][0] == 1
     assert rs_list["id"][1] == 2
+
+
+def test_batch_vector_query_shares_filtered_flat_scan(table):
+    query = (
+        table.search([[1.0, 2.0], [3.0, 4.0]])
+        .where("id > 0", prefilter=True)
+        .limit(1)
+        .select(["id"])
+    )
+
+    plan = query.explain_plan(verbose=True)
+    assert "KNNVectorDistance: queries=2" in plan
+    assert "UnionExec" not in plan
+
+    results = query.to_arrow()
+    assert len(results) == 2
+    assert results["query_index"].to_pylist() == [0, 1]
 
 
 def test_dynamic_projection(table):
@@ -1890,6 +1922,21 @@ def test_take_queries(tmp_path):
         5,
         17,
     ]
+
+    # Duplicate offsets are occurrences, not set members. Ordering is unspecified.
+    assert sorted(table.take_offsets([5, 2, 5, 17]).to_pandas()["idx"].to_list()) == [
+        2,
+        5,
+        5,
+        17,
+    ]
+
+    # Converting a take builder to its serializable query representation must
+    # retain occurrence metadata and execute with the same multiplicity.
+    query = table.take_offsets([5, 2, 5, 17]).select(["idx"]).to_query_object()
+    assert query.take_offsets == [5, 2, 5, 17]
+    converted = table._execute_query(query).read_all()
+    assert sorted(converted["idx"].to_pylist()) == [2, 5, 5, 17]
 
     # Take by row id
     assert list(

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Canonical values exchanged with the Enterprise Function service.
+//! Canonical Function values exchanged with the Enterprise service, plus the
+//! backend-neutral terminal result of a computed-column refresh.
 //!
 //! This module contains client/wire values only. Catalog persistence,
-//! environment bake, secret resolution, and execution are owned by Sophon.
+//! environment bake, and execution are owned by Sophon.
 
 use std::collections::BTreeMap;
 
@@ -13,6 +14,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::{Error, Result};
+
+/// Semantic Function type for a Blob v2 value.
+pub const FUNCTION_BLOB_V2_TYPE: &str = "blob_v2";
 
 fn invalid_json(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
@@ -185,6 +189,9 @@ pub struct PythonEnvironmentSpec {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
+    /// Conda channels in priority order; conda environments only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -194,14 +201,38 @@ pub struct PythonEnvironmentSpec {
 }
 
 /// Reproducible Python runtime definition understood by Sophon.
-///
-/// `env` contains non-secret values. Secret values have no client model;
-/// [`FunctionVersion::required_secrets`] contains names only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PythonRuntimeSpec {
     /// The V1 Sophon-managed Python runtime.
     Python {
+        python_version: String,
+        environment: PythonEnvironmentSpec,
+        env: BTreeMap<String, String>,
+    },
+    /// The GPU-enabled Sophon-managed Python runtime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeMap;
+    /// use lancedb::function::{PythonEnvironmentSpec, PythonRuntimeSpec};
+    ///
+    /// let runtime = PythonRuntimeSpec::PythonV2 {
+    ///     python_version: "3.12".to_string(),
+    ///     environment: PythonEnvironmentSpec {
+    ///         kind: "pip".to_string(),
+    ///         packages: vec!["cupy-cuda12x".to_string()],
+    ///         channels: Vec::new(),
+    ///         path: None,
+    ///         modules: Vec::new(),
+    ///         image: None,
+    ///     },
+    ///     env: BTreeMap::new(),
+    /// };
+    /// assert!(runtime.requires_gpu());
+    /// ```
+    PythonV2 {
         python_version: String,
         environment: PythonEnvironmentSpec,
         env: BTreeMap<String, String>,
@@ -218,61 +249,101 @@ impl PythonRuntimeSpec {
     pub fn kind(&self) -> &str {
         match self {
             Self::Python { .. } => "python",
+            Self::PythonV2 { .. } => "python_v2",
             Self::Unrecognized { kind } => kind,
         }
     }
 
-    /// The Python version for the V1 runtime, or `None` for an unknown kind.
+    /// The Python version for a known Python runtime, or `None` for an unknown kind.
     pub fn python_version(&self) -> Option<&str> {
         match self {
-            Self::Python { python_version, .. } => Some(python_version),
+            Self::Python { python_version, .. } | Self::PythonV2 { python_version, .. } => {
+                Some(python_version)
+            }
             Self::Unrecognized { .. } => None,
         }
     }
 
-    /// The Python environment for the V1 runtime, or `None` for an unknown kind.
+    /// The Python environment for a known Python runtime, or `None` for an unknown kind.
     pub fn environment(&self) -> Option<&PythonEnvironmentSpec> {
         match self {
-            Self::Python { environment, .. } => Some(environment),
+            Self::Python { environment, .. } | Self::PythonV2 { environment, .. } => {
+                Some(environment)
+            }
             Self::Unrecognized { .. } => None,
         }
     }
 
-    /// Non-secret environment variables, or `None` for an unknown kind.
+    /// Environment variables, or `None` for an unknown kind.
     pub fn env(&self) -> Option<&BTreeMap<String, String>> {
         match self {
-            Self::Python { env, .. } => Some(env),
+            Self::Python { env, .. } | Self::PythonV2 { env, .. } => Some(env),
             Self::Unrecognized { .. } => None,
         }
+    }
+
+    /// Whether the runtime requires a GPU selected by the execution platform.
+    pub fn requires_gpu(&self) -> bool {
+        matches!(self, Self::PythonV2 { .. })
     }
 }
 
 #[derive(Deserialize)]
-struct PythonRuntimeWire {
-    kind: String,
-    #[serde(default)]
-    python_version: Option<String>,
-    #[serde(default)]
-    environment: Option<PythonEnvironmentSpec>,
+struct PythonRuntimeV1Wire {
+    python_version: String,
+    environment: PythonEnvironmentSpec,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    #[serde(default)]
+    gpu: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct PythonRuntimeV2Wire {
+    python_version: String,
+    environment: PythonEnvironmentSpec,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    gpu: bool,
 }
 
 impl<'de> Deserialize<'de> for PythonRuntimeSpec {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        let wire = PythonRuntimeWire::deserialize(deserializer)?;
-        if wire.kind == "python" {
-            Ok(Self::Python {
-                python_version: wire
-                    .python_version
-                    .ok_or_else(|| de::Error::missing_field("python_version"))?,
-                environment: wire
-                    .environment
-                    .ok_or_else(|| de::Error::missing_field("environment"))?,
-                env: wire.env,
-            })
-        } else {
-            Ok(Self::Unrecognized { kind: wire.kind })
+        let value = Value::deserialize(deserializer)?;
+        let kind = value
+            .get("kind")
+            .ok_or_else(|| de::Error::missing_field("kind"))?
+            .as_str()
+            .ok_or_else(|| de::Error::custom("runtime.kind must be a string"))?
+            .to_string();
+        match kind.as_str() {
+            "python" => {
+                let wire: PythonRuntimeV1Wire =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                if wire.gpu.is_some() {
+                    return Err(de::Error::custom(
+                        "python runtime with gpu requires kind='python_v2'",
+                    ));
+                }
+                Ok(Self::Python {
+                    python_version: wire.python_version,
+                    environment: wire.environment,
+                    env: wire.env,
+                })
+            }
+            "python_v2" => {
+                let wire: PythonRuntimeV2Wire =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                if !wire.gpu {
+                    return Err(de::Error::custom("runtime.gpu must be true"));
+                }
+                Ok(Self::PythonV2 {
+                    python_version: wire.python_version,
+                    environment: wire.environment,
+                    env: wire.env,
+                })
+            }
+            _ => Ok(Self::Unrecognized { kind }),
         }
     }
 }
@@ -286,6 +357,8 @@ impl Serialize for PythonRuntimeSpec {
             environment: &'a PythonEnvironmentSpec,
             #[serde(skip_serializing_if = "BTreeMap::is_empty")]
             env: &'a BTreeMap<String, String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpu: Option<bool>,
         }
 
         #[derive(Serialize)]
@@ -303,6 +376,19 @@ impl Serialize for PythonRuntimeSpec {
                 python_version,
                 environment,
                 env,
+                gpu: None,
+            }
+            .serialize(serializer),
+            Self::PythonV2 {
+                python_version,
+                environment,
+                env,
+            } => PythonRuntimeRef {
+                kind: "python_v2",
+                python_version,
+                environment,
+                env,
+                gpu: Some(true),
             }
             .serialize(serializer),
             Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
@@ -312,8 +398,8 @@ impl Serialize for PythonRuntimeSpec {
 
 /// Immutable Function version returned by the Enterprise catalog.
 ///
-/// Scheduling resources, priority, concurrency, and retry policy belong to
-/// the submitting Job and are not part of this identity.
+/// The GPU execution requirement is part of this identity. CPU and memory sizing,
+/// priority, concurrency, and retry policy belong to the execution platform.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
@@ -323,8 +409,6 @@ pub struct FunctionVersion {
     runtime: PythonRuntimeSpec,
     runtime_digest: String,
     environment_digest: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    required_secrets: Vec<String>,
     created_at: String,
 }
 
@@ -355,11 +439,6 @@ impl FunctionVersion {
 
     pub fn environment_digest(&self) -> &str {
         &self.environment_digest
-    }
-
-    /// Required secret names. Resolved values exist only inside Sophon.
-    pub fn required_secrets(&self) -> &[String] {
-        &self.required_secrets
     }
 
     pub fn created_at(&self) -> &str {
@@ -403,18 +482,12 @@ pub struct FunctionArtifactRequest {
 }
 
 /// Stable request envelope for remote immutable Function registration.
-///
-/// Secret values deliberately have no field in this model. The only secret
-/// material the client may send is the ordered set of names Sophon resolves
-/// inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required_secrets: Vec<String>,
 }
 
 impl_json!(FunctionRegistrationRequest);
@@ -445,7 +518,6 @@ pub struct FunctionApplication {
     function: FunctionVersionRef,
     inputs: Vec<ApplicationInput>,
     output: FunctionOutput,
-    group_id: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     columns: BTreeMap<String, String>,
     #[serde(default, flatten, skip_serializing)]
@@ -465,10 +537,6 @@ impl FunctionApplication {
 
     pub fn output(&self) -> &FunctionOutput {
         &self.output
-    }
-
-    pub fn group_id(&self) -> &str {
-        &self.group_id
     }
 
     pub fn columns(&self) -> &BTreeMap<String, String> {
@@ -512,7 +580,7 @@ pub struct InputBinding {
     pub nullable: bool,
 }
 
-/// Ordered result-field to table-field mapping for a grouped binding.
+/// Ordered result-field to table-field mapping for a Function binding.
 ///
 /// Assignment state is not part of the Slice 1 client contract. During the
 /// NULL transition there is no public Lance cell-flag identifier to persist.
@@ -526,20 +594,18 @@ pub struct OutputMapping {
     pub nullable: bool,
 }
 
-/// Immutable grouped binding persisted by the Enterprise table service.
+/// Immutable Function binding persisted by the Enterprise table service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionBinding {
     binding_id: String,
-    revision: u64,
     function: FunctionVersionRef,
-    group_id: String,
     inputs: Vec<InputBinding>,
     outputs: Vec<OutputMapping>,
     /// Exact Arrow schema presented to the Function, encoded with the Lance
     /// Namespace Arrow JSON representation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     input_schema: Option<Value>,
-    /// Exact physical Arrow schema of the grouped table outputs.
+    /// Exact physical Arrow schema of the binding's table outputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_schema: Option<Value>,
 }
@@ -549,16 +615,8 @@ impl FunctionBinding {
         &self.binding_id
     }
 
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
     pub fn function(&self) -> &FunctionVersionRef {
         &self.function
-    }
-
-    pub fn group_id(&self) -> &str {
-        &self.group_id
     }
 
     pub fn inputs(&self) -> &[InputBinding] {
@@ -580,13 +638,22 @@ impl FunctionBinding {
 
 impl_json!(FunctionBinding);
 
-/// Stable terminal result of a remote Function-column refresh Job.
+/// Stable terminal result of an expression-backed or Function-backed column
+/// refresh [`crate::Job`].
+///
+/// Local refresh jobs produce this value in process. LanceDB Cloud and
+/// Enterprise decode the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
+    /// Rows assigned a value by this refresh.
     pub rows_assigned: u64,
+    /// Rows whose computation failed.
     pub rows_failed: u64,
+    /// Rows that still need a value when the job completes.
     pub rows_remaining: u64,
+    /// Exact table version the refresh read.
     pub source_version: u64,
+    /// Table version made visible by the refresh, when one was published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_version: Option<u64>,
 }
@@ -604,3 +671,67 @@ impl RefreshColumnResult {
 }
 
 impl_json!(RefreshColumnResult);
+
+#[cfg(test)]
+mod conda_environment_tests {
+    use super::{PythonEnvironmentSpec, PythonRuntimeSpec};
+
+    #[test]
+    fn conda_channels_round_trip_and_pip_stays_bare() {
+        let conda: PythonEnvironmentSpec = serde_json::from_str(
+            r#"{"kind":"conda","packages":["numpy"],"channels":["conda-forge"]}"#,
+        )
+        .unwrap();
+        assert_eq!(conda.channels, ["conda-forge"]);
+        assert!(
+            serde_json::to_string(&conda)
+                .unwrap()
+                .contains(r#""channels":["conda-forge"]"#)
+        );
+
+        let pip: PythonEnvironmentSpec =
+            serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
+        assert!(!serde_json::to_string(&pip).unwrap().contains("channels"));
+    }
+
+    #[test]
+    fn gpu_python_runtime_marker_round_trips_and_validates() {
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
+        )
+        .unwrap();
+        assert_eq!(runtime.kind(), "python_v2");
+        assert!(runtime.requires_gpu());
+        assert_eq!(
+            super::canonical_json(&runtime).unwrap(),
+            r#"{"environment":{"kind":"pip"},"gpu":true,"kind":"python_v2","python_version":"3.12"}"#
+        );
+
+        for invalid in [
+            r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"}}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":1}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":false}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"true"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"H100"}"#,
+        ] {
+            assert!(serde_json::from_str::<PythonRuntimeSpec>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn unknown_runtime_discards_payload_before_known_field_validation() {
+        for encoded in [
+            r#"{"kind":"python_v3","gpu":{"model":"H100"}}"#,
+            r#"{"kind":"python_v3","resources":[]}"#,
+            r#"{"kind":"python_v3","python_version":3.15,"environment":{"kind":[]}}"#,
+        ] {
+            let runtime: PythonRuntimeSpec = serde_json::from_str(encoded).unwrap();
+            assert_eq!(runtime.kind(), "python_v3");
+            assert_eq!(
+                super::canonical_json(&runtime).unwrap(),
+                r#"{"kind":"python_v3"}"#
+            );
+        }
+    }
+}

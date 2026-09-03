@@ -37,6 +37,13 @@ pub use refresh::{RefreshMaterializedViewResult, RefreshMode};
 /// Schema metadata key holding the view definition, as kind-tagged JSON.
 pub const DEFINITION_META_KEY: &str = "mv.definition";
 
+/// Schema metadata key holding the view's incarnation: a token minted at each
+/// physical creation of a view table, so a view dropped and recreated under
+/// the same name and definition is still told apart from the one a caller
+/// captured. A view whose metadata was replaced wholesale, or one declared
+/// before tokens existed, carries none until its next refresh mints one.
+pub const INCARNATION_META_KEY: &str = "mv.incarnation";
+
 /// Schema metadata key holding the source table version the view was last
 /// refreshed to. Absent until the first refresh.
 pub const SOURCE_VERSION_META_KEY: &str = "mv.source_version";
@@ -67,7 +74,14 @@ const EMBEDDING_FUNCTIONS_META_KEY: &str = "embedding_functions";
 const COLUMN_DEFINITIONS_META_KEY: &str = "lancedb::column_definitions";
 
 /// Value of the definition's `kind` tag for the projected `select` form.
+/// Reserved for root-namespace sources; see [`NAMESPACED_SELECT_KIND`].
 pub const SELECT_KIND: &str = "select";
+
+/// The `select` form over a namespaced source: its own kind, because released
+/// readers drop unknown fields and resolve a `select` source at the root, so
+/// this routes them to the [`MaterializedViewKind::Unrecognized`] refusal
+/// instead of a wrong-table refresh.
+pub const NAMESPACED_SELECT_KIND: &str = "namespaced_select";
 
 /// Which view outputs each source column is projected to directly. A column
 /// may be projected more than once, so each carries every name the view gives
@@ -88,6 +102,10 @@ pub struct ViewProjection {
 pub struct MaterializedViewDefinition {
     /// Name of the source table, in the same database as the view.
     pub source_table: String,
+    /// Namespace path holding the source table; empty is the root namespace.
+    /// A definition written before namespaced sources reads as root.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_namespace: Vec<String>,
     /// The projected output columns, in view schema order.
     pub projections: Vec<ViewProjection>,
     /// SQL predicate selecting the source rows the view holds.
@@ -122,7 +140,12 @@ pub(crate) fn definition_to_metadata(definition: &MaterializedViewDefinition) ->
     let mut value = serde_json::to_value(definition).map_err(|e| Error::Runtime {
         message: format!("failed to serialize view definition: {e}"),
     })?;
-    value["kind"] = serde_json::Value::String(SELECT_KIND.to_string());
+    let kind = if definition.source_namespace.is_empty() {
+        SELECT_KIND
+    } else {
+        NAMESPACED_SELECT_KIND
+    };
+    value["kind"] = serde_json::Value::String(kind.to_string());
     Ok(value.to_string())
 }
 
@@ -143,12 +166,21 @@ pub fn materialized_view_kind(
         .get("kind")
         .and_then(|k| k.as_str())
         .ok_or_else(|| unreadable(&"missing kind tag"))?;
-    if kind != SELECT_KIND {
+    if kind != SELECT_KIND && kind != NAMESPACED_SELECT_KIND {
         return Ok(Some(MaterializedViewKind::Unrecognized {
             kind: kind.to_string(),
         }));
     }
-    let definition = serde_json::from_value(value).map_err(|e| unreadable(&e))?;
+    let kind = kind.to_string();
+    let definition: MaterializedViewDefinition =
+        serde_json::from_value(value).map_err(|e| unreadable(&e))?;
+    // No correct writer produces a kind that disagrees with its namespace.
+    if (kind == SELECT_KIND) != definition.source_namespace.is_empty() {
+        return Err(unreadable(&format!(
+            "kind '{kind}' does not match its source namespace {:?}",
+            definition.source_namespace
+        )));
+    }
     Ok(Some(MaterializedViewKind::Select(definition)))
 }
 
@@ -159,10 +191,20 @@ pub fn materialized_view_kind(
 pub(crate) fn plan(
     source_schema: SchemaRef,
     source_table: &str,
+    source_namespace: &[String],
     projections: &[(String, String)],
     filter: Option<&str>,
     limit: Option<u64>,
 ) -> Result<(MaterializedViewDefinition, Vec<ArrowField>, Lineage)> {
+    let filter = filter
+        .map(crate::expr::canonicalize_sql_predicate)
+        .transpose()
+        .map_err(|err| match err {
+            Error::InvalidInput { message } => Error::InvalidInput {
+                message: format!("invalid view filter: {message}"),
+            },
+            err => err,
+        })?;
     let projections: Vec<(String, String)> = if projections.is_empty() {
         source_schema
             .fields()
@@ -267,7 +309,7 @@ pub(crate) fn plan(
         declared.push(output);
     }
 
-    if let Some(filter) = filter {
+    if let Some(filter) = filter.as_deref() {
         let expr = planner
             .parse_filter(filter)
             .map_err(|e| Error::InvalidInput {
@@ -303,11 +345,12 @@ pub(crate) fn plan(
 
     let definition = MaterializedViewDefinition {
         source_table: source_table.to_string(),
+        source_namespace: source_namespace.to_vec(),
         projections: projections
             .into_iter()
             .map(|(output, expression)| ViewProjection { output, expression })
             .collect(),
-        filter: filter.map(String::from),
+        filter,
         limit,
         inputs,
     };
@@ -586,7 +629,7 @@ pub struct PreparedDeclaration {
     definition: MaterializedViewDefinition,
     /// The source's own database: the only place
     /// [`PreparedDeclaration::create`] will put the view, because refresh
-    /// resolves the recorded source name through the view's database.
+    /// resolves the recorded source coordinate through the view's database.
     database: Arc<dyn Database>,
 }
 
@@ -606,15 +649,36 @@ impl PreparedDeclaration {
 
     /// Create the view table and verify it, consuming the declaration.
     ///
-    /// The view goes in the source's own database, where refresh resolves the
-    /// recorded source name. Stable row ids are requested at both levels and
-    /// verified rather than trusted; nothing is rolled back on failure.
+    /// The view goes at the root of the source's own database, where refresh
+    /// resolves the recorded source coordinate. Stable row ids are requested
+    /// at both levels and verified rather than trusted; nothing is rolled
+    /// back on failure.
     pub async fn create(self, name: &str) -> Result<MaterializedView> {
+        self.create_in(&[], name).await
+    }
+
+    /// Create the view in `namespace_path`, empty for the root namespace.
+    /// Otherwise [`PreparedDeclaration::create`].
+    pub async fn create_in(
+        self,
+        namespace_path: &[String],
+        name: &str,
+    ) -> Result<MaterializedView> {
         let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
             vec![];
+        // Minted here, not at preparation: a declaration can be cloned and
+        // create more than one physical table, and each needs its own token.
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let mut metadata = self.schema.metadata().clone();
+        metadata.insert(INCARNATION_META_KEY.to_string(), incarnation.clone());
+        let schema = Arc::new(ArrowSchema::new_with_metadata(
+            self.schema.fields().clone(),
+            metadata,
+        ));
         let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
-            Box::new(arrow_array::RecordBatchIterator::new(empty, self.schema));
+            Box::new(arrow_array::RecordBatchIterator::new(empty, schema));
         let mut request = CreateTableRequest::new(name.to_string(), Box::new(reader));
+        request.namespace_path = namespace_path.to_vec();
         let write_params = request
             .write_options
             .lance_write_params
@@ -648,14 +712,15 @@ impl PreparedDeclaration {
         Ok(MaterializedView {
             table,
             definition: self.definition,
+            incarnation: Some(incarnation),
         })
     }
 }
 
 /// Validate a view declaration against its live source and hold what its
 /// creation needs. The declaration is canonicalized through the coordinate a
-/// refresh will resolve, so a handle that does not resolve back to itself is
-/// rejected, as is a namespaced source. Same creation-time checks as
+/// refresh will resolve -- name and namespace both -- so a handle that does
+/// not resolve back to itself is rejected. Same creation-time checks as
 /// [`Connection::create_materialized_view`].
 ///
 /// ```no_run
@@ -684,17 +749,9 @@ pub async fn prepare_declaration(
             message: "materialized views are supported only on local databases".into(),
         });
     };
-    // The definition records the source by bare name; any other source
-    // form would be recorded as a name its refresh cannot resolve.
-    if !source.namespace().is_empty() {
-        return Err(Error::NotSupported {
-            message: format!(
-                "a namespaced source cannot be recorded in a view definition; \
-                 '{}' must be a root-namespace table",
-                source.name()
-            ),
-        });
-    }
+    // Refresh resolves the source at exactly this coordinate, so the
+    // definition records the namespace alongside the name.
+    let source_namespace = source.namespace().to_vec();
     let database = source
         .database_opt()
         .ok_or_else(|| Error::InvalidInput {
@@ -708,7 +765,7 @@ pub async fn prepare_declaration(
     let resolved = database
         .open_table(OpenTableRequest {
             name: source.name().to_string(),
-            namespace_path: vec![],
+            namespace_path: source_namespace.clone(),
             index_cache_size: None,
             lance_read_params: None,
             location: None,
@@ -754,6 +811,7 @@ pub async fn prepare_declaration(
     let (definition, mut fields, lineage) = plan(
         source_schema.clone(),
         resolved.name(),
+        &source_namespace,
         projections,
         filter,
         limit,
@@ -813,7 +871,9 @@ fn ensure_local(connection: &Connection) -> Result<()> {
 pub struct CreateMaterializedViewBuilder {
     connection: Connection,
     name: String,
+    namespace: Vec<String>,
     source: String,
+    source_namespace: Vec<String>,
     projections: Vec<(String, String)>,
     filter: Option<String>,
     limit: Option<u64>,
@@ -824,11 +884,26 @@ impl CreateMaterializedViewBuilder {
         Self {
             connection,
             name,
+            namespace: Vec::new(),
             source,
+            source_namespace: Vec::new(),
             projections: Vec::new(),
             filter: None,
             limit: None,
         }
+    }
+
+    /// The namespace to create the view in. Defaults to the root namespace.
+    pub fn namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.namespace = namespace_path;
+        self
+    }
+
+    /// The namespace holding the source table; recorded in the definition
+    /// for refresh to resolve. Defaults to the root namespace.
+    pub fn source_namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.source_namespace = namespace_path;
+        self
     }
 
     /// The view's columns, as `(name, SQL expression)` pairs. Not calling
@@ -861,7 +936,12 @@ impl CreateMaterializedViewBuilder {
     /// provenance across compaction, and cannot be enabled later.
     pub async fn execute(self) -> Result<MaterializedView> {
         ensure_local(&self.connection)?;
-        let source = self.connection.open_table(&self.source).execute().await?;
+        let source = self
+            .connection
+            .open_table(&self.source)
+            .namespace(self.source_namespace.clone())
+            .execute()
+            .await?;
         let prepared = prepare_declaration(
             &source,
             &self.projections,
@@ -869,7 +949,7 @@ impl CreateMaterializedViewBuilder {
             self.limit,
         )
         .await?;
-        prepared.create(&self.name).await
+        prepared.create_in(&self.namespace, &self.name).await
     }
 }
 
@@ -878,6 +958,7 @@ impl CreateMaterializedViewBuilder {
 pub struct MaterializedView {
     table: Table,
     definition: MaterializedViewDefinition,
+    incarnation: Option<String>,
 }
 
 impl MaterializedView {
@@ -893,8 +974,13 @@ impl MaterializedView {
             });
         }
         let schema = table.schema().await?;
+        let incarnation = schema.metadata().get(INCARNATION_META_KEY).cloned();
         match materialized_view_kind(schema.metadata())? {
-            Some(MaterializedViewKind::Select(definition)) => Ok(Self { table, definition }),
+            Some(MaterializedViewKind::Select(definition)) => Ok(Self {
+                table,
+                definition,
+                incarnation,
+            }),
             Some(MaterializedViewKind::Unrecognized { kind }) => Err(Error::NotSupported {
                 message: format!(
                     "materialized view '{}' is defined by '{kind}', which this version of \
@@ -923,6 +1009,13 @@ impl MaterializedView {
         &self.definition
     }
 
+    /// The view's incarnation token as of when this handle was opened; see
+    /// [`RefreshMaterializedViewBuilder::expect_incarnation`]. `None` for a
+    /// view that has none yet (see [`INCARNATION_META_KEY`]).
+    pub fn incarnation(&self) -> Option<&str> {
+        self.incarnation.as_deref()
+    }
+
     /// Recompute the view from its source.
     ///
     /// By default the refresh is incremental when the source's changes can be
@@ -943,6 +1036,7 @@ impl MaterializedView {
             view: self.clone(),
             full: false,
             source_version: None,
+            expected_incarnation: None,
         }
     }
 }
@@ -952,6 +1046,7 @@ pub struct RefreshMaterializedViewBuilder {
     view: MaterializedView,
     full: bool,
     source_version: Option<u64>,
+    expected_incarnation: Option<String>,
 }
 
 impl RefreshMaterializedViewBuilder {
@@ -967,8 +1062,28 @@ impl RefreshMaterializedViewBuilder {
         self
     }
 
+    /// Refresh only if the view is still the incarnation that minted `token`
+    /// (see [`MaterializedView::incarnation`]): a refresh requested against
+    /// one declaration must not land in a view dropped and recreated since,
+    /// even under the same name and definition.
+    ///
+    /// Best effort. The token is read from the latest stored manifest before
+    /// planning and again immediately before every commit, but it is not part
+    /// of the commit's own condition, so a recreation that lands between that
+    /// final read and the commit is not caught.
+    pub fn expect_incarnation(mut self, token: impl Into<String>) -> Self {
+        self.expected_incarnation = Some(token.into());
+        self
+    }
+
     pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
-        refresh::execute_refresh(&self.view.table, self.full, self.source_version).await
+        refresh::execute_refresh(
+            &self.view.table,
+            self.full,
+            self.source_version,
+            self.expected_incarnation.as_deref(),
+        )
+        .await
     }
 }
 
@@ -1091,6 +1206,7 @@ mod tests {
             view.definition(),
             &MaterializedViewDefinition {
                 source_table: "people".into(),
+                source_namespace: Vec::new(),
                 projections: vec![
                     ViewProjection {
                         output: "name".into(),
@@ -2022,33 +2138,138 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("custom_loc"), "{err}");
+    }
 
-        // A namespaced source cannot be recorded in the definition: the
-        // bare name refresh resolves would reach a different table or none.
-        let namespaced = crate::table::NativeTable::create(
-            "memory://ns_src",
-            "ns_src",
-            vec!["ns".to_string()],
-            Box::new(arrow_array::RecordBatchIterator::new(
-                vec![],
-                std::sync::Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
-                    "id",
-                    arrow_schema::DataType::Int32,
-                    true,
-                )])),
-            )) as Box<dyn arrow_array::RecordBatchReader + Send>,
-            None,
-            None,
-            None,
-            None,
-            std::collections::HashSet::new(),
-        )
+    /// A view declared over a namespaced source records that namespace, and
+    /// refresh resolves the source through it -- the coordinate round-trips.
+    #[tokio::test]
+    async fn a_namespaced_source_round_trips_through_refresh() {
+        use lance_namespace::models::CreateNamespaceRequest;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut properties = std::collections::HashMap::new();
+        properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
+        let conn = crate::connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["ns".into()]),
+            ..Default::default()
+        })
         .await
         .unwrap();
-        let namespaced = Table::new(std::sync::Arc::new(namespaced), conn.database().clone());
-        let err = prepare_declaration(&namespaced, &[], None, None)
+
+        let batch = record_batch!(
+            ("name", Utf8, ["ada", "grace", "alan"]),
+            ("age", Int32, [36, 85, 41])
+        )
+        .unwrap();
+        conn.create_table("people", batch)
+            .namespace(vec!["ns".to_string()])
+            .write_options(stable_row_ids())
+            .execute()
             .await
-            .unwrap_err();
-        assert!(err.to_string().contains("namespaced source"), "{err}");
+            .unwrap();
+
+        // A decoy of the same name at the root: resolving the source at the
+        // wrong namespace materializes one row here instead of three.
+        let decoy = record_batch!(("name", Utf8, ["mallory"]), ("age", Int32, [42])).unwrap();
+        conn.create_table("people", decoy)
+            .write_options(stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+
+        let view = conn
+            .create_materialized_view("adults", "people")
+            .namespace(vec!["ns".to_string()])
+            .source_namespace(vec!["ns".to_string()])
+            .select([("name", "name")])
+            .only_if("age >= 18")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(view.definition().source_table, "people");
+        assert_eq!(view.definition().source_namespace, vec!["ns".to_string()]);
+        assert_eq!(view.table().namespace(), &["ns"]);
+
+        // Refresh resolves the source at the recorded namespace, not at root.
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.rows_written, 3);
+    }
+
+    /// A definition stored before namespaced sources existed carries no
+    /// namespace key and must read as the root namespace.
+    #[test]
+    fn a_definition_without_a_namespace_reads_as_root() {
+        let stored =
+            r#"{"source_table":"people","projections":[{"output":"name","expression":"name"}]}"#;
+        let definition: MaterializedViewDefinition = serde_json::from_str(stored).unwrap();
+        assert!(definition.source_namespace.is_empty());
+    }
+
+    fn definition(source_namespace: Vec<String>) -> MaterializedViewDefinition {
+        MaterializedViewDefinition {
+            source_table: "people".to_string(),
+            source_namespace,
+            projections: vec![ViewProjection {
+                output: "name".to_string(),
+                expression: "name".to_string(),
+            }],
+            filter: None,
+            limit: None,
+            inputs: vec!["name".to_string()],
+        }
+    }
+
+    /// A root definition keeps the pre-namespace `select` form byte-stably;
+    /// a namespaced one moves off `select`, which sends pre-namespace readers
+    /// to the `Unrecognized` refusal instead of a root resolve.
+    #[test]
+    fn a_namespaced_definition_is_refused_by_the_pre_namespace_reader() {
+        let root = definition_to_metadata(&definition(Vec::new())).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&root).unwrap();
+        assert_eq!(root["kind"], "select");
+        assert!(
+            root.get("source_namespace").is_none(),
+            "a root definition must not grow new keys: {root}"
+        );
+
+        let stored = definition_to_metadata(&definition(vec!["ns".to_string()])).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        // The pre-namespace discriminator is `kind == "select"`; anything
+        // else lands in its Unrecognized refusal rather than in a root open.
+        assert_eq!(value["kind"], "namespaced_select");
+
+        // The current reader round-trips the coordinate.
+        let metadata = HashMap::from([(DEFINITION_META_KEY.to_string(), stored)]);
+        match materialized_view_kind(&metadata).unwrap() {
+            Some(MaterializedViewKind::Select(read)) => {
+                assert_eq!(read.source_namespace, vec!["ns".to_string()])
+            }
+            other => panic!("expected the namespaced select form, got {other:?}"),
+        }
+    }
+
+    /// A kind that disagrees with its namespace is an error, not a view:
+    /// under `select` it is the shape old readers would resolve at the root.
+    #[test]
+    fn a_kind_namespace_mismatch_is_refused() {
+        for (kind, namespace) in [
+            (SELECT_KIND, vec!["ns".to_string()]),
+            (NAMESPACED_SELECT_KIND, Vec::new()),
+        ] {
+            let mut value = serde_json::to_value(definition(namespace)).unwrap();
+            value["kind"] = serde_json::Value::String(kind.to_string());
+            let metadata = HashMap::from([(DEFINITION_META_KEY.to_string(), value.to_string())]);
+            let err = materialized_view_kind(&metadata).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("does not match its source namespace"),
+                "kind '{kind}': {err}"
+            );
+        }
     }
 }

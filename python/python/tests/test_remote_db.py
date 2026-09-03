@@ -479,24 +479,49 @@ def test_remote_permutation_is_picklable():
                 match = re.search(
                     r"_rowoffset\s+in\s+\((.*?)\)", body["filter"], re.IGNORECASE
                 )
-                offsets = [int(o.strip()) for o in match.group(1).split(",")]
+                offsets = list(
+                    dict.fromkeys(int(o.strip()) for o in match.group(1).split(","))
+                )
             else:
                 offsets = list(range(len(rows)))
-            table = pa.table({"a": [rows[offset] for offset in offsets]})
+            columns = body.get("columns") or ["a"]
+            table = pa.table(
+                {
+                    column: (
+                        [rows[offset] for offset in offsets]
+                        if column == "a"
+                        else offsets
+                    )
+                    for column in columns
+                }
+            )
 
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()
             with pa.ipc.new_file(request.wfile, schema=table.schema) as writer:
-                writer.write_table(table)
+                writer.write_table(table, max_chunksize=2)
         else:
             request.send_response(404)
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        permutation = Permutation.identity(db.open_table("test"))
+        table = db.open_table("test")
+        assert table.take_offsets([0, 2, 0, 4]).to_list() == [
+            {"a": 0},
+            {"a": 0},
+            {"a": 2},
+            {"a": 4},
+        ]
+
+        permutation = Permutation.identity(table)
         restored = pickle.loads(pickle.dumps(permutation))
-        assert restored.__getitems__([0, 2, 4]) == [{"a": 0}, {"a": 2}, {"a": 4}]
+        assert restored.__getitems__([0, 2, 0, 4]) == [
+            {"a": 0},
+            {"a": 2},
+            {"a": 0},
+            {"a": 4},
+        ]
 
 
 def test_create_table_exist_ok():
@@ -795,11 +820,13 @@ def test_table_create_indices():
         scalar_req = received_requests[0]
         assert "name" in scalar_req
         assert scalar_req["name"] == "custom_scalar_idx"
+        assert scalar_req["replace"] is False
 
         # Check FTS index request has custom name
         fts_req = received_requests[1]
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
+        assert fts_req["replace"] is False
         assert fts_req["block_size"] == 256
         assert fts_req["custom_stop_words"] == ["cloud"]
 
@@ -807,6 +834,7 @@ def test_table_create_indices():
         vector_req = received_requests[2]
         assert "name" in vector_req
         assert vector_req["name"] == "custom_vector_idx"
+        assert "replace" not in vector_req
 
         table.wait_for_index(["custom_scalar_idx"], timedelta(seconds=2))
         table.wait_for_index(
@@ -875,9 +903,83 @@ def test_remote_create_index_async_returns_job():
         table = db.create_table("test", [{"id": 1}])
         job = table.create_index_async("id", config=BTree())
         assert job.id == "job-1"
-        job.wait(timeout=timedelta(seconds=30))
+        assert job.wait(timeout=timedelta(seconds=30)) is None
         assert len(describe_calls) == 2
         job.cancel()
+
+
+def test_remote_refresh_async_returns_typed_terminal_result():
+    terminal_result = {
+        "rows_assigned": 12,
+        "rows_failed": 0,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+    }
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/backfill_column":
+            assert json.loads(body)["column"] == "derived"
+            request.send_response(202)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "refresh-1"}')
+        elif request.path == "/v1/jobs/describe":
+            assert json.loads(body)["job_id"] == "refresh-1"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "job_id": "refresh-1",
+                        "job_type": "function_refresh",
+                        "job_state": "DONE",
+                        "result": terminal_result,
+                    }
+                ).encode()
+            )
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "id",
+                                    "type": {"type": "int64"},
+                                    "nullable": False,
+                                }
+                            ]
+                        },
+                    }
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        job = table.refresh_column_async("derived")
+        assert job.id == "refresh-1"
+        result = job.wait(timeout=timedelta(seconds=30))
+
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.model_dump() == terminal_result
+    assert result.rows_filled == 12
+    assert result.version == 8
 
 
 def test_remote_job_wait_raises_on_failure():
@@ -1005,6 +1107,9 @@ def test_remote_create_index_new_api():
             table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
+            table.create_index(
+                "vector", config=IvfPq(distance_type="l2"), replace=False
+            )
 
         # Legacy index_type="IVF_RQ" routes to IvfRq config under the hood.
         with pytest.warns(DeprecationWarning, match="create_index"):
@@ -1014,15 +1119,17 @@ def test_remote_create_index_new_api():
                 num_partitions=8,
             )
 
-        assert len(received_requests) == 5
+        assert len(received_requests) == 6
         assert [req["column"] for req in received_requests] == [
             "vector",
             "category",
             "text",
             "vector",
             "vector",
+            "vector",
         ]
         assert received_requests[2]["block_size"] == 256
+        assert received_requests[4]["replace"] is False
 
 
 def test_table_wait_for_index_timeout():
@@ -1542,6 +1649,49 @@ def test_query_sync_fts():
             .limit(42)
             .to_list()
         )
+
+
+def test_query_sync_fts_document_granularity():
+    from lancedb.query import DocumentGranularity, MatchQuery
+
+    def handler(body):
+        assert body == {
+            "full_text_query": {
+                "query": {
+                    "match": {
+                        "column": "docs.content",
+                        "terms": "alpha",
+                        "boost": 1.0,
+                        "fuzziness": 0,
+                        "max_expansions": 50,
+                        "operator": "Or",
+                        "prefix_length": 0,
+                        "document_granularity": "list_element",
+                    }
+                }
+            },
+            "k": 10,
+            "prefilter": True,
+            "vector": [],
+            "version": None,
+        }
+        return pa.table(
+            {
+                "id": [1, 1],
+                "_doc_index": pa.array([[0], [4]], type=pa.list_(pa.uint32())),
+            }
+        )
+
+    with query_test_table(handler, server_version=Version("0.6.0")) as table:
+        result = table.search(
+            MatchQuery(
+                "alpha",
+                "docs.content",
+                document_granularity=DocumentGranularity.LIST_ELEMENT,
+            )
+        ).to_arrow()
+
+    assert result["_doc_index"].to_pylist() == [[0], [4]]
 
 
 def test_query_sync_hybrid():

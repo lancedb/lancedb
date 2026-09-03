@@ -39,8 +39,5 @@
     "env": {
       "MODE": "test"
     }
-  },
-  "required_secrets": [
-    "API_TOKEN"
-  ]
+  }
 }

@@ -1,21 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
-use arrow_array::{Array, Float16Array, Float32Array, Float64Array, RecordBatch, make_array};
+use arrow_array::{
+    Array, Float16Array, Float32Array, Float64Array, RecordBatch, UInt64Array,
+    cast::AsArray,
+    make_array,
+    types::{Int64Type, UInt64Type},
+};
 use arrow_schema::{DataType, SchemaRef};
+use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use datafusion_execution::TaskContext;
 use datafusion_expr::{Expr, col, lit};
-use datafusion_physical_plan::ExecutionPlan;
-use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
+use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion_physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+    coalesce_partitions::CoalescePartitionsExec,
+    execution_plan::{Boundedness, EmissionType},
+    limit::GlobalLimitExec,
+    stream::RecordBatchStreamAdapter,
+};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
 /// Re-export Lance ColumnOrdering type for use in query ordering
 pub use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
-use lance_datafusion::exec::execute_plan;
+use lance_datafusion::exec::{execute_plan, format_plan as format_analyzed_plan};
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
@@ -398,6 +414,9 @@ pub trait QueryBase {
     /// y > 0 AND y < 100
     /// x > 5 OR y = 'test'
     /// ```
+    ///
+    /// Identifiers may be delimited with SQL-standard double quotes or
+    /// backticks. String literals must use single quotes.
     ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).
@@ -822,6 +841,14 @@ pub struct QueryRequest {
     /// Offset of the query.
     pub offset: Option<usize>,
 
+    /// Dataset offsets whose occurrence multiplicity must be restored after
+    /// executing the physical lookup represented by this request.
+    ///
+    /// This is client-side execution metadata used when a [`TakeQuery`] is
+    /// converted into a request. It is not sent to remote services.
+    #[doc(hidden)]
+    pub take_offsets: Option<Vec<u64>>,
+
     /// Apply filter to the returned rows.
     pub filter: Option<QueryFilter>,
 
@@ -890,6 +917,7 @@ impl Default for QueryRequest {
         Self {
             limit: None,
             offset: None,
+            take_offsets: None,
             filter: None,
             filter_error: None,
             full_text_search: None,
@@ -913,6 +941,17 @@ impl QueryRequest {
     /// use different representations) the error is recorded and surfaced later
     /// by [`Self::check_filter`].
     pub(crate) fn add_filter(&mut self, new: QueryFilter) {
+        let new = match new {
+            QueryFilter::Sql(filter) => match crate::expr::canonicalize_sql_predicate(&filter) {
+                Ok(filter) => QueryFilter::Sql(filter),
+                Err(err) => {
+                    self.filter_error = Some(err.to_string());
+                    return;
+                }
+            },
+            other => other,
+        };
+
         self.filter = Some(match self.filter.take() {
             None => new,
             Some(existing) => match and_filters(existing, new) {
@@ -1174,12 +1213,12 @@ impl VectorQuery {
 
     /// Add another query vector to the search.
     ///
-    /// Multiple searches will be dispatched as part of the query.
-    /// This is a convenience method for adding multiple query vectors
-    /// to the search. It is not expected to be faster than issuing
-    /// multiple queries concurrently.
+    /// Multiple searches will be dispatched as a batch. Flat searches share
+    /// one table scan across the query vectors, avoiding the scan and memory
+    /// amplification of issuing the searches concurrently. Indexed searches
+    /// may still perform per-vector index work.
     ///
-    /// The output data will contain an additional columns `query_index` which
+    /// The output data will contain an additional column `query_index` which
     /// will contain the index of the query vector that was used to generate the
     /// result.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
@@ -1515,6 +1554,302 @@ impl HasQuery for VectorQuery {
     }
 }
 
+fn take_occurrences(offsets: &[u64]) -> HashMap<u64, usize> {
+    let mut occurrences = HashMap::with_capacity(offsets.len());
+    for offset in offsets {
+        *occurrences.entry(*offset).or_insert(0) += 1;
+    }
+    occurrences
+}
+
+fn restore_take_batch_with_occurrences(
+    batch: RecordBatch,
+    offsets: &[u64],
+    occurrences: &HashMap<u64, usize>,
+    ordering_column: &str,
+    drop_ordering_column: bool,
+    preserve_order: bool,
+) -> Result<RecordBatch> {
+    let actual_offsets = batch
+        .column_by_name(ordering_column)
+        .ok_or_else(|| Error::Schema {
+            message: format!(
+                "take query result did not include ordering column '{ordering_column}'"
+            ),
+        })?;
+    let actual_offsets = match actual_offsets.data_type() {
+        DataType::UInt64 => actual_offsets
+            .as_primitive::<UInt64Type>()
+            .values()
+            .to_vec(),
+        DataType::Int64 => actual_offsets
+            .as_primitive::<Int64Type>()
+            .values()
+            .iter()
+            .map(|offset| {
+                u64::try_from(*offset).map_err(|_| Error::Schema {
+                    message: format!(
+                        "take query ordering column '{ordering_column}' contained a negative offset"
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        data_type => {
+            return Err(Error::Schema {
+                message: format!(
+                    "take query ordering column '{ordering_column}' had unsupported type {data_type}"
+                ),
+            });
+        }
+    };
+
+    let mut desired_order = Vec::with_capacity(offsets.len());
+    if preserve_order {
+        let ordering = actual_offsets
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, offset)| (offset, index as u64))
+            .collect::<HashMap<_, _>>();
+        // Missing offsets retain the filter-based behavior of returning no row.
+        desired_order.extend(
+            offsets
+                .iter()
+                .filter_map(|offset| ordering.get(offset).copied()),
+        );
+    } else {
+        // Public take queries do not guarantee output order. Preserve the lookup's
+        // existing order and only restore the multiplicity of each matching row.
+        for (index, offset) in actual_offsets.iter().enumerate() {
+            if let Some(count) = occurrences.get(offset) {
+                desired_order.extend(std::iter::repeat_n(index as u64, *count));
+            }
+        }
+    }
+
+    let mut ordered_batch = if desired_order.len() == batch.num_rows()
+        && desired_order
+            .iter()
+            .enumerate()
+            .all(|(index, desired)| *desired == index as u64)
+    {
+        batch
+    } else {
+        arrow_select::take::take_record_batch(&batch, &UInt64Array::from(desired_order))?
+    };
+
+    if drop_ordering_column {
+        ordered_batch = ordered_batch.drop_column(ordering_column)?;
+    }
+
+    Ok(ordered_batch)
+}
+
+#[cfg(test)]
+fn restore_take_batch(
+    batch: RecordBatch,
+    offsets: &[u64],
+    ordering_column: &str,
+    drop_ordering_column: bool,
+    preserve_order: bool,
+) -> Result<RecordBatch> {
+    restore_take_batch_with_occurrences(
+        batch,
+        offsets,
+        &take_occurrences(offsets),
+        ordering_column,
+        drop_ordering_column,
+        preserve_order,
+    )
+}
+
+/// Restores the logical offset occurrence sequence above the physical lookup plan.
+///
+/// The lookup plan returns each matching row at most once. For ordinary unordered
+/// takes this operator expands each input batch incrementally and preserves the
+/// lookup's partitioning. The explicitly ordered reader path collects one coalesced
+/// input before restoring requested order. Pagination must remain above this operator
+/// so it applies to occurrences.
+#[derive(Debug)]
+struct TakeRestoreExec {
+    input: Arc<dyn ExecutionPlan>,
+    offsets: Vec<u64>,
+    occurrences: Arc<HashMap<u64, usize>>,
+    ordering_column: String,
+    drop_ordering_column: bool,
+    preserve_order: bool,
+    schema: SchemaRef,
+    properties: Arc<PlanProperties>,
+}
+
+impl TakeRestoreExec {
+    fn try_new(
+        input: Arc<dyn ExecutionPlan>,
+        offsets: Vec<u64>,
+        ordering_column: String,
+        drop_ordering_column: bool,
+        preserve_order: bool,
+    ) -> Result<Self> {
+        let schema = if drop_ordering_column {
+            RecordBatch::new_empty(input.schema())
+                .drop_column(&ordering_column)?
+                .schema()
+        } else {
+            input.schema()
+        };
+        let partition_count = if preserve_order {
+            1
+        } else {
+            input.output_partitioning().partition_count()
+        };
+        let emission_type = if preserve_order {
+            EmissionType::Final
+        } else {
+            EmissionType::Incremental
+        };
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(partition_count),
+            emission_type,
+            Boundedness::Bounded,
+        ));
+
+        Ok(Self {
+            input,
+            occurrences: Arc::new(take_occurrences(&offsets)),
+            offsets,
+            ordering_column,
+            drop_ordering_column,
+            preserve_order,
+            schema,
+            properties,
+        })
+    }
+}
+
+impl DisplayAs for TakeRestoreExec {
+    fn fmt_as(
+        &self,
+        _display_type: DisplayFormatType,
+        formatter: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(
+            formatter,
+            "TakeRestoreExec: occurrences={}",
+            self.offsets.len()
+        )
+    }
+}
+
+impl ExecutionPlan for TakeRestoreExec {
+    fn name(&self) -> &str {
+        "TakeRestoreExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![!self.preserve_order]
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(DataFusionError::Internal(format!(
+                "TakeRestoreExec expected one child, got {}",
+                children.len()
+            )));
+        }
+        let child = children.into_iter().next().unwrap();
+        let plan = Self::try_new(
+            child,
+            self.offsets.clone(),
+            self.ordering_column.clone(),
+            self.drop_ordering_column,
+            self.preserve_order,
+        )
+        .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        Ok(Arc::new(plan))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> DataFusionResult<datafusion_physical_plan::SendableRecordBatchStream> {
+        let partition_count = self.input.output_partitioning().partition_count();
+        if partition >= partition_count || (self.preserve_order && partition != 0) {
+            return Err(DataFusionError::Internal(format!(
+                "TakeRestoreExec cannot execute partition {partition}; input has {partition_count} partitions"
+            )));
+        }
+
+        let input = self.input.execute(partition, context)?;
+        let output_schema = self.schema.clone();
+        let offsets = self.offsets.clone();
+        let occurrences = self.occurrences.clone();
+        let ordering_column = self.ordering_column.clone();
+        let drop_ordering_column = self.drop_ordering_column;
+        let preserve_order = self.preserve_order;
+        let stream: Pin<Box<dyn futures::Stream<Item = DataFusionResult<RecordBatch>> + Send>> =
+            if preserve_order {
+                let input_schema = input.schema();
+                Box::pin(stream::once(async move {
+                    let batches = input.try_collect::<Vec<_>>().await?;
+                    let batch = if batches.is_empty() {
+                        RecordBatch::new_empty(input_schema.clone())
+                    } else {
+                        concat_batches(&input_schema, &batches)?
+                    };
+                    restore_take_batch_with_occurrences(
+                        batch,
+                        &offsets,
+                        &occurrences,
+                        &ordering_column,
+                        drop_ordering_column,
+                        true,
+                    )
+                    .map_err(|error| DataFusionError::External(Box::new(error)))
+                }))
+            } else {
+                Box::pin(input.map(move |batch| {
+                    batch.and_then(|batch| {
+                        restore_take_batch_with_occurrences(
+                            batch,
+                            &offsets,
+                            &occurrences,
+                            &ordering_column,
+                            drop_ordering_column,
+                            false,
+                        )
+                        .map_err(|error| DataFusionError::External(Box::new(error)))
+                    })
+                }))
+            };
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            output_schema,
+            stream,
+        )))
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        false
+    }
+}
+
 /// A builder for LanceDB take queries.
 ///
 /// See [`crate::Table::query`] for more details on queries
@@ -1531,6 +1866,8 @@ impl HasQuery for VectorQuery {
 pub struct TakeQuery {
     parent: Arc<dyn BaseTable>,
     request: QueryRequest,
+    offsets: Option<Vec<u64>>,
+    preserve_order: bool,
 }
 
 impl TakeQuery {
@@ -1538,15 +1875,24 @@ impl TakeQuery {
     ///
     /// See [`crate::Table::take_offsets`] for more details.
     pub fn from_offsets(parent: Arc<dyn BaseTable>, offsets: Vec<u64>) -> Self {
-        let in_list: Vec<Expr> = offsets.iter().map(|o| lit(*o)).collect();
+        let mut seen = HashSet::with_capacity(offsets.len());
+        let in_list: Vec<Expr> = offsets
+            .iter()
+            .copied()
+            .filter(|offset| seen.insert(*offset))
+            .map(lit)
+            .collect();
         Self {
             parent,
             request: QueryRequest {
                 filter: Some(QueryFilter::Datafusion(
                     col("_rowoffset").in_list(in_list, false),
                 )),
+                take_offsets: Some(offsets.clone()),
                 ..Default::default()
             },
+            offsets: Some(offsets),
+            preserve_order: false,
         }
     }
 
@@ -1561,7 +1907,179 @@ impl TakeQuery {
                 filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
                 ..Default::default()
             },
+            offsets: None,
+            preserve_order: false,
         }
+    }
+
+    /// Preserve the requested offset order when restoring duplicate occurrences.
+    ///
+    /// This is reserved for readers whose API explicitly guarantees ordering.
+    pub(crate) fn preserve_order(mut self) -> Self {
+        debug_assert!(self.offsets.is_some());
+        self.preserve_order = true;
+        self
+    }
+
+    async fn request_with_row_offset(
+        parent: &dyn BaseTable,
+        request: &QueryRequest,
+    ) -> Result<(QueryRequest, String, bool)> {
+        const ROW_OFFSET: &str = "_rowoffset";
+        const INTERNAL_ROW_OFFSET: &str = "__lancedb_take_row_offset";
+
+        let mut request = request.clone();
+        // The physical lookup must not recursively restore occurrences. The
+        // wrapper above this request owns that logical operation.
+        request.take_offsets = None;
+        let (ordering_column, drop_ordering_column) = match &mut request.select {
+            Select::All => {
+                let mut columns = parent
+                    .schema()
+                    .await?
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect::<Vec<_>>();
+                columns.push(ROW_OFFSET.to_string());
+                request.select = Select::Columns(columns);
+                (ROW_OFFSET.to_string(), true)
+            }
+            Select::Columns(columns) => {
+                if columns.iter().any(|column| column == ROW_OFFSET) {
+                    (ROW_OFFSET.to_string(), false)
+                } else {
+                    columns.push(ROW_OFFSET.to_string());
+                    (ROW_OFFSET.to_string(), true)
+                }
+            }
+            Select::Dynamic(columns) => {
+                let mut ordering_column = INTERNAL_ROW_OFFSET.to_string();
+                while columns.iter().any(|(name, _)| name == &ordering_column) {
+                    ordering_column.push('_');
+                }
+                columns.push((ordering_column.clone(), ROW_OFFSET.to_string()));
+                (ordering_column, true)
+            }
+            Select::Expr(columns) => {
+                let mut ordering_column = INTERNAL_ROW_OFFSET.to_string();
+                while columns.iter().any(|(name, _)| name == &ordering_column) {
+                    ordering_column.push('_');
+                }
+                columns.push((ordering_column.clone(), col(ROW_OFFSET)));
+                (ordering_column, true)
+            }
+        };
+
+        Ok((request, ordering_column, drop_ordering_column))
+    }
+
+    async fn prepare_offsets_lookup(
+        parent: &dyn BaseTable,
+        request: &QueryRequest,
+    ) -> Result<(QueryRequest, String, bool, usize, Option<usize>)> {
+        let (mut request, ordering_column, drop_ordering_column) =
+            Self::request_with_row_offset(parent, request).await?;
+        // The lookup operates on distinct physical rows. Pagination is a logical
+        // operation over occurrences and must be applied only after restoration.
+        let output_offset = request.offset.take().unwrap_or_default();
+        let output_limit = request.limit.take();
+
+        Ok((
+            request,
+            ordering_column,
+            drop_ordering_column,
+            output_offset,
+            output_limit,
+        ))
+    }
+
+    fn wrap_offsets_plan(
+        lookup: Arc<dyn ExecutionPlan>,
+        offsets: &[u64],
+        ordering_column: String,
+        drop_ordering_column: bool,
+        output_offset: usize,
+        output_limit: Option<usize>,
+        preserve_order: bool,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let lookup = if preserve_order {
+            Arc::new(CoalescePartitionsExec::new(lookup)) as Arc<dyn ExecutionPlan>
+        } else {
+            lookup
+        };
+        let restored: Arc<dyn ExecutionPlan> = Arc::new(TakeRestoreExec::try_new(
+            lookup,
+            offsets.to_vec(),
+            ordering_column,
+            drop_ordering_column,
+            preserve_order,
+        )?);
+
+        if output_offset > 0 || output_limit.is_some() {
+            Ok(Arc::new(GlobalLimitExec::new(
+                restored,
+                output_offset,
+                output_limit,
+            )))
+        } else {
+            Ok(restored)
+        }
+    }
+
+    fn wrap_offsets_explanation(
+        lookup: &str,
+        occurrence_count: usize,
+        output_offset: usize,
+        output_limit: Option<usize>,
+        preserve_order: bool,
+    ) -> String {
+        fn indent(plan: &str, spaces: usize) -> String {
+            let indentation = " ".repeat(spaces);
+            plan.lines()
+                .map(|line| format!("{indentation}{line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let restored = if preserve_order {
+            format!(
+                "TakeRestoreExec: occurrences={occurrence_count}\n  CoalescePartitionsExec\n{}",
+                indent(lookup, 4)
+            )
+        } else {
+            format!(
+                "TakeRestoreExec: occurrences={occurrence_count}\n{}",
+                indent(lookup, 2)
+            )
+        };
+
+        if output_offset > 0 || output_limit.is_some() {
+            let fetch = output_limit
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "None".to_string());
+            format!(
+                "GlobalLimitExec: skip={output_offset}, fetch={fetch}\n{}",
+                indent(&restored, 2)
+            )
+        } else {
+            restored
+        }
+    }
+
+    async fn create_offsets_plan(
+        &self,
+        offsets: &[u64],
+        options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        create_take_offsets_plan(
+            self.parent.as_ref(),
+            &self.request,
+            offsets,
+            options,
+            self.preserve_order,
+        )
+        .await
     }
 
     /// Convert the `TakeQuery` into a `QueryRequest`.
@@ -1608,6 +2126,63 @@ impl TakeQuery {
     }
 }
 
+pub(crate) async fn create_take_offsets_plan(
+    parent: &dyn BaseTable,
+    request: &QueryRequest,
+    offsets: &[u64],
+    options: QueryExecutionOptions,
+    preserve_order: bool,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let (request, ordering_column, drop_ordering_column, output_offset, output_limit) =
+        TakeQuery::prepare_offsets_lookup(parent, request).await?;
+    let lookup_options = if preserve_order {
+        options.without_output_batch_length_limit()
+    } else {
+        options
+    };
+    let lookup = parent
+        .create_plan(&AnyQuery::Query(request), lookup_options)
+        .await?;
+
+    TakeQuery::wrap_offsets_plan(
+        lookup,
+        offsets,
+        ordering_column,
+        drop_ordering_column,
+        output_offset,
+        output_limit,
+        preserve_order,
+    )
+}
+
+pub(crate) async fn explain_take_offsets_plan(
+    parent: &dyn BaseTable,
+    request: &QueryRequest,
+    offsets: &[u64],
+    verbose: bool,
+) -> Result<String> {
+    let (request, _, _, output_offset, output_limit) =
+        TakeQuery::prepare_offsets_lookup(parent, request).await?;
+    let lookup = parent
+        .explain_plan(&AnyQuery::Query(request), verbose)
+        .await?;
+    Ok(TakeQuery::wrap_offsets_explanation(
+        &lookup,
+        offsets.len(),
+        output_offset,
+        output_limit,
+        false,
+    ))
+}
+
+pub(crate) async fn prepare_take_offsets_request(
+    parent: &dyn BaseTable,
+    request: &QueryRequest,
+) -> Result<QueryRequest> {
+    let (request, _, _, _, _) = TakeQuery::prepare_offsets_lookup(parent, request).await?;
+    Ok(request)
+}
+
 impl HasQuery for TakeQuery {
     fn mut_query(&mut self) -> &mut QueryRequest {
         &mut self.request
@@ -1616,6 +2191,10 @@ impl HasQuery for TakeQuery {
 
 impl ExecutableQuery for TakeQuery {
     async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+        if let Some(offsets) = &self.offsets {
+            return self.create_offsets_plan(offsets, options).await;
+        }
+
         let req = AnyQuery::Query(self.request.clone());
         self.parent.clone().create_plan(&req, options).await
     }
@@ -1624,6 +2203,18 @@ impl ExecutableQuery for TakeQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        if self.offsets.is_some() {
+            let plan = self.create_plan(options.clone()).await?;
+            let inner = execute_plan(plan, Default::default())?;
+            let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
+            let inner = if let Some(timeout) = options.timeout {
+                TimeoutStream::new_boxed(inner, timeout)
+            } else {
+                inner
+            };
+            return Ok(DatasetRecordBatchStream::new(inner).into());
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         Ok(SendableRecordBatchStream::from(
             self.parent.clone().query(&query, options).await?,
@@ -1631,11 +2222,51 @@ impl ExecutableQuery for TakeQuery {
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        if let Some(offsets) = &self.offsets {
+            let (request, _, _, output_offset, output_limit) =
+                Self::prepare_offsets_lookup(self.parent.as_ref(), &self.request).await?;
+            // Ask the backend to explain only the distinct-row lookup. This keeps
+            // remote explanation non-executing while still showing the client-side
+            // operators that create_plan and execution place above that lookup.
+            let lookup = self
+                .parent
+                .explain_plan(&AnyQuery::Query(request), verbose)
+                .await?;
+            return Ok(Self::wrap_offsets_explanation(
+                &lookup,
+                offsets.len(),
+                output_offset,
+                output_limit,
+                self.preserve_order,
+            ));
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         self.parent.explain_plan(&query, verbose).await
     }
 
     async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
+        if self.offsets.is_some() {
+            if self.parent.analyze_plan_is_remote() {
+                let (request, _, _, _, _) =
+                    Self::prepare_offsets_lookup(self.parent.as_ref(), &self.request).await?;
+                // Remote analysis is owned by the service. The current wire
+                // request represents only the distinct-row lookup, so return
+                // the service report unchanged instead of fabricating metrics
+                // for client-side restoration operators.
+                return self
+                    .parent
+                    .analyze_plan(&AnyQuery::Query(request), options)
+                    .await;
+            }
+
+            let plan = self.create_plan(options).await?;
+            execute_plan(plan.clone(), Default::default())?
+                .try_collect::<Vec<_>>()
+                .await?;
+            return Ok(format_analyzed_plan(plan));
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         self.parent.analyze_plan(&query, options).await
     }
@@ -1646,12 +2277,17 @@ mod tests {
     use std::{collections::HashSet, sync::Arc};
 
     use super::*;
-    use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
+    use arrow::{
+        array::downcast_array,
+        compute::concat_batches,
+        datatypes::{Int32Type, UInt8Type},
+    };
     use arrow_array::{
-        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
-        types::Float32Type,
+        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
+        StringArray, cast::AsArray, types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
+    use datafusion_physical_plan::display::DisplayableExecutionPlan;
     use futures::{StreamExt, TryStreamExt};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use rand::seq::IndexedRandom;
@@ -1774,11 +2410,14 @@ mod tests {
             .postfilter();
         let result = query.execute().await;
         let mut stream = result.expect("should have result");
-        // should only have one batch
+        let mut num_rows = 0;
         while let Some(batch) = stream.next().await {
-            // post filter should have removed some rows
-            assert!(batch.expect("should be Ok").num_rows() < 10);
+            let batch = batch.expect("should be Ok");
+            let ids: &Int32Array = batch["id"].as_primitive();
+            assert!(ids.iter().all(|id| id.unwrap() % 2 == 0));
+            num_rows += batch.num_rows();
         }
+        assert!(num_rows <= 10);
 
         let query = table
             .query()
@@ -1873,6 +2512,157 @@ mod tests {
         assert!(query.request.check_filter().is_ok());
         // The combined filter executes without error.
         query.execute().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_double_quoted_predicates_across_table_operations() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("PartyAbbrev", DataType::Utf8, false),
+            ArrowField::new("path", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+                Arc::new(StringArray::from(vec!["D", "R", "R", "D"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x", "x"])),
+            ],
+        )
+        .unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn.create_table("parties", batch).execute().await.unwrap();
+        let batches = table
+            .query()
+            .only_if(r#""PartyAbbrev" = 'D'"#)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'D'"#.to_string()))
+                .await
+                .unwrap(),
+            2
+        );
+
+        // Public BaseTable dispatch cannot bypass canonicalization.
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql(r#""PartyAbbrev" = 'D'"#.to_string())),
+            ..Default::default()
+        });
+        let batches = table
+            .base_table()
+            .query(&query, Default::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(
+            table
+                .base_table()
+                .count_rows(Some(crate::table::Filter::Sql(
+                    r#""PartyAbbrev" = 'D'"#.to_string(),
+                )))
+                .await
+                .unwrap(),
+            2
+        );
+
+        for predicate in [
+            r#"id = 1 -- unmatched " in a valid SQL comment"#,
+            r#"id = 1 /* unmatched " in a valid SQL comment */"#,
+            r#"id = 1 /*! OR "PartyAbbrev" = 'D' */"#,
+            r#"path = '\' AND "PartyAbbrev" = 'D'"#,
+        ] {
+            let batches = table
+                .query()
+                .only_if(predicate)
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+        }
+
+        // The same canonical predicate contract applies to both merge filters.
+        let source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["D", "R", "R"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x"])),
+            ],
+        )
+        .unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_not_matched_by_source_delete(Some(r#""PartyAbbrev" = 'D'"#.to_string()));
+        let result = table
+            .base_table()
+            .merge_insert(
+                merge,
+                Box::new(RecordBatchIterator::new(vec![Ok(source)], schema.clone())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.num_deleted_rows, 1);
+
+        let source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["U", "U", "U"])),
+                Arc::new(StringArray::from(vec!["\\", "\\", "x"])),
+            ],
+        )
+        .unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_matched_update_all(Some(r#"target."PartyAbbrev" = 'D'"#.to_string()));
+        merge
+            .execute(Box::new(RecordBatchIterator::new(vec![Ok(source)], schema)))
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'U'"#.to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        let update = table
+            .update()
+            .only_if(r#""PartyAbbrev" = 'R'"#)
+            .column("PartyAbbrev", "'X'");
+        table.base_table().update(update).await.unwrap();
+        assert_eq!(
+            table
+                .count_rows(Some(r#""PartyAbbrev" = 'X'"#.to_string()))
+                .await
+                .unwrap(),
+            2
+        );
+
+        let result = table
+            .base_table()
+            .delete(crate::table::Predicate::String(r#""PartyAbbrev" = 'X'"#))
+            .await
+            .unwrap();
+        assert_eq!(result.num_deleted_rows, 2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -2331,7 +3121,8 @@ mod tests {
             .limit(1);
 
         let plan = query.explain_plan(true).await.unwrap();
-        assert!(plan.contains("UnionExec"));
+        assert!(plan.contains("KNNVectorDistance: queries=2"));
+        assert!(!plan.contains("UnionExec"));
 
         let results = query
             .execute()
@@ -2344,6 +3135,100 @@ mod tests {
         assert_eq!(results.num_rows(), 2); // One result for each query vector.
         let query_index = results["query_index"].as_primitive::<Int32Type>();
         // We don't guarantee order.
+        assert!(query_index.values().contains(&0));
+        assert!(query_index.values().contains(&1));
+
+        // Batch KNN does not support a per-query offset, so offset queries keep
+        // the legacy per-vector plan to preserve their result semantics.
+        let offset_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .add_query_vector(&[0.5, 0.6, 0.7, 0.8])
+            .unwrap()
+            .limit(1)
+            .offset(1);
+        assert!(
+            offset_query
+                .explain_plan(true)
+                .await
+                .unwrap()
+                .contains("UnionExec")
+        );
+        let offset_results = offset_query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            offset_results
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multiple_binary_query_vectors() {
+        let vectors = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            vec![
+                Some(vec![Some(0), Some(0)]),
+                Some(vec![Some(255), Some(255)]),
+            ],
+            2,
+        );
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![0, 1])), Arc::new(vectors)],
+        )
+        .unwrap();
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("binary_batch", batch)
+            .execute()
+            .await
+            .unwrap();
+        let query = table
+            .query()
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+            .add_query_vector(&[255.0, 255.0])
+            .unwrap()
+            .distance_type(DistanceType::Hamming)
+            .limit(1);
+
+        // Binary queries retain the per-vector plan because Lance's binary
+        // nearest path requires primitive UInt8 query arrays.
+        assert!(
+            query
+                .explain_plan(true)
+                .await
+                .unwrap()
+                .contains("UnionExec")
+        );
+
+        let results = query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(results.num_rows(), 2);
+
+        let ids = results["id"].as_primitive::<Int32Type>();
+        assert!(ids.values().contains(&0));
+        assert!(ids.values().contains(&1));
+        let query_index = results["query_index"].as_primitive::<Int32Type>();
         assert!(query_index.values().contains(&0));
         assert!(query_index.values().contains(&1));
     }
@@ -2655,6 +3540,218 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 3);
         assert_eq!(results[0].num_columns(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_preserves_duplicate_multiplicity() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let results = table
+            .take_offsets(vec![5, 1, 5, 17])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 2,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|batch| batch.num_columns() == 1));
+        let mut ids = results
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<Int32Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 5, 5, 17]);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_plan_is_incremental() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let plan = table
+            .take_offsets(vec![5, 1, 17])
+            .create_plan(QueryExecutionOptions {
+                max_batch_length: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(plan.properties().emission_type, EmissionType::Incremental);
+        let displayed = DisplayableExecutionPlan::new(plan.as_ref())
+            .indent(false)
+            .to_string();
+        assert!(displayed.contains("TakeRestoreExec"));
+        assert!(!displayed.contains("CoalescePartitionsExec"));
+    }
+
+    #[tokio::test]
+    async fn test_take_into_request_preserves_duplicate_multiplicity() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let request = table.take_offsets(vec![5, 5]).into_request();
+        assert_eq!(request.take_offsets, Some(vec![5, 5]));
+
+        let batches = table
+            .base_table()
+            .query(&AnyQuery::Query(request), QueryExecutionOptions::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    }
+
+    #[test]
+    fn test_restore_take_batch_only_reorders_when_requested() {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "id",
+                Arc::new(Int32Array::from(vec![17, 5, 1])) as Arc<dyn Array>,
+            ),
+            (
+                "_rowoffset",
+                Arc::new(UInt64Array::from(vec![17, 5, 1])) as Arc<dyn Array>,
+            ),
+        ])
+        .unwrap();
+
+        let restored =
+            restore_take_batch(batch.clone(), &[5, 1, 5, 17], "_rowoffset", true, false).unwrap();
+        assert_eq!(
+            restored
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values(),
+            &[17, 5, 5, 1]
+        );
+
+        let ordered = restore_take_batch(batch, &[5, 1, 5, 17], "_rowoffset", true, true).unwrap();
+        assert_eq!(
+            ordered
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values(),
+            &[5, 1, 5, 17]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_applies_pagination_after_restoration() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let limited = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .limit(3)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let limited = concat_batches(&limited[0].schema(), &limited).unwrap();
+        assert_eq!(limited.num_rows(), 3);
+        assert!(
+            limited
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values()
+                .iter()
+                .all(|id| [0, 1, 2].contains(id))
+        );
+
+        let offset = table
+            .take_offsets(vec![5, 1, 5, 17])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .offset(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let offset = concat_batches(&offset[0].schema(), &offset).unwrap();
+        assert_eq!(offset.num_rows(), 3);
+        assert!(
+            offset
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values()
+                .iter()
+                .all(|id| [1, 5, 17].contains(id))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_create_plan_restores_occurrences() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let take = table
+            .take_offsets(vec![5, 1, 5, 17])
+            .select(Select::Columns(vec!["id".to_string()]));
+
+        let plan = take
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(plan.schema().fields().len(), 1);
+        assert_eq!(plan.schema().field(0).name(), "id");
+        let planned = execute_plan(plan, Default::default())
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let planned = concat_batches(&planned[0].schema(), &planned).unwrap();
+        let mut ids = planned
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 5, 5, 17]);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_plan_introspection_shows_restoration() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let take = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .limit(3);
+
+        let explained = take.explain_plan(false).await.unwrap();
+        assert!(explained.contains("GlobalLimitExec"));
+        assert!(explained.contains("TakeRestoreExec"));
+        assert!(!explained.contains("CoalescePartitionsExec"));
+
+        let analyzed = take.analyze_plan().await.unwrap();
+        assert!(analyzed.contains("GlobalLimitExec"));
+        assert!(analyzed.contains("TakeRestoreExec"));
+        assert!(!analyzed.contains("CoalescePartitionsExec"));
     }
 
     #[tokio::test]
