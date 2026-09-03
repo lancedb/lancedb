@@ -1,0 +1,270 @@
+---
+title: "Tutorial: Use the LanceDB agent plugin"
+sidebarTitle: "LanceDB agent plugin"
+description: "Install the LanceDB plugin and use an AI coding agent to quickly build a multimodal ingestion pipeline."
+icon: "robot"
+keywords: ["AI agents", "agent plugins", "multimodal", "Pydantic", "branches", "embeddings"]
+---
+
+import {
+  PyCamelotSchema,
+  PyCamelotBatches,
+  PyCamelotOssIngestion,
+} from '/snippets/build_with_ai_agents.mdx';
+
+The LanceDB agent plugin gives coding agents a maintained reference for the
+Python and TypeScript APIs. It also covers portable OSS and Enterprise code,
+ingestion performance, and branch operations. It ships as the `lancedb` plugin in
+the [lancedb-agent-plugins](https://github.com/lancedb/lancedb-agent-plugins)
+repository, which is also a plugin marketplace. Install it with your agent's
+plugin manager:
+
+<CodeGroup>
+```text Claude Code
+/plugin marketplace add lancedb/lancedb-agent-plugins
+/plugin install lancedb@lancedb
+```
+
+```bash Codex icon="terminal"
+codex plugin marketplace add lancedb/lancedb-agent-plugins
+codex plugin add lancedb@lancedb
+```
+
+```bash Other agents icon="terminal"
+npx plugins add lancedb/lancedb-agent-plugins
+```
+</CodeGroup>
+
+The [`plugins`](https://www.npmjs.com/package/plugins) installer shown under
+**Other agents** is a cross-tool option. It detects which agent CLIs are on your
+`PATH` — Cursor, GitHub Copilot CLI, VS Code, Grok Build, and Kimi Code, as well
+as Claude Code and Codex — and installs through each one's native plugin system.
+
+The plugin supplements the agent's training data with current LanceDB
+instructions. To pick up later revisions, refresh the marketplace:
+
+<CodeGroup>
+```text Claude Code
+/plugin marketplace update lancedb
+```
+
+```bash Codex icon="terminal"
+codex plugin marketplace upgrade
+```
+
+```bash Other agents icon="terminal"
+npx plugins add lancedb/lancedb-agent-plugins
+```
+</CodeGroup>
+
+<Accordion title="Where the plugin gets installed">
+Each plugin manager clones the repository, reads its marketplace manifest to find
+the `lancedb` plugin, and hands the plugin to the agent's own plugin store rather
+than copying files into your project. Claude Code and Codex keep it under
+`~/.claude/plugins` and `~/.codex/plugins` respectively, so the plugin is available
+in every project on the machine.
+
+The `npx plugins` installer defaults to the same user-wide scope. Pass
+`--scope project` to record the plugin in the current repository instead, so that
+everyone working in it gets the same plugin, or `-t <target>` to install for a
+single agent rather than every one it detects:
+
+```bash
+npx plugins add lancedb/lancedb-agent-plugins --scope project -t cursor
+```
+
+Not every agent supports project scope; `npx plugins targets` lists what it
+found and what each target supports.
+</Accordion>
+
+## Get started with the LanceDB agent plugin {#get-started-with-the-lancedb-agent-plugin}
+
+This tutorial uses the Camelot dataset from the [quickstart](/quickstart), with
+a portrait added for each character. Each LanceDB row contains validated
+metadata and raw JPEG bytes. Text, images, and any embeddings you add later
+remain in the same table.
+
+### 1\. Download the multimodal dataset {#1-download-the-multimodal-dataset}
+
+From a new project directory, download the JSON file and portraits:
+
+```bash
+mkdir -p data/img
+
+BASE_URL="https://docs.lancedb.com/static/assets/tutorials/build-with-ai-agents/camelot/data"
+curl -fsSL "$BASE_URL/camelot.json" -o data/camelot.json
+
+for image in \
+  arthur.jpg \
+  guinevere.jpg \
+  merlin.jpg \
+  mordred.jpg \
+  sir_galahad.jpg \
+  sir_gawain.jpg \
+  sir_lancelot.jpg \
+  sir_percival.jpg
+do
+  curl -fsSL "$BASE_URL/img/$image" -o "data/img/$image"
+done
+```
+
+Each JSON record has this shape:
+
+```json
+{
+  "id": 2,
+  "name": "Merlin",
+  "role": "Wizard and Advisor",
+  "description": "A powerful wizard and prophet who mentors Arthur.",
+  "stats": {
+    "strength": 2,
+    "courage": 4,
+    "magic": 5,
+    "wisdom": 5
+  },
+  "img": "data/img/merlin.jpg"
+}
+```
+
+JSON input may have missing fields, unexpected fields, or values of the wrong
+type. The LanceDB plugin tells the agent to validate each record with strict
+Pydantic models before writing it.
+
+After the agent writes the pipeline, inspect the schema, batching, and write
+path rather than assuming it followed the plugin's guidance correctly.
+
+### 2\. Prompt your agent to build the pipeline {#2-prompt-your-agent-to-build-the-pipeline}
+
+Install the Python packages used by the example:
+
+```bash icon="terminal"
+uv init
+uv add lancedb pyarrow pydantic
+```
+
+If you're using LanceDB Enterprise, ask the agent to ingest into an Enterprise table,
+provide the relevant environment variables for connecting to your Enterprise deployment
+in a local `.env` file, and point the agent to it.
+
+```text .env
+LANCEDB_URI=db://your_project_name
+LANCEDB_API_KEY=your_api_key_here
+LANCEDB_REGION=us-east-1
+LANCEDB_HOST_OVERRIDE=https://your-enterprise-endpoint.com
+```
+
+If you're using LanceDB OSS, no connection settings are required, as it runs as an
+embedded retrieval library. A simple prompt like this should work:
+
+```text Agent prompt
+# If using OSS
+Use the lancedb plugin to ingest the dataset in `data/` into a LanceDB
+OSS table.
+
+# If using enterprise
+Use the lancedb plugin to ingest the dataset in `data/` into a LanceDB
+Enterprise table using the connection information in `.env`.
+```
+
+Because the plugin is registered with the agent's own plugin system, the agent
+should pick it up on its own once you restart the session. If it does not,
+simply ask it to use the `lancedb` plugin in the prompt, as shown above.
+
+That should be enough! The agent will create `ingest_multimodal.py`, or similar.
+The following sections inspect the script to verify that it follows the plugin's guidance.
+
+#### Data validation {#data-validation}
+
+The plugin encourages the agent to validate each record with Pydantic before writing it.
+The agent should ideally define a schema for the table and a nested schema for the
+`stats` field.
+
+<CodeBlock filename="ingest_multimodal.py" language="Python" icon="python">
+  {PyCamelotSchema}
+</CodeBlock>
+
+In this case, our agent correctly defined `Character` and `Stats` Pydantic models
+and validated the JSON before adding it to the table.
+
+#### Batched ingestion {#batched-ingestion}
+
+Naively calling `table.add()` once per row is slow, and is considered an anti-pattern
+in LanceDB. The plugin encourages the agent to collect incoming rows into batches and
+write them with a single `table.add()` call. When you use the plugin, the agent should
+produce something like this:
+
+<CodeBlock filename="ingest_multimodal.py" language="Python" icon="python">
+  {PyCamelotBatches}
+</CodeBlock>
+
+The script calls `Character.model_validate(...)` before adding a record to the
+batch. If validation fails, that batch is never written. The function yields up
+to `batch_size` rows at a time, providing an iterable of batches for the ingestion step,
+shown next.
+
+#### Table maintenance {#table-maintenance}
+For LanceDB OSS, the plugin instructs the agent to call
+`table.optimize()` after the ingestion loop. This compacts small fragments, cleans up
+old versions according to the retention policy, and incorporates new data into indexes.
+
+<CodeBlock filename="ingest_multimodal.py" language="Python" icon="python">
+  {PyCamelotOssIngestion}
+</CodeBlock>
+
+If you're using LanceDB Enterprise, the plugin mentions that this step is not needed
+because LanceDB Enterprise handles maintenance automatically.
+
+
+<Note>
+This example dataset has only eight rows, so the default batch size writes it in
+one call. Larger inputs should still avoid single-row write commits.
+</Note>
+
+### 3\. Run the OSS pipeline {#3-run-the-oss-pipeline}
+
+```bash
+uv run python ingest_multimodal.py
+```
+
+The table now contains the validated character records and their JPEG bytes.
+Here are the first three rows:
+
+| Image | Character | Role |
+| --- | --- | --- |
+| <img src="/static/assets/tutorials/build-with-ai-agents/camelot/data/img/arthur.jpg" alt="King Arthur" width="128" height="128" /> | King Arthur | King of Camelot |
+| <img src="/static/assets/tutorials/build-with-ai-agents/camelot/data/img/merlin.jpg" alt="Merlin" width="128" height="128" /> | Merlin | Wizard and Advisor |
+| <img src="/static/assets/tutorials/build-with-ai-agents/camelot/data/img/guinevere.jpg" alt="Queen Guinevere" width="128" height="128" /> | Queen Guinevere | Queen of Camelot |
+
+Once your pipeline works, you can [run experiments on branches](/agent-branch-experiments)
+to try new embedding models, parsers, or search settings without touching `main`.
+
+## Takeaways {#takeaways}
+
+The example in this tutorial was small, but similar ideas apply to other workflows, too.
+Give the agent the data source, the constraints it must respect, and the
+artifacts it should return.
+
+The plugin supplies LanceDB-specific guidance, but it's the user's responsibility to
+ensure the output makes sense for the application.
+
+### Try the plugin with your own dataset {#try-the-plugin-with-your-own-dataset}
+
+The plugin shown in this tutorial should generalize reasonably well to other use cases.
+If you find any issues, open [an issue](https://github.com/lancedb/lancedb-agent-plugins/issues)
+on GitHub, clearly describing the intended behavior.
+
+You can choose OSS or Enterprise based on how the work will run:
+
+Start with [LanceDB OSS](/quickstart) during the early stages of a project
+when an agent is helping you prototype,
+explore a dataset, or run small workflows on a subset of the data. The application owns
+the storage and lifecycle work, so ask the agent to validate inputs, write in
+batches, and it will include table maintenance operations such as `optimize()`
+where appropriate.
+
+Choose [LanceDB Enterprise](/enterprise) when the resulting table becomes
+shared production infrastructure, and the workload needs distributed capacity,
+private deployment, or platform-managed operations. The underlying data format and table
+API stay the same, so the pipeline does not need to be redesigned. The agent
+instead connects to a remote `db://` table and lets the cluster handle
+maintenance and background work.

@@ -1,0 +1,26 @@
+---
+title: Gemini
+sidebarTitle: Gemini
+---
+
+import { PyEmbeddingGeminiUsage } from '/snippets/integrations.mdx';
+
+With Google's Gemini, you can represent text (words, sentences, and blocks of text) in a vectorized form, making it easier to compare and contrast embeddings. For example, two texts that share a similar subject matter or sentiment should have similar embeddings, which can be identified through mathematical comparison techniques such as cosine similarity. For more on how and why you should use embeddings, refer to the Embeddings guide.
+The Gemini Embedding Model API supports various task types:
+
+| Task Type               | Description                                                                                                                                                |
+|-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| "`retrieval_query`"     | Specifies the given text is a query in a search/retrieval setting.                                                                                         |
+| "`retrieval_document`"  | Specifies the given text is a document in a search/retrieval setting. Using this task type requires a title but is automatically provided by Embeddings API |
+| "`semantic_similarity`" | Specifies the given text will be used for Semantic Textual Similarity (STS).                                                                               |
+| "`classification`"      | Specifies that the embeddings will be used for classification.                                                                                             |
+| "`clustering`"           | Specifies that the embeddings will be used for clustering.                                                                                                 |
+
+
+Usage Example:
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingGeminiUsage}
+  </CodeBlock>
+</CodeGroup>

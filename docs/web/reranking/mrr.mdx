@@ -1,0 +1,48 @@
+---
+title: MRR Reranker
+sidebarTitle: "MRR Algorithm"
+description: Combine and rerank search results using Mean Reciprocal Rank (MRR) algorithm in LanceDB. Supports weighted scoring for hybrid and multivector search.
+
+---
+
+import { PyRerankingMrrUsage } from '/snippets/integrations.mdx';
+
+# MRR Reranker
+
+This reranker uses the Mean Reciprocal Rank (MRR) algorithm to combine and rerank search results from vector and full-text search. You can use this reranker by passing `MRRReranker()` to the `rerank()` method. The MRR algorithm calculates the average of reciprocal ranks across different search results, providing a balanced way to merge results from multiple ranking systems.
+
+> **Note:** Supported query types – Hybrid and Multivector search.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingMrrUsage}
+  </CodeBlock>
+</CodeGroup>
+
+## Accepted Arguments {#accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `weight_vector` | `float` | `0.5` | Weight for vector search results (0.0 to 1.0). |
+| `weight_fts` | `float` | `0.5` | Weight for FTS search results (0.0 to 1.0). |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score`. If "all", will return all scores from the vector and FTS search along with the relevance score. |
+
+**Note:** `weight_vector` + `weight_fts` must equal 1.0.
+
+For multivector reranking, input result sets need `_rowid` so LanceDB can identify the same row
+across the ranked lists. Add `.with_row_id(True)` to each vector search before passing the results
+to the reranker.
+
+## Supported Scores for each query type {#supported-scores-for-each-query-type}
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+### Hybrid Search {#hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Results have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`). |
+
+### Multivector Search {#multivector-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Results have vector distances from all searches along with `_relevance_score`. |

@@ -1,0 +1,442 @@
+---
+title: Ingesting Data
+sidebarTitle: "Ingesting data"
+description: Learn about different methods to ingest data into tables in LanceDB, including from various data sources and empty tables.
+icon: "cookie"
+---
+import { TsConnect, RsConnect } from '/snippets/connection.mdx';
+import {
+    PyCreateTableFromDicts as CreateTableFromDicts,
+    TsCreateTableFromDicts as TsCreateTableFromDicts,
+    RsCreateTableFromDicts as RsCreateTableFromDicts,
+    PyCreateTableConflictHandling as CreateTableConflictHandling,
+    TsCreateTableConflictHandling as TsCreateTableConflictHandling,
+    RsCreateTableConflictHandling as RsCreateTableConflictHandling,
+    PyCreateTableFromPandas as CreateTableFromPandas,
+    PyCreateTableCustomSchema as CreateTableCustomSchema,
+    TsCreateTableCustomSchema as TsCreateTableCustomSchema,
+    RsCreateTableCustomSchema as RsCreateTableCustomSchema,
+    PyCreateTableFromPolars as CreateTableFromPolars,
+    PyCreateTableFromArrow as CreateTableFromArrow,
+    TsCreateTableFromArrow as TsCreateTableFromArrow,
+    RsCreateTableFromArrow as RsCreateTableFromArrow,
+    PyCreateTableFromPydantic as CreateTableFromPydantic,
+    PyCreateTableNestedSchema as CreateTableNestedSchema,
+    PyAddFromDataset as AddFromDataset,
+    PyCreateTableFromIterator as CreateTableFromIterator,
+    TsCreateTableFromIterator as TsCreateTableFromIterator,
+    RsCreateTableFromIterator as RsCreateTableFromIterator,
+    TsAddProgress,
+    PyOpenExistingTable as OpenExistingTable,
+    TsOpenExistingTable as TsOpenExistingTable,
+    RsOpenExistingTable as RsOpenExistingTable,
+    PyCreateEmptyTable as CreateEmptyTable,
+    TsCreateEmptyTable as TsCreateEmptyTable,
+    RsCreateEmptyTable as RsCreateEmptyTable,
+    PyCreateEmptyTablePydantic as CreateEmptyTablePydantic,
+    PyDropTable as DropTable,
+    TsDropTable as TsDropTable,
+    RsDropTable as RsDropTable,
+    PyTablesBasicConnect as TablesBasicConnect,
+    PyTablesDocumentModel as TablesDocumentModel,
+    PyTablesTzValidator as TablesTzValidator,
+} from '/snippets/tables.mdx';
+
+In LanceDB, tables store records with a defined schema that specifies column names and types. Across the SDKs, you can create tables from row-oriented data and Apache Arrow data structures. The Python SDK additionally supports:
+
+- PyArrow schemas for explicit schema control
+- `LanceModel` for Pydantic-based validation
+
+## Create a table with data {#create-a-table-with-data}
+
+Initialize a LanceDB connection and create a table
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {TablesBasicConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsConnect}
+    </CodeBlock>
+</CodeGroup>
+
+Depending on the SDK, LanceDB can ingest arrays of records, Arrow tables or record batches, and Arrow batch iterators or readers. Let's take a look at some of the common patterns.
+
+### From list of objects {#from-list-of-objects}
+
+You can provide a list of objects to create a table. The Python and TypeScript SDKs
+support lists/arrays of dictionaries, while the Rust SDK supports lists of structs.
+In Python, pass a list or other batch-like object; a single bare `dict` or single
+`LanceModel` is rejected.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableFromDicts}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateTableFromDicts}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateTableFromDicts}
+    </CodeBlock>
+</CodeGroup>
+
+### Handle existing tables {#handle-existing-tables}
+
+By default, `create_table` raises an error if a table with the same name already exists.
+You can change this behavior with two parameters that resolve the conflict in different ways:
+
+- **Idempotent open**: return the existing table without modifying it. Use when your
+  code may run more than once (notebooks, retries, init scripts) and you want to reuse
+  the table on subsequent runs. The provided data is ignored, but the schema is
+  validated against the existing table and a mismatch raises an error.
+- **Overwrite**: drop the existing table and create a new one with the provided data.
+  Use this for test fixtures or when you intentionally want to replace prior contents.
+  This permanently discards the old table's data.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableConflictHandling}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateTableConflictHandling}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateTableConflictHandling}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+`exist_ok` / `existOk` does not append the provided data to an existing table. Use
+[`table.add()`](/tables/update) for that. If you need to ensure a table exists *and*
+contains specific rows, prefer the [empty-table-then-add pattern](#create-empty-table).
+</Note>
+
+### From a custom schema {#from-a-custom-schema}
+
+You can define a custom Arrow schema for the table. This is useful when you want to have more control over the column types and metadata.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableCustomSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateTableCustomSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateTableCustomSchema}
+    </CodeBlock>
+</CodeGroup>
+
+An explicit schema is also where you control nullability. If later writes omit a
+non-nullable column, or provide actual nulls for it, ingestion fails; nullable columns can be
+omitted or written with null values. Without an explicit schema, Python infers list-like vector
+values as fixed-size `float32` vector fields from the observed dimension.
+
+For Python ingest, malformed vector values fail by default. If you expect occasional wrong-length,
+null, or NaN vectors, choose an `on_bad_vectors` policy: `"drop"` removes those rows, `"fill"` writes
+`fill_value`, and `"null"` writes nulls.
+
+### From an Arrow Table {#from-an-arrow-table}
+You can also create LanceDB tables directly from Arrow tables.
+Rust uses an Arrow `RecordBatchReader` for the same Arrow-native ingest flow.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableFromArrow}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateTableFromArrow}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateTableFromArrow}
+    </CodeBlock>
+</CodeGroup>
+
+
+### From a Pandas DataFrame {#from-a-pandas-dataframe}
+<Badge color="green">Python Only</Badge>
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableFromPandas}
+    </CodeBlock>
+</CodeGroup>
+
+<Note title="Note">
+Data is converted to Arrow before being written to disk. For maximum control over how data is saved, either provide the PyArrow schema to convert to or else provide a PyArrow Table directly.
+</Note>
+
+<Note title="Vector Column Type">
+The **`vector`** column needs to be a [Vector](/integrations/data/pydantic#vector-field) (defined as [pyarrow.FixedSizeList](https://arrow.apache.org/docs/python/generated/pyarrow.list_.html)) type.
+</Note>
+
+### From a Polars DataFrame {#from-a-polars-dataframe}
+<Badge color="green">Python Only</Badge>
+
+LanceDB supports [Polars](https://pola.rs/), a modern, fast DataFrame library
+written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow
+under the hood. A deeper integration between LanceDB Tables and Polars DataFrames
+is on the way.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableFromPolars}
+    </CodeBlock>
+</CodeGroup>
+
+### From Pydantic Models {#from-pydantic-models}
+<Badge color="green">Python Only</Badge>
+
+When you create an empty table without data, you must specify the table schema.
+LanceDB supports creating tables by specifying a PyArrow schema or a specialized
+Pydantic model called `LanceModel`.
+
+For example, the following Content model specifies a table with 5 columns:
+`movie_id`, `vector`, `genres`, `title`, and `imdb_id`. When you create a table, you can
+pass the class as the value of the `schema` parameter to `create_table`.
+The `vector` column is a `Vector` type, which is a specialized Pydantic type that
+can be configured with the vector dimensions. It is also important to note that
+LanceDB only understands subclasses of `lancedb.pydantic.LanceModel`
+(which itself derives from `pydantic.BaseModel`).
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableFromPydantic}
+    </CodeBlock>
+</CodeGroup>
+
+#### Nested schemas {#nested-schemas}
+
+Sometimes your data model may contain nested objects. For example, you may want to store the document string and the document source name as a nested Document object:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {TablesDocumentModel}
+    </CodeBlock>
+</CodeGroup>
+
+This can be used as the type of a LanceDB table column:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableNestedSchema}
+    </CodeBlock>
+</CodeGroup>
+
+This creates a struct column called "document" that has two subfields
+called "content" and "source":
+
+```bash
+In [28]: tbl.schema
+Out[28]:
+id: string not null
+vector: fixed_size_list<item: float>[1536] not null
+    child 0, item: float
+document: struct<content: string not null, source: string not null> not null
+    child 0, content: string not null
+    child 1, source: string not null
+```
+
+#### Validators {#validators}
+
+Because `LanceModel` inherits from Pydantic's `BaseModel`, you can combine them with Pydantic's
+[field validators](https://docs.pydantic.dev/latest/concepts/validators). The example
+below shows how to add a validator to ensure that only valid timezone-aware datetime objects are used
+for a `created_at` field.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {TablesTzValidator}
+    </CodeBlock>
+</CodeGroup>
+
+When you run this code it, should raise the `ValidationError`.
+
+### Loading Large Datasets {#loading-large-datasets}
+
+When ingesting large datasets, use `table.add()` on an existing table rather than
+passing all data to `create_table()`. The `add()` method auto-parallelizes large
+writes, while `create_table(name, data)` does not.
+
+<Tip>
+For best performance with large datasets, create an empty table first and then call
+`table.add()`. This enables automatic write parallelism for materialized data sources.
+</Tip>
+
+#### From files (Parquet, CSV, etc.) {#from-files-parquet-csv-etc}
+<Badge color="green">Python Only</Badge>
+
+For file-based data, pass a `pyarrow.dataset.Dataset` to `table.add()`. This streams
+data from disk without loading the entire dataset into memory.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddFromDataset}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+`pa.dataset()` input is currently Python-only. TypeScript and Rust support for
+file-based dataset ingestion is tracked in
+[lancedb#3173](https://github.com/lancedb/lancedb/issues/3173).
+</Note>
+
+#### From iterators (custom batch generation) {#from-iterators-custom-batch-generation}
+
+When you need custom batch logic — generating embeddings on the fly, transforming
+rows from an external source, etc. — use an iterator of `RecordBatch` objects.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableFromIterator}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateTableFromIterator}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateTableFromIterator}
+    </CodeBlock>
+</CodeGroup>
+
+Use this pattern when:
+
+- Your source data already arrives in Arrow batches, readers, datasets, or streams.
+- Materializing the entire ingest as one giant in-memory list or array would be too expensive.
+- You want to control chunk size explicitly during ingestion.
+
+Python can also consume iterators of other supported types like Pandas DataFrames or Python lists.
+
+#### Write parallelism {#write-parallelism}
+
+<Note title="Automatic parallelism">
+For materialized data (`pa.Table`, `pd.DataFrame`, `pa.dataset()`), LanceDB
+automatically parallelizes large writes — no configuration needed. Auto-parallelism
+targets approximately 1M rows or 2GB per write partition.
+
+For streaming sources (iterators, `RecordBatchReader`), LanceDB cannot determine
+total size upfront. A `parallelism` parameter to control this manually is planned
+but not yet exposed in Python or TypeScript
+([tracking issue](https://github.com/lancedb/lancedb/issues/3173)).
+</Note>
+
+#### Tracking ingestion progress {#tracking-ingestion-progress}
+<Badge color="green">TypeScript Only</Badge>
+
+For long-running writes, pass a `progress` callback to `table.add()` to surface
+per-batch progress in your UI, logs, or metrics pipeline. The callback fires
+once per batch written and once more with `done: true` when the write completes.
+
+Each invocation receives a `WriteProgress` object:
+
+| Field | Description |
+|:------|:------------|
+| `outputRows` | Rows written so far. |
+| `outputBytes` | Bytes written so far. |
+| `totalRows` | Expected total rows when the input source reports one. Always set on the final callback. |
+| `elapsedSeconds` | Wall-clock seconds since the write started. |
+| `activeTasks` | Parallel write tasks currently in flight. |
+| `totalTasks` | Total parallel write tasks (the write parallelism). |
+| `done` | `true` only for the final callback. |
+
+<CodeGroup>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddProgress}
+    </CodeBlock>
+</CodeGroup>
+
+A few things to know before you wire this up:
+
+- Back-pressures the writer: callback invocations are serialized and run inline with each batch, so a slow callback will slow the write rather than drop updates. Every batch update is delivered, and the final `done: true` callback always fires (even on error or cancellation). Keep the callback cheap — offload heavy work to a queue you drain elsewhere.
+- Errors swallowed: anything your callback throws is logged with `console.warn` and won't abort the write, so keep the callback side-effect-only and don't rely on it for control flow.
+- Row totals: `totalRows` is only populated when the input source can report it up front (for example, a materialized `arrow.Table`). For streaming sources it stays `undefined` until the final callback, where it falls back to the actual rows written.
+
+## Create empty table {#create-empty-table}
+You can create an empty table for scenarios where you want to add data to the table later.
+An example would be when you want to collect data from a stream/external file and then add it to a table in
+batches.
+
+An empty table can be initialized via an Arrow schema.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateEmptyTable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateEmptyTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateEmptyTable}
+    </CodeBlock>
+</CodeGroup>
+
+Alternatively, you can also use Pydantic to specify the schema for the empty table. Note that we do not
+directly import `pydantic` but instead use `lancedb.pydantic` which is a subclass of `pydantic.BaseModel`
+that has been extended to support LanceDB specific types like `Vector`.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateEmptyTablePydantic}
+    </CodeBlock>
+</CodeGroup>
+
+Once the empty table has been created, you can append to it or modify its contents,
+as explained in the [updating and modifying tables](/tables/update) section.
+
+## Open an existing table {#open-an-existing-table}
+
+You can open an existing table by specifying the name of the table to the `open_table` / `openTable` method.
+If you forget the name of your table, you can always get a listing of all table names.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {OpenExistingTable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsOpenExistingTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsOpenExistingTable}
+    </CodeBlock>
+</CodeGroup>
+
+## Drop a table {#drop-a-table}
+
+Use the `drop_table()` method on the database to remove a table.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DropTable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDropTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDropTable}
+    </CodeBlock>
+</CodeGroup>
+
+This permanently removes the table and is not recoverable, unlike deleting rows.
+By default, if the table does not exist an exception is raised. To suppress this,
+you can pass in `ignore_missing=True`.

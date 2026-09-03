@@ -1,0 +1,165 @@
+---
+title: "Full-Text Search (FTS) Index"
+sidebarTitle: "FTS index"
+description: "Create and tune BM25-based full-text search indexes in LanceDB."
+icon: "book"
+---
+import { PyFtsIndexAsync as FtsIndexAsync, PyFtsIndexCreate as FtsIndexCreate, PyFtsIndexNested as FtsIndexNested, PyFtsIndexWait as FtsIndexWait } from '/snippets/indexing.mdx';
+
+LanceDB provides performant full-text search based on BM25, allowing you to incorporate keyword-based search in your retrieval solutions. This page shows
+examples on how to create and configure FTS indexes in LanceDB OSS and Enterprise, using the synchronous and asynchronous APIs.
+
+<Note>
+In LanceDB Enterprise, `create_fts_index` API returns immediately, but index building happens asynchronously.
+</Note>
+
+## Creating FTS Indexes {#creating-fts-indexes}
+
+### Synchronous API {#synchronous-api}
+
+Use `create_fts_index` with synchronous LanceDB connections:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {FtsIndexCreate}
+    </CodeBlock>
+</CodeGroup>
+
+Check FTS index status using the API:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {FtsIndexWait}
+    </CodeBlock>
+</CodeGroup>
+
+`wait_for_index(...)` waits until the named FTS index exists and `index_stats(...)` reports `num_unindexed_rows == 0`. It can time out if writes keep adding rows faster than the index catches up. If a table has multiple FTS indexes, specify the target text column when querying instead of relying on implicit selection.
+
+### Asynchronous API {#asynchronous-api}
+
+When using async connections (`connect_async`), use `create_index` with the `FTS` configuration:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {FtsIndexAsync}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+The `create_fts_index` method is not available on `AsyncTable`. Use `create_index` with `FTS` config instead.
+</Note>
+
+The current FTS implementation is Lance-native. Legacy Tantivy-only options, including
+`use_tantivy`, are no longer accepted by the index creation APIs.
+
+## Nested field paths {#nested-field-paths}
+
+FTS indexes can target text leaves inside struct columns by passing a dotted path (for example, `payload.text`). The same path works for [`MatchQuery`](/search/full-text-search) and [`PhraseQuery`](/search/full-text-search), and for the `columns` argument on async `nearest_to_text` queries.
+
+You can point an index at any string leaf nested in a struct, regardless of depth. The struct container itself isn't indexable: you have to name a specific text field.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {FtsIndexNested}
+    </CodeBlock>
+</CodeGroup>
+
+LanceDB rejects paths that don't resolve to a text leaf:
+
+- A struct container (for example, `payload`): raises `ValueError: FTS index cannot be created ...`.
+- A non-text leaf such as an integer or float (for example, `payload.count`): raises the same error.
+- A path that doesn't exist in the schema (for example, `payload.missing`): raises `ValueError: Field path ... not found`.
+
+The async API accepts the same dotted paths through `create_index`:
+
+```python Python icon="python"
+from lancedb.index import FTS
+
+await async_table.create_index("payload.text", config=FTS(with_position=True))
+```
+
+## Configuration Options {#configuration-options}
+
+### FTS Parameters {#fts-parameters}
+
+| Parameter | Type | Default | Description |
+|:----------|:-----|:--------|:------------|
+| `with_position` | bool | `False` | Store token positions (required for phrase queries) |
+| `base_tokenizer` | str | `"simple"` | Text splitting method (`simple`, `whitespace`, `raw`, `ngram`, `icu`, `jieba/*`, or `lindera/*`) |
+| `language` | str | `"English"` | Language for stemming and stop-word filters. Choose CJK and mixed-language segmentation with `base_tokenizer`. |
+| `max_token_length` | int | `40` | Maximum token size; longer tokens are omitted |
+| `lower_case` | bool | `True` | Lowercase tokens |
+| `stem` | bool | `True` | Apply stemming (`running` → `run`) |
+| `remove_stop_words` | bool | `True` | Drop common stop words |
+| `ascii_folding` | bool | `True` | Normalize accented characters |
+| `custom_stop_words` | list[str] | `None` | Extra stop words to drop in addition to the language defaults. Requires `remove_stop_words=True`. |
+| `ngram_min_length` | int | `3` | Minimum n-gram length. Applies only when `base_tokenizer="ngram"`. |
+| `ngram_max_length` | int | `3` | Maximum n-gram length. Applies only when `base_tokenizer="ngram"`. |
+| `prefix_only` | bool | `False` | Index only prefix n-grams rather than all substrings. Applies only when `base_tokenizer="ngram"`. |
+| `block_size` | int | `128` | Number of documents per compressed posting block. Supported values are `128` and `256`. Setting this to `256` opts in to the experimental FTS V3 layout. |
+
+<Note title="Key parameters">
+- `max_token_length` can filter out base64 blobs or long URLs.
+- Disabling `with_position` reduces index size but disables phrase queries.
+- `ascii_folding` helps with international text (e.g., “café” → “cafe”).
+</Note>
+
+### Tokenizer choices {#tokenizer-choices}
+
+`base_tokenizer` controls segmentation before token filters run:
+
+- `simple`, `whitespace`, and `raw` cover common tokenization strategies for space-delimited text.
+- `ngram` indexes overlapping character spans for substring-style matching.
+- `icu` uses bundled ICU4X word segmentation for mixed-language text and scripts where whitespace splitting is not enough. ICU stands for [International Components for Unicode](https://icu.unicode.org/), and this tokenizer does not need external model files.
+- `jieba/*` is for Chinese word segmentation with Jieba.
+- `lindera/*` loads a compiled Lindera dictionary, such as `lindera/ipadic` for Japanese or `lindera/ko-dic` for Korean.
+
+Model-backed tokenizers such as `jieba/default`, `lindera/ipadic`, and `lindera/ko-dic` require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to another model root. For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`.
+
+`language` is used by token filters, not by the base tokenizer. Stemming supports Arabic, Danish, Dutch, English, Finnish, French, German, Greek, Hungarian, Italian, Norwegian, Portuguese, Romanian, Russian, Spanish, Swedish, Tamil, and Turkish. Built-in stop-word removal supports Danish, Dutch, English, Finnish, French, German, Hungarian, Italian, Norwegian, Portuguese, Russian, Spanish, and Swedish. For other stemming languages, set `remove_stop_words=False` or pass `custom_stop_words`.
+
+### Posting block size {#posting-block-size}
+
+`block_size` controls the number of documents packed into each compressed posting block on disk. The default of `128` matches the current FTS layout and is the right choice for most workloads. Setting it to `256` opts in to the experimental FTS V3 format, which changes how postings are encoded and may introduce breaking changes in future releases. Any other value is rejected at index creation time.
+
+You can set the option through either the synchronous or asynchronous API. In the async Python API, pass it on the `FTS` config, and in the TypeScript API use the camelCase `blockSize` field on `FtsOptions`:
+
+```python Python icon="python"
+from lancedb.index import FTS
+
+await async_table.create_index("text", config=FTS(block_size=256))
+```
+
+```typescript TypeScript icon="square-js"
+await table.createIndex("text", {
+  config: lancedb.Index.fts({ blockSize: 256 }),
+});
+```
+
+### Phrase Query Configuration {#phrase-query-configuration}
+
+Enable phrase queries by setting:
+
+| Parameter | Required Value | Purpose |
+|:----------|:---------------|:--------|
+| `with_position` | `True` | Track token positions for phrase matching |
+| `remove_stop_words` | `False` | Preserve stop words for exact phrase matching |
+
+## Indexing nested string fields {#indexing-nested-string-fields}
+
+You can build an FTS index on a string field inside a struct by passing its full dotted path, like `nested.text`. The same path is used when you query the index through `fts_columns`, and the indexed column is reported back as the full path from `list_indices()`.
+
+```python
+# Schema: pa.struct([pa.field("text", pa.string())]) stored under the `nested` column.
+table.create_fts_index("nested.text")
+
+results = (
+    table.search("puppy", query_type="fts", fts_columns="nested.text")
+    .limit(5)
+    .to_list()
+)
+```
+
+<Note>
+Use the canonical Lance path: dot-separate each struct field from root to leaf (for example, `metadata.author.name`). The same convention applies to scalar and vector indexes.
+</Note>

@@ -1,0 +1,453 @@
+---
+title: "Vector Search"
+sidebarTitle: Vector search
+description: "Learn how to run vector search queries in LanceDB. Includes best practices, tips and examples."
+icon: "arrow-up-right-dots"
+---
+import {
+    PyConfigureDistanceMetric as ConfigureDistanceMetric,
+    PySelectVectorColumn as SelectVectorColumn,
+    PyIndexNestedColumn as IndexNestedColumn,
+    PyExactVsApproximateDistances as ExactVsApproximateDistances,
+    PyVectorSearchPrefilter as VectorSearchPrefilter,
+    PyVectorSearchPostfilter as VectorSearchPostfilter,
+    PyMultivectorSearch as MultivectorSearch,
+    PySearchDistanceRange as SearchDistanceRange,
+    PySearchBinaryVectors as SearchBinaryVectors,
+    PyBatchSearch as BatchSearch,
+    PyFastSearch as FastSearch,
+    PyBruteForceSearch as BruteForceSearch,
+    PyBypassVectorIndex as BypassVectorIndex,
+    TsSearch2,
+    TsSelectVectorColumn,
+    TsIndexNestedColumn,
+    TsExactVsApproximate,
+    TsVectorSearchPrefilter,
+    TsVectorSearchPostfilter,
+    TsDistanceRange,
+    TsBinarySearch,
+    TsBatchSearch,
+    TsFastSearch,
+    TsBruteForceSearch,
+    TsBypassVectorIndex,
+    RsConfigureDistanceMetric,
+    RsExactVsApproximate,
+    RsVectorSearchPrefilter,
+    RsVectorSearchPostfilter,
+    RsSearchDistanceRange,
+    RsFastSearch,
+    RsBruteForceSearch,
+    RsBypassVectorIndex,
+    RsBatchSearch,
+    RsBinarySearch,
+} from '/snippets/search.mdx';
+
+Vector search is a technique used to search for similar items based on their vector representations, called embeddings. It is also known as similarity search, nearest neighbor search, or approximate nearest neighbor search.
+
+![](/static/assets/images/search/vector-db-basics.png)
+
+Raw data (e.g. text, images, audio, etc.) is converted into embeddings via an embedding model, which are then stored in a multimodal lakehouse like LanceDB. To perform similarity search at scale, an index is created on the stored embeddings, which can then used to perform fast lookups.
+
+## Supported distance metrics {#supported-distance-metrics}
+
+Distance metrics determine how LanceDB compares vectors to find similar matches. Euclidean or `l2` is the default, and used for general-purpose similarity, `cosine` for unnormalized embeddings, `dot` for normalized embeddings (best performance), or `hamming` for binary vectors. 
+
+<Warning>
+Ensure you always use the same distance metric that your embedding model was trained with. Most modern embedding models use cosine similarity, so `cosine` is often the best choice. However, if your vectors are normalized, you should use `dot` for best performance.
+</Warning>
+
+The right metric improves both search accuracy and query performance. Currently, LanceDB supports the following metrics:
+
+| Distance metric | Mathematical form | Notes |
+|---|---|---|
+| `l2` | $\|x-y\|_2=\sqrt{\sum_i (x_i-y_i)^2}$ | Measures the straight-line distance between two points in vector space. Calculated as the square root of the sum of squared differences between corresponding vector components. |
+| `cosine` | $1-\frac{x\cdot y}{\|x\|_2\|y\|_2}$ | Measures directional difference between vectors. Computed as 1 minus cosine similarity (the dot product normalized by both vector magnitudes), so vector length does not affect the score. Use for unnormalized vectors. |
+| `dot` | $x\cdot y=\sum_i x_i y_i$ | Calculates the sum of products of corresponding vector components. Provides raw similarity scores without normalization, sensitive to vector magnitudes. Use for normalized vectors for best performance. |
+| `hamming` | $\sum_i \mathbf{1}[x_i\neq y_i]$ | Counts the number of positions where corresponding bits differ between binary vectors. Only applicable to binary vectors stored as packed uint8 arrays. |
+
+For indexed search, supported distance metrics vary by index type:
+
+| Index type | Supported distance metrics |
+|---|---|
+| `IVF_FLAT` | `["l2", "cosine", "dot", "hamming"]` |
+| `IVF_PQ` | `["l2", "cosine", "dot"]` |
+| `IVF_SQ` | `["l2", "cosine", "dot"]` |
+| `IVF_RQ` | `["l2", "cosine", "dot"]` |
+| `IVF_HNSW_FLAT` | `["l2", "cosine", "dot"]` |
+| `IVF_HNSW_PQ` | `["l2", "cosine", "dot"]` |
+| `IVF_HNSW_SQ` | `["l2", "cosine", "dot"]` |
+
+### Configure Distance Metric {#configure-distance-metric}
+
+By default, `l2` will be used as metric type. You can specify the metric type as
+`cosine` or `dot` if required (`hamming` is supported for `IVF_FLAT` index only).
+
+**Note:** You can configure the distance metric during search only if there's no vector index. If a vector index exists, the distance metric will always be the one you specified when creating the index.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{ConfigureDistanceMetric}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsSearch2}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsConfigureDistanceMetric}
+</CodeBlock>
+</CodeGroup>
+
+Here you can see the same search but using `cosine` similarity instead of `l2` distance. The result focuses on vector direction rather than absolute distance, which works better for normalized embeddings.
+
+Set `.limit(...)` on vector searches you run in applications. You can page through results with `.offset(...)` and include LanceDB's internal row id with `.with_row_id()` / `.withRowId()` when you need a stable handle for follow-up operations.
+
+## Selecting the vector column {#selecting-the-vector-column}
+
+If your table has exactly one vector column, you can omit the column name and LanceDB will pick it for you. This works for both top-level columns (such as `vector`) and vector fields nested inside a struct (such as `image.embedding`).
+
+When LanceDB can't infer a single column, it raises a `ValueError` (Python) or rejects the query (Node/Rust). Two cases trigger this:
+
+- No vector column: the schema has no `fixed_size_list` or `list` of floats.
+- Multiple candidates: more than one column matches the query's dimension. The error lists every candidate path so you can pick one explicitly.
+
+To disambiguate, pass the field path with dot notation. Wrap any segment that contains characters outside `[A-Za-z0-9_]` in backticks (for example, `` `image-meta`.`embedding.v1` ``).
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{SelectVectorColumn}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsSelectVectorColumn}
+</CodeBlock>
+</CodeGroup>
+
+The same field-path syntax works when creating an index on a nested vector column:
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{IndexNestedColumn}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsIndexNestedColumn}
+</CodeBlock>
+</CodeGroup>
+
+When several columns share a name across structs (for example, `image.embedding` and `text.embedding`), LanceDB still picks the one whose dimension matches your query vector. If two candidates have the same dimension, you must pass the column name explicitly.
+
+## Vector Search With ANN Index {#vector-search-with-ann-index}
+
+Instead of performing an exhaustive search on the entire database for each and every query, approximate nearest neighbour (ANN) algorithms use an index to narrow down the search space, which significantly reduces query latency. 
+
+The trade-off is that the results are not guaranteed to be the true nearest neighbors of the query, but are usually "good enough" for most use cases.
+
+Use ANN search for large-scale applications where speed matters more than perfect recall. LanceDB uses approximate nearest neighbor algorithms to deliver fast results without examining every vector in your dataset.
+
+<Warning>
+When a vector index is used, `_distance` is not always the true distance between full vectors. On quantized ANN indexes, LanceDB may compute `_distance` from the compressed representation for speed. Use `refine_factor` when you want reranking on full vectors.
+</Warning>
+
+### Exact vs Approximate Distances {#exact-vs-approximate-distances}
+
+When doing vector search, the meaning of "distance" depends on whether you are using an index and whether `refine_factor` is specified as part of your query.
+`nprobes` controls how many partitions are searched to find candidates, `approx_mode` controls the query-time speed/recall trade-off for RQ-quantized indexes, and `refine_factor` controls how many candidates are rescored on full vectors for better distance fidelity and reranking quality.
+
+The table below summarizes the behavior of `_distance` in search results based on your query configuration:
+
+| Query mode | Neighbor quality | `_distance` in results |
+| :--- | :--- | :--- |
+| No index or `.bypass_vector_index()` | Exact kNN (100% recall) | True distance on full vectors |
+| Indexed ANN, no `refine_factor` | Approximate neighbors | Distance on the index representation: exact for flat indexes, approximate for quantized indexes |
+| Indexed ANN + `refine_factor(1)` | Approximate neighbors (same candidate set) | Distances recomputed on full vectors for reranked candidates |
+| Indexed ANN + `refine_factor(>1)` | Better recall than no refine (usually) | Distances recomputed on full vectors for reranked candidates |
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{ExactVsApproximateDistances}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsExactVsApproximate}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsExactVsApproximate}
+</CodeBlock>
+</CodeGroup>
+
+For deeper tuning guidance on indexing and performance estimation, see the [vector indexes](/indexing/vector-index/#search-configuration) page,
+For tuning `nprobes`, see below.
+
+### Tuning approximate mode {#tuning-approximate-mode}
+
+Use `approx_mode` when you want to adjust the speed/recall trade-off for approximate vector search at query time. This setting currently applies only to RQ-quantized indexes, such as `IVF_RQ`; other index types ignore it.
+
+The supported values are:
+
+| Value | Behavior |
+| :--- | :--- |
+| `fast` | Prefer lower query latency, which can reduce recall. |
+| `normal` | Use the default balance between query latency and recall. This only has an effect for RQ indexes built with `num_bits > 1`. |
+| `accurate` | Prefer higher recall, which can increase query latency. |
+
+You can change `approx_mode` per query without rebuilding the index. For RQ indexes built with `num_bits=1`, `normal` uses the same one-bit scoring path as `fast`. If you also set `refine_factor`, LanceDB first uses `approx_mode` while finding candidates, then reranks the selected candidates on full vectors.
+
+### Tuning `nprobes` {#tuning-nprobes}
+
+- `nprobes` controls how many partitions are searched at query time.
+- `nprobes` improves candidate recall, but does not by itself make `_distance` exact.
+- By default, LanceDB automatically tunes `nprobes` to achieve the best performance without noticeably sacrificing accuracy.
+- In most cases, leave `nprobes` unset and use the auto-tuned value.
+- Only tune `nprobes` manually when recall is below your target, or when you need even higher performance for your workload.
+- If recall is too low, increase `nprobes` gradually, but after a certain threshold, increasing `nprobes` yields only marginal accuracy gains.
+- If you need higher performance and have recall headroom, decrease `nprobes` gradually.
+
+For filtered ANN searches, you can also set `minimum_nprobes` and `maximum_nprobes`. LanceDB starts
+with the minimum and can scan more partitions up to the maximum if the filter leaves too few
+candidates. Calling `nprobes(n)` fixes both values to `n`, which disables that adaptive behavior.
+
+### Vector Search with Prefiltering {#vector-search-with-prefiltering}
+
+This is the default vector search setting. You can use prefiltering to boost query performance by reducing the search space before vector calculations begin. The system first applies your filter criteria to the dataset, then conducts vector search operations only on the remaining relevant subset.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{VectorSearchPrefilter}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsVectorSearchPrefilter}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsVectorSearchPrefilter}
+</CodeBlock>
+</CodeGroup>
+
+This filters out rows where label ≤ 2 before doing vector search, then picks specific columns from the top 5 matches. 
+
+The `.where("label > 2")` applies a filter before vector search, `.select(["text", "keywords", "label"])` chooses specific columns to return, and `.limit(5)` restricts results to the top `5` most similar vectors. 
+
+As a result, you'll see a result with just the data you want from the most similar vectors.
+
+### Vector Search with Postfiltering {#vector-search-with-postfiltering}
+
+Use postfiltering to prioritize vector similarity by searching the full dataset first, then applying metadata filters to the top results. This approach ensures you get the most similar vectors before filtering, which can be crucial when similarity is more important than metadata constraints.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{VectorSearchPostfilter}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsVectorSearchPostfilter}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsVectorSearchPostfilter}
+</CodeBlock>
+</CodeGroup>
+
+Here you can see how to do vector search first to get the most similar vectors, then filter by label > 1 on those results. 
+
+The `prefilter=False` parameter tells LanceDB to apply the filter after vector search instead of before, `.where("label > 1")` filters the top results by metadata, and `.select()` chooses which columns to include. 
+
+In the end, you receive a query result with the best matches that also meet your metadata requirements.
+
+<Card icon="book">
+[Post-filtering](/search/filtering/#post-filtering-with-vector-search) in LanceDB applies
+the filter condition after obtaining the nearest neighbors based on vector similarity.
+</Card>
+
+## Multivector Search {#multivector-search}
+
+Use multivector search when your documents contain multiple embeddings and you need sophisticated matching between query and document vector pairs. The late interaction approach finds the most relevant combinations across all available embeddings and provides nuanced similarity scoring.
+
+Only `cosine` similarity is supported as the distance metric for multivector search operations.
+Every query vector must match the inner dimension of the multivector column; LanceDB rejects mismatched query dimensions rather than guessing how to reshape them.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{MultivectorSearch}
+</CodeBlock>
+</CodeGroup>
+
+Here you can see how to take 2 query vectors and find the best matching pairs between them and document vectors using late interaction. The `np.random.random(size=(2, 256))` creates a 2×256 array with two random query vectors, `.limit(5)` returns the top 5 best document-query combinations, and `.to_pandas()` provides results in a DataFrame format. 
+
+**Read more:** [Multivector search](/search/multivector-search/)
+
+## Advanced Search Scenarios {#advanced-search-scenarios}
+
+### Search With Distance Range {#search-with-distance-range}
+
+Use `distance_range` search when you need vectors within particular similarity bounds rather than just the closest neighbors. The system filters results to only include vectors that fall within your specified distance thresholds from the query.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{SearchDistanceRange}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsDistanceRange}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsSearchDistanceRange}
+</CodeBlock>
+</CodeGroup>
+
+This shows three ways to search within distance ranges: bounded, upper bound only, and lower bound only. 
+
+The `distance_range()` method filters results by similarity thresholds - the first example finds vectors with distance between `0.1` and `0.5`, the second finds vectors closer than `0.5`, and the third finds vectors farther than `0.1`. 
+
+  Each approach returns Arrow tables with vectors that fall within your specified distance thresholds.
+
+### Search With Binary Vectors {#search-with-binary-vectors}
+
+Use binary vector search for scenarios involving binary embeddings, such as those produced by hashing algorithms. The system stores these efficiently as packed uint8 arrays and uses Hamming distance calculations to determine vector similarity.
+
+<Tip>
+The number of dimensions of the binary vector must be a multiple of 8. A vector of dimensionality 128 will be stored as a `uint8` array of size 16.
+</Tip>
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{SearchBinaryVectors}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsBinarySearch}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsBinarySearch}
+</CodeBlock>
+</CodeGroup>
+
+Here you can see how to set up a table for binary vectors, pack them efficiently into bytes, and search using Hamming distance. 
+
+The schema defines a 32-byte vector field (256 bits ÷ 8), `np.random.randint(0, 2, size=256)` creates binary vectors, `np.packbits()` compresses them to bytes, and `.distance_type("hamming")` specifies `hamming` distance for similarity calculation. 
+
+The search produces an Arrow table with binary vectors ranked by how many bits differ from the query.
+
+## Scaling Vector Search {#scaling-vector-search}
+
+### Batch Search {#batch-search}
+
+Use batch search to handle multiple query vectors simultaneously. This gives you significant efficiency gains over individual queries. LanceDB processes all vectors in parallel and organizes results with a `query_index` field that maps each result set back to its originating query.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{BatchSearch}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsBatchSearch}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsBatchSearch}
+</CodeBlock>
+</CodeGroup>
+
+This takes 5 query embeddings and finds the top 5 matches for each one in a single batch operation. 
+
+The `load_dataset()` loads embeddings from a Hugging Face dataset, `query_embeds` contains `5` query vectors, and `.search(query_embeds)` processes all queries simultaneously. 
+
+The final query result contains all results, including a `query_index` to tell you which query each result came from.
+
+<Tip>
+When processing batch queries, the results include a `query_index` field 
+to explicitly associate each result set with its corresponding query in 
+the input batch. 
+</Tip>
+
+### Search With Asynchronous Indexing {#search-with-asynchronous-indexing}
+
+To optimize for speed over completeness, enable the `fast_search` flag in your query to skip searching unindexed data.
+
+While vector indexing occurs asynchronously, newly added vectors are immediately 
+searchable through a fallback brute-force search mechanism. This ensures zero 
+latency between data insertion and searchability, though it may temporarily 
+increase query response times. 
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{FastSearch}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsFastSearch}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsFastSearch}
+</CodeBlock>
+</CodeGroup>
+
+Here you can see how to turn on fast search mode to skip unindexed vectors and only look through indexed data for speed. 
+
+The `fast_search=True` parameter tells LanceDB to only search indexed vectors, skipping any recently added data that hasn't been indexed yet. 
+
+You'll obtain a query result with the top `5` matches from indexed vectors, but might miss data that was just added.
+
+## Brute Force Search {#brute-force-search}
+
+### Search With No Index {#search-with-no-index}
+
+The simplest way to perform vector search is to perform a brute force search, without an index, where the distance between the query vector and all the vectors in the database are computed, with the top-k closest vectors returned. 
+
+This is equivalent to a k-nearest neighbours (kNN) search in vector space.
+
+Choose brute force search when you need guaranteed 100% recall, typically with smaller datasets where query speed isn't the primary concern. The system scans every vector in the table and calculates precise distances to find the exact nearest neighbors.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{BruteForceSearch}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsBruteForceSearch}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsBruteForceSearch}
+</CodeBlock>
+</CodeGroup>
+
+This carries out a brute force search through every vector in the table to find the 3 closest matches to a random 1536-dimensional query. You'll get back a list of the most similar vectors with exact distances.
+
+![](/static/assets/images/search/knn_search.png)
+
+As you can imagine, the brute force approach is not scalable for datasets larger than a few hundred thousand vectors, as the latency of the search grows linearly with the size of the dataset. This is where approximate nearest neighbour (ANN) algorithms come in.
+
+### Bypass the Vector Index {#bypass-the-vector-index}
+
+Use `bypass_vector_index` to get exact, ground-truth results by performing exhaustive searches across all vectors. Instead of relying on approximate methods, the system directly compares your query against every vector in the table, ensuring 100% recall at the cost of increased query time.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{BypassVectorIndex}
+</CodeBlock>
+
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsBypassVectorIndex}
+</CodeBlock>
+
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsBypassVectorIndex}
+</CodeBlock>
+</CodeGroup>
+
+This skips the approximate index and checks every single vector for exact, ground-truth results. 
+
+The `.bypass_vector_index()` method forces LanceDB to perform an exhaustive search through all vectors instead of using the approximate nearest neighbor index, ensuring exact results but at the cost of slower performance. 
+
+The output is a query result with the top 5 exact matches, guaranteeing 100% recall but taking longer to run.
+
+This approach is particularly useful when:
+- Evaluating ANN index quality
+- Calculating recall metrics to tune index parameters
+- Ensuring exact results for critical applications

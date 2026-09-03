@@ -1,0 +1,99 @@
+---
+title: "Lance format"
+sidebarTitle: "Lance format"
+description: "Open-source lakehouse format for multimodal AI."
+icon: "/static/assets/logo/lance-logo-gray.svg"
+---
+
+[Lance](https://lance.org/) is an open-source, columnar lakehouse format for multimodal AI.
+It provides a file format, table format, and lightweight catalog spec, allowing developers
+to build a complete open lakehouse on top of object storage.
+
+Building on top of open foundations and optimizing the format for random access
+(without compromising scan performance) enables
+high-performance vector search, full-text search, indexing, and feature engineering capabilities.
+[LanceDB](/enterprise) builds on these capabilities so teams can work with one multimodal data layer
+instead of moving data across separate storage, search, feature, and training systems.
+
+<Card
+  title="Lance format documentation"
+  icon="/static/assets/logo/lance-logo-gray.svg"
+  href="https://lance.org/format"
+>
+  Visit the Lance format documentation to learn more about its design, features, and how it enables the multimodal lakehouse.
+</Card>
+
+## Capabilities of the Lance format {#capabilities-of-the-lance-format}
+
+Capability | What it enables
+--- | ---
+Multimodal storage | Store images, video, audio, text, embeddings, annotations, metadata, features, and more, all in one table.
+First-class blob API | Store large binary objects such as images, video, audio, and model artifacts in blob columns with lazy reads and streaming byte access.
+Fast random access and scans | Sample, shuffle, and retrieve individual rows efficiently without giving up high-throughput sequential reads.
+Flexible data evolution | Add, drop, rename, or alter columns as datasets change, often without rewriting existing data files.
+Versioned tables | Reproduce experiments, restore previous states, and tie downstream artifacts to the exact table version they used.
+Hybrid search and indexing | Combine vector search, full-text search, and scalar filters on the same dataset with Lance indexes.
+Open lakehouse interoperability | Build on object storage and connect Lance tables to open engines such as PyTorch, Ray, Spark, Trino, DuckDB and Polars.
+
+## Key concepts {#key-concepts}
+
+The following concepts are core to the Lance format:
+
+<Steps>
+  <Step>
+   **Arrow-native, columnar storage** and **interoperability** with the open lakehouse ecosystem (including other file formats and compute engines).
+  </Step>
+  <Step>
+   **Zero-copy** data evolution, meaning you can easily add derived columns (like features or embeddings) at a later time, **without full table rewrites**. Only new data is written; expensive existing data (like images/videos) remain untouched.
+  </Step>
+  <Step>
+   Data is **versioned**, with each insert operation creating a new version of the dataset and an update to the manifest that tracks versions via metadata
+  </Step>
+</Steps>
+
+
+### Data versioning {#data-versioning}
+
+Data in Lance tables are versioned -- this helps keep LanceDB scalable and consistent.
+We do not immediately blow away old versions when creating new ones because other clients might be
+in the middle of querying the old version. It's important to retain older versions for as long as they
+might be queried.
+
+Each version contains metadata and just the new/updated data in your transaction. So if you have 100
+versions, they aren't 100 duplicates of the same data. However, they do have 100x the metadata overhead
+of a single version, which can result in slower queries.
+
+### Data compaction {#data-compaction}
+
+As you insert more data, your dataset will grow and you'll need to perform compaction to maintain query
+throughput (i.e., keep latencies down to a minimum). Compaction is the process of merging fragments
+together to reduce the amount of metadata that needs to be managed, and to reduce the number of files
+that need to be opened while scanning the dataset.
+
+Running compaction on a Lance dataset will do the following:
+
+- Remove deleted rows from fragments
+- Remove dropped columns from fragments
+- Merge small fragments into larger ones
+
+Compaction focuses on read performance, not immediate disk reclamation. During compaction, Lance writes
+new compacted files while older files are still referenced by previous table versions. This means disk
+usage can increase temporarily until old versions are cleaned up.
+
+### Data deletion and recovery {#data-deletion-and-recovery}
+
+Although Lance allows you to delete rows from a dataset, it does not actually delete the data immediately.
+It simply marks the row as deleted in the `DataFile` that represents a fragment.
+
+For a given version of the dataset, each fragment can have up to one deletion file (if no rows were ever
+deleted from that fragment, it will not have a deletion file). This is important to keep in mind because
+it means that the data is still there, and can be recovered if needed, as long as that version still
+exists based on your backup policy.
+
+<Card
+  title="Learn more about Lance"
+  icon="/static/assets/logo/lance-logo-gray.svg"
+  href="https://lance.org/quickstart"
+>
+  Lance is a separate open source project. Check out its documentation to learn more.
+</Card>

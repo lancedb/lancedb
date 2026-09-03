@@ -1,0 +1,55 @@
+---
+title: "LlamaIndex"
+sidebarTitle: "LlamaIndex"
+
+---
+
+import {
+  PyFrameworksLlamaindexAddReranker,
+  PyFrameworksLlamaindexFiltering,
+  PyFrameworksLlamaindexHybridSearch,
+  PyFrameworksLlamaindexQuickStart,
+} from '/snippets/integrations.mdx';
+
+## Quickstart {#quickstart}
+
+LlamaIndex is a well-known framework for building LLM-powered agents over your data with LLMs and workflows.
+You can build your LlamaIndex pipeline and persist your metadata and embeddings in LanceDB via the `LanceDBVectorStore` class.
+
+First, install the LlamaIndex-LanceDB integration.
+
+<CodeBlock filename="bash" language="bash" icon="terminal">
+pip install llama-index-vector-stores-LanceDB
+</CodeBlock>
+
+Run the below script as an example.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksLlamaindexQuickStart}
+</CodeBlock>
+
+The vector store connector will open an existing LanceDB directory or create the directory if it does not exist.
+
+### Filtering {#filtering}
+For metadata filtering, you can use a Lance SQL-like string filter as demonstrated in the example above. Additionally, you can also filter using the `MetadataFilters` class from LlamaIndex:
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksLlamaindexFiltering}
+</CodeBlock>
+
+### Hybrid Search {#hybrid-search}
+For complete documentation, refer [here](https://docs.lancedb.com/search/hybrid-search). This example uses the `colbert` reranker. Make sure to install necessary dependencies for the reranker you choose.
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksLlamaindexHybridSearch}
+</CodeBlock>
+
+In the snippet above, you can change/specify `query_type` when creating the engine/retriever
+to use different search strategies, such as vector search or FTS.
+
+## API reference {#api-reference}
+
+<Card
+  title="LlamaIndex Vector Stores API reference"
+  href="https://developers.llamaindex.ai/python/framework-api-reference/storage/vector_store/lancedb/"
+>
+See the official LlamaIndex Vector Stores API reference for more details.
+</Card>

@@ -1,0 +1,46 @@
+---
+title: OpenCLIP
+sidebarTitle: OpenCLIP
+---
+
+import {
+  PyEmbeddingOpenclipSetup,
+  PyEmbeddingOpenclipTextSearch,
+  PyEmbeddingOpenclipImageSearch,
+} from '/snippets/integrations.mdx';
+
+We support CLIP model embeddings using the open source alternative, [open-clip](https://github.com/mlfoundations/open_clip) which supports various customizations. It is registered as `open-clip` and supports the following customizations:
+
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| `name` | `str` | `"ViT-B-32"` | The name of the model. |
+| `pretrained` | `str` | `"laion2b_s34b_b79k"` | The name of the pretrained model to load. |
+| `device` | `str` | `"cpu"` | The device to run the model on. Can be `"cpu"` or `"gpu"`. |
+| `batch_size` | `int` | `64` | The number of images to process in a batch. |
+| `normalize` | `bool` | `True` | Whether to normalize the input images before feeding them to the model. |
+
+This embedding function supports ingesting images as both bytes and urls. You can query them using both text and other images.
+
+<Info>
+LanceDB supports ingesting images directly from accessible links.
+</Info>
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingOpenclipSetup}
+  </CodeBlock>
+</CodeGroup>
+Now we can search using text from both the default vector column and the custom vector column
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingOpenclipTextSearch}
+  </CodeBlock>
+</CodeGroup>
+
+Because we're using a multimodal embedding function, we can also search using images
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingOpenclipImageSearch}
+  </CodeBlock>
+</CodeGroup>

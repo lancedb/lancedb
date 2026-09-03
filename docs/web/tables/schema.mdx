@@ -1,0 +1,486 @@
+---
+title: "Schema and Data Evolution"
+sidebarTitle: "Schema & data evolution"
+description: Learn how to manage table schemas in LanceDB, including adding, altering, and dropping columns.
+icon: "boxes-stacked"
+---
+import {
+    PySchemaAddSetup as SchemaAddSetup,
+    TsSchemaAddSetup as TsSchemaAddSetup,
+    RsSchemaAddSetup as RsSchemaAddSetup,
+    PyAddColumnsCalculated as AddColumnsCalculated,
+    TsAddColumnsCalculated as TsAddColumnsCalculated,
+    RsAddColumnsCalculated as RsAddColumnsCalculated,
+    PyAddColumnsDefaultValues as AddColumnsDefaultValues,
+    TsAddColumnsDefaultValues as TsAddColumnsDefaultValues,
+    RsAddColumnsDefaultValues as RsAddColumnsDefaultValues,
+    PyAddColumnsNullable as AddColumnsNullable,
+    TsAddColumnsNullable as TsAddColumnsNullable,
+    RsAddColumnsNullable as RsAddColumnsNullable,
+    PyAddFeatureColumnsSql as AddFeatureColumnsSql,
+    TsAddFeatureColumnsSql as TsAddFeatureColumnsSql,
+    RsAddFeatureColumnsSql as RsAddFeatureColumnsSql,
+    PySchemaAlterSetup as SchemaAlterSetup,
+    TsSchemaAlterSetup as TsSchemaAlterSetup,
+    RsSchemaAlterSetup as RsSchemaAlterSetup,
+    PyAlterColumnsRename as AlterColumnsRename,
+    TsAlterColumnsRename as TsAlterColumnsRename,
+    RsAlterColumnsRename as RsAlterColumnsRename,
+    PyAlterColumnsDataType as AlterColumnsDataType,
+    TsAlterColumnsDataType as TsAlterColumnsDataType,
+    RsAlterColumnsDataType as RsAlterColumnsDataType,
+    PyAlterColumnsNullable as AlterColumnsNullable,
+    TsAlterColumnsNullable as TsAlterColumnsNullable,
+    RsAlterColumnsNullable as RsAlterColumnsNullable,
+    PyAlterColumnsMultiple as AlterColumnsMultiple,
+    TsAlterColumnsMultiple as TsAlterColumnsMultiple,
+    PyAlterColumnsWithExpression as AlterColumnsWithExpression,
+    TsAlterColumnsWithExpression as TsAlterColumnsWithExpression,
+    RsAlterColumnsMultiple as RsAlterColumnsMultiple,
+    RsAlterColumnsWithExpression as RsAlterColumnsWithExpression,
+    PySchemaDropSetup as SchemaDropSetup,
+    TsSchemaDropSetup as TsSchemaDropSetup,
+    RsSchemaDropSetup as RsSchemaDropSetup,
+    PyDropColumnsSingle as DropColumnsSingle,
+    TsDropColumnsSingle as TsDropColumnsSingle,
+    RsDropColumnsSingle as RsDropColumnsSingle,
+    PyDropColumnsMultiple as DropColumnsMultiple,
+    TsDropColumnsMultiple as TsDropColumnsMultiple,
+    RsDropColumnsMultiple as RsDropColumnsMultiple,
+    PyAlterVectorColumn as AlterVectorColumn,
+    TsAlterVectorColumn as TsAlterVectorColumn,
+    RsAlterVectorColumn as RsAlterVectorColumn,
+    PySchemaFieldMetadataMerge as SchemaFieldMetadataMerge,
+    TsSchemaFieldMetadataMerge as TsSchemaFieldMetadataMerge,
+    RsSchemaFieldMetadataMerge as RsSchemaFieldMetadataMerge,
+    PySchemaFieldMetadataReplace as SchemaFieldMetadataReplace,
+    TsSchemaFieldMetadataReplace as TsSchemaFieldMetadataReplace,
+    RsSchemaFieldMetadataReplace as RsSchemaFieldMetadataReplace,
+} from '/snippets/tables.mdx';
+
+Schema evolution enables non-breaking modifications to a database table's structure — such as adding columns, altering data types, or dropping fields — to adapt to evolving data requirements without service interruptions. 
+LanceDB supports ACID-compliant schema evolution through granular operations (add/alter/drop columns), allowing you to:
+
+* Iterate Safely: Modify schemas in production with versioned datasets and backward compatibility
+* Scale Seamlessly: Handle ML model iterations, regulatory changes, or feature additions
+* Optimize Continuously: Remove unused fields or enforce new constraints without downtime
+
+## Schema evolution operations {#schema-evolution-operations}
+
+LanceDB supports four primary schema evolution operations:
+
+1. **Adding new columns**: Extend your table with additional attributes
+2. **Altering existing columns**: Change column names, data types, or nullability
+3. **Updating field metadata**: Attach or change per-column Arrow metadata
+4. **Dropping columns**: Remove unnecessary columns from your schema
+
+
+<Tip title="Schema Evolution Performance">
+Schema evolution operations are applied immediately but do not typically require rewriting all data. However, data type changes may involve more substantial operations.
+</Tip>
+
+Each schema evolution operation commits a new table version and returns status metadata such as
+the committed `version`. Run these operations from a mutable table handle; if you checked out an
+older version for reads, call `checkout_latest` / `checkoutLatest` before modifying the schema.
+
+## Add new columns {#add-new-columns}
+
+You can add new columns to a table with the [`add_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.add_columns) 
+method in Python, [`addColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#addcolumns) in TypeScript/JavaScript, or `add_columns` in Rust. 
+New columns are populated based on SQL expressions you provide.
+
+
+### Set up the example table {#set-up-the-example-table}
+
+First, let's create a sample table with product data to demonstrate schema evolution:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaAddSetup}
+    </CodeBlock>
+</CodeGroup>
+
+### Add derived columns {#add-derived-columns}
+
+You can add new columns that are derived from existing data using SQL expressions.
+For feature engineering on large existing tables, group related derived features into
+one `add_columns` operation instead of running many separate writes. This creates one
+new table version for the schema change and computes the new columns from the existing
+rows, which avoids growing the table's version history with many small updates.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddColumnsCalculated}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsCalculated}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsCalculated}
+    </CodeBlock>
+</CodeGroup>
+
+The same call can add multiple derived columns at once. For example, if you are
+building several lightweight features from existing product fields, pass all of the
+new column expressions together:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddFeatureColumnsSql}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddFeatureColumnsSql}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddFeatureColumnsSql}
+    </CodeBlock>
+</CodeGroup>
+
+<Info>
+LanceDB `add_columns` does not currently accept Python callables, batch UDFs, or
+PyArrow `RecordBatch` iterators for populating new columns. New column values must be
+defined with SQL expressions, or added as NULL columns from an Arrow field or schema.
+If your transformation cannot be expressed in SQL, compute the values outside
+`add_columns` before writing them back through another workflow.
+</Info>
+
+### Add columns with default values {#add-columns-with-default-values}
+
+Add boolean columns with default values for status tracking:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddColumnsDefaultValues}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsDefaultValues}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsDefaultValues}
+    </CodeBlock>
+</CodeGroup>
+
+### Add nullable columns {#add-nullable-columns}
+
+Add timestamp columns that can contain NULL values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsNullable}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning title="NULL Values in New Columns">
+When adding columns that should contain NULL values, be sure to cast the NULL to the appropriate type, e.g., `cast(NULL as timestamp)`.
+</Warning>
+
+## Alter existing columns {#alter-existing-columns}
+
+You can alter columns using the [`alter_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.alter_columns)
+method in Python, [`alterColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#altercolumns) in TypeScript/JavaScript, or `alter_columns` in Rust. This allows you to:
+
+- Rename a column
+- Change a column's data type
+- Modify nullability (whether a column can contain NULL values)
+
+
+### Set up the example table {#set-up-the-example-table-2}
+
+Create a table with a custom schema to demonstrate column alterations:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaAlterSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaAlterSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaAlterSetup}
+    </CodeBlock>
+</CodeGroup>
+
+### Rename columns {#rename-columns}
+
+Change column names to better reflect their purpose:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsRename}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsRename}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsRename}
+    </CodeBlock>
+</CodeGroup>
+
+### Change data types {#change-data-types}
+
+Convert column data types for better performance or compatibility:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsDataType}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsDataType}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsDataType}
+    </CodeBlock>
+</CodeGroup>
+
+### Make columns nullable {#make-columns-nullable}
+
+You can alter columns to contain NULL values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsNullable}
+    </CodeBlock>
+</CodeGroup>
+
+Changing a column to nullable affects future writes and merges too: missing values are accepted
+only when the target column is nullable.
+
+### Multiple changes at once {#multiple-changes-at-once}
+
+Apply several alterations in a single operation:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsMultiple}
+    </CodeBlock>
+</CodeGroup>
+
+### Expression-based type changes {#expression-based-type-changes}
+
+For transformations that are not simple casts (for example, converting `"$100"` to an integer), use a SQL-expression column add, then drop and rename:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsWithExpression}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsWithExpression}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsWithExpression}
+    </CodeBlock>
+</CodeGroup>
+
+### Alter embedding types and dimensions {#alter-embedding-types-and-dimensions}
+
+It's quite common to need to change an embedding column's schema, in case a new model becomes available with a different embedding dimension.
+- In Python, the example shows an in-place type update when the cast is compatible.
+- In TypeScript and Rust, the example shows a dimension change (`384 -> 1024`), which cannot be cast in-place.
+
+For dimension changes, use this 3-step pattern: add a new column with the target type, drop the old column, then rename the new column to the original name.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterVectorColumn}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterVectorColumn}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterVectorColumn}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning>
+**`FixedSizeList` Dimension Changes in TypeScript and Rust**
+
+`alterColumns` / `alter_columns` can cast between compatible types, but changing `FixedSizeList` dimensions (for example `384 -> 1024`) is not a compatible cast.
+For such cases, use `addColumns` / `add_columns` (with `arrow_cast`), then `dropColumns` / `drop_columns`, then rename the replacement column.
+</Warning>
+
+<Warning title="Data Type Changes">
+Changing data types requires rewriting the column data and may be resource-intensive for large tables. Renaming columns or changing nullability is more efficient as it only updates metadata.
+</Warning>
+
+## Update field metadata {#update-field-metadata}
+
+Each column in a LanceDB table can carry a small key/value map of Arrow field metadata — useful
+for annotating columns with units, provenance, PII flags, embedding model versions, or any other
+schema-level context your application needs.
+
+Use [`update_field_metadata`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.update_field_metadata)
+in Python, [`updateFieldMetadata`](https://lancedb.github.io/lancedb/js/classes/Table/#updatefieldmetadata)
+in TypeScript/JavaScript, or `update_field_metadata` in Rust to add, change, or remove these
+key/value pairs without rewriting the column data. Each call commits a new table version and returns
+the new `version`.
+
+Each update targets one field by **dot-path**: top-level columns are addressed by name (for
+example `"embedding"`), and nested fields by their full path (for example `"address.zip"`). By
+default, the keys you pass are **merged** into the field's existing metadata — keys you do not
+mention are preserved, and passing `None` (Python) or `null` (TypeScript) deletes a key. Set
+`replace: true` to swap the field's entire metadata map instead of merging.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaFieldMetadataMerge}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaFieldMetadataMerge}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaFieldMetadataMerge}
+    </CodeBlock>
+</CodeGroup>
+
+To overwrite a field's metadata entirely instead of merging, set `replace` to `true`:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaFieldMetadataReplace}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaFieldMetadataReplace}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaFieldMetadataReplace}
+    </CodeBlock>
+</CodeGroup>
+
+<Tip>
+You can pass multiple updates in a single call to change metadata on several fields at once —
+each call commits a single new table version.
+</Tip>
+
+### Canonical metadata keys {#canonical-metadata-keys}
+
+You can use any string as a metadata key. By convention, LanceDB treats keys prefixed with
+`lancedb:` as canonical. LanceDB Enterprise displays these keys in the UI, and agents can rely
+on finding this information in a consistent place. Use them when they fit your use case:
+
+| Key | Purpose | Example |
+| --- | --- | --- |
+| `lancedb:description` | Human-readable description of the field. | `"CLIP embedding of the product image"` |
+| `lancedb:tag:<name>` | User-defined key/value tag, where the suffix names the tag category. | `"lancedb:tag:model": "clip"` |
+| `lancedb:logical-column` | Groups related columns into one logical column. For example, `feature_v1` and `feature_v2` might belong to the same logical column. | `"lancedb:logical-column": "feature"` |
+| `lancedb:status` | Life cycle state of the column: `production`, `candidate`, `deprecated`, or `archived`. | `"lancedb:status": "production"` |
+
+<Note>
+These keys are conventions, not enforced constraints. LanceDB does not validate their values,
+but following the conventions keeps your tables consistent with Enterprise tooling.
+</Note>
+
+## Drop columns {#drop-columns}
+
+You can remove columns using the [`drop_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.drop_columns)
+ method in Python, [`dropColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#dropcolumns) in TypeScript/JavaScript, or `drop_columns` in Rust.
+
+
+### Set Up the example table {#set-up-the-example-table-3}
+
+Create a table with temporary columns that we'll remove:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaDropSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaDropSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaDropSetup}
+    </CodeBlock>
+</CodeGroup>
+
+### Drop single columns {#drop-single-columns}
+
+Remove individual columns that are no longer needed:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DropColumnsSingle}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDropColumnsSingle}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDropColumnsSingle}
+    </CodeBlock>
+</CodeGroup>
+
+### Drop multiple columns {#drop-multiple-columns}
+
+Remove several columns at once for efficiency:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DropColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDropColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDropColumnsMultiple}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning title="Irreversible Column Deletion">
+Dropping columns cannot be undone. Make sure you have backups or are certain before removing columns.
+</Warning>

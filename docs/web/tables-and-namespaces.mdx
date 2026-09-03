@@ -1,0 +1,43 @@
+---
+title: "Tables and Namespaces"
+sidebarTitle: "Tables and Namespaces"
+description: "Learn more about the table abstraction and namespaces in LanceDB."
+icon: "table"
+---
+
+Despite its name, LanceDB is not a "database" in the traditional sense. It is a **Multimodal Lakehouse** built on Lance tables plus a catalog abstraction.
+As you dive deeper into LanceDB, it helps to separate two ideas:
+- A **table** is where your data lives and is queried.
+- A **namespace** is how groups of tables are organized and resolved at the catalog level.
+
+## Understanding tables {#understanding-tables}
+
+A table is the core data abstraction in LanceDB: a structured dataset with schema, indexes, and versioned updates.
+What changes between deployments is how that table is addressed and accessed.
+
+The mental model below clarifies table types by connection mode:
+
+- **`LanceTable`**: direct table access (local path, `file://`, `s3://`, and similar object-store paths). This is the common mode in LanceDB OSS.
+- **`RemoteTable`**: catalog-backed table access through a server/cluster (`db://...`). This is the mode you will use in LanceDB Enterprise.
+
+![](/static/assets/images/overview/understanding-tables.png)
+
+From an application perspective, both expose a familiar table API: create/open tables, mutate rows, and query data.
+The main difference is where resolution and execution happen (directly against storage vs through a remote catalog service).
+
+## Semantic difference between tables and namespaces {#semantic-difference-between-tables-and-namespaces}
+
+The easiest way to think about this is:
+- A **table** answers: "What data do I store and query?"
+- A **namespace** answers: "Where does this table name live in my catalog hierarchy?"
+
+In other words, tables are data objects; namespaces are catalog objects.
+
+| Concept | Scope | Owns | Typical operations |
+| --- | --- | --- | --- |
+| Table | Data layer | Schema, rows, indexes, versions | `create_table`, `open_table`, inserts/updates/deletes, search/query |
+| Namespace | Catalog layer | Hierarchy of names, table grouping, table name resolution | `create_namespace`, `list_namespaces`, `drop_namespace`, table ops with `namespace` |
+
+For simple use cases where you have a relatively flat set of tables, you can ignore namespaces and just use table paths directly.
+As your application needs evolve and your tables grow in number and complexity, you may move from table-centric thinking
+to catalog-centric thinking. Check out the [Namespaces and the Catalog Model](/namespaces) guide to learn more.

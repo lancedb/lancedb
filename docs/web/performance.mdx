@@ -1,0 +1,241 @@
+---
+title: "Performance Tips and Best Practices"
+sidebarTitle: "Performance Tips"
+description: "Optimize LanceDB for your workload across ingestion, indexing, querying, and maintenance."
+icon: "gauge-high"
+keywords: ["performance", "tuning", "best practices", "optimization", "ingestion", "indexing", "vector search", "filtering", "compaction", "oss", "enterprise"]
+---
+
+LanceDB is performant by default. This page covers performance best practices that matter when you want to ensure you get the right performance for a specific workload. Use the table below to jump to the area relevant to what you're working on.
+
+| When you're working on... | Read |
+|---------------------------|------|
+| Loading data into a table | [Ingestion](#ingestion) |
+| Running filtered or vector queries at scale | [Indexing](#indexing) |
+| Iterating over large result sets (training, export, migration) | [Querying](#querying) |
+| Keeping a long-lived dataset healthy | [Maintenance](#maintenance) |
+| Inspecting query plans | [Diagnostics](#diagnostics) |
+
+<Danger>
+When using Python with multiprocessing, use `spawn` rather than `fork`. LanceDB is multi-threaded internally, and `fork` plus a multi-threaded process is unsafe.
+</Danger>
+
+## Ingestion {#ingestion}
+
+If ingestion is taking longer than expected on a large dataset, the cause is almost always how `add()` is called: each call commits a new version and a new fragment, so a per-row loop pays that per-call overhead at every row. The best practice is to pick the ingestion mode that matches your data shape — bulk ingestion when the data is already materialized, or iterator ingestion when it's streamed or computed on the fly.
+
+<Note>
+**Why `merge_insert()` is significantly slower than `add()`**
+
+A merge has to scan existing data to find matches on the join key (or look them up via a scalar index, if one exists), and then delete-and-reinsert any updated rows in a single transaction; `add()` simply appends new fragments.
+
+Use `add()` for pure appends, and reach for `merge_insert()` only when you need upsert or conditional-insert logic. When you do use it, build a scalar index on the join column first — otherwise the match step falls back to a full column scan, which is the dominant cost at scale.
+</Note>
+
+### Bulk ingestion: for data you already have {#bulk-ingestion-for-data-you-already-have}
+
+For materialized inputs (Arrow Tables, DataFrames) and file-backed sources (`pyarrow.dataset(...)`), LanceDB auto-parallelizes the write across workers, estimating the partition count from the data size — more partitions means more concurrent writes and higher throughput, up to the CPU core count.
+
+```python Python icon="python"
+table.add(arrow_table)                              # in-memory
+table.add(df)                                       # pandas
+table.add(ds.dataset("data/", format="parquet"))    # streams from disk, still parallelized
+```
+
+Pass `progress=True` to watch it happen: LanceDB shows a live tqdm bar with rows written, throughput in MB/s, and active worker count.
+
+```python Python icon="python"
+table.add(ds.dataset("data/", format="parquet"), progress=True)
+```
+
+```text
+71%|███████▏  | 710000/1000000 [00:12<00:05, 58.8kit/s, 42.3 MB/s | 8/8 workers]
+```
+
+For larger-than-memory data, prefer scanning a file-backed dataset (`ds.dataset(...)`) over a hand-built `pyarrow.RecordBatchReader`: a `Dataset` can be counted and rescanned, so LanceDB knows the row count upfront (better auto-parallelism) and can retry a failed write from the start — a reader can only be consumed once, so neither is possible. Reach for the iterator path below only when the data genuinely can't be backed by files, e.g. to apply custom data transformations as you ingest.
+
+For very large initial loads, create the table empty first; passing data directly to `create_table(name, data)` skips the auto-parallel path.
+
+### Iterator ingestion: for data you transform on the fly {#iterator-ingestion-for-data-you-transform-on-the-fly}
+
+If each row needs work before it can be written — applying a custom transformation as you ingest, for example — the data doesn't exist as a file you can point `ds.dataset(...)` at. The best practice is to pass an iterator of `pyarrow.RecordBatch` instead; LanceDB consumes one batch at a time as you produce them.
+
+```python Python icon="python"
+def stream():
+    for raw in source:
+        vectors = model.encode(raw["text"])
+        yield pa.RecordBatch.from_pydict({**raw, "vector": vectors})
+
+table.add(stream())
+```
+
+Use decently large chunks of several thousand rows or more, rather than yielding single-row batches.
+
+<Note>
+**Set `write_parallelism` yourself for large inputs**
+
+A reader can't be counted or rescanned the way a `Dataset` can (see above), so LanceDB can't auto-size parallelism for it — set `write_parallelism` explicitly for large inputs:
+
+```python Python icon="python"
+table.add(stream(), write_parallelism=4)
+```
+
+Each partition becomes its own fragment, so don't over-allocate on a small input — budget one unit of parallelism per ~100K rows or ~1 GB of data as a rule of thumb.
+</Note>
+
+### Bulk ingests into a remote table {#bulk-ingests-into-a-remote-table}
+
+<Badge color="red">Enterprise</Badge>
+
+This section applies only to remote tables (`db://` connections). Embedded (local) writes are unaffected.
+
+When you write to a remote LanceDB Enterprise table, the client splits each write partition into one or more HTTP `insert` parts and uploads them under a single upload id. Each part is streamed rather than buffered, so peak memory stays bounded. But each part still has to finish within the client read timeout while the server writes it to object storage, so on very large ingests an oversized part can run past that timeout and surface as:
+
+```text
+lancedb.remote.errors.HttpError: operation timed out
+```
+
+Two environment variables control how parts are cut. Both are picked up automatically by the Python and TypeScript clients, and are the only way to tune this from those SDKs:
+
+| Variable | Default | What it controls |
+|----------|---------|------------------|
+| `LANCE_CLIENT_MAX_BYTES_PER_REQUEST` | 8 GiB | Maximum size of a single insert part, in LZ4-compressed Arrow IPC bytes. Set to `0` to disable splitting and send one request per partition. |
+| `LANCE_CLIENT_MAX_REQUEST_DURATION` | Half the read timeout | Maximum wall-clock time, in whole seconds, that any one insert part may stay open. Set to `0` to disable the time-based cut. |
+
+A part is cut when it hits either limit, whichever comes first. Lower the byte budget when large ingests hit the read timeout; lower the duration when uploads are slow or throttled and the byte budget isn't the limiting factor.
+
+```bash
+export LANCE_CLIENT_MAX_BYTES_PER_REQUEST=1073741824  # 1 GiB
+export LANCE_CLIENT_MAX_REQUEST_DURATION=120          # 2 minutes
+```
+
+Splitting into more parts does not change the final table. The server stages every part under the shared upload id and merges them atomically when the write completes.
+
+## Indexing {#indexing}
+
+### Vector indexes {#vector-indexes}
+
+If vector search latency climbs with table size (i.e., queries that ran in milliseconds on a small table take seconds as it grows to millions of rows), the cause is the default brute-force scan over every vector. That works fine below ~100K vectors, but past that you should build a dedicated vector index. Pick the type by your data shape:
+
+| Index | When to use |
+|-------|-------------|
+| `IVF_PQ` | General-purpose default; what Enterprise builds automatically. Higher accuracy than RQ at small dimensions (≤ 256). |
+| `IVF_RQ` | Maximum compression on high-dim vectors, faster builds than PQ. |
+| `IVF_HNSW_SQ` | Best recall/latency for unfiltered search; higher latency variance under selective filters. |
+| `IVF_FLAT` | Required for binary vectors with `hamming`. |
+
+The distance metric is fixed once the index is built. Pick the distance metric based on how the embedding model was trained: `cosine` (unnormalized), `dot` (already-normalized, best performance), `l2` (general-purpose, default), `hamming` (binary). For parameter tuning, see [Vector Indexing](/indexing/vector-index).
+
+### Scalar indexes {#scalar-indexes}
+
+If filtered queries slow down as the table grows — even when the filter is selective — the cause is a full column scan: without a scalar index, LanceDB evaluates the `where(...)` predicate on every row, and the same applies to `merge_insert` join keys. The best practice is to build a scalar index on every column you filter or join on, picking the type by the column's shape:
+
+| Index | Best for |
+|-------|----------|
+| `BTREE` (default) | Numeric, string, temporal columns with mostly distinct values |
+| `BITMAP` | Boolean and low-cardinality columns (< ~1,000 distinct values) |
+| `LABEL_LIST` | `List<T>` columns queried with `array_has_any` / `array_has_all` |
+
+See [Scalar Indexing](/indexing/scalar-index).
+
+### Full-text search {#full-text-search}
+
+If your full-text index is much larger than expected, or takes longer than expected to build, the cause is usually phrase-query flags being enabled when they aren't needed: `with_position=True` and `remove_stop_words=False` both significantly inflate index size and build time. The best practice is to keep the defaults for most workloads, and only enable those flags when you actually need to search for phrases. See [FTS Indexing](/indexing/fts-index) configuration options for the full set of options.
+
+## Compaction and cleanup {#compaction-and-cleanup}
+
+Two things accumulate on a long-lived table as more and more data gets added to it:
+
+- **Many small fragments build up as you write**, slowing down queries that have to scan across more files. **Compaction** merges them back into larger fragments.
+- **Old versions build up as the table changes**, growing disk usage beyond the live data size (LanceDB retains them for time-travel and rollback). **Cleanup** prunes versions older than a retention window.
+
+In OSS, you run them yourself via `optimize()`, which bundles both into a single call:
+
+```python Python icon="python"
+from datetime import timedelta
+table.optimize()                                       # 7-day default retention
+table.optimize(cleanup_older_than=timedelta(days=1))   # reclaim space sooner
+```
+
+The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates — see [Reindexing](/indexing/reindexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed — rebuild the index after large update batches.
+
+LanceDB Enterprise handles both compaction and cleanup automatically.
+
+## Querying {#querying}
+
+Three knobs materially affect query latency, memory use, and recall. Be deliberate about each one on every query:
+
+<Steps>
+  <Step title="Project and limit explicitly">
+    If queries return more data than you need or take longer than expected, the cause is usually projecting more columns than necessary, or letting the result count run unbounded. The best practice is to always pass both `select()` and `limit()`:
+
+    ```python Python icon="python"
+    table.search(emb).select(["id", "title"]).limit(20)
+    ```
+  </Step>
+  <Step title="Stay on pre-filter unless fewer matches are acceptable">
+    If a query with `prefilter=False` returns fewer than `limit` results — sometimes zero — the cause is that post-filter applies the predicate after the top-k is selected, so only candidates that already passed the search are filtered. Pre-filter is the default and guarantees every result satisfies the predicate. Switch to `prefilter=False` only when fewer-than-`limit` results are acceptable. See [Filtering](/search/filtering).
+  </Step>
+  <Step title="Tune for recall one knob at a time">
+    If recall is lower than expected, the cause is that the search-time knobs limit how many candidates the index considers. Adjust based on your index type:
+
+    - Quantized indexes (PQ, RQ, SQ): `refine_factor` pulls extra candidates and re-scores them on full vectors.
+    - HNSW-backed indexes: `ef` at search time. Start at `1.5 × k`, raise toward `10 × k` if recall is short.
+    - IVF candidate breadth: `nprobes` is auto-tuned; override only when a selective pre-filter leaves too few neighbors.
+  </Step>
+</Steps>
+
+For hybrid search, the default `RRFReranker()` combines vector and FTS results into a single ranking via reciprocal rank fusion. See [Hybrid Search](/search/hybrid-search).
+
+### Avoid materializing the whole table {#avoid-materializing-the-whole-table}
+
+If you need every row in the table (for training, export, or migration), calling `to_pandas()` or `to_arrow()` will run you out of memory on any non-trivial dataset — both materialize the full table at once. The best practice is to iterate via `table.search(...)` or `table.query(...)`, which work the same way in both LanceDB OSS and Enterprise.
+
+In OSS, you can also stream batches through the underlying Lance dataset directly — useful when you need filter pushdown or fragment-level parallelism via `ds.scanner(...)`:
+
+```python Python icon="python"
+ds = table.to_lance()
+for batch in ds.to_batches(columns=["id", "text"], batch_size=10000):
+    process(batch)
+```
+
+<Info>
+**API disparity between OSS and Enterprise.**
+
+LanceDB OSS exposes the `to_pandas()`, `to_arrow()`, and `table.to_lance()` methods for direct Lance dataset access. Enterprise's `RemoteTable` exposes none of these. Only `table.search(...)` and `table.query(...)`. In general, it's always best to go through `search()` and `query()` to keep your code portable across both OSS and Enterprise.
+</Info>
+
+### Diagnostics {#diagnostics}
+
+To analyze a slow query, inspect what the query engine actually did and the state of the indexes it touched. These two tools surface that information — use them in this order:
+
+```python Python icon="python"
+print(table.search(emb).where("year > 2000").limit(10).analyze_plan())
+print(table.index_stats("vector_idx"))   # num_unindexed_rows should be ~0
+```
+
+`analyze_plan()` returns the execution plan with per-stage timings, so you can see where the query actually spent its time. `index_stats()` shows how many rows are still unindexed — you want `num_unindexed_rows` to be ~0. In `analyze_plan`, look for:
+
+| Plan pattern | Fix |
+|--------------|-----|
+| `LanceScan` with high `bytes_read` / `iops` | Add a missing index, project columns with `select()`, or check that the dataset has been compacted |
+| Multiple sequential filters | Reorder filter conditions |
+
+[Optimize Query Performance](/search/optimize-queries) walks through a fully worked before/after example, including how `KNNVectorDistance` and `output_batches` change once indexes are in place.
+
+## Where to go next {#where-to-go-next}
+
+<Columns cols={2}>
+  <Card title="Optimize Query Performance" icon="gauge" href="/search/optimize-queries">
+    Read execution plans, find the bottleneck.
+  </Card>
+  <Card title="Vector Indexing" icon="layer-group" href="/indexing/vector-index">
+    Index types, parameters, and tuning in depth.
+  </Card>
+  <Card title="Filtering" icon="filter" href="/search/filtering">
+    Pre- vs post-filter, scalar indexes, list columns.
+  </Card>
+  <Card title="Enterprise Benchmarks" icon="server" href="/enterprise/performance">
+    Benchmark methodology and reference latency numbers.
+  </Card>
+</Columns>

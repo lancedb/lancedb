@@ -1,0 +1,100 @@
+---
+title: "Run experiments on branches"
+sidebarTitle: "Run experiments on branches"
+description: "Use LanceDB branches to isolate agent-driven experiments from main, evaluate them on a fixed test set, and promote only the winner."
+icon: "flask"
+keywords: ["AI agents", "branches", "experiments", "embeddings", "evaluation"]
+---
+
+LanceDB supports [branching](/tables/branching) to isolate experiments from the main table when working with agents.
+Branches are useful when you instruct an agent to try several approaches without
+affecting the production data on the `main` branch.
+Each experiment gets its own writable table history.
+
+For example, you can generate and compare embeddings from two text embedding
+models on the given table:
+
+| Branch | Model | Added column |
+| --- | --- | --- |
+| `embed-minilm` | `sentence-transformers/all-MiniLM-L6-v2` | `vector_minilm` |
+| `embed-nomic` | `nomic-embed-text` from Ollama | `vector_nomic` |
+
+The branches share a logical table, but each has its own schema and history.
+The original table handle still points to `main`. LanceDB does not have a
+process-wide current branch.
+
+Install the model packages, then download the `nomic-embed-text` model from Ollama
+(or any other model you prefer):
+
+```bash
+uv add sentence-transformers ollama
+ollama pull nomic-embed-text
+```
+
+It's always recommended to measure the results of an experiment on a fixed evaluation set.
+Here's an example of how you could ask the agent to run both experiments and compare the results:
+
+```text Agent prompt
+Use the lancedb plugin and the LanceDB branching documentation to compare two
+embedding experiments on the `camelot_multimodal` table.
+
+1. Fork `embed-minilm` from `main`. Build normalized embeddings from
+   `"{role}. {description}"` with
+   `sentence-transformers/all-MiniLM-L6-v2` and add them as `vector_minilm`.
+2. Fork `embed-nomic` from `main`. Embed the identical text with Ollama
+   `nomic-embed-text` and add the results as `vector_nomic`.
+3. Process rows in batches and write only through each branch-scoped table
+   handle. Verify that neither new column appears on `main`.
+4. Evaluate both branches with the queries "wise magical advisor",
+   "treacherous rebel", and "virtuous Grail knight". Report the top three names,
+   latency, and whether the expected character ranks first.
+5. Do not modify `main` and do not delete either branch. Recommend a winner
+   based on the results.
+```
+
+<Note>
+The vector dimensions may differ because the columns live on separate branches.
+Use a different column name for each model. Within an experiment, use the same
+model for the stored text and the search queries.
+</Note>
+
+## Apply the winning experiment to `main` {#apply-the-winning-experiment-to-main}
+
+The branch experiments leave you with the results side by side, and they
+deliberately never touch `main`. Once you've picked a winner, apply it to
+`main` yourself by rerunning that experiment's validated transformation
+directly against the `main` table. Rerunning the reviewed operation is the
+reliable path on both OSS and Enterprise: it replays exactly the transformation
+you validated on the branch, and it works the same regardless of how the branch
+evolved.
+
+Suppose `nomic-embed-text` wins. Rerun the same Nomic embedding transformation
+you validated on `embed-nomic` against `main` in batches, then call
+`table.optimize()` on OSS. Verify a bounded vector search on `main`, and keep
+the losing branch around until you're confident in the result.
+
+See [Branches](/tables/branching) for more on how branches, versions, and tags
+relate.
+
+## More experiments you can run {#more-experiments-you-can-run}
+
+Swapping embedding models on a branch while working with agents is only one example
+of what you can do with the LanceDB plugin. The table below shows other experiments
+you can run with the plugin.
+
+| Hypothesis | Change on the branch | What to evaluate |
+| --- | --- | --- |
+| A different embedding model improves retrieval | Add a new vector column | Recall, ranking quality, latency, and cost |
+| A new parser or OCR model improves source data | Reprocess files and backfill metadata | Validation failures and a reviewed sample |
+| A new search setup works better | Build an index or change hybrid-search and reranking settings | Relevance and latency on a fixed query set |
+| A curation rule improves the corpus | Deduplicate, classify, or filter records | False positives, false negatives, and row counts |
+| A migration is safe to deploy | Add columns or run a backfill | Schema compatibility and application checks |
+
+For each experiment, ask the agent to state the hypothesis, use a fixed
+evaluation set, report the comparison, and, if you want, work on an alternate
+branch that's isolated from `main` until you decide you want the new derived
+column in `main`.
+
+Once you've chosen a winner, rerun that validated transformation to ingest it into `main`
+yourself, on either LanceDB OSS or Enterprise. See our documentation on [branches](/tables/branching)
+for more information.

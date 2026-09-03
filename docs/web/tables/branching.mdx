@@ -1,0 +1,403 @@
+---
+title: "Branches"
+sidebarTitle: "Branches"
+description: "Fork isolated, writable lines of table history in LanceDB. Run experiments, backfills, and index rebuilds without disturbing production reads on main."
+icon: "code-branch"
+---
+import {
+    PyConnect,
+    TsConnect,
+    RsConnect,
+    PyConnectEnterpriseQuickstart,
+    TsConnectEnterpriseQuickstart,
+    RsConnectEnterpriseQuickstart,
+} from '/snippets/connection.mdx';
+import {
+    PyBranchCreate as BranchCreate,
+    TsBranchCreate,
+    RsBranchCreate,
+    PyBranchWrite as BranchWrite,
+    TsBranchWrite,
+    RsBranchWrite,
+    PyBranchReopen as BranchReopen,
+    TsBranchReopen,
+    RsBranchReopen,
+    PyBranchDelete as BranchDelete,
+    TsBranchDelete,
+    RsBranchDelete,
+    PyBranchUpsertToMain as BranchUpsertToMain,
+    TsBranchUpsertToMain,
+    RsBranchUpsertToMain,
+    PyBranchIndex as BranchIndex,
+    TsBranchIndex,
+    RsBranchIndex,
+} from '/snippets/tables.mdx';
+
+A branch is an isolated, writable line of history forked from `main` (or from any
+other branch). Anything you do on a branch (e.g., adding rows, changing the schema,
+building an index) stays on that branch, so `main` keeps serving production
+reads exactly as before. Branches are a natural fit when you want to:
+
+- Experiment with a new index, schema change, or reprocessing step without
+  affecting live queries on `main`.
+- Run a backfill or migration you'd like to validate before applying it to
+  `main`.
+- Hand a collaborator a frozen point-in-time fork while you keep writing to `main`.
+
+## How branches relate to versions and tags {#how-branches-relate-to-versions-and-tags}
+
+Every LanceDB table already tracks a linear history of [versions](/tables/versioning),
+and you can [tag](/tables/versioning#tag-based-versioning) a version or `checkout`
+one to read it. Branches add the missing piece: a *separate, writable* line of
+history. Where a tag is a read-only label and `checkout` is a read-only view, a
+branch forks from a point in history and then evolves on its own. Creating or
+checking out a branch hands you a new table handle whose reads and writes are
+scoped to that branch. The [comparison table](#branches-vs-tags-vs-checkout) at
+the end of this page lays out when to reach for each.
+
+<Note>
+Branches are supported on local and namespace-backed tables in LanceDB OSS, as
+well as on LanceDB Enterprise (remote) tables.
+</Note>
+
+## Connect to a table {#connect-to-a-table}
+
+The branch API is identical no matter how you connect — only the connection
+itself differs between OSS and Enterprise. Establish a connection (`db`) and open
+a `table` (see [Create a table](/tables/create)), then use the same branch calls
+in every example that follows.
+
+### LanceDB OSS {#lancedb-oss}
+
+Point LanceDB at a local directory (or an object-storage URI) to use it as an
+embedded library.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n\n" }
+    {RsConnect}
+    </CodeBlock>
+</CodeGroup>
+
+### LanceDB Enterprise {#lancedb-enterprise}
+
+<Badge color="red">Enterprise</Badge>
+
+Branching on LanceDB Enterprise works the same way as on OSS, but you connect to your
+Enterprise deployment with a `db://` URI, an API key, and your
+region. Once you have a connection, open a table and use the same branch calls in
+every example that follows.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnectEnterpriseQuickstart}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnectEnterpriseQuickstart}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsConnectEnterpriseQuickstart}
+    </CodeBlock>
+</CodeGroup>
+
+## Work with branches {#work-with-branches}
+
+The lifecycle of a branch is short and predictable: fork it, write to it, reopen
+it whenever you need it, and delete it once you're done. The examples below use a
+small `quotes` table with three rows on `main`.
+
+### Create a branch {#create-a-branch}
+
+Forking from `main` returns a table handle scoped to the new branch. `main` is
+the reserved default source, so `create` needs only a name; to fork from
+somewhere else, pass a branch name, a specific version, or both.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BranchCreate}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBranchCreate}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBranchCreate}
+    </CodeBlock>
+</CodeGroup>
+
+### Write to a branch {#write-to-a-branch}
+
+Writes go through the branch handle and stay there — the `main` handle keeps
+reporting its original row count. Listing branches returns a mapping of each
+branch name to its metadata, including the version it was forked from.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BranchWrite}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBranchWrite}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBranchWrite}
+    </CodeBlock>
+</CodeGroup>
+
+### Reopen a branch {#reopen-a-branch}
+
+A branch outlives the handle that created it. Reopen it later by name — either
+from an existing table handle or straight from the connection when you open the
+table. Both routes give you a writable handle tracking the branch's latest state.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BranchReopen}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBranchReopen}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBranchReopen}
+    </CodeBlock>
+</CodeGroup>
+
+### Delete a branch {#delete-a-branch}
+
+Deleting a branch removes it and its branch-local history; `main` is untouched.
+Before deleting a branch, make sure you've retained any results you need — see
+[Apply branch-tested changes to `main`](#apply-branch-tested-changes-to-main)
+below.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BranchDelete}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBranchDelete}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBranchDelete}
+    </CodeBlock>
+</CodeGroup>
+
+## Apply branch-tested changes to `main` {#apply-branch-tested-changes-to-main}
+
+<Warning>
+A branch has its own writable history. Outside of the [diff and merge
+APIs](#compare-and-merge-a-branch-into-main) — which are available on
+LanceDB Enterprise and promote added columns only — LanceDB does not reconcile
+one branch's history with another or detect conflicts between them. To carry
+other accepted work forward, rerun the validated operation against `main` or
+explicitly write selected results to it.
+</Warning>
+
+How you apply a validated change depends on the type of work:
+
+- **Added columns (Enterprise):** review the branch with `diff`, then promote
+  the new columns onto `main` with `merge`. See
+  [Compare and merge a branch into `main`](#compare-and-merge-a-branch-into-main).
+- **Backfill or transformation:** rerun the validated job against `main`.
+- **Schema change:** apply the same reviewed schema operation to `main`.
+- **Index change:** build the index on `main` using the configuration validated
+  on the branch.
+- **Selected row results:** upsert those rows into `main` using a stable unique
+  key.
+
+### Upsert selected branch rows into `main` {#upsert-selected-branch-rows-into-main}
+
+If the result you want to retain is a set of inserted or updated rows, use
+[`merge_insert`](/tables/update#merge-incoming-rows-by-key) to write them to
+`main`. Despite its name, `merge_insert` is a row-ingestion operation: it
+matches incoming rows by key and does not merge branch histories.
+
+Read the rows you want from the reviewed branch, then upsert them into `main` on
+your key column — `id` in this example. Here, `candidate` is the branch handle:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BranchUpsertToMain}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBranchUpsertToMain}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBranchUpsertToMain}
+    </CodeBlock>
+</CodeGroup>
+
+This operation transfers only the inserted or updated rows in its input. It does
+not transfer branch history, schema changes, indexes, or branch-local deletions,
+and it does not determine which rows changed after the branch was created.
+
+Reapplying an identical payload is idempotent on the key, but the operation is
+not conflict-aware. If `main` has diverged, incoming branch rows can overwrite
+newer values with the same key. Read and upsert the whole branch only when that
+overwrite is intentional; otherwise, filter the branch read to the rows you
+intend to apply.
+
+## Compare and merge a branch into `main` {#compare-and-merge-a-branch-into-main}
+
+<Badge color="red">Enterprise</Badge>
+
+On LanceDB Enterprise, branches expose two review-and-land calls that let you
+inspect what a branch has changed relative to `main` and then promote its new
+columns onto `main` in place — without reissuing the branch's writes.
+
+<Info>
+`diff` and `merge` are available on Enterprise (remote) tables only. On local
+tables both calls raise `NotSupported`. `merge` currently promotes added
+columns; use the [upsert](#upsert-selected-branch-rows-into-main) or rerun
+patterns above for row and index changes.
+</Info>
+
+### Diff a branch {#diff-a-branch}
+
+`diff` reads the branch and `main`, and returns a summary of what has changed:
+which columns were added, removed, or altered; which indexes were added or
+removed; row-count deltas; and — most importantly — a list of merge blockers
+explaining why the branch cannot currently be merged, if any.
+
+<CodeGroup>
+```python Python icon="python"
+diff = table.branches.diff("exp")
+
+print(diff["addedColumns"])       # columns the branch introduced
+print(diff["mergeable"])          # True when there are no blockers
+print(diff["mergeBlockers"])      # list of {"code", "message"} entries
+```
+
+```typescript TypeScript icon="square-js"
+const diff = await table.branches.diff("exp");
+
+console.log(diff.addedColumns);   // columns the branch introduced
+console.log(diff.mergeable);      // true when there are no blockers
+console.log(diff.mergeBlockers);  // array of { code, message } entries
+```
+</CodeGroup>
+
+Common merge blocker codes include `BaseMoved` (the branch's parent no longer
+matches `main`'s latest), `RowsChanged`, `ColumnRemoved`, `ColumnChanged`,
+`NoMergeableChanges`, `NoColumnChanges`, `InputColumnDependency`, and
+`ParentNotMain`. Newer server codes surface as `Unknown` so older clients
+keep working.
+
+### Merge a branch {#merge-a-branch}
+
+`merge` promotes a branch's added columns onto `main`. It is a review-and-land
+operation: the server re-evaluates the diff at request time, and either lands
+the promotion or rejects it with the same blockers `diff` would report. A
+rejected merge is not an exception — it resolves with `status="rejected"` so
+you can inspect the blockers and decide what to do next.
+
+Set `dry_run=True` (Python) or `dryRun: true` (TypeScript) to preview the
+merge without landing it. The result includes a `preview.promoted_columns`
+list showing which columns the merge would (or did) promote.
+
+<CodeGroup>
+```python Python icon="python"
+# Preview first — this does not modify main.
+preview = table.branches.merge("exp", dry_run=True)
+print(preview["status"])                   # "ready" | "rejected" | ...
+print(preview["preview"]["promotedColumns"])
+
+# Land the merge.
+result = table.branches.merge("exp")
+if result["status"] == "merged":
+    print("landed at main version", result["mainVersionAfter"])
+elif result["status"] == "rejected":
+    for blocker in result["diff"]["mergeBlockers"]:
+        print(blocker["code"], blocker["message"])
+```
+
+```typescript TypeScript icon="square-js"
+// Preview first — this does not modify main.
+const preview = await table.branches.merge("exp", true);
+console.log(preview.status);               // "ready" | "rejected" | ...
+console.log(preview.preview.promotedColumns);
+
+// Land the merge.
+const result = await table.branches.merge("exp");
+if (result.status === "merged") {
+  console.log("landed at main version", result.mainVersionAfter);
+} else if (result.status === "rejected") {
+  for (const blocker of result.diff.mergeBlockers) {
+    console.log(blocker.code, blocker.message);
+  }
+}
+```
+</CodeGroup>
+
+Possible `status` values are `ready` (returned by `dry_run` when the merge
+would land), `merged` (a real merge that landed), `rejected` (server declined;
+see `diff.mergeBlockers`), `notImplemented`, and `unknown` for forward
+compatibility. Merge requests are not retried on rejection — the response
+carries everything you need to decide next steps.
+
+## Build indexes on a branch {#build-indexes-on-a-branch}
+
+One of the most useful things a branch buys you is a safe place to build and
+validate an index without affecting what's in production on the `main` branch.
+Fork a branch, create your vector (ANN) and full-text search (FTS)
+indexes on it, and check recall and latency. Once you have selected a
+configuration, build the corresponding index on `main` through your normal
+deployment workflow. Because the indexes live on the branch, queries against
+`main` never see a half-built index and are never slowed down by the branch's
+build.
+
+This pattern is especially valuable on <Badge color="red">Enterprise</Badge>
+deployments, where `main` is typically serving production traffic while you tune
+an index configuration on the side.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BranchIndex}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBranchIndex}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBranchIndex}
+    </CodeBlock>
+</CodeGroup>
+
+Schema changes such as adding, altering, or dropping columns are branch-scoped in
+the same way, so you can stage and review a larger reshaping of a table before
+applying the same schema operations to `main`.
+
+## Branches vs. tags vs. versions {#branches-vs-tags-vs-versions}
+
+Now that you're familiar with branches, you can see how they complement the other ways LanceDB
+give you to work with table history. Choose these approaches based on whether you need to
+*label*, *read*, or *write* data at a point in history:
+
+| Feature | Writable? | Purpose |
+| --- | --- | --- |
+| **[Branch](#work-with-branches)** | ✅ Yes | Write on top of a point in history without touching `main`. |
+| **[Tag](/tables/versioning#tag-based-versioning)** | ❌ No | Attach a human-readable label to an existing version; protects it from cleanup. |
+| **[`checkout(version)`](/tables/versioning#rollback-to-previous-versions)** | ❌ No | Read a historical version of `main` without forking. Read-only until you `restore`. |
+
+<Note>
+For linear version history — creating versions, listing them, rolling back, and
+tagging — see the [Versioning and Reproducibility](/tables/versioning) guide.
+</Note>

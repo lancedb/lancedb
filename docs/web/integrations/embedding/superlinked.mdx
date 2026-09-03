@@ -1,0 +1,140 @@
+---
+title: Superlinked
+sidebarTitle: Superlinked
+---
+
+[Superlinked](https://superlinked.com) is a self-hosted inference engine (SIE) for embedding, reranking, and extraction. The `sie-lancedb` package registers SIE as a first-class embedding function in LanceDB's embeddings registry, so embeddings are computed automatically on insert and search. You need a running SIE instance - see the [Superlinked quickstart](https://superlinked.com/docs) for deployment options.
+
+## Installation {#installation}
+
+<CodeGroup>
+```bash Python icon=Python
+pip install sie-lancedb
+```
+
+```bash TypeScript icon=js
+npm install @superlinked/sie-lancedb @lancedb/lancedb
+```
+</CodeGroup>
+
+## Registered functions {#registered-functions}
+
+Importing `sie_lancedb` registers two embedding functions in LanceDB's registry:
+
+| Name | Purpose |
+|---|---|
+| `"sie"` | Dense text embeddings |
+| `"sie-multivector"` | ColBERT-style late interaction with MaxSim scoring |
+
+Supported parameters on `.create()`:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `model` | `str` | Any of 85+ SIE-supported models (e.g. `BAAI/bge-m3`, `NovaSearch/stella_en_400M_v5`, `jinaai/jina-colbert-v2`) |
+| `base_url` | `str` | URL of the SIE endpoint (e.g. `http://localhost:8080`) |
+
+## Usage {#usage}
+
+```py Python icon=Python
+import lancedb
+from lancedb.embeddings import get_registry
+from lancedb.pydantic import LanceModel, Vector
+import sie_lancedb  # registers "sie" and "sie-multivector"
+
+sie = get_registry().get("sie").create(
+    model="BAAI/bge-m3",
+    base_url="http://localhost:8080",
+)
+
+class Documents(LanceModel):
+    text: str = sie.SourceField()
+    vector: Vector(sie.ndims()) = sie.VectorField()
+
+db = lancedb.connect("~/.lancedb")
+table = db.create_table("docs", schema=Documents, mode="overwrite")
+
+table.add([
+    {"text": "Machine learning is a subset of AI."},
+    {"text": "Neural networks use multiple layers."},
+    {"text": "Python is popular for ML development."},
+])
+
+results = table.search("What is deep learning?").limit(3).to_list()
+```
+
+LanceDB handles embedding generation for both inserts and queries automatically, based on the `SourceField` / `VectorField` declarations on the schema.
+
+## Hybrid search with reranker {#hybrid-search-with-reranker}
+
+`SIEReranker` plugs into LanceDB's hybrid search pipeline. It uses SIE's cross-encoder `score()` to rerank combined vector + full-text search results. You need a full-text search index on the column first:
+
+```py Python icon=Python
+from sie_lancedb import SIEReranker
+
+# Create FTS index for hybrid search
+table.create_fts_index("text", replace=True)
+
+results = (
+    table.search("What is deep learning?", query_type="hybrid")
+    .rerank(SIEReranker(model="jinaai/jina-reranker-v2-base-multilingual"))
+    .limit(5)
+    .to_list()
+)
+
+for r in results:
+    print(f"{r['_relevance_score']:.3f}  {r['text']}")
+```
+
+The reranker also works with pure vector or pure FTS search via `.rerank()`.
+
+## ColBERT and multivector {#colbert-and-multivector}
+`SIEMultiVectorEmbeddingFunction` (registered as `"sie-multivector"`) works with LanceDB's native `MultiVector` type and MaxSim scoring for ColBERT and ColPali models:
+
+```py Python icon=Python
+from lancedb.pydantic import MultiVector
+
+sie_colbert = get_registry().get("sie-multivector").create(
+    model="jinaai/jina-colbert-v2",
+    base_url="http://localhost:8080",
+)
+
+class ColBERTDocs(LanceModel):
+    text: str = sie_colbert.SourceField()
+    vector: MultiVector(sie_colbert.ndims()) = sie_colbert.VectorField()
+
+table = db.create_table("colbert_docs", schema=ColBERTDocs, mode="overwrite")
+table.add([{"text": "Machine learning is a subset of AI."}])
+
+# MaxSim search - query and document multivectors compared token-by-token
+results = table.search("What is ML?").limit(5).to_list()
+```
+
+## Entity extraction {#entity-extraction}
+
+`SIEExtractor` adds entity extraction to LanceDB's data-enrichment workflows. Extract entities from a text column and merge the results back as a structured Arrow column - enabling filtered search on extracted entities:
+
+```py Python icon=Python
+from sie_lancedb import SIEExtractor
+
+extractor = SIEExtractor(
+    base_url="http://localhost:8080",
+    model="urchade/gliner_multi-v2.1",
+)
+
+extractor.enrich_table(
+    table,
+    source_column="text",
+    target_column="entities",
+    labels=["person", "technology", "organization"],
+    id_column="id",
+)
+```
+
+The `entities` column stores structured Arrow data (`list<struct<text, label, score, start, end, bbox>>`), so you can filter on extracted entities in queries.
+
+## Links {#links}
+
+- [`sie-lancedb` on PyPI](https://pypi.org/project/sie-lancedb/)
+- [`@superlinked/sie-lancedb` on npm](https://www.npmjs.com/package/@superlinked/sie-lancedb)
+- [Superlinked on GitHub](https://github.com/superlinked/sie)
+- [Superlinked docs](https://superlinked.com/docs)

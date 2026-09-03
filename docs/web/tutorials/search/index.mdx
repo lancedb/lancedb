@@ -1,0 +1,31 @@
+---
+title: "Search Tutorials"
+sidebarTitle: "Overview"
+description: "Learn how vector, full-text and hybrid search work in LanceDB."
+layout: wide
+---
+
+The table below shows examples of applications built with LanceDB for search use cases.
+
+| Example | Description |
+|--------|:------------|
+| **Hybrid search & reranking on BEIR** <br /> <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Inbuilt-Hybrid-Search/Inbuilt_Hybrid_Search_with_LanceDB.ipynb" rel="noreferer, ,noopener" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" /></a> [View on GitHub](https://github.com/lancedb/vectordb-recipes/tree/main/examples/Inbuilt-Hybrid-Search) | This example demonstrates how to use LanceDB's built-in hybrid search feature, which combines the strengths of both semantic and full-text search. By using the BEIR dataset, it shows how to achieve more relevant results by searching for both the meaning of a query and the specific keywords it contains. |
+| **Semantic search across videos** <br /> <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/v-jepa-video-search/intra-video.ipynb" rel="noreferer, ,noopener" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" /></a> [View on GitHub](https://github.com/lancedb/vectordb-recipes/tree/main/examples/v-jepa-video-search) | Learn how to build a video search application using V-JEPA (Video Joint Embedding Predictive Architecture) and LanceDB. This example shows how to generate vector embeddings for videos and then use LanceDB to perform similarity searches, allowing you to find videos that are visually similar to a given query. |
+| **Semantic result merging** <br /> <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Vector-Arithmetic-with-LanceDB/main.ipynb" rel="noreferer, ,noopener" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" /></a> [View on GitHub](https://github.com/lancedb/vectordb-recipes/tree/main/examples/Vector-Arithmetic-with-LanceDB) | Explore the concept of vector arithmetic with LanceDB. This notebook demonstrates how you can manipulate vector embeddings to capture more complex relationships in your data. For instance, you can modify a search query by adding or subtracting vector representations of different concepts, enabling more nuanced and powerful semantic search. |
+| **Reddit concept summarizer** <br /> <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Reddit-summarization-and-search/subreddit_summarization_querying.ipynb" rel="noreferer, ,noopener" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" /></a> [View on GitHub](https://github.com/lancedb/vectordb-recipes/tree/main/examples/Reddit-summarization-and-search) | This project showcases a complete pipeline for acquiring text data from Reddit, transforming it into meaningful vector representations using embeddings, and then storing and managing those vectors in LanceDB. It demonstrates how to build applications on top of this data, such as summarization and powerful semantic search. |
+| **NER-powered vector search** <br /> <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/NER-powered-Semantic-Search/NER_powered_Semantic_Search_with_LanceDB.ipynb" rel="noreferer, ,noopener" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" /></a> [View on GitHub](https://github.com/lancedb/vectordb-recipes/tree/main/tutorials/NER-powered-Semantic-Search) | This example demonstrates how to use Named Entity Recognition (NER) to power vector search. By extracting entities (like people, places, and organizations) from text and creating vector embeddings of them, you can significantly improve the accuracy of your search results. |
+| **Multi-vector search with XTR** <br /> <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/multivector_xtr/main.ipynb" rel="noreferer, ,noopener" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" /></a> [View on GitHub](https://github.com/lancedb/vectordb-recipes/tree/main/examples/multivector_xtr) | This notebook dives into LanceDB's advanced multivector search capabilities, enhanced by the XTR (ConteXtualized Token Retriever) technique. It shows how to represent complex data with multiple vectors for more nuanced meaning and how XTR speeds up retrieval by prioritizing the most important tokens. |
+| **Needle-in-a-haystack multi-vector search** <br /> <br /> [Read the tutorial](/tutorials/search/multivector-needle-in-a-haystack/)<br /> | This tutorial complements the XTR multi-vector example by comparing several retrieval strategies on a token-level "needle in a haystack" benchmark. It shows when full multi-vector search, pooling, and reranking help or hurt when the goal is to find an exact page rather than just a relevant document. |
+
+
+## Read the docs {#read-the-docs}
+
+The relevant section of the documentation are listed below.
+
+| Feature | Description |
+|:--------|:------------|
+| [Vector search](/search/vector-search/) | Learn the fundamentals of vector search, including how to perform similarity searches, use different distance metrics, and optimize performance. |
+| [Hybrid search](/search/hybrid-search/) | Combine keyword-based search with vector search to improve retrieval accuracy and relevance. |
+| [Full-text search](/search/full-text-search/) | Perform full-text search on your text data, and combine it with vector search for a powerful hybrid search experience. |
+| [Reranking](/reranking/) | Refine your search results using reranking models to improve the relevance of the top-k results. |
+| [Multi-vector search](/search/multivector-search/) | Use multiple vector embeddings per document to perform more nuanced and accurate searches. |

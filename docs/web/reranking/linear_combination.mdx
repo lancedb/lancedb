@@ -1,0 +1,43 @@
+---
+title: Linear Combination Reranker
+sidebarTitle: "Linear Combination"
+description: Learn about LanceDB's deprecated Linear Combination Reranker for combining semantic and full-text search scores.
+
+---
+
+import { PyRerankingLinearCombinationUsage } from '/snippets/integrations.mdx';
+
+# Linear Combination Reranker
+
+> **Note:** This reranker is deprecated. Use the `RRFReranker` if you need a score-based reranker.
+
+The Linear Combination Reranker combines the results of semantic and full-text search using a linear combination of the scores. The weights for the linear combination can be specified, and defaults to 0.7, i.e, 70% weight for semantic search and 30% weight for full-text search.
+
+> **Note:** Supported query type – Hybrid search only.
+
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingLinearCombinationUsage}
+  </CodeBlock>
+</CodeGroup>
+
+## Accepted Arguments {#accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `weight` | `float` | `0.7` | The weight to use for the semantic search score. The weight for the full-text search score is `1 - weight`. |
+| `fill` | `float` | `1.0` | Score used when a result is missing from one side of the hybrid query. The default strongly penalizes missing vector or FTS matches. |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", returns only `_relevance_score`. If "all", returns all scores from the vector and FTS search along with the relevance score. |
+
+`weight` must be between `0` and `1`. If either the vector or FTS side returns no rows, the reranker
+returns the non-empty side with `_relevance_score` attached rather than failing.
+
+
+## Supported Scores for each query type {#supported-scores-for-each-query-type}
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+### Hybrid Search {#hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column |
+| `all` | ✅ Supported | Results have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_distance`) |

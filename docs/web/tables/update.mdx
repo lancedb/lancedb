@@ -1,0 +1,440 @@
+---
+title: "Updating and Modifying Table Data"
+sidebarTitle: "Update/modify data"
+description: "Learn how to update, merge, and delete rows in a LanceDB table."
+icon: "clone"
+---
+import {
+    PyUpdateConnectEnterprise as UpdateConnectEnterprise,
+    PyUpdateConnectLocal as UpdateConnectLocal,
+    PyUpdateExampleTableSetup as UpdateExampleTableSetup,
+    PyUpdateOperation as UpdateOperation,
+    PyUpdateUsingSql as UpdateUsingSql,
+    PyMergeMatchedUpdateOnly as MergeMatchedUpdateOnly,
+    PyInsertIfNotExists as InsertIfNotExists,
+    PyMergeUpdateInsert as MergeUpdateInsert,
+    PyMergeDeleteMissingBySource as MergeDeleteMissingBySource,
+    PyMergePartialColumns as MergePartialColumns,
+    PyDeleteOperation as DeleteOperation,
+    PyUpdateOptimizeCleanup as UpdateOptimizeCleanup,
+    TsUpdateConnectEnterprise,
+    TsUpdateConnectLocal,
+    TsUpdateExampleTableSetup,
+    TsUpdateOperation,
+    TsUpdateUsingSql,
+    TsMergeMatchedUpdateOnly,
+    TsInsertIfNotExists,
+    TsMergeUpdateInsert,
+    TsMergeDeleteMissingBySource,
+    TsMergePartialColumns,
+    TsDeleteOperation,
+    TsUpdateOptimizeCleanup,
+    RsUpdateConnectEnterprise,
+    RsUpdateConnectLocal,
+    RsUpdateExampleTableSetup,
+    RsUpdateMakeUsersReader,
+    RsUpdateOperation,
+    RsUpdateUsingSql,
+    RsMergeMatchedUpdateOnly,
+    RsInsertIfNotExists,
+    RsMergeUpdateInsert,
+    RsMergeDeleteMissingBySource,
+    RsMergePartialColumns,
+    RsDeleteOperation,
+    RsUpdateOptimizeCleanup,
+} from '/snippets/tables.mdx';
+
+Updating or modifying data involves changing rows in an existing table.
+LanceDB provides two families of write operations that can modify data in a table:
+
+- `update(...)`: mutate existing rows that match a SQL filter.
+- `merge_insert(...)`: compare incoming rows to existing rows by key, then choose what to do for each case.
+
+The `update` method is simpler to use when you already know which rows you want to modify and you do not need to compare against an incoming dataset. The `merge_insert` method is more powerful when you have a new dataset that you want to merge into an existing table, and you want LanceDB to handle the logic of comparing against existing rows by key.
+
+Let's look at an example that demonstrates these operations in practice.
+
+## Connect to LanceDB {#connect-to-lancedb}
+
+Connect to your local LanceDB instance:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateConnectLocal}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateConnectLocal}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateConnectLocal}
+    </CodeBlock>
+</CodeGroup>
+
+Or, connect to LanceDB Enterprise:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateConnectEnterprise}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateConnectEnterprise}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateConnectEnterprise}
+    </CodeBlock>
+</CodeGroup>
+
+In the Rust snippets, a `make_users_reader` helper is used  to build Arrow input data.
+
+<CodeGroup>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateMakeUsersReader}
+    </CodeBlock>
+</CodeGroup>
+
+## Create the example table {#create-the-example-table}
+
+We'll start by creating a simple table with `id`, `name`, and `login_count` columns. All examples below use the same table.
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateExampleTableSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateExampleTableSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateExampleTableSetup}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 20 |
+
+The example above shows a PyArrow schema. You can just as well create the table using other
+table creation patterns (Pandas, Polars, Pydantic, iterators, etc.) -- see the [ingestion](/tables/create/) guide for more details.
+
+## Choose a write method {#choose-a-write-method}
+
+| Family |  Method | Use this when... |
+| --------------- | --------------- | ---------------- |
+| `update` | `update(where=..., values=...)` | You want to edit rows that already exist, using a SQL filter. |
+| `merge_insert` | `.when_matched_update_all()` | You have incoming rows and want to update keys that already exist in the table. |
+| `merge_insert` | `.when_not_matched_insert_all()` | You have incoming rows and want to insert keys that do not exist yet. |
+| `merge_insert` | `.when_matched_update_all()` + `.when_not_matched_insert_all()` | You want both behaviors together (often called **upsert**: update existing keys **and** insert missing keys in the same operation). |
+| `merge_insert` | `.when_not_matched_by_source_delete(...)` | You want to remove target rows that are missing from the incoming source set. |
+
+Write operations return status metadata. For example, `update` reports updated row count and
+committed `version`, `delete` reports deleted row count and `version`, and `merge_insert` reports
+inserted, updated, deleted, retry-attempt, and `version` fields. Writes require a mutable table
+handle; after checking out an older version for reads, call `checkout_latest` / `checkoutLatest`
+before modifying data.
+The committed `version` advances even for writes that affect zero rows, such as a delete predicate
+that matches nothing.
+
+## Update rows {#update-rows}
+
+Use `update` when you already know which target rows to modify and you do not need to compare against an incoming dataset.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateOperation}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateOperation}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateOperation}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 20 |
+
+<Warning title="Warning">
+Updating nested columns is not yet supported.
+</Warning>
+
+## Update rows with SQL expressions {#update-rows-with-sql-expressions}
+
+Use `values_sql` when you want to use SQL-like expressions to update rows. This is useful for operations like incrementing a counter, or setting a column value based on another column.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateUsingSql}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateUsingSql}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateUsingSql}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 21 |
+
+<Note title="SQL syntax">
+See the [SQL queries](/search/sql/) page for more information on the supported SQL syntax.
+</Note>
+
+When rows are updated, they are moved out of any existing index. The row will still show up in search queries, but the query will not be as fast as it would be if the row was in the index. If you update a large proportion of rows, consider triggering an index rebuild afterwards.
+
+## Merge incoming rows by key {#merge-incoming-rows-by-key}
+
+Merging is different from updating because it involves comparing incoming rows to existing rows by key, and then choosing what to do based on whether the key exists in the target table or not.
+The `merge_insert(""..."")` method lets you do this.
+
+In merge operations, rows are split into three groups:
+
+- **Matched**: key exists in both source and target.
+- **Not matched**: key exists only in source.
+- **Not matched by source**: key exists only in target.
+
+Conditional merge clauses can compare old and new values. Use the `target.` prefix for the
+existing table row and `source.` for the incoming row, for example
+`target.last_update < source.last_update`.
+
+<Tip>
+**Use scalar indexes to speed up merge insert**
+
+The merge insert command performs a join between the input data and the target table `on` the key you provide. This requires scanning that entire column, which can be expensive for large tables. To speed up this operation, create a scalar index on the join column, which will allow LanceDB to find matches without scanning the whole table.
+
+Read more about scalar indices in the [Scalar Index](/indexing/scalar-index/) guide.
+</Tip>
+
+<Info>
+If you see this HTTP 400 error from `merge_insert`: `Bad request: Merge insert cannot be performed because the number of unindexed rows exceeds the maximum of 10000`. Verify that the scalar index on the join column is up to date before retrying.
+</Info>
+
+<Note>
+**Rust: build merge predicates with DataFusion expressions**
+
+In the Rust SDK, you can pass a `datafusion_expr::Expr` directly instead of a SQL string by using
+`when_matched_update_all_expr` and `when_not_matched_by_source_delete_expr` on `MergeInsertBuilder`.
+This is useful when you are constructing predicates programmatically and want to avoid building a SQL string.
+
+These methods are only supported on local tables. Calling them against a remote table returns a
+`NotSupported` error — use the SQL string variants (`when_matched_update_all` /
+`when_not_matched_by_source_delete`) for remote tables.
+</Note>
+
+Like the create table and add APIs, the merge insert API will automatically compute embeddings based on the [embedding registry](/embedding/index#embedding-registry) if the table has an embedding definition in its schema.
+
+During `merge_insert`, if the input data doesn't contain the source column (i.e., the original field used to generate embeddings, such as text for a text embedding model or `image_uri` for an image model), or if a vector value is already provided, LanceDB skips embedding generation for that row. Embeddings are only auto-generated when that source field is present in the incoming data, **and** the vector field is empty.
+
+Primary keys in LanceDB are metadata used by operations such as `merge_insert`; they are not
+enforced as uniqueness constraints on ordinary writes. Keep using `merge_insert` or your own
+deduplication logic when you need key-based upsert semantics.
+
+### Update matched rows only {#update-matched-rows-only}
+
+This updates keys that already exist in the target table. Source rows with new keys are ignored.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeMatchedUpdateOnly}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeMatchedUpdateOnly}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeMatchedUpdateOnly}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 21 |
+
+### Insert unmatched rows only {#insert-unmatched-rows-only}
+
+This inserts only brand-new keys from the source. Existing keys are left unchanged.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {InsertIfNotExists}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsInsertIfNotExists}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsInsertIfNotExists}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 20 |
+| 3 | Charlie | 5 |
+
+### Update matched rows and insert unmatched rows {#update-matched-rows-and-insert-unmatched-rows}
+
+Use both `when_matched_update_all()` and `when_not_matched_insert_all()` when you want to update existing keys and insert missing keys in one operation.
+
+<Info>
+This is a conventional **upsert**.
+</Info>
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeUpdateInsert}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeUpdateInsert}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeUpdateInsert}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 21 |
+| 3 | Charlie | 5 |
+
+### Delete target rows that are missing from source {#delete-target-rows-that-are-missing-from-source}
+
+Use `when_not_matched_by_source_delete()` when you want to remove any target row that does not appear in the incoming source data.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeDeleteMissingBySource}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeDeleteMissingBySource}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeDeleteMissingBySource}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 2 | Bobby | 21 |
+| 3 | Charlie | 5 |
+
+In the example above, LanceDB matches rows by `id`. Rows with `id=2` and `id=3` exist in both the table and incoming data, so they are updated. Row `id=1` exists only in the target, so it is deleted.
+
+### Use partial columns in merge updates {#use-partial-columns-in-merge-updates}
+
+Merge updates do not require you to provide values for all columns. You can provide only a subset of columns in source rows. For matched rows, only the provided columns are updated.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergePartialColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergePartialColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergePartialColumns}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 20 |
+| 3 | Charlie | null |
+
+Note that in the example above, when `merge_insert` creates a new row, any missing columns are written as `null`. If a missing column is non-nullable in your schema, the insert will fail.
+
+## Delete rows {#delete-rows}
+
+Delete operations **soft delete** rows that match a given condition.
+The underlying data is not immediately removed, but is marked
+for deletion (in the [deletion files](https://lance.org/format/table/#deletion-files) at the Lance format level) and excluded from query results.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DeleteOperation}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDeleteOperation}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDeleteOperation}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 20 |
+
+
+<Warning>
+**Deleting rows removes them from the index**
+
+When rows are deleted, those rows are also excluded from the index segments, so indexed queries will not return them either. If ALL the rows are deleted (i.e., the table is emptied), ensure that you recreate the index after ingesting new data.
+</Warning>
+
+To permanently remove deleted rows, you can optimize the table, which will run compaction and cleans up the soft-deleted rows, which frees up storage space.
+
+- In LanceDB OSS, compaction and cleanup are manual. Run `table.optimize()` regularly to free up disk space.
+- In LanceDB Enterprise, files aren't cleaned up by default. You can configure automatic compaction and cleanup behavior at cluster setup time to suit your organization's retention policy.
+
+By default, table cleanup removes data up to 7 days ago. If you need to reclaim space from deleted rows more aggressively, manually call `table.optimize()` use a shorter retention window as follows:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateOptimizeCleanup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateOptimizeCleanup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateOptimizeCleanup}
+    </CodeBlock>
+</CodeGroup>

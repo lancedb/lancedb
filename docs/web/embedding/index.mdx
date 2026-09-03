@@ -1,0 +1,239 @@
+---
+title: "Managing Embeddings"
+sidebarTitle: Overview
+description: "Use the embedding API in LanceDB -- registry, functions, schemas, and multi-language SDK support."
+icon: "bars"
+---
+
+import {
+    PyOpenaiEmbeddings,
+    PyCreateEmbeddingFunction,
+    PyManualQuerySearch,
+    PyEmbeddingFunction,
+    PyRegisterDevice,
+    PyRegisterSecret,
+    TsOpenaiEmbeddings,
+    TsCreateEmbeddingFunction,
+    TsManualQuerySearch,
+    TsEmbeddingFunction,
+    TsRegisterModelFallback,
+    TsRegisterSecret,
+    RsOpenaiEmbeddings,
+    RsCreateEmbeddingFunction,
+    RsManualQuerySearch,
+    RsEmbeddingFunction,
+} from '/snippets/embedding.mdx';
+
+Modern machine learning models can be trained to convert raw data into embeddings, which are vectors
+of floating point numbers. The position of an embedding in vector space captures the semantics of
+the data, so vectors that are close to each other are considered similar.
+
+LanceDB provides an embedding function registry in OSS as well as its Enterprise versions
+([see below](#embeddings-in-lancedb-enterprise))
+that automatically generates vector embeddings during data ingestion. Automatic query-time embedding
+generation is available in LanceDB OSS, with SDK-specific query ergonomics. The API abstracts
+embedding generation, allowing you to focus on your application logic.
+
+## Embedding Registry {#embedding-registry}
+
+You can get a supported embedding function from the registry, and then use it in your table schema. 
+Once configured, the embedding function will automatically generate embeddings when you insert data
+into the table. Query-time behavior depends on SDK: Python/TypeScript can query with text directly,
+while Rust examples typically compute query embeddings explicitly before vector search.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="python" icon="python">
+    {PyOpenaiEmbeddings}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+    {TsOpenaiEmbeddings}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="rust" icon="rust">
+    {RsOpenaiEmbeddings}
+    </CodeBlock>
+</CodeGroup>
+
+### Using an embedding function {#using-an-embedding-function}
+
+Create an embedding function before you attach it to table or schema metadata. Python and TypeScript fetch
+provider implementations from the embedding registry, while Rust constructs the provider embedding function
+directly and registers it on the connection before using it in an `EmbeddingDefinition`.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="python" icon="python">
+    {PyCreateEmbeddingFunction}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+    {TsCreateEmbeddingFunction}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="rust" icon="rust">
+    {RsCreateEmbeddingFunction}
+    </CodeBlock>
+</CodeGroup>
+
+Provider configuration is SDK-specific, so copy the option names from the provider page for the SDK you use.
+For example, the OpenAI model is selected with `name` in Python, `model` in TypeScript, and the model argument
+to `OpenAIEmbeddingFunction::new_with_model` in Rust.
+
+| Concept | Python | TypeScript | Rust |
+| --- | --- | --- | --- |
+| Model | `name="text-embedding-3-small"` | `{ model: "text-embedding-3-small" }` | `new_with_model(api_key, "text-embedding-3-small")` |
+| Retry count | `max_retries=7` | Provider/client-specific | Provider/client-specific |
+| API key | `api_key="..."`, environment variables, or `$var:` | `apiKey: "..."`, environment variables, or `$var:` | Constructor argument or environment variable |
+| Device | Provider-specific, for example `device="cuda"` | Provider-specific | Provider-specific |
+
+When ingesting data with an embedding definition, LanceDB only computes the vector column if that
+column is missing from the incoming batch or present but entirely null. If you provide any non-null
+values in the vector column, LanceDB treats the column as user-supplied and does not backfill the
+remaining rows in that batch.
+
+For reusable runtime configuration, the registry also supports `$var:` placeholders in embedding-function config.
+This is useful for provider secrets and environment-specific settings in Python and TypeScript.
+
+- Python uses `registry.set_var(...)`.
+- TypeScript uses `registry.setVar(...)`.
+- You can provide a fallback with `$var:name:default`.
+- Sensitive values such as API keys should be passed through registry variables instead of hardcoding them in config.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="python" icon="python">
+    {PyRegisterSecret}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+    {TsRegisterSecret}
+    </CodeBlock>
+</CodeGroup>
+
+For non-sensitive settings such as inference device selection, you can also use a default fallback:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="python" icon="python">
+    {PyRegisterDevice}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+    {TsRegisterModelFallback}
+    </CodeBlock>
+</CodeGroup>
+
+Find the full list of arguments for each provider in the [integrations](/integrations/embedding) section.
+
+## Multiple embedding columns {#multiple-embedding-columns}
+
+A single table can include more than one embedding definition when you want to store multiple semantic views
+of the same data, or generate embeddings from different source columns. In practice, each embedding definition
+maps one source column to one vector column, and the table schema can contain multiple such pairs.
+
+The exact setup differs by SDK, but the underlying pattern is the same: define a distinct source/vector pair
+for each embedding function you want applied during ingest.
+
+In TypeScript, automatic query embedding currently uses the first embedding function stored in the
+table metadata. If a table has multiple embedding definitions and you need to query a specific vector
+column, compute the query embedding explicitly and pass the vector to the search builder.
+
+## Embedding model providers {#embedding-model-providers}
+
+LanceDB supports most popular embedding providers.
+
+### Text embeddings {#text-embeddings}
+
+| Provider | Model ID | Default Model |
+|----------|----------|---------------|
+| OpenAI | `openai` | `text-embedding-ada-002` |
+| Sentence Transformers | `sentence-transformers` | `all-MiniLM-L6-v2` |
+| Hugging Face | `huggingface` | `colbert-ir/colbertv2.0` |
+| Cohere | `cohere` | `embed-english-v3.0` |
+| ... | ... | ... |
+
+### Multimodal embedding {#multimodal-embedding}
+
+| Provider | Model ID | Supported Inputs |
+|----------|----------|------------------|
+| OpenCLIP | `open-clip` | Text, Images |
+| ImageBind | `imagebind` | Text, Images, Audio, Video |
+| ... | ... | ... |
+
+You can find all supported embedding models in the [integrations](/integrations/embedding) section.
+
+## Embeddings in LanceDB Enterprise {#embeddings-in-lancedb-enterprise}
+<Badge color="red">Enterprise</Badge>
+
+In LanceDB Enterprise, embedding generation during data ingestion is client-side and the resulting vectors are
+stored on the remote table.
+
+<Info>
+The Enterprise server does not currently generate embeddings from query text on its own. Any automatic
+query-time embedding happens on the client side.
+</Info>
+
+### How string queries are interpreted {#how-string-queries-are-interpreted}
+
+For the Python remote client, `table.search("hello")` can take two different paths:
+
+- If the selected vector column has embedding metadata
+  (i.e., the table schema stores the source-column, vector-column, and
+  embedding-function mapping created from fields like `SourceField()` and
+  `VectorField()` during table creation), then the embeddings are computed in the Python client process.
+  The client uses the same local LanceDB embedding registry used by OSS tables to
+  reconstruct the embedding function from schema metadata, compute the query vector in
+  the client process, and send that vector to Enterprise for search.
+  ```python
+  result = table.search("hello").limit(1).to_list()
+  # The Python client computes the query embedding locally, then sends a vector search.
+  ```
+- If the table does not have embedding metadata for that search, `table.search("hello")` in `auto` mode is
+  treated as an FTS query instead.
+  ```python
+  result = table.search("hello").limit(5).to_list()
+  # In auto mode this is treated as an FTS query, not a vector query.
+  ```
+
+If you want explicit vector or hybrid behavior and the client cannot resolve an embedding function from the
+table metadata, generate the query embedding yourself and pass the vector directly.
+
+TypeScript has a similar string-query distinction in `auto` mode: if no embedding providers have been
+registered in the process, `search("text")` falls back to FTS. Once an embedding provider has been
+imported and registered, the client expects table embedding metadata for automatic vector search and
+raises an error if the table has none.
+
+The manual query-embedding flow below works across Enterprise SDKs and is an explicit path you can use when you
+want full control over query-time behavior.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="python" icon="python">
+    {PyManualQuerySearch}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+    {TsManualQuerySearch}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="rust" icon="rust">
+    {RsManualQuerySearch}
+    </CodeBlock>
+</CodeGroup>
+
+## Custom Embedding Functions {#custom-embedding-functions}
+
+You can always implement your own embedding function:
+- Python/TypeScript: subclass `TextEmbeddingFunction` (text) or `EmbeddingFunction` (multimodal).
+- Rust: implement the `EmbeddingFunction` trait.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="python" icon="python">
+    {PyEmbeddingFunction}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+    {TsEmbeddingFunction}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="rust" icon="rust">
+    {RsEmbeddingFunction}
+    </CodeBlock>
+</CodeGroup>

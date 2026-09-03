@@ -1,0 +1,51 @@
+---
+title: "Polars"
+sidebarTitle: "Polars & Arrow"
+
+---
+
+import {
+  PyPlatformsPolarsCreateTable,
+  PyPlatformsPolarsImports,
+  PyPlatformsPolarsLazyframe,
+  PyPlatformsPolarsPydantic,
+  PyPlatformsPolarsVectorSearch,
+} from '/snippets/integrations.mdx';
+
+LanceDB supports [Polars](https://github.com/pola-rs/polars), a blazingly fast DataFrame library for Python written in Rust. Under the hood, both Lance and Polars speak Arrow, so passing data back and forth stays zero-copy and ergonomic.
+
+## Create and Query a Table {#create-and-query-a-table}
+
+Import the required libraries, including the optional Pydantic helpers if you plan to define schemas.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPolarsImports}
+</CodeBlock>
+
+Build a Polars `DataFrame`, convert it to Arrow, and use it directly when creating a LanceDB table.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPolarsCreateTable}
+</CodeBlock>
+
+Run vector search and keep the results as a Polars `DataFrame` for further processing or visualization.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPolarsVectorSearch}
+</CodeBlock>
+
+## Work with LazyFrames {#work-with-lazyframes}
+
+When you want to operate on the entire table (potentially larger than RAM), convert to a Polars `LazyFrame` so you can chain transformations without loading everything at once.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPolarsLazyframe}
+</CodeBlock>
+
+## Define Schemas with Pydantic {#define-schemas-with-pydantic}
+
+You can also describe your table via `LanceModel` and continue ingesting data from Polars. This is useful when multiple teams share a schema or when you want validation.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPolarsPydantic}
+</CodeBlock>
