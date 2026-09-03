@@ -691,6 +691,25 @@ def test_fetch_blobs_accepts_query_result():
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"gamma"}
 
 
+def test_fetch_blobs_after_compact_with_stable_row_ids(tmp_path):
+    db = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("t", schema=schema)
+    table.add([{"id": 1, "image": b"frag-one"}])
+    table.add([{"id": 2, "image": b"frag-two"}])
+    by_id = _row_ids_by_id(table)
+    ids = [by_id[1], by_id[2]]
+
+    table.optimize()
+
+    blobs = table.fetch_blobs("image", ids)
+    assert blobs.to_pylist() == [b"frag-one", b"frag-two"]
+    ranges = table.fetch_blob_ranges("image", [(ids[0], 5, 3), (ids[1], 5, 3)])
+    assert ranges.to_pylist() == [b"one", b"two"]
+
+
 def test_fetch_blobs_preserves_null_and_empty_values():
     table = _blob_table(
         "nulls",
