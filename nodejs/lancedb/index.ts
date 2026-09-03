@@ -399,6 +399,7 @@ export async function connect(
   }
 
   finalOptions = (finalOptions as ConnectionOptions) ?? {};
+  finalOptions.apiKey ??= process.env.LANCEDB_API_KEY;
   (<ConnectionOptions>finalOptions).storageOptions = cleanseStorageOptions(
     (<ConnectionOptions>finalOptions).storageOptions,
   );
