@@ -1261,4 +1261,63 @@ mod tests {
         assert_eq!(nested.value(0), r#"{"b":2}"#);
         assert!(nested.is_null(1));
     }
+
+    /// A null struct row survives a cast of one of its children, even when that child is
+    /// non-nullable. Lance checks a non-nullable child for nulls without applying the
+    /// parent's validity, so rebuilding the struct must leave the children untouched.
+    #[tokio::test]
+    async fn test_add_null_struct_with_non_nullable_child() {
+        use arrow_array::{Array, cast::AsArray};
+        use arrow_schema::Fields;
+
+        let table_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(vec![Field::new("x", DataType::Int64, false)].into()),
+            true,
+        )]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("null_struct", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Int32 rather than the table's Int64, so the struct goes through reconstruction.
+        let input_children: Fields = vec![Field::new("x", DataType::Int32, false)].into();
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(arrow_array::StructArray::new(
+                input_children,
+                vec![Arc::new(arrow_array::Int32Array::from(vec![0, 6]))],
+                Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+            ))],
+        )
+        .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        let s = batch.column_by_name("s").unwrap().as_struct();
+        assert!(s.is_null(0));
+        assert_eq!(
+            s.column_by_name("x")
+                .unwrap()
+                .as_primitive::<arrow::datatypes::Int64Type>()
+                .value(1),
+            6
+        );
+    }
 }

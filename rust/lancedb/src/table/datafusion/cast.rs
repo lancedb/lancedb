@@ -2,16 +2,19 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
+use arrow_array::StructArray;
+use arrow_array::cast::AsArray;
 use arrow_cast::can_cast_types;
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
 use datafusion::functions::core::{get_field, named_struct};
-use datafusion_common::ScalarValue;
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::metadata::FieldMetadata;
+use datafusion_common::{DataFusionError, Result as DFResult, ScalarValue};
+use datafusion_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
 use datafusion_physical_expr::ScalarFunctionExpr;
-use datafusion_physical_expr::expressions::{CaseExpr, CastExpr, IsNullExpr, Literal};
+use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
@@ -167,7 +170,13 @@ fn build_field_exprs(
                 ));
 
                 result.push((
-                    restore_struct_validity(ns_expr, input_expr, input_field, &output_field)?,
+                    restore_struct_validity(
+                        ns_expr,
+                        input_expr,
+                        input_field,
+                        &output_field,
+                        config.clone(),
+                    ),
                     output_field,
                 ));
                 continue;
@@ -205,29 +214,79 @@ fn build_field_exprs(
 
 // `named_struct` returns a struct with no null bitmap, and the `get_field` calls feeding it
 // read each child without applying the parent's validity, so a null input struct would come
-// back non-null with its masked children exposed. Select a typed null wherever the input
-// struct was null.
+// back non-null with its masked children exposed. Move the input's null buffer onto the
+// rebuilt struct.
 fn restore_struct_validity(
     rebuilt: Arc<dyn PhysicalExpr>,
     input_expr: Arc<dyn PhysicalExpr>,
     input_field: &FieldRef,
     output_field: &FieldRef,
-) -> Result<Arc<dyn PhysicalExpr>> {
+    config: Arc<ConfigOptions>,
+) -> Arc<dyn PhysicalExpr> {
     if !input_field.is_nullable() {
-        return Ok(rebuilt);
+        return rebuilt;
     }
 
-    let null_struct = null_literal(output_field)?;
-    let when_null: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(input_expr));
-    let case = CaseExpr::try_new(None, vec![(when_null, null_struct)], Some(rebuilt))?;
-
-    // `CASE` derives its return field from the branch types, which loses the field name and
-    // metadata, so stamp the field back on. The types already match, making the cast a no-op.
-    Ok(Arc::new(CastExpr::new_with_target_field(
-        Arc::new(case),
+    Arc::new(ScalarFunctionExpr::new(
+        &format!("restore_validity({})", output_field.name()),
+        RESTORE_VALIDITY_UDF.clone(),
+        vec![rebuilt, input_expr],
         output_field.clone(),
-        None,
-    )))
+        config,
+    ))
+}
+
+static RESTORE_VALIDITY_UDF: LazyLock<Arc<datafusion_expr::ScalarUDF>> =
+    LazyLock::new(|| Arc::new(datafusion_expr::ScalarUDF::from(RestoreValidityUdf::new())));
+
+/// Returns its first argument, a struct, carrying the null buffer of its second.
+///
+/// Selecting a typed null for the null rows instead would nullify their children too, which
+/// Lance rejects outright for a non-nullable child, even where the parent masks it. Children
+/// therefore have to survive the round trip byte for byte.
+#[derive(Debug, Hash, PartialEq, Eq)]
+struct RestoreValidityUdf {
+    signature: Signature,
+}
+
+impl RestoreValidityUdf {
+    fn new() -> Self {
+        Self {
+            signature: Signature::any(2, Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for RestoreValidityUdf {
+    fn name(&self) -> &str {
+        "restore_validity"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(arg_types[0].clone())
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
+        let rows = args.number_rows;
+        let rebuilt = args.args[0].to_array(rows)?;
+        let nulls_from = args.args[1].to_array(rows)?;
+
+        let rebuilt = rebuilt.as_struct_opt().ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "restore_validity expects a struct, got {}",
+                rebuilt.data_type()
+            ))
+        })?;
+
+        let nulls = nulls_from.logical_nulls();
+        let (fields, columns, _) = rebuilt.clone().into_parts();
+        let restored = StructArray::try_new_with_length(fields, columns, nulls, rows)?;
+        Ok(ColumnarValue::Array(Arc::new(restored)))
+    }
 }
 
 // The storage type arrow.json would use for `input`, or None if it cannot hold JSON text.
@@ -1189,6 +1248,44 @@ mod tests {
         assert!(s.is_null(0));
         assert!(s.is_valid(1));
         let x: &Int64Array = s.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(x.value(1), 6);
+    }
+
+    /// Lance rejects a non-nullable child that carries nulls even where the parent masks
+    /// them, so the null rows have to keep the placeholder children the input gave them.
+    #[tokio::test]
+    async fn test_null_struct_keeps_children_of_a_non_nullable_child() {
+        let input_children: Fields = vec![Field::new("x", DataType::Int32, false)].into();
+        let table_schema = Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(vec![Field::new("x", DataType::Int64, false)].into()),
+            true,
+        )]);
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StructArray::new(
+                input_children,
+                vec![Arc::new(Int32Array::from(vec![0, 6]))],
+                Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let result = collect(projected).await;
+        let s: &StructArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert!(s.is_null(0));
+        assert!(s.is_valid(1));
+        let x: &Int64Array = s.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(x.null_count(), 0);
         assert_eq!(x.value(1), 6);
     }
 
