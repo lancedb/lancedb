@@ -6,9 +6,13 @@
 import tempfile
 import shutil
 import importlib
+import multiprocessing as mp
+import sys
+from datetime import timedelta
 import pytest
 import pyarrow as pa
 import lancedb
+from lance_namespace import connect as namespace_connect
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.namespace import _MAX_QUERY_K
 from lancedb.table import AsyncTable, LanceTable
@@ -70,6 +74,16 @@ def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
     # pushdown is not routed to Rust.
     table._route_pushdown_to_rust = False
     return table
+
+
+def _direct_namespace_fork_child(table, result_queue):
+    from lancedb.permutation import Permutation
+
+    try:
+        permutation = Permutation.identity(table)
+        result_queue.put(("ok", permutation.num_rows))
+    except Exception as error:
+        result_queue.put((type(error).__name__, str(error)))
 
 
 class TestNamespaceConnection:
@@ -419,7 +433,95 @@ class TestNamespaceConnection:
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("test_table", schema=schema, storage_options=table_opts)
+        created = db.create_table(
+            "test_table", schema=schema, storage_options=table_opts
+        )
+        assert created._storage_options == table_opts
+
+        opened = db.open_table(
+            "test_table",
+            storage_options={"allow_http": "true"},
+            index_cache_size=17,
+        )
+        assert opened._storage_options == {"allow_http": "true"}
+        assert opened._index_cache_size == 17
+        opened._pid = -1
+        opened._ensure_open()
+        assert opened.count_rows() == 0
+
+    def test_serialize_preserves_zero_read_consistency_interval(self):
+        db = lancedb.connect_namespace(
+            "dir",
+            {"root": self.temp_dir},
+            read_consistency_interval=timedelta(0),
+        )
+
+        restored = lancedb.deserialize_conn(db.serialize())
+        assert restored.read_consistency_interval == timedelta(0)
+
+    @pytest.mark.skipif(
+        sys.platform != "linux",
+        reason="fork() is only supported safely for this test on Linux",
+    )
+    def test_direct_namespace_with_descriptor_reopens_after_fork(self):
+        properties = {"root": self.temp_dir}
+        namespace = namespace_connect("dir", properties)
+        db = lancedb.LanceNamespaceDBConnection(
+            namespace,
+            namespace_client_impl="dir",
+            namespace_client_properties=properties,
+        )
+        table = db.create_table("items", pa.table({"id": [1]}))
+
+        ctx = mp.get_context("fork")
+        result_queue = ctx.Queue()
+        process = ctx.Process(
+            target=_direct_namespace_fork_child,
+            args=(table, result_queue),
+        )
+        process.start()
+        process.join(10)
+
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+            pytest.fail("Direct namespace table hung while reopening after fork")
+
+        assert process.exitcode == 0
+        assert result_queue.get(timeout=2) == ("ok", 1)
+
+    @pytest.mark.skipif(
+        sys.platform != "linux",
+        reason="fork() is only supported safely for this test on Linux",
+    )
+    def test_opaque_direct_namespace_reports_unsupported_fork(self):
+        namespace = namespace_connect("dir", {"root": self.temp_dir})
+        db = lancedb.LanceNamespaceDBConnection(namespace)
+        table = db.create_table("items", pa.table({"id": [1]}))
+
+        with pytest.raises(ValueError, match="opaque namespace client"):
+            db.serialize()
+        assert not table._can_reopen_after_fork
+
+        ctx = mp.get_context("fork")
+        result_queue = ctx.Queue()
+        process = ctx.Process(
+            target=_direct_namespace_fork_child,
+            args=(table, result_queue),
+        )
+        process.start()
+        process.join(10)
+
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+            pytest.fail("Opaque namespace table hung after fork")
+
+        assert process.exitcode == 0
+        error_type, message = result_queue.get(timeout=2)
+        assert error_type == "RuntimeError"
+        assert "Cannot reopen table 'items' in a forked process" in message
+        assert "namespace_client_impl and namespace_client_properties" in message
 
     def test_namespace_operations(self):
         """Test namespace management operations."""
