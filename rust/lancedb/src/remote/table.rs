@@ -6306,6 +6306,7 @@ mod tests {
                             let mut expected_body = expected_body.clone();
                             expected_body["column"] = "a".into();
                             expected_body[INDEX_TYPE_KEY] = index_type.into();
+                            expected_body["replace"] = false.into();
 
                             assert_eq!(body, expected_body);
 
@@ -6615,38 +6616,46 @@ mod tests {
             json!({
                 "column": "rowId",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "`row-id`",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "userId",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "MetaData.userId",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "metadata.user_id",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "image.embedding",
                 "index_type": "IVF_PQ",
                 "metric_type": "l2",
+                "replace": false,
             }),
             {
                 let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
                 body["column"] = "payload.text".into();
                 body["index_type"] = "FTS".into();
+                body["replace"] = false.into();
                 body
             },
             {
                 let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
                 body["column"] = "docs.content".into();
                 body["index_type"] = "FTS".into();
+                body["replace"] = false.into();
                 body
             },
             {
@@ -6654,15 +6663,18 @@ mod tests {
                 body["column"] = "docs.content".into();
                 body["index_type"] = "FTS".into();
                 body["document_granularity"] = "list_element".into();
+                body["replace"] = false.into();
                 body
             },
             json!({
                 "column": "`meta-data`.`user-id`",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "literal.`a.b`",
                 "index_type": "BTREE",
+                "replace": false,
             }),
         ]);
         let request_idx = Arc::new(AtomicUsize::new(0));
