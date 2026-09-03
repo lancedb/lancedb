@@ -3096,6 +3096,47 @@ async def test_add_list_of_dicts_to_json_list_column(mem_db_async: AsyncConnecti
     assert matched.column("id").to_pylist() == [2]
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_map_of_json_values(mem_db_async: AsyncConnection):
+    """JSON in a map's values needs the same encoding a list's items do."""
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("m", pa.map_(pa.string(), pa.json_())),
+        ]
+    )
+    table = await mem_db_async.create_table(
+        "json_map_add",
+        schema=schema,
+        storage_options={"new_table_data_storage_version": "2.2"},
+    )
+
+    def batch(row_id: int, text: str) -> pa.Table:
+        return pa.table(
+            {
+                "id": pa.array([row_id], type=pa.int64()),
+                "m": pa.array([[("k", text)]], type=pa.map_(pa.string(), pa.string())),
+            }
+        )
+
+    await table.add(batch(1, '{"x": 1}'))
+    await table.add(batch(2, '{"x": 2}'), on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 1, "m": [("k", '{"x":1}')]},
+        {"id": 2, "m": [("k", '{"x":2}')]},
+    ]
+
+    matched = (
+        await table.query()
+        .where("json_extract(element_at(m, 'k')[1], '$.x') = '2'")
+        .to_arrow()
+    )
+    assert matched.column("id").to_pylist() == [2]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str

@@ -634,14 +634,10 @@ def _align_field_types(
     return new_fields
 
 
-def _align_list_value_field(
-    value_field: pa.Field, target_value_field: pa.Field
-) -> pa.Field:
-    # A list has exactly one child, so the inferred child name ("item") aligns
-    # positionally and adopts the table's child name; pa.Table.cast renames it.
-    return _align_field(value_field, target_value_field).with_name(
-        target_value_field.name
-    )
+def _align_container_child(child: pa.Field, target_child: pa.Field) -> pa.Field:
+    # A list has one child, a map one key and one item, so an inferred child name
+    # ("item") aligns positionally and adopts the table's; pa.Table.cast renames it.
+    return _align_field(child, target_child).with_name(target_child.name)
 
 
 def _arrow_json_storage_type(input_type: pa.DataType) -> Optional[pa.DataType]:
@@ -688,7 +684,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.list_(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 )
             )
@@ -697,7 +693,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_large_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.large_list(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 )
             )
@@ -706,10 +702,25 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_fixed_size_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.list_(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 ),
                 target_field.type.list_size,
+            )
+        else:
+            new_type = target_field.type
+    elif pa.types.is_map(target_field.type):
+        if pa.types.is_map(field.type):
+            # A map has exactly one key and one item field, so like a list's child they
+            # align positionally and adopt the table's names.
+            new_type = pa.map_(
+                _align_container_child(
+                    field.type.key_field, target_field.type.key_field
+                ),
+                _align_container_child(
+                    field.type.item_field, target_field.type.item_field
+                ),
+                keys_sorted=target_field.type.keys_sorted,
             )
         else:
             new_type = target_field.type
