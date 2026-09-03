@@ -20,8 +20,9 @@ use arrow::{
 use lancedb::blob::{BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
+    FieldMetadataUpdate, FtsToken as LanceDbFtsToken, IndexRemapMode, NewColumnTransform,
+    OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -98,6 +99,128 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
 enum PredicateArg {
     Expr(PyExpr),
     Sql(String),
+}
+
+fn validate_positive_u32(value: u64, name: &str) -> PyResult<usize> {
+    if !(1..=u32::MAX as u64).contains(&value) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be between 1 and {}",
+            u32::MAX
+        )));
+    }
+    Ok(value as usize)
+}
+
+fn positive_u32(value: &Bound<'_, PyAny>, name: &str) -> PyResult<usize> {
+    validate_positive_u32(value.extract()?, name)
+}
+
+fn optional_positive_u32(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<usize>> {
+    value
+        .extract::<Option<u64>>()?
+        .map(|value| validate_positive_u32(value, name))
+        .transpose()
+}
+
+fn optional_positive_usize(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<usize>> {
+    let value: Option<usize> = value.extract()?;
+    if value == Some(0) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than 0"
+        )));
+    }
+    Ok(value)
+}
+
+fn optional_positive_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<u64>> {
+    let value: Option<u64> = value.extract()?;
+    if value == Some(0) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than 0"
+        )));
+    }
+    Ok(value)
+}
+
+fn u32_list(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u32>> {
+    value
+        .extract::<Vec<i64>>()?
+        .into_iter()
+        .map(|value| {
+            u32::try_from(value).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "{name} must contain values between 0 and {}",
+                    u32::MAX
+                ))
+            })
+        })
+        .collect()
+}
+
+fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<u64>> {
+    let value: Option<u64> = value.extract()?;
+    if value.is_some_and(|value| value > i64::MAX as u64) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be at most {}",
+            i64::MAX
+        )));
+    }
+    Ok(value)
+}
+
+fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<CompactionOptions> {
+    let mut parsed = CompactionOptions::default();
+    let Some(options) = options else {
+        return Ok(parsed);
+    };
+
+    for (key, value) in options.iter() {
+        let key: String = key.extract()?;
+        match key.as_str() {
+            "target_rows_per_fragment" => {
+                parsed.target_rows_per_fragment = positive_u32(&value, &key)?
+            }
+            "max_rows_per_group" => parsed.max_rows_per_group = positive_u32(&value, &key)?,
+            "max_bytes_per_file" => parsed.max_bytes_per_file = value.extract()?,
+            "materialize_deletions" => parsed.materialize_deletions = value.extract()?,
+            "materialize_deletions_threshold" => {
+                parsed.materialize_deletions_threshold = value.extract()?
+            }
+            "num_threads" => parsed.num_threads = optional_positive_usize(&value, &key)?,
+            "batch_size" => parsed.batch_size = optional_positive_u32(&value, &key)?,
+            "io_buffer_size" => parsed.io_buffer_size = optional_i64_bounded_u64(&value, &key)?,
+            "defer_index_remap" => parsed.defer_index_remap = value.extract()?,
+            "index_remap_mode" => {
+                let mode: String = value.extract()?;
+                parsed.index_remap_mode = IndexRemapMode::try_from(mode.as_str())
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            }
+            "compaction_mode" => {
+                let mode: Option<String> = value.extract()?;
+                parsed.compaction_mode = mode
+                    .map(|mode| {
+                        CompactionMode::try_from(mode.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))
+                    })
+                    .transpose()?;
+            }
+            "binary_copy_read_batch_bytes" => {
+                parsed.binary_copy_read_batch_bytes = value.extract()?
+            }
+            "max_source_fragments" => parsed.max_source_fragments = value.extract()?,
+            "max_source_rows" => parsed.max_source_rows = optional_positive_usize(&value, &key)?,
+            "max_source_bytes" => parsed.max_source_bytes = optional_positive_u64(&value, &key)?,
+            "excluded_fragment_ids" => parsed.excluded_fragment_ids = u32_list(&value, &key)?,
+            "max_overlays_per_fragment" => parsed.max_overlays_per_fragment = value.extract()?,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid compaction option: {key}"
+                )));
+            }
+        }
+    }
+
+    Ok(parsed)
 }
 
 /// Statistics about a compaction operation.
@@ -1340,13 +1463,15 @@ impl Table {
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
-    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
-    pub fn optimize(
-        self_: PyRef<'_, Self>,
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, compaction_options=None))]
+    pub fn optimize<'py>(
+        self_: PyRef<'py, Self>,
         cleanup_since_ms: Option<u64>,
         delete_unverified: Option<bool>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+        compaction_options: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let compaction_options = parse_compaction_options(compaction_options)?;
         let older_than = if let Some(ms) = cleanup_since_ms {
             if ms > i64::MAX as u64 {
                 return Err(PyValueError::new_err(format!(
@@ -1362,7 +1487,7 @@ impl Table {
         future_into_py(self_.py(), async move {
             let compaction_stats = inner
                 .optimize(OptimizeAction::Compact {
-                    options: lancedb::table::CompactionOptions::default(),
+                    options: compaction_options,
                     remap_options: None,
                 })
                 .await
