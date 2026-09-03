@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 import sys
@@ -1987,8 +1988,16 @@ class AsyncConnection(object):
         if fill_value is None:
             fill_value = 0.0
 
-        data, schema = sanitize_create_table(
-            data, schema, metadata, on_bad_vectors, fill_value
+        # Input preparation may advance a user-provided iterator.  Keep that work
+        # off the background event loop so an iterator can use the synchronous
+        # LanceDB API without blocking the loop that API needs to make progress.
+        data, schema = await asyncio.to_thread(
+            sanitize_create_table,
+            data,
+            schema,
+            metadata,
+            on_bad_vectors,
+            fill_value,
         )
         validate_schema(schema)
 
