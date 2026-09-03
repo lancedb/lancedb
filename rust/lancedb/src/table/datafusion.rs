@@ -5,10 +5,13 @@
 
 mod blob_coerce;
 pub mod cast;
+mod extension;
 pub mod insert;
 pub mod reject_nan;
 pub mod scannable_exec;
+mod struct_expr;
 pub mod udtf;
+mod write_schema;
 
 use std::{collections::HashMap, sync::Arc};
 
