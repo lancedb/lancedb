@@ -27,7 +27,7 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from lancedb.scannable import _register_optional_converters, to_scannable
+from lancedb.scannable import Scannable, _register_optional_converters, to_scannable
 
 from . import __version__
 from ._blob import (
@@ -618,6 +618,79 @@ def _field_extension_name(field: pa.Field) -> Optional[str]:
     return extension_name
 
 
+def _coerce_json_field(field: pa.Field, target_field: pa.Field) -> Optional[pa.Field]:
+    """Promote compatible JSON input to Arrow's logical JSON type."""
+    if _field_extension_name(target_field) != "lance.json":
+        return None
+
+    if _field_extension_name(field) == "arrow.json":
+        return field
+
+    is_string_like = (
+        pa.types.is_string(field.type)
+        or pa.types.is_large_string(field.type)
+        or (hasattr(pa.types, "is_string_view") and pa.types.is_string_view(field.type))
+    )
+    if not is_string_like and not pa.types.is_null(field.type):
+        return None
+
+    if hasattr(pa, "json_"):
+        json_type = (
+            pa.json_(pa.large_string())
+            if pa.types.is_large_string(field.type)
+            else pa.json_()
+        )
+        return pa.field(
+            field.name,
+            json_type,
+            nullable=field.nullable,
+            metadata=field.metadata,
+        )
+
+    storage_type = (
+        pa.large_string() if pa.types.is_large_string(field.type) else pa.string()
+    )
+    metadata = dict(field.metadata or {})
+    metadata[b"ARROW:extension:name"] = b"arrow.json"
+    return pa.field(
+        field.name,
+        storage_type,
+        nullable=field.nullable,
+        metadata=metadata,
+    )
+
+
+def _coerce_json_scannable(data: Scannable, target_schema: pa.Schema) -> Scannable:
+    """Promote JSON-compatible columns without sanitizing unrelated columns."""
+    target_fields = {field.name: field for field in target_schema}
+    fields = []
+    changed = False
+
+    for field in data.schema:
+        target_field = target_fields.get(field.name)
+        coerced = (
+            _coerce_json_field(field, target_field)
+            if target_field is not None
+            else None
+        )
+        if coerced is not None:
+            fields.append(coerced)
+            changed = changed or not coerced.equals(field, check_metadata=True)
+        else:
+            fields.append(field)
+
+    if not changed:
+        return data
+
+    schema = pa.schema(fields, metadata=data.schema.metadata)
+    return Scannable(
+        schema=schema,
+        num_rows=data.num_rows,
+        reader=lambda: _cast_to_target_schema(data.reader(), schema),
+        rescannable=data.rescannable,
+    )
+
+
 def _align_field_types(
     fields: List[pa.Field],
     target_fields: List[pa.Field],
@@ -645,15 +718,11 @@ def _align_list_value_field(
 
 
 def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
-    # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
-    # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
-    # input to that storage type here merely relabels the raw JSON bytes as
-    # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
-    if (
-        _field_extension_name(field) == "arrow.json"
-        and _field_extension_name(target_field) == "lance.json"
-    ):
-        return field
+    # Keep compatible logical JSON input as arrow.json so Lance performs the
+    # JSONB encoding instead of relabeling raw JSON bytes as encoded storage.
+    json_field = _coerce_json_field(field, target_field)
+    if json_field is not None:
+        return json_field
     if pa.types.is_struct(target_field.type):
         if pa.types.is_struct(field.type):
             new_type = pa.struct(
@@ -5650,6 +5719,8 @@ class AsyncTable:
             )
         _register_optional_converters()
         data = to_scannable(data)
+        if mode in (None, "append"):
+            data = _coerce_json_scannable(data, schema)
         progress, owns = _normalize_progress(progress)
         try:
             return await self._inner.add(
