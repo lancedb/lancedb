@@ -36,6 +36,7 @@ pub mod runtime;
 pub mod session;
 pub mod table;
 pub mod util;
+pub mod write_batch;
 
 #[pymodule]
 pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -91,6 +92,8 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(expr_col, m)?)?;
     m.add_function(wrap_pyfunction!(expr_lit, m)?)?;
     m.add_function(wrap_pyfunction!(expr_func, m)?)?;
+    m.add_function(wrap_pyfunction!(write_batch::write_schema_for, m)?)?;
+    m.add_function(wrap_pyfunction!(write_batch::coerce_batch, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

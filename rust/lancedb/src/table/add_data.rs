@@ -239,7 +239,7 @@ pub struct PreprocessingOutput {
 /// If the types are not exactly the same, we will attempt to cast later - so that is also okay at this stage.
 ///
 /// If the nullability is different, that is also okay - we can relax nullability when casting.
-fn validate_schema(input: &Schema, table: &Schema) -> Result<()> {
+pub fn validate_schema(input: &Schema, table: &Schema) -> Result<()> {
     validate_fields(input.fields(), table.fields())
 }
 

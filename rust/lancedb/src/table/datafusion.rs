@@ -7,10 +7,12 @@ mod blob_coerce;
 pub mod cast;
 mod extension;
 pub mod insert;
+mod list_expr;
 pub mod reject_nan;
 pub mod scannable_exec;
 mod struct_expr;
 pub mod udtf;
+pub mod write_batch;
 mod write_schema;
 
 use std::{collections::HashMap, sync::Arc};

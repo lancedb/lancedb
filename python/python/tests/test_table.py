@@ -1885,13 +1885,12 @@ def test_add_nullable_fixed_size_list_with_none(mem_db: DBConnection):
 
 def test_add_nullable_struct_with_none(mem_db: DBConnection):
     """Regression test for issue #2654: a nullable struct column whose
-    first batch contains only None values must not crash in
-    _align_field_types with AttributeError: 'pyarrow.lib.DataType'
-    object has no attribute 'fields'.
+    first batch contains only None values must not crash while its type is
+    being aligned with the table's.
 
     PyArrow infers an all-None struct column as `null` (not `struct`),
-    so the type-alignment path needs to handle the case where the
-    source field type is null and use the target type directly.
+    so the coercion needs to handle the case where the source field type
+    is null and use the target type directly.
     """
     # Use the v2.1 file format so that nullable structs are supported.
     table = mem_db.create_table(
@@ -1974,7 +1973,7 @@ def test_on_bad_vectors_does_not_handle_non_vector_fixed_size_lists(
     )
     table = mem_db.create_table("test_bbox_schema", schema=schema)
 
-    with pytest.raises(RuntimeError, match="FixedSizeListType"):
+    with pytest.raises(ValueError, match="Cannot cast to FixedSizeList"):
         table.add(
             [{"vector": [1.0, 2.0, 3.0, 4.0], "bbox": [0.0, 1.0]}],
             on_bad_vectors="drop",
@@ -1987,7 +1986,7 @@ def test_on_bad_vectors_does_not_handle_custom_named_fixed_size_lists(
     schema = pa.schema([pa.field("features", pa.list_(pa.float32(), 16))])
     table = mem_db.create_table("test_custom_named_fixed_size_vector", schema=schema)
 
-    with pytest.raises(RuntimeError, match="FixedSizeListType"):
+    with pytest.raises(ValueError, match="Cannot cast to FixedSizeList"):
         table.add(
             [
                 {"features": []},

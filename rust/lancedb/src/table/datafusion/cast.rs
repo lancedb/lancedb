@@ -18,6 +18,7 @@ use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 
 use super::blob_coerce::coerce_blob_expr;
 use super::extension::ExtensionKind;
+use super::list_expr::{CoerceListValues, list_item, list_of, same_list_kind};
 use super::struct_expr::{StructChild, build_struct, cast_to_field, get_field_expr};
 use super::write_schema::resolve_write_field;
 use crate::{Error, Result};
@@ -69,12 +70,17 @@ type Rule = fn(&WriteColumn) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>
 /// * A struct is rebuilt child by child, because that is the only way to line up input whose
 ///   children are reordered or partial. It has to precede [`cast_column`], which would ask
 ///   arrow for a struct cast and get an error for anything but an exact positional match.
+/// * A list is rebuilt with its items coerced by these same rules, one level down, for the
+///   cases arrow's list cast cannot reach: items that have to be synthesized rather than
+///   cast, such as a blob column inside a list, and a change of list kind, where arrow's
+///   cast mishandles a sliced input. Like the struct rebuild it has to precede
+///   [`cast_column`].
 ///
 /// Rules that were needed before phase one existed and are now subsumed by [`cast_column`]:
 /// JSON no longer needs one because [`resolve_write_field`] asks for an `arrow.json` field
 /// that a plain cast can satisfy, and null input needs none because arrow casts `Null` into
 /// any type as an all-null array.
-const RULES: &[Rule] = &[blob_column, rebuild_struct];
+const RULES: &[Rule] = &[blob_column, rebuild_struct, coerce_list_items];
 
 /// Build expressions to project input fields to match the table schema.
 ///
@@ -178,6 +184,83 @@ fn rebuild_struct(column: &WriteColumn) -> Result<Option<(Arc<dyn PhysicalExpr>,
         .then(|| column.input_expr.clone());
     let expr = build_struct(children, &output_field, nulls_from, column.config)?;
     Ok(Some((expr, output_field)))
+}
+
+/// Rebuild a list column, coercing its items with the same rules.
+///
+/// This is how items needing more than a cast — a blob synthesized from raw bytes, say — are
+/// reached inside a list. It also normalizes the list's offsets to start at zero, which is
+/// what makes the cast to a fixed-size list correct: arrow's cast reads the values buffer
+/// from index zero regardless of where the offsets point, so a sliced input would otherwise
+/// be written a row or more out of step.
+///
+/// Declines a list arrow can cast on its own, which is any list of the same kind whose items
+/// only need a cast (a widened item type, a JSON leaf relabelled by phase one).
+fn coerce_list_items(column: &WriteColumn) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>> {
+    let (Some(input_item), Some(write_item)) = (
+        list_item(column.input_field.data_type()),
+        list_item(column.write_field.data_type()),
+    ) else {
+        return Ok(None);
+    };
+    let arrow_can_do_it =
+        input_item == write_item || can_cast_types(input_item.data_type(), write_item.data_type());
+    if arrow_can_do_it
+        && same_list_kind(
+            column.input_field.data_type(),
+            column.write_field.data_type(),
+        )
+    {
+        return Ok(None);
+    }
+
+    // A list has exactly one child, so the items line up positionally however they are
+    // named. Renaming the input's item to the table's is what lets them be matched by name
+    // like the columns of a struct, so the same rules apply to both.
+    let item_name = write_item.name();
+    // Nullable whatever the input field says: the values array's own nulls are what the
+    // synthetic batch has to accept, and a list's item field is often mislabelled.
+    let input_item: FieldRef = Arc::new(
+        input_item
+            .as_ref()
+            .clone()
+            .with_name(item_name)
+            .with_nullable(true),
+    );
+    let item_fields = Fields::from(vec![write_item.clone()]);
+    let input_fields = Fields::from(vec![input_item.clone()]);
+    let mut coerced = build_field_exprs(&input_fields, &item_fields, &|_| {
+        Arc::new(Column::new(item_name, 0)) as Arc<dyn PhysicalExpr>
+    })?;
+    let Some((values_expr, values_field)) = coerced.pop() else {
+        return Ok(None);
+    };
+
+    // The rebuilt list reuses the input's offsets and validity, so it comes out as the same
+    // kind of list the input was. A table field that asks for another kind (a fixed-size list
+    // of blobs, say) is reached by casting afterwards, which arrow can do once the items are
+    // the type it is expecting.
+    let rebuilt_field: FieldRef = Arc::new(list_of(
+        column.write_field,
+        column.input_field.data_type(),
+        values_field.clone(),
+    )?);
+    let rebuilt: Arc<dyn PhysicalExpr> = Arc::new(CoerceListValues::new(
+        column.input_expr.clone(),
+        values_expr,
+        input_item,
+        rebuilt_field.clone(),
+    )?);
+
+    let output_field: FieldRef = Arc::new(list_of(
+        column.write_field,
+        column.write_field.data_type(),
+        values_field,
+    )?);
+    if output_field == rebuilt_field {
+        return Ok(Some((rebuilt, output_field)));
+    }
+    Ok(Some((cast_to_field(rebuilt, &output_field), output_field)))
 }
 
 /// Pass the column through if it already matches, otherwise cast it to the write field.
