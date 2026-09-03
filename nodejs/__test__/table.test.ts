@@ -1526,11 +1526,7 @@ describe("When creating an index", () => {
 
   it("should allow me to replace (or not) an existing index", async () => {
     await tbl.createIndex("id");
-    // Default is replace=true
-    await tbl.createIndex("id");
-    await expect(tbl.createIndex("id", { replace: false })).rejects.toThrow(
-      "already exists",
-    );
+    await expect(tbl.createIndex("id")).rejects.toThrow("already exists");
     await tbl.createIndex("id", { replace: true });
   });
 
