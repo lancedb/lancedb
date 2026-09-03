@@ -12962,4 +12962,18 @@ mod tests {
             .unwrap();
         branch.stats().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_stats_num_deleted_rows_is_none_when_absent() {
+        // The stats endpoint does not report num_deleted_rows, so the response
+        // must still parse and value set to None.
+        let body = r#"{"total_bytes":1,"num_rows":3,"num_indices":0,"fragment_stats":{"num_fragments":1,"num_small_fragments":0,"lengths":{"min":3,"max":3,"mean":3,"p25":3,"p50":3,"p75":3,"p99":3}}}"#;
+        let table = Table::new_with_handler("my_table", move |_| {
+            http::Response::builder()
+                .status(200)
+                .body(body.to_string())
+                .unwrap()
+        });
+        assert_eq!(table.stats().await.unwrap().num_deleted_rows, None);
+    }
 }
