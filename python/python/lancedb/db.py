@@ -960,6 +960,25 @@ class LanceDBConnection(DBConnection):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(uri={self._conn.uri!r})"
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def is_open(self) -> bool:
+        """Return True if the connection is open."""
+        return self._conn.is_open()
+
+    def close(self) -> None:
+        """Close the connection, releasing any underlying resources.
+
+        It is safe to call this method multiple times.
+
+        Any attempt to use the connection after it is closed will result in an
+        error."""
+        self._conn.close()
+
     @override
     def serialize(self) -> str:
         import json
@@ -1589,6 +1608,12 @@ class AsyncConnection(object):
         return self
 
     def __exit__(self, *_):
+        self.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
         self.close()
 
     def is_open(self):

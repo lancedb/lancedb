@@ -423,6 +423,48 @@ async def test_context_manager():
 
 
 @pytest.mark.asyncio
+async def test_async_context_manager():
+    async with await lancedb.connect_async("memory://") as db:
+        assert db.is_open()
+    assert not db.is_open()
+
+
+def test_sync_close(mem_db):
+    """The sync connection had no way to release its resources short of
+    dropping the object and waiting for the GC."""
+    assert mem_db.is_open()
+    mem_db.close()
+    assert not mem_db.is_open()
+
+    with pytest.raises(Exception, match="is closed"):
+        mem_db.list_tables()
+
+
+def test_sync_close_is_idempotent(mem_db):
+    """Error case: closing twice must be harmless, matching the async side."""
+    mem_db.close()
+    mem_db.close()
+    assert not mem_db.is_open()
+
+
+def test_sync_context_manager():
+    with lancedb.connect("memory://") as db:
+        assert db.is_open()
+    assert not db.is_open()
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_closes_on_error():
+    """The connection must be released even when the block raises, which is
+    the whole reason to reach for `async with` over a manual close."""
+    db = await lancedb.connect_async("memory://")
+    with pytest.raises(ValueError, match="boom"):
+        async with db:
+            raise ValueError("boom")
+    assert not db.is_open()
+
+
+@pytest.mark.asyncio
 async def test_create_mode_async(tmp_db_async: lancedb.AsyncConnection):
     data = pd.DataFrame(
         {
