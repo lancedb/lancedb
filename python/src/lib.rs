@@ -3,6 +3,9 @@
 
 use arrow::RecordBatchStream;
 use connection::{Connection, connect, connect_namespace, connect_namespace_client};
+use dataframe::{
+    NativeDataFrame, aggregate_avg, aggregate_count, aggregate_max, aggregate_min, aggregate_sum,
+};
 use env_logger::Env;
 use expr::{PyExpr, expr_col, expr_func, expr_lit};
 use index::IndexConfig;
@@ -22,6 +25,7 @@ use table::{
 
 pub mod arrow;
 pub mod connection;
+pub mod dataframe;
 pub mod error;
 pub mod expr;
 pub mod header;
@@ -75,6 +79,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAsyncPermutationBuilder>()?;
     m.add_class::<PyPermutationReader>()?;
     m.add_class::<PyExpr>()?;
+    m.add_class::<NativeDataFrame>()?;
     // OpenTelemetry metrics bridge
     m.add_class::<otel::PyMetricPoint>()?;
     m.add_class::<otel::PyMetricDescription>()?;
@@ -94,6 +99,11 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(expr_col, m)?)?;
     m.add_function(wrap_pyfunction!(expr_lit, m)?)?;
     m.add_function(wrap_pyfunction!(expr_func, m)?)?;
+    m.add_function(wrap_pyfunction!(aggregate_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(aggregate_avg, m)?)?;
+    m.add_function(wrap_pyfunction!(aggregate_min, m)?)?;
+    m.add_function(wrap_pyfunction!(aggregate_max, m)?)?;
+    m.add_function(wrap_pyfunction!(aggregate_count, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

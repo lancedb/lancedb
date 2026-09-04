@@ -73,7 +73,12 @@ jobs:
             pre_build: |-
               set -e &&
               apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config &&
+              apt-get install -y curl unzip pkg-config &&
+              curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-x86_64.zip -o /tmp/protoc.zip &&
+              unzip -o /tmp/protoc.zip -d /usr/local &&
+              rm /tmp/protoc.zip &&
+              /usr/local/bin/protoc --version &&
+              export PROTOC=/usr/local/bin/protoc &&
               # The base image (manylinux2014-cross) sets TARGET_CC to the old
               # GCC 4.8 cross-compiler. aws-lc-sys checks TARGET_CC before CC,
               # so it picks up GCC even though the napi-rs image sets CC=clang.
@@ -105,7 +110,12 @@ jobs:
             pre_build: |-
               set -e &&
               apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config &&
+              apt-get install -y curl unzip pkg-config &&
+              curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-x86_64.zip -o /tmp/protoc.zip &&
+              unzip -o /tmp/protoc.zip -d /usr/local &&
+              rm /tmp/protoc.zip &&
+              /usr/local/bin/protoc --version &&
+              export PROTOC=/usr/local/bin/protoc &&
               export TARGET_CC=clang TARGET_CXX=clang++ &&
               # The manylinux2014 sysroot has glibc 2.17 headers which lack
               # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.

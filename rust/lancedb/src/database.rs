@@ -350,6 +350,23 @@ pub trait Database:
             message: "SQL is not supported by this database".to_string(),
         })
     }
+    /// Execute a DataFrame plan on a supported database.
+    #[doc(hidden)]
+    async fn execute_dataframe(
+        &self,
+        _plan: &[u8],
+        _version: &str,
+        _default_namespace_path: &[String],
+    ) -> Result<crate::sql::Query> {
+        Err(crate::error::Error::NotSupported {
+            message: "DataFrame execution is not supported by this database".to_string(),
+        })
+    }
+    /// Whether DataFrames should be serialized and submitted to this database.
+    #[doc(hidden)]
+    fn executes_dataframe_remotely(&self) -> bool {
+        false
+    }
     /// Describe a submitted SQL query by its connection-scoped id.
     async fn describe_query(&self, _query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
         Err(crate::error::Error::NotSupported {
