@@ -1,0 +1,133 @@
+---
+title: "SQL functions and types"
+sidebarTitle: "Functions and types"
+description: "The dialect is DataFusion's. What that gives you, and what LanceDB adds on top."
+icon: function
+keywords: ["sql functions", "datafusion", "scalar functions", "aggregate", "data types", "fts"]
+---
+
+LanceDB executes SQL with [Apache DataFusion](https://datafusion.apache.org),
+currently **version 54**. The dialect, the built-in functions, and the type
+system are DataFusion's, registered from its default set — so anything the
+DataFusion reference documents for that version is available, and this page does
+not reproduce it.
+
+What it does document is the version you are querying against, where the
+authoritative lists are, and the parts that are LanceDB's rather than
+DataFusion's.
+
+## Reference by category {#reference}
+
+| | DataFusion reference |
+| --- | --- |
+| Math, conditional, string, binary string, regular expression, time and date | [Scalar functions](https://datafusion.apache.org/user-guide/sql/scalar_functions.html) |
+| `count`, `sum`, `avg`, `min`, `max`, statistical, approximate | [Aggregate functions](https://datafusion.apache.org/user-guide/sql/aggregate_functions.html) |
+| `row_number`, `rank`, `lag`, `lead`, and the rest of `OVER (...)` | [Window functions](https://datafusion.apache.org/user-guide/sql/window_functions.html) |
+| Arrow-backed types, and how SQL type names map onto them | [Data types](https://datafusion.apache.org/user-guide/sql/data_types.html) |
+| `SELECT`, joins, `GROUP BY`, `ORDER BY`, `LIMIT`, CTEs, set operations | [SELECT syntax](https://datafusion.apache.org/user-guide/sql/select.html) |
+
+<Note>
+Function availability is version-specific: DataFusion adds functions in most
+releases, so a function documented on `main` may not exist in 54. When a
+function is not recognised, check it against the reference for the version above
+before assuming a bug.
+</Note>
+
+## Types are Arrow types {#types}
+
+There is no SQL type layer over Lance storage. The DataFusion table provider
+returns the dataset's Arrow schema directly — `Schema::from(dataset.schema())` —
+so a column is the same object to the query engine as it is to the format, and
+DataFusion's [type reference](https://datafusion.apache.org/user-guide/sql/data_types.html)
+describes it exactly.
+
+That identity is mostly invisible and occasionally load-bearing. A vector column
+is a `FixedSizeList<Float32>`: selectable, testable for nullness, joinable like
+any other column — but arithmetic over it is list arithmetic, not scalar
+arithmetic. When the operation is a similarity comparison, use vector search
+rather than SQL.
+
+### Pseudo-columns {#pseudo-columns}
+
+Lance rows carry metadata the provider can expose as columns. They are appended
+to the schema only when asked for, so they do not appear in `SELECT *`:
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `_rowid` | `UInt64`, nullable | stable row identifier |
+| `_rowaddr` | `UInt64`, nullable | physical row address |
+| `_rowoffset` | `UInt64`, nullable | offset within the fragment |
+| `_score` | `Float32` | relevance, from [`fts()`](#fts) |
+
+`_rowid` and `_rowaddr` are declared nullable, but not because a row lacks one —
+their validity bitmap is reused as a selection vector internally. Do not read a
+null there as meaningful.
+
+`_rowid` is the identifier [materialized views](/feature-engineering/materialized-views)
+depend on, which is why a source table needs stable row ids enabled at creation.
+
+### Blob columns change shape {#blobs}
+
+A blob column can be read as its **binary contents** or as a **description** —
+a pointer plus metadata, without fetching the bytes. That choice changes the
+column's Arrow type, and therefore the schema a query sees.
+
+The default reads blobs as descriptions and other binary columns as binary. A
+query that selects a blob column and expects bytes will get a struct instead
+unless the read is configured otherwise. Worth knowing before writing a
+predicate against one.
+
+## What LanceDB adds {#extensions}
+
+### `fts(table, query)` {#fts}
+
+Full-text search is a **table function**, not a predicate — implemented as a
+DataFusion `TableProvider` over the dataset, so its result is a relation. That is
+what lets it return relevance alongside the matching rows, which a `WHERE` clause
+has nowhere to put:
+
+```sql
+SELECT id, text, _score
+FROM fts('my_docs', 'puppy')
+ORDER BY _score DESC
+LIMIT 5
+```
+
+The second argument is either a bare query string or a JSON query object for
+fuzzy, phrase, boolean, boost and multi-match forms.
+
+Its schema is the dataset's, so every column of the table is available in the
+result — projections push down into the scan rather than being applied
+afterwards. Being a relation is also what makes it compose: join it, filter it,
+aggregate over it.
+
+```sql
+SELECT c.name, count(*) AS hits
+FROM fts('my_docs', 'puppy') AS m
+JOIN categories AS c ON c.id = m.category_id
+GROUP BY c.name
+ORDER BY hits DESC
+```
+
+### `_score` {#score}
+
+A pseudo-column produced by `fts()`, carrying relevance for the row. It behaves
+like a normal column — order by it, filter on it, project it — and exists only
+in a relation that came from `fts()`.
+
+## From the DataFrame API {#from-dataframe}
+
+The [DataFrame API](/sql/dataframe) wraps five aggregates as Python functions —
+`sum`, `avg`, `min`, `max`, `count`. Everything else in the DataFusion reference
+is reachable through `func(name, *args)`:
+
+```python
+from lancedb import col, func
+
+df.select(func("date_trunc", "month", col("created_at")))
+df.filter(func("regexp_like", col("title"), "^intro"))
+```
+
+`func()` is not checked when you build the plan — an unknown name or a wrong
+argument count surfaces when the query runs on the server. That is the trade for
+reaching the whole function set without a wrapper per function.

@@ -1,0 +1,34 @@
+---
+title: "Troubleshooting"
+sidebarTitle: "Troubleshooting"
+description: "Tips for troubleshooting basic LanceDB issues."
+icon: "tools"
+---
+
+## Frequently-asked questions {#frequently-asked-questions}
+
+For commonly asked questions about LanceDB, please refer to our [FAQ section](/faq).
+
+## Getting technical support {#getting-technical-support}
+
+If you're using LanceDB OSS, the best place to get help is in our
+[Discord community](https://discord.gg/AUEWnJ7Txb),
+under the relevant language channel for Python, TypeScript, or Rust.
+By asking in the language-specific channel, you can get help from the community
+and our engineering team.
+
+If you are a LanceDB Enterprise user, please contact our support team at [support@lancedb.com](mailto:support@lancedb.com) for dedicated assistance. 
+
+## General issues {#general-issues}
+
+### Slow or unexpected query results {#slow-or-unexpected-query-results}
+
+If you have slow queries or unexpected query results, it can be helpful to
+print the resolved query plan. 
+
+LanceDB provides two powerful tools for query analysis and optimization: `explain_plan` and `analyze_plan`.
+
+Read the full guide on [Query Optimization](/search/optimize-queries/).
+
+### The Python multiprocessing module {#the-python-multiprocessing-module}
+Multiprocessing with `fork` is not supported. You should use `spawn` instead.

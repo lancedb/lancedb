@@ -1,0 +1,355 @@
+---
+title: Hybrid Search
+sidebarTitle: Hybrid search
+description: Learn how to perform hybrid search in LanceDB by combining vector and full-text search techniques with reranking.
+icon: "search"
+---
+
+In certain cases, you may want to retrieve documents that are semantically similar to a given  query,
+but also prioritize specific keywords. This is an example of **hybrid search**, a query method that combines
+multiple search techniques.
+
+For detailed examples, look at this [Python Notebook](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/saas_examples/python_notebook/Hybrid_search.ipynb) or the [**TypeScript Example**](https://github.com/lancedb/vectordb-recipes/tree/main/examples/saas_examples/ts_example/hybrid-search)
+
+## Example: Hybrid Search {#example-hybrid-search}
+
+### 1\. Setup {#1-setup}
+Import the necessary libraries and dependencies for working with LanceDB, OpenAI embeddings, and reranking.
+
+<CodeGroup>
+```python Python icon="python"
+import os
+import lancedb
+import openai
+from lancedb.embeddings import get_registry
+from lancedb.pydantic import LanceModel, Vector
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+import "@lancedb/lancedb/embedding/openai";
+import { Utf8 } from "apache-arrow";
+```
+</CodeGroup>
+
+### 2\. Connect to LanceDB {#2-connect-to-lancedb}
+Establish a connection to your LanceDB instance, with different options for Enterprise setups or open source.
+
+<Badge color="green">OSS</Badge>
+
+<CodeGroup>
+```python Python icon="python"
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+import * as arrow from "apache-arrow";
+
+const databaseDir = "data/sample-lancedb";
+const db = await lancedb.connect(databaseDir);
+```
+</CodeGroup>
+
+<Badge color="red">Enterprise</Badge>
+
+For LanceDB Enterprise, set the `db://` URI, region and the host override to your private cloud endpoint:
+
+<CodeGroup>
+```python Python icon="python"
+host_override = os.environ.get("LANCEDB_HOST_OVERRIDE")
+
+db = lancedb.connect(
+    uri=uri,
+    api_key=api_key,
+    region=region,
+    host_override=host_override
+)
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+import * as arrow from "apache-arrow";
+
+const uri = "db://my-lancedb-instance/my-database";
+const apiKey = process.env.LANCEDB_API_KEY;
+const region = process.env.LANCEDB_REGION;
+const hostOverride = process.env.LANCEDB_HOST_OVERRIDE;
+
+const db = await lancedb.connect(uri, {
+  apiKey,
+  region
+  hostOverride,
+});
+```
+</CodeGroup>
+
+
+
+### 3\. Configure Embedding Model {#3-configure-embedding-model}
+Set up the any embedding model that will convert text into vector representations for semantic search.
+
+<CodeGroup>
+```python Python icon="python"
+embeddings = get_registry().get("sentence-transformers").create()
+```
+
+```typescript TypeScript icon="square-js"
+const embedFunc = lancedb.embedding.getRegistry().get("openai")?.create({
+  model: "text-embedding-ada-002",
+}) as lancedb.embedding.EmbeddingFunction;
+```
+</CodeGroup>
+
+### 4\. Create Table and Schema {#4-create-table-and-schema}
+Define the data structure for your documents, including both the text content and its vector representation.
+
+<CodeGroup>
+```python Python icon="python"
+class Documents(LanceModel):
+    text: str = embeddings.SourceField()
+    vector: Vector(embeddings.ndims()) = embeddings.VectorField()
+
+table_name = "hybrid_search_example"
+table = db.create_table(table_name, schema=Documents, mode="overwrite")
+```
+
+```typescript TypeScript icon="square-js"
+const documentSchema = lancedb.embedding.LanceSchema({
+  text: embedFunc.sourceField(new Utf8()),
+  vector: embedFunc.vectorField(),
+});
+
+const tableName = "hybrid_search_example";
+const table = await db.createEmptyTable(tableName, documentSchema, {
+  mode: "overwrite",
+});
+```
+</CodeGroup>
+
+### 5\. Add Data {#5-add-data}
+Insert sample documents into your table, which will be used for both semantic and keyword search.
+
+<CodeGroup>
+```python Python icon="python"
+data = [
+    {"text": "rebel spaceships striking from a hidden base"},
+    {"text": "have won their first victory against the evil Galactic Empire"},
+    {"text": "during the battle rebel spies managed to steal secret plans"},
+    {"text": "to the Empire's ultimate weapon the Death Star"},
+]
+table.add(data=data)
+```
+
+```typescript TypeScript icon="square-js"
+const data = [
+  { text: "rebel spaceships striking from a hidden base" },
+  { text: "have won their first victory against the evil Galactic Empire" },
+  { text: "during the battle rebel spies managed to steal secret plans" },
+  { text: "to the Empire's ultimate weapon the Death Star" },
+];
+await table.add(data);
+console.log(`Created table: ${tableName} with ${data.length} rows`);
+```
+</CodeGroup>
+
+### 6\. Build Full Text Index {#6-build-full-text-index}
+Create a full-text search index on the text column to enable keyword-based search capabilities.
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index("text")
+wait_for_index(table, "text_idx")
+```
+
+```typescript TypeScript icon="square-js"
+console.log("Creating full-text search index...");
+await table.createIndex("text", {
+  config: lancedb.Index.fts(),
+});
+await waitForIndex(table as any, "text_idx");
+```
+</CodeGroup>
+
+### 7\. Set Reranker [Optional] {#7-set-reranker-optional}
+Initialize the reranker that will combine and rank results from both semantic and keyword search. By default, lancedb uses RRF reranker, but you can choose other rerankers like `Cohere`, `CrossEncoder`, or others lister in integrations section.
+
+<CodeGroup>
+```python Python icon="python"
+reranker = RRFReranker()
+```
+
+```typescript TypeScript icon="square-js"
+const reranker = await lancedb.rerankers.RRFReranker.create();
+```
+</CodeGroup>
+
+### 8\. Hybrid Search {#8-hybrid-search}
+Perform a hybrid search query that combines semantic similarity with keyword matching, using the specified reranker to merge and rank the results.
+
+<CodeGroup>
+```python Python icon="python"
+results = (
+    table.search(
+        "flower moon",
+        query_type="hybrid",
+        vector_column_name="vector",
+        fts_columns="text",
+    )
+    .rerank(reranker)
+    .limit(10)
+    .to_pandas()
+)
+
+print("Hybrid search results:")
+print(results)
+```
+
+```typescript TypeScript icon="square-js"
+console.log("Performing hybrid search...");
+const queryVector = await embedFunc.computeQueryEmbeddings("full moon in May");
+const hybridResults = await table
+  .query()
+  .fullTextSearch("flower moon")
+  .nearestTo(queryVector)
+  .rerank(reranker)
+  .select(["text"])
+  .limit(10)
+  .toArray();
+
+console.log("Hybrid search results:");
+console.log(hybridResults);
+```
+</CodeGroup>
+
+### 9\. Hybrid Search - Explicit Vector and Text Query pattern {#9-hybrid-search-explicit-vector-and-text-query-pattern}
+You can also pass the vector and text query explicitly. This is useful if you're not using the embedding API or if you're using a separate embedder service.
+
+<CodeGroup>
+```python Python icon="python"
+vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]
+text_query = "flower moon"
+(
+    table.search(query_type="hybrid")
+    .vector(vector_query)
+    .text(text_query)
+    .limit(5)
+    .to_pandas()
+)
+```
+</CodeGroup>
+
+## Query controls {#query-controls}
+
+Hybrid queries inherit the same builder API as vector and FTS queries, so the same knobs for filtering, distance bounds, and row identity apply. These compose with `.rerank(...)` and the explicit `.vector()` / `.text()` form shown above.
+
+<Info>
+Always set `.limit(...)` on production hybrid queries. LanceDB's default search limit is 10, but an
+explicit cap gives you a clear top-k contract to tune before reranking.
+</Info>
+
+### Returning row IDs {#returning-row-ids}
+
+Pass `with_row_id(True)` (Python) or `withRowId()` (TypeScript) to include the internal `_rowid` column in the results. This is useful for joining hybrid results back to a primary table, or for deduping across multiple queries:
+
+<CodeGroup>
+```python Python icon="python"
+results = (
+    table.search("flower moon", query_type="hybrid")
+    .with_row_id(True)
+    .limit(10)
+    .to_pandas()
+)
+# results now contains a `_rowid` column alongside `_relevance_score`
+```
+
+```typescript TypeScript icon="square-js"
+const results = await table
+    .query()
+    .fullTextSearch("flower moon")
+    .nearestTo(queryVector)
+    .withRowId()
+    .limit(10)
+    .toArray();
+```
+</CodeGroup>
+
+### Bounding vector distance {#bounding-vector-distance}
+
+`distance_range(lower, upper)` (Python) and `distanceRange(lower, upper)` (TypeScript) constrain the vector half of the hybrid query to the half-open interval `[lower, upper)`. This is helpful when you want to cap how far semantic candidates can drift from the query vector before reranking:
+
+<CodeGroup>
+```python Python icon="python"
+results = (
+    table.search("flower moon", query_type="hybrid")
+    .distance_range(lower_bound=0.0, upper_bound=0.4)
+    .limit(10)
+    .to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js"
+const results = await table
+    .query()
+    .fullTextSearch("flower moon")
+    .nearestTo(queryVector)
+    .distanceRange(0.0, 0.4)
+    .limit(10)
+    .toArray();
+```
+</CodeGroup>
+
+Either bound can be omitted to leave that side unbounded.
+
+### Prefilter vs. postfilter {#prefilter-vs-postfilter}
+
+When the query carries a metadata filter via `where(...)`, you can choose whether the filter runs before or after the vector and FTS sub-queries. **Prefiltering** (the default) applies `where` to the candidate set before scoring, which is usually what you want — it shrinks the working set and benefits from any scalar indexes on the filter columns. **Postfiltering** runs the filter on the already-ranked top-k from each sub-query; this can be faster when the filter is non-selective or unindexed, but it may return fewer than `limit` rows because some of the top-k may be filtered out.
+
+<CodeGroup>
+```python Python icon="python"
+# Prefilter (default): filter applied before scoring
+table.search("flower moon", query_type="hybrid") \
+    .where("category = 'film'", prefilter=True) \
+    .limit(10) \
+    .to_pandas()
+
+# Postfilter: filter applied after the sub-queries return top-k
+table.search("flower moon", query_type="hybrid") \
+    .where("category = 'film'", prefilter=False) \
+    .limit(10) \
+    .to_pandas()
+```
+
+```typescript TypeScript icon="square-js"
+// Prefilter (default): just call .where(...)
+await table.query()
+    .fullTextSearch("flower moon")
+    .nearestTo(queryVector)
+    .where("category = 'film'")
+    .limit(10)
+    .toArray();
+
+// Postfilter: chain .postfilter() after .where(...)
+await table.query()
+    .fullTextSearch("flower moon")
+    .nearestTo(queryVector)
+    .where("category = 'film'")
+    .postfilter()
+    .limit(10)
+    .toArray();
+```
+</CodeGroup>
+
+The choice gets baked into both sub-queries, so the vector and FTS halves see the filter applied the same way. Use [`explain_plan`](/search/optimize-queries#analyzing-non-vector-queries) on a hybrid query to see whether the filter pushed into the scan or ran as a separate `FilterExec` step.
+
+## More on Reranking {#more-on-reranking}
+
+You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB comes with [**built-in rerankers**](https://docs.lancedb.com/reranking) and you can implement your own **custom reranker** as well. 
+
+By default, LanceDB uses `RRFReranker()`, which uses reciprocal rank fusion score, to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
+
+| Argument | Type | Default | Description |
+|:---------|:-----|:--------|:------------|
+| `normalize` | `str` | `"score"` | The method to normalize the scores. Can be `rank` or `score`. If `rank`, the scores are converted to ranks and then normalized. If `score`, the scores are normalized directly. |
+| `reranker` | `Reranker` | `RRF()` | The reranker to use. If not specified, the default reranker is used. |

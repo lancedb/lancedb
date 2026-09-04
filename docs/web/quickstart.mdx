@@ -1,0 +1,472 @@
+---
+title: Quickstart
+sidebarTitle: "Quickstart"
+description: "Get started with LanceDB in minutes."
+icon: rocket
+---
+import {
+    PyConnect,
+    PyConnectAsync,
+    PyConnectEnterpriseQuickstart,
+    PyConnectObjectStorage,
+    PyConnectObjectStorageAsync,
+    RsConnect,
+    RsConnectEnterpriseQuickstart,
+    RsConnectObjectStorage,
+    TsConnect,
+    TsConnectEnterpriseQuickstart,
+    TsConnectObjectStorage,
+} from '/snippets/connection.mdx';
+import {
+    PyQuickstartData,
+    PyQuickstartCreateTable,
+    PyQuickstartCreateTableAsync,
+    PyQuickstartAddFeature,
+    PyQuickstartCurateWithMetadata,
+    PyQuickstartMultimodalBytes,
+    PyQuickstartQueryFeature,
+    PyQuickstartVectorSearch1,
+    PyQuickstartVectorSearch1Async,
+    PyQuickstartOutputPandas,
+    RsQuickstartAddFeature,
+    RsQuickstartCurateWithMetadata,
+    RsQuickstartCreateTable,
+    RsQuickstartData,
+    RsQuickstartDefineStruct,
+    RsQuickstartMultimodalBytes,
+    RsQuickstartQueryFeature,
+    RsQuickstartVectorSearch1,
+    TsQuickstartAddFeature,
+    TsQuickstartCurateWithMetadata,
+    TsQuickstartCreateTable,
+    TsQuickstartData,
+    TsQuickstartMultimodalBytes,
+    TsQuickstartQueryFeature,
+    TsQuickstartVectorSearch1,
+} from '/snippets/quickstart.mdx';
+
+As described in [the landing page](/), LanceDB provides one data layer for
+curation, feature engineering, search and retrieval, and model training. Whether you are preparing
+training data, building a RAG or agentic retrieval system, reviewing examples, or adding model-generated
+features, you'll work with the same underlying table and search primitives.
+
+Let's get started in just a few steps!
+
+## 1\. Install LanceDB {#1-install-lancedb}
+
+Install LanceDB in your client SDK.
+
+<CodeGroup>
+```bash pip icon="terminal"
+pip install lancedb
+```
+
+```bash uv icon="terminal"
+uv add lancedb
+
+# Or, in an existing virtual environment:
+uv pip install lancedb
+```
+
+```bash TypeScript icon=js
+npm install @lancedb/lancedb
+```
+
+```bash Rust icon=Rust
+cargo add lancedb
+```
+</CodeGroup>
+
+### Python pre-release builds {#python-pre-release-builds}
+
+To pick up the latest features and bug fixes
+before the next stable release, install a pre-release from LanceDB's Fury index.
+
+<CodeGroup>
+```bash pip icon="terminal"
+pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
+```
+
+```bash uv icon="terminal"
+uv venv
+uv pip install --prerelease allow --index https://pypi.fury.io/lancedb/ lancedb
+
+# To add to pyproject.toml, use:
+uv add --prerelease allow --index https://pypi.fury.io/lancedb/ lancedb
+```
+</CodeGroup>
+
+<Note>
+Pre-release builds receive the same level of testing as stable releases, but their availability is not guaranteed
+for more than 6 months after release. For real-world workloads, we recommend you use the latest stable release
+as far as possible.
+</Note>
+
+<Accordion title="Running on older x86_64 CPUs without AVX2?">
+The default `lancedb` wheel targets `x86-64-haswell` (AVX2 + FMA + F16C). On older x86_64 CPUs without AVX2
+(Intel Sandy Bridge, Ivy Bridge, Westmere; AMD Bulldozer, Piledriver, Steamroller), `import lancedb` crashes
+with `Illegal instruction`.
+
+Install `lancedb-compat` instead. It exposes the same API (`import lancedb` still works), is built at the
+`x86-64-v2` baseline, and uses runtime SIMD dispatch to still leverage AVX2, FMA, or AVX-512 when available:
+
+```bash pip icon="terminal"
+pip install lancedb-compat
+```
+
+The two packages share the same `lancedb/` namespace and conflict at install time, so pick one. To switch,
+uninstall the other first (`pip uninstall lancedb && pip install lancedb-compat`).
+</Accordion>
+
+## 2\. Connect to a LanceDB database {#2-connect-to-a-lancedb-database}
+
+LanceDB supports several URI patterns to connect to a database.
+
+- A local filesystem path (when using it as an embedded library)
+- A `db://...` URI (when using LanceDB Enterprise)
+- An object storage URI: `s3://...`, `gs://...`, or `az://...` (when connecting directly from the client SDK)
+
+### Connect via local directory path {#connect-via-local-directory-path}
+
+The simplest way to begin is to use LanceDB as an embedded library. Import LanceDB in your
+client SDK of choice and point to a local directory path.
+
+<CodeGroup >
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyConnectAsync}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n" }
+    { "\n" }
+    {RsConnect}
+    </CodeBlock>
+</CodeGroup >
+
+
+### Connect via object storage URIs {#connect-via-object-storage-uris}
+
+You can also connect directly to object storage from the client SDK:
+
+<CodeGroup >
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyConnectObjectStorage}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyConnectObjectStorageAsync}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnectObjectStorage}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsConnectObjectStorage}
+    </CodeBlock>
+</CodeGroup >
+
+For credentials, endpoints, and provider-specific options, see
+[Configuring storage](/storage/configuration).
+
+### Connect to LanceDB Enterprise {#connect-to-lancedb-enterprise}
+
+If you're using LanceDB Enterprise, you can connect to the remote database using the
+`db://` URI along with the API key, region, and cluster endpoint you received from the
+LanceDB team. Pass the cluster endpoint via `host_override` so the client routes
+requests to your deployment.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="python">
+    { "import lancedb\n\n" }
+    {PyConnectEnterpriseQuickstart}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectEnterpriseQuickstart}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n\n" }
+    {RsConnectEnterpriseQuickstart}
+    </CodeBlock>
+</CodeGroup >
+
+<Note>
+`host_override` is the full URL of your cluster endpoint, including the scheme
+(`https://`) and a port if your deployment listens on a non-default one
+(e.g. `https://your-enterprise-endpoint.com:443`). If you don't have the
+endpoint, [contact the LanceDB team](mailto:contact@lancedb.com).
+</Note>
+
+To learn more about `RemoteTable` semantics and how Enterprise differs operationally from
+embedded LanceDB, see the [Enterprise overview](/enterprise).
+
+## 3\. Create a new table {#3-create-a-new-table}
+
+Let's create a small table of characters from the kingdom of Camelot. Each row stores source text,
+metadata, structured fields, and a vector embedding in the same LanceDB table.
+
+<Info>
+The embeddings we use in this example are synthetic and for demonstration purposes only. In a real AI
+data workflow, you would generate them from text, images, audio, or video using an embedding model of choice.
+</Info>
+
+Each row has source text, metadata, structured fields, and a vector:
+
+```json
+{
+  "id": "2",
+  "name": "Merlin",
+  "role": "Wizard",
+  "description": "Advisor and prophet with deep magical knowledge.",
+  "stats": { "strength": 2, "magic": 5, "leadership": 4, "wisdom": 5 },
+  "vector": [0.2, 0.9, 0.4, 0.9]
+}
+```
+
+The full raw records are included below:
+
+<Accordion title="View raw character records">
+    <CodeGroup >
+        <CodeBlock filename="Python (sync)" language="Python" icon="python">
+        {PyQuickstartData}
+        </CodeBlock>
+
+        <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+        {TsQuickstartData}
+        </CodeBlock>
+
+        <CodeBlock filename="Rust" language="Rust" icon="rust">
+        {RsQuickstartDefineStruct}
+        {RsQuickstartData}
+        </CodeBlock>
+    </CodeGroup >
+</Accordion>
+
+You can now create a LanceDB table from those records. The code below creates a LanceDB table
+with the appropriate schema and ingests the data.
+
+<CodeGroup >
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyQuickstartCreateTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyQuickstartCreateTableAsync}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartCreateTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartCreateTable}
+    </CodeBlock>
+</CodeGroup >
+
+## 4\. Semantic search {#4-semantic-search}
+
+Search is a useful capability for all kinds of AI data pipelines. Below, we do a vector similarity
+search for samples similar to a "_wise magical advisor_" (transforming the natural language query to
+an embedding), and project only the columns needed by the next step.
+
+Search (which requires random access) is a ubiquitous access pattern that appears in many workloads:
+whether you're building a RAG or recommendation system, serving agent memory, or curating a training
+dataset.
+
+<CodeGroup >
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyQuickstartVectorSearch1}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyQuickstartVectorSearch1Async}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartVectorSearch1}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartVectorSearch1}
+    </CodeBlock>
+</CodeGroup >
+
+The example for Python above shows how to convert results to a Polars DataFrame.
+Depending on your language, you can collect query results as a list/array of objects or DataFrames
+to be used downstream in your application.
+
+<Accordion title="Pandas users in Python can get results as a Pandas DataFrame">
+  Use the `to_pandas()` method to convert query results into a Pandas DataFrame.
+  <CodeBlock filename="Python" language="Python" icon="python">
+  {PyQuickstartOutputPandas}
+  </CodeBlock>
+</Accordion>
+
+## 5\. Curation {#5-curation}
+
+Searching for relevant results can be more useful when combined with metadata filters.
+In this tiny example, we filter to examples with high `magic` stats.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartCurateWithMetadata}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartCurateWithMetadata}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartCurateWithMetadata}
+    </CodeBlock>
+</CodeGroup >
+
+When working with large datasets, it's common to use the same pattern to filter on quality labels,
+train/eval splits, numeric fields, categorical values, timestamp windows, or generated tags and labels.
+
+## 6\. Add a derived feature {#6-add-a-derived-feature}
+
+Feature engineering is the process of cleaning up your data and creating new signals that
+help your model learn, make better predictions, or your agent retrieve more useful information.
+In the example below, we add a `power_score` column from the structured `stats` fields.
+Lance supports data evolution, so you can add new columns without rewriting the entire table.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartAddFeature}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartAddFeature}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::table::NewColumnTransform;\n\n" }
+    {RsQuickstartAddFeature}
+    </CodeBlock>
+</CodeGroup >
+
+Next, you can query a compact view of the new feature:
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartQueryFeature}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartQueryFeature}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartQueryFeature}
+    </CodeBlock>
+</CodeGroup >
+
+| name | role | power_score |
+| --- | --- | --- |
+| King Arthur | King | 3.5 |
+| Merlin | Wizard | 4.0 |
+| Sir Lancelot | Knight | 3.0 |
+
+The same workflow is used for data preparation tasks when adding derived features, cached model signals, review scores, or dataset
+quality indicators.
+
+## 7\. Store multimodal data {#7-store-multimodal-data}
+
+Multimodal data is a first-class citizen in LanceDB. Binary data (image, audio, video, etc.) is
+stored as blobs or inline Arrow binary types in a LanceDB column, and they benefit from the same
+table operations and data versioning semantics as other data types. All the data is governed
+in the same table, so you can search, filter, and retrieve multimodal records together with structured
+fields, metadata, and embeddings.
+
+In this example, the
+[`lancedb/magical_kingdom`](https://huggingface.co/datasets/lancedb/magical_kingdom) dataset stores
+character images, descriptions, structured stats, image embeddings, and text embeddings together.
+
+Say we downloaded the image for Sir Lancelot from that dataset locally. You can read the image bytes
+in your client SDK and store them in a LanceDB column. The image bytes can be used for downstream tasks
+like retrieval, evaluation, or training.
+
+<div style={{ display: "flex", justifyContent: "center" }}>
+  <img
+    src="/static/assets/images/quickstart/sir-lancelot.jpg"
+    alt="Sir Lancelot from the lancedb/magical_kingdom dataset"
+    width="320"
+  />
+</div>
+
+These snippets load the local image file and store the bytes in an `image` column:
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartMultimodalBytes}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartMultimodalBytes}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartMultimodalBytes}
+    </CodeBlock>
+</CodeGroup >
+
+For more examples, see the [multimodal data](/tables/multimodal) section.
+
+## Code {#code}
+
+See the full code for these examples (including helper functions) in the
+`quickstart` file for the appropriate client language in the
+[files provided in the repo](https://github.com/lancedb/docs/tree/main/tests).
+
+
+## Next steps {#next-steps}
+You've learned how to install LanceDB, connect, create one table for AI data, retrieve related
+examples, curate with metadata, add a derived feature, and represent multimodal records. These same
+primitives apply across the AI data lifecycle, from data preparation and feature engineering to
+retrieval, evaluation, and training.
+
+Continue to the table and search guides to build on this example with schema options, appends,
+updates, versioning, indexing, full-text search, hybrid search, and reranking.
+
+<Columns cols={2}>
+<Card
+  title="Basic table operations"
+  icon="table"
+  href="/tables"
+>
+  Build on this quickstart with table creation, updates, and schema tips.
+</Card>
+<Card
+  title="Build a RAG App"
+  icon="search"
+  href="/tutorials/agents/"
+>
+  Learn how to build Retrieval-Augmented Generation (RAG) applications using LanceDB.
+</Card>
+<Card
+  title="Indexing"
+  icon="layer-group"
+  href="/indexing/"
+>
+  Create vector, full-text, and scalar indexes to speed up queries on larger datasets.
+</Card>
+<Card
+  title="Data loading and shuffles"
+  icon="boxes-stacked"
+  href="/training/"
+>
+  Use LanceDB for projected, shuffled, random-access reads in training workflows.
+</Card>
+</Columns>

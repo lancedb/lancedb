@@ -1,0 +1,565 @@
+---
+title: Full-Text Search (FTS)
+sidebarTitle: Full-Text Search (FTS)
+description: Learn how to implement full-text search in LanceDB using BM25 for keyword-based retrieval.
+icon: "book"
+---
+
+import {
+    PyFtsPrefiltering,
+    PyFtsPostfiltering,
+    PyFtsIncrementalIndex,
+} from '/snippets/search.mdx'
+
+LanceDB provides support for Full-Text Search via Lance, allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
+
+## Basic Usage {#basic-usage}
+
+Consider that we have a LanceDB table named `my_table`, whose string column `text` we want to index and query via keyword search, the FTS index must be created before you can search via keywords.
+
+### Table Setup {#table-setup}
+
+First, open or create the table you want to search:
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+from lancedb.index import FTS
+
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
+
+table = db.create_table(
+    "my_table_fts",
+    data=[
+        {"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"},
+        {"vector": [5.9, 26.5], "text": "There are several kittens playing"},
+    ],
+)
+```
+
+```ts TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+const uri = "data/sample-lancedb"
+const db = await lancedb.connect(uri);
+
+const data = [
+    { vector: [3.1, 4.1], text: "Frodo was a happy puppy" },
+    { vector: [5.9, 26.5], text: "There are several kittens playing" },
+];
+const tbl = await db.createTable("my_table", data, { mode: "overwrite" });
+```
+
+```rust Rust icon="rust"
+let uri = "data/sample-lancedb";
+let db = connect(uri).execute().await?;
+let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
+let tbl = db
+    .create_table("my_table", initial_data)
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+### Construct FTS Index {#construct-fts-index}
+
+Create a full-text search index on your text column:
+
+<Note>
+In Python, this page shows the synchronous `create_fts_index(...)` form. For the
+asynchronous equivalent (`await table.create_index("text", config=FTS(...))`), see
+[FTS index](/indexing/fts-index).
+</Note>
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index("text")
+```
+
+```typescript TypeScript icon="square-js"
+await tbl.createIndex("text", {
+    config: lancedb.Index.fts(),
+});
+```
+
+```rust Rust icon="rust"
+tbl
+    .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+### Full-text Search {#full-text-search}
+
+Perform full-text search and retrieve results:
+
+<CodeGroup>
+```python Python icon="python"
+results = table.search("puppy")
+    .limit(10)
+    .select(["text"])
+    .to_list()
+# [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
+```
+
+```typescript TypeScript icon="square-js"
+const results = await tbl
+    .search("puppy", "fts")
+    .select(["text"])
+    .limit(10)
+    .toArray();
+```
+
+```rust Rust icon="Rust"
+let results = tbl
+    .query()
+    .full_text_search(FullTextSearchQuery::new("puppy".to_owned()))
+    .select(lancedb::query::Select::Columns(vec!["text".to_owned()]))
+    .limit(10)
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+The search is conducted on all indexed columns by default, so it's useful when there are multiple indexed columns.
+
+If you want to specify which columns to search use `fts_columns="text"`
+
+<Note>
+LanceDB automatically searches on the existing FTS index if the input to the search is of type `str`. If you provide a vector as input, LanceDB will search the ANN index instead.
+</Note>
+
+If a table has more than one FTS index, specify the indexed text column in the query. In Python you can use `fts_columns` or the query builder's `nearest_to_text(..., columns=...)`; in TypeScript, use `query().nearestToText(..., columns)`. The newer Lance-native FTS does not accept legacy Tantivy-only index parameters.
+
+### Keeping the index up to date {#keeping-the-index-up-to-date}
+
+Rows you add after building an FTS index aren't part of the index until you optimize the table. Until then, queries fall back to a flat scan over the unindexed fragments to keep results complete, which slows them down as the unindexed tail grows. Call `table.optimize()` to fold new rows into the existing index — it's the same operation used for vector indexes:
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyFtsIncrementalIndex}
+</CodeBlock>
+
+```typescript TypeScript icon="square-js"
+await tbl.add([{ vector: [3.1, 4.1], text: "Frodo was a happy puppy" }]);
+await tbl.optimize();
+```
+
+```rust Rust icon="rust"
+tbl.add(new_data).execute().await?;
+tbl.optimize(OptimizeAction::All).await?;
+```
+</CodeGroup>
+
+A useful rule of thumb is to call `optimize()` after roughly 100,000 row changes or 20 data-modification operations, whichever comes first. For tables with continuous ingest, schedule it on a cadence that keeps `num_unindexed_rows` (from `table.index_stats(...)`) close to zero. If you want to skip the flat scan over unindexed rows entirely — for example, on a hot read path where stale results are acceptable — call `.fast_search()` on the query so the search returns only indexed results.
+
+## Advanced Usage {#advanced-usage}
+
+### Tokenize Table Data {#tokenize-table-data}
+
+By default, the text is tokenized by splitting on punctuation and whitespaces, and would filter out words that are longer than 40 characters. All words are converted to lowercase.
+
+Stemming is useful for improving search results by reducing words to their root form, e.g. "running" to "run". LanceDB supports stemming for Arabic, Danish, Dutch, English, Finnish, French, German, Greek, Hungarian, Italian, Norwegian, Portuguese, Romanian, Russian, Spanish, Swedish, Tamil, and Turkish. You should set the `base_tokenizer` parameter rather than `tokenizer_name` because you cannot customize the tokenizer if `tokenizer_name` is specified.
+
+Tokenization and language filters are separate settings. `base_tokenizer` controls how text is split into searchable tokens. `language` controls stemming and stop-word removal when `stem=True` or `remove_stop_words=True`; choose the tokenizer for CJK or mixed-language segmentation.
+
+For example, to enable stemming for English:
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index("text", language="English", replace=True)
+```
+</CodeGroup>
+
+The tokenizer is customizable, you can specify how the tokenizer splits the text, and how it filters out words, etc.
+
+**Default index parameters:**
+- `base_tokenizer`: `"simple"`
+- `language`: English
+- `with_position`: false
+- `max_token_length`: 40
+- `lower_case`: true
+- `stem`: true
+- `remove_stop_words`: true
+- `ascii_folding`: true
+- `custom_stop_words`: `None` — pass a `list[str]` to drop additional words beyond the language defaults. Requires `remove_stop_words=True`.
+
+For multilingual use cases, use `base_tokenizer="icu"` for unicode-aware word segmentation on mixed-language text. ICU stands for [International Components for Unicode](https://icu.unicode.org/). The ICU tokenizer uses bundled ICU4X segmenter data, so it does not require external tokenizer model files. It is a good default when documents mix languages or include scripts where the simple tokenizer would keep an unspaced span as one large token.
+
+The Python API also supports tokenizer implementations that load language model files. Use `base_tokenizer="jieba/default"` for Jieba tokenization, which segments Chinese text into searchable word tokens when the text is written without spaces between words. Use Lindera-backed tokenizers for dictionary-based East Asian morphological segmentation, such as `base_tokenizer="lindera/ipadic"` for Japanese or `base_tokenizer="lindera/ko-dic"` for Korean when you have installed and compiled that Lindera model. These are language-specific tokenizers; ICU is the broader mixed-language option.
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index(
+    "text",
+    base_tokenizer="jieba/default",
+    stem=False,
+    remove_stop_words=False,
+    ascii_folding=False,
+    replace=True,
+)
+```
+</CodeGroup>
+
+Model-backed tokenizers require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to a different model root:
+
+```bash
+export LANCE_LANGUAGE_MODEL_HOME=/path/to/lance/language_models
+```
+
+For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`, `lindera/ipadic` under `<model-home>/lindera/ipadic/...`, and `lindera/ko-dic` under `<model-home>/lindera/ko-dic/...`.
+
+<Note>
+Built-in stop-word removal supports Danish, Dutch, English, Finnish, French, German, Hungarian, Italian, Norwegian, Portuguese, Russian, Spanish, and Swedish. If you use another stemming language, such as Arabic, Greek, Romanian, Tamil, or Turkish, set `remove_stop_words=False` or pass `custom_stop_words`.
+</Note>
+
+For example, for language with accents, you can specify the tokenizer to use `ascii_folding` to remove accents, e.g. 'é' to 'e':
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index(
+        "text",
+        language="French",
+        stem=True,
+        ascii_folding=True,
+        replace=True,
+    )
+```
+</CodeGroup>
+
+### Filtering Options {#filtering-options}
+
+LanceDB full text search supports to filter the search results by a condition, both pre-filtering and post-filtering are supported.
+
+This can be invoked via the familiar `where` syntax.
+ 
+With pre-filtering:
+
+<CodeGroup>
+
+<CodeBlock filename="Python" language="python" icon="python">
+{PyFtsPrefiltering}
+</CodeBlock>
+
+```typescript TypeScript icon="square-js"
+await tbl
+.search("puppy")
+.select(["id", "doc"])
+.limit(10)
+.where("meta='foo'")
+.prefilter(true)
+.toArray();
+```
+
+```rust Rust icon="Rust"
+table
+    .query()
+    .full_text_search(FullTextSearchQuery::new("puppy".to_owned()))
+    .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
+    .limit(10)
+    .only_if("meta='foo'")
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+With post-filtering:
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyFtsPostfiltering}
+</CodeBlock>
+
+```typescript TypeScript icon="square-js"
+await tbl
+.search("apple")
+.select(["id", "doc"])
+.limit(10)
+.where("meta='foo'")
+.prefilter(false)
+.toArray();
+```
+
+```rust Rust icon="Rust"
+table
+    .query()
+    .full_text_search(FullTextSearchQuery::new(words[0].to_owned()))
+    .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
+    .postfilter()
+    .limit(10)
+    .only_if("meta='foo'")
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+### Phrase vs. Terms Queries {#phrase-vs-terms-queries}
+
+<Warning>
+Lance-based FTS doesn't support queries using boolean operators `OR`, `AND` in the search string.
+</Warning>
+
+For full-text search you can specify either a **phrase** query like `"the old man and the sea"`,
+or a **terms** search query like `old man sea`. 
+
+To search for a phrase, the index must be created with `with_position=True` and `remove_stop_words=False`:
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index("text", with_position=True, replace=True)
+```
+</CodeGroup>
+
+This will allow you to search for phrases, but it will also significantly increase the index size and indexing time.
+
+### Fuzzy Search {#fuzzy-search}
+
+Fuzzy search allows you to find matches even when the search terms contain typos or slight variations. 
+LanceDB uses the classic [Levenshtein distance](https://en.wikipedia.org/wiki/Levenshtein_distance) 
+to find similar terms within a specified edit distance.
+
+| Parameter      | Type | Default | Description                                                                                                                                                 |
+| -------------- | ---- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| fuzziness      | int  | 0       | Maximum edit distance allowed for each term. If not specified, automatically set based on term length: 0 for length ≤ 2, 1 for length ≤ 5, 2 for length > 5 |
+| max_expansions | int  | 50      | Maximum number of terms to consider for fuzzy matching. Higher values may improve recall but increase search time                                           |
+
+For a complete walkthrough that creates a sample table and demonstrates fuzzy search and relevance boosting, see the [fuzzy search example](/search/fts-examples#fuzzy-search-and-boosting-example).
+
+### Search for Substring {#search-for-substring}
+
+LanceDB supports searching for substrings in the text column, you can set the `base_tokenizer` parameter to `"ngram"` to enable this feature, and use the parameters `ngram_min_length` and `ngram_max_length` to control the length of the substrings:
+
+| Parameter        | Type | Default | Description                                        |
+| ---------------- | ---- | ------- | -------------------------------------------------- |
+| ngram_min_length | int  | 3       | Minimum length of the n-grams to search for        |
+| ngram_max_length | int  | 3       | Maximum length of the n-grams to search for        |
+| prefix_only      | bool | false   | Whether to only search for prefixes of the n-grams |
+
+
+## More Examples {#more-examples}
+
+For complete worked examples of fuzzy search, prefix matching, phrase matching, boosting, boolean queries, and substring search — including sample data generation and index setup — see [Full-Text Search Examples](/search/fts-examples).
+
+## Full-Text Search on Array Fields {#full-text-search-on-array-fields}
+
+LanceDB supports full-text search on string array columns, enabling efficient keyword-based search across multiple values within a single field (e.g., tags, keywords).
+
+### Setting Up the Connection {#setting-up-the-connection}
+
+Connect to your LanceDB instance:
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+
+# Connect to LanceDB
+db = lancedb.connect(
+  uri="db://your-project-slug",
+  api_key="your-api-key",
+  region="us-east-1"
+)
+```
+
+```typescript TypeScript icon="square-js" expandable=true
+import * as lancedb from "@lancedb/lancedb"
+
+const db = await lancedb.connect({
+  uri: "db://your-project-slug",
+  apiKey: "your-api-key",
+  region: "us-east-1"
+});
+```
+</CodeGroup>
+
+### Defining the Schema {#defining-the-schema}
+
+Create a schema that includes an array field for tags:
+
+<CodeGroup>
+```python Python icon="python"
+table_name = "fts-array-field-test"
+schema = pa.schema([
+    pa.field("id", pa.string()),
+    pa.field("tags", pa.list_(pa.string())),
+    pa.field("description", pa.string())
+])
+```
+
+```typescript TypeScript icon="square-js" expandable=true
+const tableName = "fts-array-field-test-ts";
+
+// Create schema
+const schema = new Schema([
+  new Field("id", new Utf8(), false),
+  new Field("tags", new List(new Field("item", new Utf8()))),
+  new Field("description", new Utf8(), false)
+]);
+```
+</CodeGroup>
+
+### Creating Sample Data {#creating-sample-data}
+
+Generate sample data with array fields containing tags:
+
+<CodeGroup>
+```python Python icon="python" expandable=true
+# Generate sample data
+data = {
+    "id": [f"doc_{i}" for i in range(10)],
+    "tags": [
+        ["python", "machine learning", "data science"],
+        ["deep learning", "neural networks", "AI"],
+        ["database", "indexing", "search"],
+        ["vector search", "embeddings", "AI"],
+        ["full text search", "indexing", "database"],
+        ["python", "web development", "flask"],
+        ["machine learning", "deep learning", "pytorch"],
+        ["database", "SQL", "postgresql"],
+        ["search engine", "elasticsearch", "indexing"],
+        ["AI", "transformers", "NLP"]
+    ],
+    "description": [
+        "Python for data science projects",
+        "Deep learning fundamentals",
+        "Database indexing techniques",
+        "Vector search implementations",
+        "Full-text search guide",
+        "Web development with Python",
+        "Machine learning with PyTorch",
+        "Database management systems",
+        "Search engine optimization",
+        "AI and NLP applications"
+    ]
+}
+```
+
+```typescript TypeScript icon="square-js" expandable=true
+// Generate sample data
+const data = makeArrowTable(
+  Array(10).fill(0).map((_, i) => ({
+    id: `doc_${i}`,
+    tags: [
+      ["python", "machine learning", "data science"],
+      ["deep learning", "neural networks", "AI"],
+      ["database", "indexing", "search"],
+      ["vector search", "embeddings", "AI"],
+      ["full text search", "indexing", "database"],
+      ["python", "web development", "flask"],
+      ["machine learning", "deep learning", "pytorch"],
+      ["database", "SQL", "postgresql"],
+      ["search engine", "elasticsearch", "indexing"],
+      ["AI", "transformers", "NLP"]
+    ][i],
+    description: [
+      "Python for data science projects",
+      "Deep learning fundamentals",
+      "Database indexing techniques",
+      "Vector search implementations",
+      "Full-text search guide",
+      "Web development with Python",
+      "Machine learning with PyTorch",
+      "Database management systems",
+      "Search engine optimization",
+      "AI and NLP applications"
+    ][i]
+  })),
+  { schema }
+);
+```
+</CodeGroup>
+
+### Creating the Table and Adding Data {#creating-the-table-and-adding-data}
+
+Create the table and populate it with the sample data:
+
+<CodeGroup>
+```python Python icon="python"
+# Create table and add data
+table = db.create_table(table_name, schema=schema, mode="overwrite")
+table_data = pa.Table.from_pydict(data, schema=schema)
+table.add(table_data)
+```
+
+```typescript TypeScript icon="square-js"
+// Create table
+const table = await db.createTable(tableName, data, { mode: "overwrite" });
+console.log(`Created table: ${tableName}`);
+```
+</CodeGroup>
+
+### Building the Full-Text Search Index {#building-the-full-text-search-index}
+
+Create an FTS index on the tags column to enable efficient text search:
+
+<CodeGroup>
+```python Python icon="python"
+# Create FTS index
+table.create_fts_index("tags")
+wait_for_index(table, "tags_idx")
+```
+
+```typescript TypeScript icon="square-js"
+// Create FTS index
+console.log("Creating FTS index on 'tags' column...");
+await table.createIndex("tags", {
+  config: Index.fts()
+});
+
+// Wait for index
+const ftsIndexName = "tags_idx";
+await waitForIndex(table, ftsIndexName);
+```
+</CodeGroup>
+
+### Performing Fuzzy Search {#performing-fuzzy-search}
+
+Search for terms with typos using fuzzy matching:
+
+<CodeGroup>
+```python Python icon="python"
+# Search examples
+print("\nSearching for 'learning' in tags with a typo:")
+result = (
+    table.search(MatchQuery("learnin", column="tags", fuzziness=1))
+    .select(['id', 'tags', 'description'])
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js">
+// Search examples
+console.log("\nSearching for 'learning' in tags with a typo:");
+const fuzzyResults = await table.query()
+  .fullTextSearch(new MatchQuery("learnin", "tags", {
+    fuzziness: 2,
+  }))
+  .select(["id", "tags", "description"])
+  .toArray();
+console.log(fuzzyResults);
+```
+</CodeGroup>
+
+### Performing Phrase Search {#performing-phrase-search}
+
+Search for exact phrases within the array fields:
+
+<CodeGroup>
+```python Python icon="python"
+print("\nSearching for 'machine learning' in tags:")
+result = (
+    table.search(PhraseQuery("machine learning", column="tags"))
+    .select(['id', 'tags', 'description'])
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+console.log("\nSearching for 'machine learning' in tags:");
+const phraseResults = await table.query()
+  .fullTextSearch(new PhraseQuery("machine learning", "tags"))
+  .select(["id", "tags", "description"])
+  .toArray();
+console.log(phraseResults);
+```
+</CodeGroup>

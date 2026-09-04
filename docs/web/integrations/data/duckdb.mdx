@@ -1,0 +1,119 @@
+---
+title: "DuckDB"
+sidebarTitle: "DuckDB"
+description: "Learn how to use the DuckDB-Lance extension to query Lance tables with SQL."
+---
+
+LanceDB integrates with [DuckDB](https://duckdb.org/) through the [Lance extension](https://github.com/lance-format/lance-duckdb) for DuckDB. In this page, we'll show how LanceDB manages table lifecycle, and DuckDB provides SQL analytics (including joins) and search over those tables.
+
+Note that earlier versions of LanceDB used to recommend converting Lance tables to Arrow tables via `table.to_arrow()`. Although this method is still available (because DuckDB [natively scans Arrow tables](https://duckdb.org/2021/12/03/duck-arrow)), it is no longer the recommended workflow for working with Lance tables in DuckDB. This page shows how to use the Lance extension with namespace-attached LanceDB tables, allowing you to pushdown SQL queries directly to the Lance layer.
+
+
+## Install {#install}
+
+Install the DuckDB CLI as per [their docs](https://duckdb.org/install) and alternatively, their Python package with `pip install duckdb`.
+
+Then, open the DuckDB CLI and install and load the Lance extension as follows:
+
+```sql SQL icon="database"
+INSTALL lance;
+LOAD lance;
+```
+
+## Attach the directory namespace in DuckDB {#attach-the-directory-namespace-in-duckdb}
+
+Attach the LanceDB root directory as a Lance namespace:
+
+```sql SQL icon="database"
+ATTACH './local_lancedb' AS lance_ns (TYPE LANCE);
+```
+
+In this page, tables are referenced using `lance_ns.main.<table_name>`, so the table path is `lance_ns.main.lance_duck`.
+
+## Write Lance table {#write-lance-table}
+
+Create the `lance_duck` table using SQL and populate it with sample data:
+
+```sql SQL icon="database"
+CREATE OR REPLACE TABLE lance_ns.main.lance_duck AS
+SELECT *
+FROM (
+  VALUES
+    ('duck', 'quack', [0.9, 0.7, 0.1]::FLOAT[]),
+    ('horse', 'neigh', [0.3, 0.1, 0.5]::FLOAT[]),
+    ('dragon', 'roar', [0.5, 0.2, 0.7]::FLOAT[])
+) AS t(animal, noise, vector);
+```
+
+This table is the source of truth for all DuckDB queries below.
+
+<Info>
+The examples below show SQL entered in the DuckDB CLI. You can run the same SQL from
+Python as well, using LanceDB and DuckDB's Python clients in your application code.
+</Info>
+
+## Query the table with SQL {#query-the-table-with-sql}
+
+```sql SQL icon="database"
+SELECT *
+  FROM lance_ns.main.lance_duck
+  LIMIT 5;
+```
+
+## Vector search {#vector-search}
+
+```sql SQL icon="database"
+SELECT animal, noise, vector, _distance
+  FROM lance_vector_search(
+    'lance_ns.main.lance_duck',
+    'vector',
+    [0.8, 0.7, 0.2]::FLOAT[],
+    k = 1,
+    prefilter = true
+  )
+  ORDER BY _distance ASC;
+```
+
+## Full-text search {#full-text-search}
+
+```sql SQL icon="database"
+SELECT animal, noise, vector, _score
+  FROM lance_fts(
+    'lance_ns.main.lance_duck',
+    'animal',
+    'the brave knight faced the dragon',
+    k = 1,
+    prefilter = true
+  )
+  ORDER BY _score DESC;
+```
+
+## Hybrid search {#hybrid-search}
+
+```sql SQL icon="database"
+SELECT animal, noise, vector, _hybrid_score, _distance, _score
+  FROM lance_hybrid_search(
+    'lance_ns.main.lance_duck',
+    'vector',
+    [0.8, 0.7, 0.2]::FLOAT[],
+    'animal',
+    'the duck surprised the dragon',
+    k = 2,
+    prefilter = false,
+    alpha = 0.5,
+    oversample_factor = 4
+  )
+  ORDER BY _hybrid_score DESC;
+```
+
+## Directory namespace model {#directory-namespace-model}
+
+A directory namespace maps a LanceDB catalog root to namespace-qualified table identifiers in DuckDB. This keeps table discovery and table naming stable as your project grows.
+
+To learn more about the catalog and namespace model, see [Namespaces and the Catalog Model](/namespaces).
+
+
+## Advanced usage {#advanced-usage}
+
+See the [docs](https://github.com/lance-format/lance-duckdb) directory in the Lance-DuckDB extension repo
+for more advanced usage on SQL and REST API clients.

@@ -1,0 +1,113 @@
+---
+title: "Computed columns"
+sidebarTitle: "Computed columns"
+description: "Declare a column from a SQL expression and fill it when you choose."
+icon: table-columns
+keywords: ["computed columns", "add_columns", "refresh_column", "backfill"]
+---
+
+A computed column is declared with an expression and starts with no values. A
+separate refresh fills the rows that lack them. Splitting the two means
+declaring a column on a billion-row table costs the same as declaring one on an
+empty table: nothing is evaluated until you ask for it.
+
+## Declare and fill {#declare-and-fill}
+
+```python
+import lancedb
+
+db = lancedb.connect("./.lancedb")
+table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
+
+table.add_columns(computed={"doubled": "x * 2"})
+# AddColumnsResult(version=2)
+
+table.refresh_column("doubled")
+# RefreshColumnResult(rows_filled=2, version=3)
+
+table.to_arrow().sort_by("x").to_pandas()
+#    x  doubled
+# 0  1        2
+# 1  2        4
+```
+
+`add_columns(computed=...)` commits a new table version with the column present
+and empty. `refresh_column` fills it and commits another. Both are ordinary
+table versions, so the usual [versioning](/tables/versioning) applies.
+
+## `computed` and `transforms` are different {#computed-vs-transforms}
+
+`add_columns` takes either, and the difference matters:
+
+- **`transforms`** evaluates the expression *now*, for every row, as part of the
+  call. Good for a small table or a column you want populated immediately.
+- **`computed`** stores the expression and evaluates nothing. The column is
+  committed empty and filled later by `refresh_column`.
+
+They cannot be combined in one call. Reach for `computed` when the table is
+large enough that you would rather control when the work happens.
+
+## Refreshes do not revisit filled rows {#idempotent}
+
+A refresh gives values to rows that have none. Rows already filled are left
+alone. Two consequences follow:
+
+**Appending is cheap.** Rows added since the last refresh are filled by the
+next one; everything before it is skipped. Backfilling a column and then
+ingesting more data does not mean recomputing the backfill.
+
+**A filled value does not track its input.** If `doubled` derives from `x` and
+a row's `x` is later updated, `doubled` keeps the value computed when it was
+filled. Recomputing means dropping the column and declaring it again.
+
+That is what makes the call idempotent and safe to retry, but it is the opposite
+of a spreadsheet formula, so it is worth being deliberate about which columns
+you derive this way.
+
+## Constraints on the inputs {#input-constraints}
+
+While a computed column's declaration references another column, that column
+cannot be renamed, retyped, or dropped. The declaration is part of the schema,
+and LanceDB will not let you invalidate it out from under itself.
+
+Declaration order is also dependency order: a computed column may reference one
+declared earlier in the same mapping.
+
+## Filling as a job {#async}
+
+<Badge color="red">Cloud and Enterprise</Badge>
+
+Against a remote database the refresh runs on the server. `refresh_column`
+raises there; use `refresh_column_async`, which returns a job you can wait on or
+poll instead of holding a connection open:
+
+```python
+job = table.refresh_column_async("doubled")
+result = job.wait()
+result.rows_assigned
+# 2
+job.status()
+# 'finished'
+```
+
+The job handle carries `id`, `status()`, `wait(timeout=...)` and `cancel()`, so
+a long backfill can be started, left, and checked on later.
+
+## Filling with Python instead of SQL {#functions}
+
+<Badge color="red">Cloud and Enterprise</Badge>
+
+When the value cannot be expressed in SQL — an embedding, a model call, an image
+decode — the column is filled by a registered function instead of an expression.
+See [Functions](/feature-engineering/functions).
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Materialized views" icon="table" href="/feature-engineering/materialized-views">
+    Derive a whole table rather than a column.
+  </Card>
+  <Card title="Functions" icon="code" href="/feature-engineering/functions">
+    Fill a column with Python.
+  </Card>
+</CardGroup>

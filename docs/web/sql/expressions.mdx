@@ -1,0 +1,135 @@
+---
+title: "Expressions"
+sidebarTitle: "Expressions"
+description: "Columns, literals, operators, string and null predicates, and the aggregate functions."
+icon: function
+keywords: ["expressions", "col", "lit", "operators", "aggregate", "sql functions"]
+---
+
+Expressions are the values a DataFrame operation takes: what to project, what to
+filter on, what to group by. They are built from column references and literals,
+combined with operators, and evaluated by the server.
+
+```python
+from lancedb import col, lit, func
+from lancedb import sql_functions as F
+```
+
+## Building blocks {#building-blocks}
+
+| | |
+| --- | --- |
+| `col(name)` | reference a column by name |
+| `lit(value)` | a literal — `bool`, `int`, `float`, `str`, `bytes`, `date`, `datetime`, `Decimal` |
+| `func(name, *args)` | call a server-side function by name |
+
+`func()` is the escape hatch. Anything the engine exposes that has no Python
+method here can be reached by name — at the cost of being checked only when the
+query runs.
+
+Where an operation accepts an expression, a bare Python value is coerced to a
+literal and a bare string to a column reference. `col("age") > 18` needs no
+`lit()`.
+
+## Operators {#operators}
+
+| Category | Operators |
+| --- | --- |
+| Comparison | `==` `!=` `<` `<=` `>` `>=` |
+| Boolean | `&` (and) · `\|` (or) · `~` (not) |
+| Arithmetic | `+` `-` `*` `/` |
+
+All of them work with the expression on either side, so `1 + col("x")` is as
+valid as `col("x") + 1`.
+
+<Warning>
+Use `&`, `|` and `~` — **not** `and`, `or` and `not`. Python cannot overload the
+keywords, so they will silently evaluate the expression object's truthiness
+instead of building a predicate.
+
+Parenthesise them. `&` and `|` bind more tightly than comparisons, so
+
+```python
+col("a") > 1 & col("b") < 2      # wrong: parses as col("a") > (1 & col("b")) < 2
+(col("a") > 1) & (col("b") < 2)  # right
+```
+</Warning>
+
+## Methods on an expression {#methods}
+
+| Method | Result |
+| --- | --- |
+| `lower()` | lowercase a string |
+| `upper()` | uppercase a string |
+| `contains(substr)` | true when the string contains `substr` |
+| `isin(values)` | true when the value is in `values` |
+| `is_null()` | true when the value is null |
+| `is_not_null()` | true when the value is not null |
+| `alias(name)` | name the result, for projection |
+| `sort(ascending=True, nulls_first=None)` | a sort key — see below |
+
+```python
+df.filter(col("title").lower().contains("puppy"))
+df.filter(col("lang").isin(["en", "fr"]))
+df.select(col("score").alias("relevance"))
+```
+
+## Sort keys {#sort}
+
+`expr.sort()` produces a `SortExpr`, which carries the direction and the null
+placement.
+
+| | Default |
+| --- | --- |
+| `ascending` | `True` |
+| `nulls_first` | the opposite of `ascending` |
+
+That default is DataFusion's convention and is worth reading twice: an ascending
+sort puts nulls **last**, and a descending sort puts them **first**. Set
+`nulls_first` explicitly when it matters.
+
+```python
+df.sort(col("score").sort(ascending=False))                    # desc, nulls first
+df.sort(col("score").sort(ascending=False, nulls_first=False)) # desc, nulls last
+```
+
+Passing a bare expression to `sort()` is equivalent to `ascending=True,
+nulls_first=False`.
+
+## Aggregates {#aggregates}
+
+From `lancedb.sql_functions`:
+
+| Function | Result |
+| --- | --- |
+| `sum(expr)` | sum of non-null values |
+| `avg(expr)` | mean of non-null values |
+| `min(expr)` | minimum non-null value |
+| `max(expr)` | maximum non-null value |
+| `count(expr)` | number of non-null values |
+
+All five ignore nulls, including `count`. To count rows rather than values,
+count a column that cannot be null.
+
+```python
+from lancedb import sql_functions as F
+
+df.aggregate("lang", [F.count(col("id")), F.avg(col("score"))])
+```
+
+These five have Python wrappers. Every other function in the
+[DataFusion set](/sql/functions) — scalar, aggregate and window — is reachable
+through `func(name, ...)`, unchecked until execution.
+
+## Naming results {#naming}
+
+An aggregate or derived column takes a generated name unless you give it one.
+`alias()` on the expression, or the keyword in `with_columns()`, sets it:
+
+```python
+df.aggregate("lang", F.avg(col("score")).alias("mean_score"))
+df.with_columns(mean_score=F.avg(col("score")))
+```
+
+Worth doing on anything downstream code refers to by name — a generated name is
+not part of the API and may change.

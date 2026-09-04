@@ -1,0 +1,266 @@
+---
+title: "Metadata Filtering in LanceDB"
+sidebarTitle: Filtering
+description: Filter search results in LanceDB based on metadata fields.
+icon: "filter"
+---
+
+LanceDB supports filtering features of query results based on metadata fields. 
+While joint vector and metadata search at scale presents a significant challenge, 
+LanceDB achieves sub-100ms latency at thousands of QPS, enabling efficient vector search 
+with filtering capabilities even on datasets containing billions of records. 
+
+**Pre-filtering** means LanceDB applies the metadata `where(...)` condition before running vector search, so the search only considers rows that already match the filter. **Post-filtering** means LanceDB runs vector search first and only then filters the returned candidates. Pre-filtering is enabled by default. In practice, pre-filtering is better when the filter is part of the result contract; post-filtering can be lower-latency for expensive or non-indexable filters, but it can return fewer than `limit` rows, or even zero, if the nearest neighbors do not pass the filter.
+
+On hybrid queries, the same `where(...)` filter is applied to both the vector and full-text halves of the query. The prefilter or postfilter choice controls whether that happens before each subquery scores candidates or after the subquery top-k is produced.
+
+## Chaining `where` clauses {#chaining-where-clauses}
+
+In more recent LanceDB SDK versions (see the callout box below for the exact version numbers), you can call `where(...)` (Python and TypeScript) or `only_if(...)` (Rust) more than once on the same query builder. Each additional filter is combined with the previous one using logical `AND`, so `where("a > 0").where("b < 10")` is equivalent to `where("(a > 0) AND (b < 10)")`.
+
+For a fixed predicate, writing one `where(...)` clause with `AND` is just as valid and often clearer. Chaining is mainly useful when code composes filters incrementally, such as applying a shared base predicate in a helper and then adding a per-call predicate at the query site.
+
+<CodeGroup>
+```python Python icon="python"
+# Both filters apply: item is in the list AND price is above 15.
+result = (
+    table.search([100, 102])
+    .where("item IN ('foo', 'bar', 'baz')")
+    .where("price > 15.0")
+    .limit(3)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Both filters apply: item is in the list AND price is above 15.
+const result = await table
+  .search([100, 102])
+  .where("item IN ('foo', 'bar', 'baz')")
+  .where("price > 15.0")
+  .limit(3)
+  .toArray();
+```
+</CodeGroup>
+
+<Warning>
+In Python SDK versions before `0.34.0` and Rust/TypeScript SDK versions before `0.31.0`, a second `where(...)` or `only_if(...)` call replaced the first filter, so only the last predicate was applied. If your code needs to run on those older versions, write a single predicate with `AND` instead of chaining calls. When upgrading to the latest SDKs, review any existing chained filters and drop earlier calls you no longer want to apply.
+</Warning>
+
+## Example: Metadata Filtering {#example-metadata-filtering}
+
+To illustrate filtering capabilities, let's try four data points with combinations of vectors and metadata:
+
+<CodeGroup>
+```python Python icon="python"
+data = [
+    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    {"vector": [10.2, 100.8], "item": "baz", "price": 30.0},
+    {"vector": [1.4, 9.5], "item": "fred", "price": 40.0},
+]
+table = db.create_table("metadata_filter_example", data=data, mode="overwrite")
+```
+
+```typescript TypeScript icon="square-js"
+const data = [
+  { vector: [3.1, 4.1], item: "foo", price: 10.0 },
+  { vector: [5.9, 26.5], item: "bar", price: 20.0 },
+  { vector: [10.2, 100.8], item: "baz", price: 30.0 },
+  { vector: [1.4, 9.5], item: "fred", price: 40.0 },
+];
+
+const tableName = "metadata_filter_example";
+const table = await db.createTable(tableName, data, {
+  mode: "overwrite",
+});
+```
+</CodeGroup>
+
+### Filtering Without Vector Search {#filtering-without-vector-search}
+
+You can always filter your data without search. This is useful when you need to query based on metadata:
+
+<CodeGroup>
+```python Python icon="python"
+filtered_no_search_result = (
+    table.search()
+    .where("(item IN ('foo', 'bar', 'baz')) AND (price > 15.0)")
+    .limit(3)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+const filteredResult = await table
+  .query()
+  .where("(item IN ('foo', 'bar', 'baz')) AND (price > 15.0)")
+  .limit(3)
+  .toArray();
+```
+</CodeGroup>
+
+<Warning>
+If your table is large, this could potentially return a very large amount of data. Please be sure to use a `limit` clause unless you're sure you want to return the whole result set.
+</Warning>
+
+### Pre-Filtering with Vector Search {#pre-filtering-with-vector-search}
+
+<CodeGroup>
+```python Python icon="python"
+filtered_result = (
+    table.search([100, 102])
+    .where("(item IN ('foo', 'bar')) AND (price > 15.0)")
+    .limit(3)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+const results = await table
+  .search([100, 102])
+  .where("(item IN ('foo', 'bar')) AND (price > 15.0)")
+  .toArray();
+```
+</CodeGroup>
+
+### Post-Filtering with Vector Search {#post-filtering-with-vector-search}
+
+<CodeGroup>
+```python Python icon="python"
+post_filtered_result = (
+    table.search([100, 102])
+    .where("(item IN ('foo', 'bar')) AND (price > 15.0)", prefilter=False)
+    .limit(3)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+const postFilteredResult = await (table.search([100, 102]) as VectorQuery)
+  .where("(item IN ('foo', 'bar')) AND (price > 15.0)")
+  .postfilter()
+  .limit(3)
+  .toArray();
+```
+</CodeGroup>
+
+<Warning>
+When querying large tables, omitting a `limit` clause may overwhelm resources and return excessive data. It's always recommended
+to be mindful of the potential impact on performance and costs when working with really large tables.
+</Warning>
+
+## Filtering with SQL {#filtering-with-sql}
+
+Because it's built on top of DataFusion, LanceDB embraces the utilization of standard SQL expressions as predicates for filtering operations. SQL can be used during vector search,  update, and deletion operations.
+
+LanceDB supports a growing list of SQL expressions:
+
+| SQL Expression | Description |
+|:---------------|:-------------|
+| `>, >=, <, <=, =` | Comparison operators |
+| `AND`, `OR`, `NOT` | Logical operators |
+| `IS NULL`, `IS NOT NULL` | Null checks |
+| `IS TRUE`, `IS NOT TRUE`, `IS FALSE`, `IS NOT FALSE` | Boolean checks |
+| `IN` | Value matching from a set |
+| `LIKE`, `NOT LIKE` | Pattern matching |
+| `CAST` | Type conversion |
+| `regexp_match(column, pattern)` | Regular expression matching |
+| [DataFusion Functions](https://datafusion.apache.org/user-guide/sql/scalar_functions.html) | Additional SQL functions |
+
+### Simple SQL Filters {#simple-sql-filters}
+
+For example, the following filter string is acceptable:
+
+<CodeGroup>
+```python Python icon="python"
+tbl.search([100, 102]).where(
+    "(item IN ('foo', 'baz')) AND (price > 20.0)"
+).to_arrow()
+```
+
+```typescript TypeScript icon="square-js"
+await table
+  .search([100, 102])
+  .where("(item IN ('foo', 'baz')) AND (price > 20.0)")
+  .toArray();
+```
+</CodeGroup>
+
+### Advanced SQL Filters {#advanced-sql-filters}
+
+If your column name contains special characters, upper-case characters, or is a [SQL Keyword](https://docs.rs/sqlparser/latest/sqlparser/keywords/index.html),
+you can use backtick (`` ` ``) to escape it. For nested fields, each segment of the
+path must be wrapped in backticks.
+
+```sql
+`CUBE` = 10 AND `UpperCaseName` = '3' AND `column name with space` IS NOT NULL
+AND `nested with space`.`inner with space` < 2
+```
+
+<Warning>
+Field names containing periods (.) are NOT supported.
+</Warning>
+
+### Dates, Timestamps, Decimals {#dates-timestamps-decimals}
+
+Literals for dates, timestamps, and decimals can be written by writing the string
+value after the type name. For example:
+
+<CodeGroup>
+```sql SQL icon="SQL"
+date_col = date '2021-01-01'
+and timestamp_col = timestamp '2021-01-01 00:00:00'
+and decimal_col = decimal(8,3) '1.000'
+```
+</CodeGroup>
+
+For timestamp columns, the precision can be specified as a number in the type
+parameter. Microsecond precision (6) is the default.
+
+| SQL            | Time unit    |
+|:-------------- |:------------ |
+| `timestamp(0)` | Seconds      |
+| `timestamp(3)` | Milliseconds |
+| `timestamp(6)` | Microseconds |
+| `timestamp(9)` | Nanoseconds  |
+
+## Apache Arrow Mapping {#apache-arrow-mapping}
+
+LanceDB internally stores data in [Apache Arrow](https://arrow.apache.org/) format.
+The mapping from SQL types to Arrow types is:
+
+| SQL type                                                  | Arrow type         |
+|:--------------------------------------------------------- |:------------------ |
+| `boolean`                                                 | `Boolean`          |
+| `tinyint` / `tinyint unsigned`                            | `Int8` / `UInt8`   |
+| `smallint` / `smallint unsigned`                          | `Int16` / `UInt16` |
+| `int` or `integer` / `int unsigned` or `integer unsigned` | `Int32` / `UInt32` |
+| `bigint` / `bigint unsigned`                              | `Int64` / `UInt64` |
+| `float`                                                   | `Float32`          |
+| `double`                                                  | `Float64`          |
+| `decimal(precision, scale)`                               | `Decimal128`       |
+| `date`                                                    | `Date32`           |
+| `timestamp`                                               | `Timestamp` [^1]   |
+| `string`                                                  | `Utf8`             |
+| `binary`                                                  | `Binary`           |
+
+
+## Best Practices {#best-practices}
+
+**Scalar Indexes**: We strongly recommend creating scalar indices on columns used for filtering, whether combined with a search operation or applied independently (e.g., for updates or deletions).
+
+For best performance with large tables or high query volumes:
+
+- Build a scalar index on frequently filtered columns
+- Use exact column names in filters (e.g., `user_id` instead of `USER_ID`)
+- Avoid complex transformations in filter expressions (keep them simple)
+- When running concurrent queries, use connection pooling for better throughput
+
+For a column of type LIST(T), you can use `LABEL_LIST` to create a scalar index. Then you should leverage DataFusion's [array functions](https://datafusion.apache.org/user-guide/sql/scalar_functions.html#array-functions) like `array_has_any` or `array_has_all` for optimized filtering.
+
+## Limitations {#limitations}
+
+Both **pre-filtering** and **post-filtering** can yield false positives. For pre-filtering, if the filter is too selective, it might eliminate relevant items that the vector search would have otherwise identified as a good match. In this case, increasing `nprobes` parameter will help reduce such false positives. It is recommended to call `bypass_vector_index()` if you know that the filter is highly selective.
+
+Similarly, a highly selective post-filter can lead to false positives. Increasing both `nprobes` and `refine_factor` can mitigate this issue. When deciding between pre-filtering and post-filtering, pre-filtering is generally the safer choice if you're uncertain.

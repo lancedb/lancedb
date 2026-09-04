@@ -1,0 +1,114 @@
+---
+title: "Monitor LanceDB with OpenTelemetry"
+sidebarTitle: "Monitoring"
+description: "Export LanceDB object store request counts, bytes, latency, errors, and throttles to any OpenTelemetry backend."
+icon: "chart-line"
+keywords: ["monitoring", "observability", "opentelemetry", "otel", "metrics", "prometheus", "object store"]
+---
+
+LanceDB emits internal metrics (currently object store request counts, bytes transferred, request latency, retryable errors, and throttles) and can bridge them into any [OpenTelemetry](https://opentelemetry.io/) backend. Use this to watch how your application interacts with S3, GCS, Azure Blob, or the local filesystem in production: spot latency regressions, catch retry storms, and size your storage tier from real workload data.
+
+The bridge is available in the Python and TypeScript SDKs. It is a thin wrapper over LanceDB's `metrics` recorder; your application supplies and configures the OpenTelemetry SDK.
+
+<Note>
+This page covers LanceDB OSS. LanceDB Enterprise clusters emit their own Prometheus/OpenTelemetry metrics from the server side — see the [Enterprise overview](/enterprise/) for that flow.
+</Note>
+
+## What you get {#what-you-get}
+
+Once instrumented, LanceDB registers one observable instrument per metric on your `MeterProvider`. The current catalog covers the object store layer:
+
+| Metric | Kind | Description |
+|--------|------|-------------|
+| `lance_object_store_requests_total` | Counter | Total object store requests, labelled by `operation` and `base` (store scheme). |
+| `lance_object_store_request_duration_seconds` | Histogram | Request latency in seconds. |
+| `lance_object_store_bytes_transferred_total` | Counter | Bytes read from or written to the store. |
+| `lance_object_store_retryable_responses_total` | Counter | Requests that returned a retryable error (throttles, transient failures). |
+| `lance_object_store_in_flight_requests` | Gauge | Currently outstanding object store requests. |
+
+The recorder is process-global and pull-based: your configured `MetricReader` collects on its own schedule, so there is no hot-path overhead beyond the atomic aggregation that LanceDB does anyway.
+
+<Note>
+**Histograms are exported Prometheus-style.** OpenTelemetry has no asynchronous histogram instrument, so each histogram surfaces as three observable counters: `<name>_bucket` (with an `le` attribute per bucket boundary, including `+Inf`), `<name>_count`, and `<name>_sum`. Only `_sum` carries the histogram's unit; `_bucket` and `_count` are cumulative sample counts.
+</Note>
+
+## Python {#python}
+
+Install LanceDB with the `otel` extra to pull in the OpenTelemetry API, plus an OpenTelemetry SDK of your choice. The SDK is intentionally not bundled, so you configure it and its readers and exporters however your platform expects.
+
+```bash
+pip install "lancedb[otel]" opentelemetry-sdk
+```
+
+Call `instrument_lancedb_metrics()` once at startup, before opening any tables. It returns `True` when the recorder is installed and instruments are registered.
+
+```python Python icon="python"
+import lancedb
+from lancedb.otel import instrument_lancedb_metrics
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import (
+    PeriodicExportingMetricReader,
+)
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+    OTLPMetricExporter,
+)
+
+reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+provider = MeterProvider(metric_readers=[reader])
+
+instrument_lancedb_metrics(provider)
+
+# Any object store activity from this point on is now recorded.
+db = lancedb.connect("s3://my-bucket/lancedb")
+```
+
+If you omit `meter_provider`, LanceDB uses the global provider returned by `opentelemetry.metrics.get_meter_provider()`.
+
+<Warning>
+`instrument_lancedb_metrics()` returns `False` and emits a warning if another `metrics`-crate recorder is already installed in the process. Only one global recorder is permitted, so instrument LanceDB before any other library that installs its own recorder.
+</Warning>
+
+## TypeScript {#typescript}
+
+The Node SDK depends on `@opentelemetry/api` directly, so no extra install step is needed to expose the entry point. You still need an OpenTelemetry SDK to actually export.
+
+```bash
+npm install @opentelemetry/sdk-metrics @opentelemetry/exporter-metrics-otlp-grpc
+```
+
+```typescript TypeScript icon="square-js"
+import { connect, instrumentLanceDbMetrics } from "@lancedb/lancedb";
+import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc";
+
+const reader = new PeriodicExportingMetricReader({
+  exporter: new OTLPMetricExporter(),
+});
+const provider = new MeterProvider({ readers: [reader] });
+
+instrumentLanceDbMetrics(provider);
+
+const db = await connect("s3://my-bucket/lancedb");
+```
+
+`instrumentLanceDbMetrics()` also accepts no arguments, in which case it uses the global provider from `@opentelemetry/api`. Calling it more than once is safe: instruments are created only on the first successful call.
+
+## What to watch {#what-to-watch}
+
+A few starting points for dashboards and alerts:
+
+- **Request rate by operation:** `rate(lance_object_store_requests_total[1m])` broken down by `operation` shows read vs. write pressure and helps size ingestion and serving traffic separately.
+- **Tail latency:** histogram quantiles over `lance_object_store_request_duration_seconds_bucket` catch object store slowdowns before they surface as query timeouts.
+- **Retryable responses:** a rising `lance_object_store_retryable_responses_total` typically means you are being throttled and should back off or shard writes.
+- **In-flight requests:** a growing `lance_object_store_in_flight_requests` gauge without a matching rise in throughput indicates queueing.
+
+## Where to go next {#where-to-go-next}
+
+<Columns cols={2}>
+  <Card title="Performance tips" icon="gauge-high" href="/performance">
+    Tune ingestion, indexing, and query patterns once metrics highlight a hot spot.
+  </Card>
+  <Card title="Storage configuration" icon="wrench" href="/storage/configuration">
+    Configure the object store backends whose requests these metrics measure.
+  </Card>
+</Columns>

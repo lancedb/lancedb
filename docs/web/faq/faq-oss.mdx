@@ -1,0 +1,90 @@
+---
+title: "LanceDB: Frequently Asked Questions"
+sidebarTitle: "LanceDB OSS"
+description: "Commonly asked questions about LanceDB OSS."
+icon: "code"
+mode: wide
+---
+
+This section covers some common questions and issues that you may encounter when using LanceDB.
+
+### Is LanceDB open source? {#is-lancedb-open-source}
+
+LanceDB OSS is a permissively licensed embedded retrieval library available under an Apache 2.0 license. We also have a LanceDB Enterprise, a commercial product that can be deployed on a private cloud or a bring-your-own-cloud (BYOC) solution. LanceDB Enterprise transforms your data lake into a high-performance multimodal lakehouse.
+
+### What is the difference between Lance and LanceDB? {#what-is-the-difference-between-lance-and-lancedb}
+
+[Lance](https://github.com/lancedb/lance) is a modern lakehouse format for multimodal AI. It's perfect for building search engines, feature stores and being the foundation of large-scale ML training jobs requiring high performance IO and shuffles. It also has native support for storing, querying, and inspecting deeply nested data for robotics or large blobs like images, point clouds, and more.
+
+LanceDB is the multimodal lakehouse that's built on top of Lance, and utilizes the underlying optimized storage format to build efficient disk-based indexes that power semantic search & retrieval applications, from RAGs to QA bots to recommender systems.
+
+### Why invent another data format instead of using Parquet? {#why-invent-another-data-format-instead-of-using-parquet}
+
+As we mention in our talk titled "[Lance, a modern columnar data format](https://www.youtube.com/watch?v=ixpbVyrsuL8)", Parquet and other tabular formats that derive from it are rather dated (Parquet is over 10 years old), especially when it comes to random access on vectors. We needed a format that's able to handle the complex trade-offs involved in shuffling, scanning, OLAP and filtering large datasets involving vectors, and our extensive experiments with Parquet didn't yield sufficient levels of performance for modern ML. [Our benchmarks](https://lancedb.com/blog/benchmarking-random-access-in-lance/) show that Lance is up to 1000x faster than Parquet for random access, which we believe justifies our decision to create a new data format for AI.
+
+### Why build in Rust? {#why-build-in-rust}
+
+We believe that the Rust ecosystem has attained mainstream maturity and that Rust will form the underpinnings of large parts of the data and ML landscape in a few years. Performance, latency and reliability are paramount to a vector DB, and building in Rust allows us to iterate and release updates more rapidly due to Rust's safety guarantees. Both Lance (the data format) and LanceDB (the database) are written entirely in Rust. We also provide Python, JavaScript, and Rust client libraries to interact with the database.
+
+### What makes LanceDB different? {#what-makes-lancedb-different}
+
+LanceDB is among the few embedded vector DBs out there that we believe can unlock a whole new class of LLM-powered applications in the browser or via edge functions. Lance's multimodal nature allows you to store the raw data, metadata and the embeddings all at once, unlike other solutions that typically store just the embeddings and metadata.
+
+The Lance data format that powers our storage system also provides true zero-copy access and seamless interoperability with numerous other data formats (like Pandas, Polars, Pydantic) via Apache Arrow, as well as automatic data versioning and data management without needing extra infrastructure.
+
+### How large of a dataset can LanceDB handle? {#how-large-of-a-dataset-can-lancedb-handle}
+
+LanceDB and its underlying data format, Lance, are built to scale to really large amounts of data. LanceDB OSS can comfortably handle millions of vectors on a single node, making it a great fit for most applications. Its disk-based indexes keep performance strong without requiring expensive infrastructure.
+
+If you need to scale to hundreds of millions of vectors or work with terabytes of data, we recommend [LanceDB Enterprise](/enterprise). Enterprise customers regularly operate on billions of rows, backed by distributed infrastructure designed for large-scale production workloads.
+
+### Do I need to build a vector index to run vector search? {#do-i-need-to-build-a-vector-index-to-run-vector-search}
+
+No. LanceDB is blazing fast (due to its disk-based index) for even brute force kNN search, within reason. In our benchmarks, computing 100K pairs of 1000-dimension vectors takes less than 20ms. For small datasets of ~100K records or applications that can accept ~100ms latency, a vector index is usually not necessary.
+
+For large-scale (>1M) or higher dimension vectors, it is beneficial to create a vector index. See the [Vector Indexes](/indexing/vector-index/) section for more details.
+
+### How can I speed up data inserts? {#how-can-i-speed-up-data-inserts}
+
+LanceDB auto-parallelizes large writes when you call `table.add()` with materialized
+data such as `pa.Table`, `pd.DataFrame`, or `pa.dataset()`. No extra configuration
+is needed — writes are automatically split into partitions of ~1M rows or 2GB.
+
+For best results:
+
+- **Create an empty table first**, then call `table.add()`. The `add()` path enables
+  automatic write parallelism, while passing data directly to `create_table()` does not.
+- **For file-based data**, use `pyarrow.dataset.dataset("path/to/data/", format="parquet")`
+  so LanceDB can stream from disk without loading everything into memory.
+- **Avoid inserting one row at a time.** Each insert creates a new data fragment on
+  disk. Batch your data into Arrow tables, DataFrames, or use iterators.
+
+See [Loading Large Datasets](/tables/create#loading-large-datasets) for full examples.
+
+### Do I need to set a refine factor when using an index? {#do-i-need-to-set-a-refine-factor-when-using-an-index}
+
+Yes. LanceDB uses PQ, or Product Quantization, to compress vectors and speed up search when using an ANN index. However, because PQ is a lossy compression algorithm, it tends to reduce recall while also reducing the index size. To address this trade-off, we introduce a process called **refinement**. The normal process computes distances by operating on the compressed PQ vectors. The refinement factor (*rf*) is a multiplier that takes the top-k similar PQ vectors to a given query, fetches `rf * k` *full* vectors and computes the raw vector distances between them and the query vector, reordering the top-k results based on these scores instead.
+
+For example, if you're retrieving the top 10 results and set `refine_factor` to 25, LanceDB will fetch the 250 most similar vectors (according to PQ), compute the distances again based on the full vectors for those 250 and then re-rank based on their scores. This can significantly improve recall, with a small added latency cost (typically a few milliseconds), so it's recommended you set a `refine_factor` of anywhere between 5-50 and measure its impact on latency prior to deploying your solution.
+
+### How can I improve IVF-PQ recall while keeping latency low? {#how-can-i-improve-ivf-pq-recall-while-keeping-latency-low}
+
+When using an IVF-PQ index, there's a trade-off between recall and latency at query time. You can improve recall by increasing the number of probes and the `refine_factor`. In our benchmark on the GIST-1M dataset, we show that it's possible to achieve >0.95 recall with a latency of under 10 ms on most systems, using ~50 probes and a `refine_factor` of 50. This is, of course, subject to the dataset at hand and a quick sensitivity study can be performed on your own data. You can find more details on the benchmark in a past [blog post](https://medium.com/etoai/benchmarking-lancedb-92b01032874a).
+
+![](/static/assets/images/faq/recall-vs-latency.webp)
+
+### How much data can LanceDB practically manage without affecting performance? {#how-much-data-can-lancedb-practically-manage-without-affecting-performance}
+
+We target good performance on ~10-50 billion rows and ~10-30 TB of data. For the best performance and
+scalability guarantees, check out [LanceDB Enterprise](/enterprise).
+
+### Does LanceDB support concurrent operations? {#does-lancedb-support-concurrent-operations}
+
+LanceDB can handle concurrent reads very well, and can scale horizontally. The main constraint is how well the storage layer you've chosen, scales. For writes, we support concurrent writing, though too many concurrent writers can lead to failing writes as there is a limited number of times a writer retries a commit.
+
+<Warning>
+If you use Python's multiprocessing, you should probably not use `fork` as Lance is multi-threaded
+internally and `fork` and multi-threaded Python do not work well together.
+[Refer to this discussion](https://discuss.python.org/t/concerns-regarding-deprecation-of-fork-with-alive-threads/33555)
+for more information.
+</Warning>

@@ -1,0 +1,672 @@
+---
+title: "Basic Table Operations"
+sidebarTitle: "Basic usage"
+description: "Create tables, search vectors, and append data in LanceDB."
+icon: "table"
+keywords: ["create table", "polars", "pandas", "pyarrow", "dataframe", "nested data"]
+---
+
+import { PyConnect, PyConnectEnterpriseQuickstart, TsConnect, TsConnectEnterpriseQuickstart, RsConnect, RsConnectEnterpriseQuickstart } from '/snippets/connection.mdx';
+import {
+    PyBasicImports,
+    PyDataLoad,
+    PyBasicCreateTable,
+    PyBasicOpenTable,
+    PyBasicCreateEmptyTable,
+    PyBasicCreateTablePandas,
+    PyBasicCreateTablePolars,
+    PyBasicAsyncApi,
+    PyBasicVectorSearch,
+    PyBasicVectorSearchQ1,
+    PyBasicVectorSearchQ2,
+    PyBasicVectorSearchQ3,
+    PyBasicVectorSearchQ4,
+    PyBasicSortPolars,
+    PyBasicDeleteRows,
+    PyBasicAddData,
+    PyBasicAddColumns,
+    PyBasicDropColumns,
+    PyBasicDropTable,
+    TsBasicImports,
+    TsDataLoad,
+    TsBasicCreateTable,
+    TsBasicOpenTable,
+    TsBasicCreateEmptyTable,
+    TsBasicVectorSearchQ1,
+    TsBasicVectorSearchQ2,
+    TsBasicVectorSearchQ3,
+    TsBasicVectorSearchQ4,
+    TsBasicDeleteRows,
+    TsBasicAddData,
+    TsBasicAddColumns,
+    TsBasicDropColumns,
+    TsBasicDropTable,
+    RsBasicImports,
+    RsDataLoad,
+    RsBasicCreateTable,
+    RsBasicOpenTable,
+    RsBasicCreateEmptyTable,
+    RsBasicAddData,
+    RsBasicVectorSearchQ1,
+    RsBasicVectorSearchQ2,
+    RsBasicVectorSearchQ3,
+    RsBasicVectorSearchQ4,
+    RsBasicDeleteRows,
+    RsBasicAddColumns,
+    RsBasicDropColumns,
+    RsBasicDropTable,
+} from '/snippets/basic_usage.mdx';
+
+Now that you've completed the [LanceDB quickstart](/quickstart), you're ready to
+explore some more table operations you'll typically need when working with LanceDB.
+
+- **Ingest data into tables** from JSON data (and in Python, Pandas or Polars DataFrames)
+- **Create empty tables** by defining explicit Arrow schemas
+- **Vector similarity search** with filtering and projections
+- **Filtered queries** that can operate on nested structs
+- **Query Lance tables in DuckDB** via the Lance extension for SQL analytics (including joins)
+
+<Note title="Python async users">
+This page uses **synchronous** Python snippets. If your Python app uses `asyncio`,
+the same flow works with `connect_async(...)` and `await`-based table/query calls.
+Use the example below as a template, and see [Quickstart](/quickstart#python-sync-and-async-apis)
+for example snippets on both sync and async Python usage.
+</Note>
+
+## Dataset {#dataset}
+
+We'll work with this small dataset based on characters from the legends of Camelot. Note that
+the `vector` column holds 4-dimensional embeddings, and the `stats` column is a nested struct
+with several integer fields, indicating each character's attributes.
+
+```json camelot.json icon="brackets-curly" expandable=true
+[
+  {
+    "id": 1,
+    "name": "King Arthur",
+    "role": "King of Camelot",
+    "description": "The legendary ruler of Camelot, wielder of Excalibur, and leader of the Knights of the Round Table.",
+    "vector": [0.72, -0.28, 0.60, 0.86],
+    "stats": { "strength": 2, "courage": 5, "magic": 1, "wisdom": 4 }
+  },
+  {
+    "id": 2,
+    "name": "Merlin",
+    "role": "Wizard and Advisor",
+    "description": "A powerful wizard and prophet who mentors Arthur and shapes the destiny of Camelot through magic and foresight.",
+    "vector": [0.05, 0.88, 0.62, 0.85],
+    "stats": { "strength": 2, "courage": 4, "magic": 5, "wisdom": 5 }
+  },
+  {
+    "id": 3,
+    "name": "Queen Guinevere",
+    "role": "Queen of Camelot",
+    "description": "Arthur's queen, admired for her grace and diplomacy, whose romances and loyalties influence Camelot's fate.",
+    "vector": [0.22, -0.22, 0.42, 0.82],
+    "stats": { "strength": 1, "courage": 3, "magic": 1, "wisdom": 4 }
+  },
+  {
+    "id": 4,
+    "name": "Sir Lancelot",
+    "role": "Knight of the Round Table",
+    "description": "Arthur's most skilled knight, famed for unmatched combat prowess and his tragic love for Queen Guinevere.",
+    "vector": [0.86, -0.35, 0.38, 0.55],
+    "stats": { "strength": 5, "courage": 5, "magic": 1, "wisdom": 3 }
+  },
+  {
+    "id": 5,
+    "name": "Sir Gawain",
+    "role": "Knight of the Round Table",
+    "description": "A noble and honorable knight known for his courtesy and his encounter with the Green Knight.",
+    "vector": [0.82, -0.32, 0.52, 0.60],
+    "stats": { "strength": 4, "courage": 5, "magic": 1, "wisdom": 4 }
+  },
+  {
+    "id": 6,
+    "name": "Sir Galahad",
+    "role": "Knight of the Round Table",
+    "description": "The purest and most virtuous knight, chosen to achieve the Holy Grail due to his unwavering spiritual purity.",
+    "vector": [0.80, -0.20, 0.70, 0.78],
+    "stats": { "strength": 4, "courage": 5, "magic": 2, "wisdom": 5 }
+  },
+  {
+    "id": 7,
+    "name": "Sir Percival",
+    "role": "Knight of the Round Table",
+    "description": "A loyal and innocent knight whose bravery and sincerity make him one of the key seekers of the Holy Grail.",
+    "vector": [0.78, -0.36, 0.48, 0.52],
+    "stats": { "strength": 4, "courage": 4, "magic": 1, "wisdom": 3 }
+  },
+  {
+    "id": 8,
+    "name": "Mordred",
+    "role": "Traitor Knight",
+    "description": "Arthur's treacherous son or nephew who ultimately rebels against him, leading to Camelot's downfall.",
+    "vector": [0.68, -0.30, -0.65, 0.20],
+    "stats": { "strength": 4, "courage": 2, "magic": 1, "wisdom": 2 }
+  }
+]
+```
+
+<Note>
+The `vector` arrays here are synthetic and for demonstration purposes only. In your real-world
+applications, you'd generate these vectors from the raw text fields using a suitable embedding model.
+</Note>
+
+## Connect to a database {#connect-to-a-database}
+
+### Option 1: Direct table access {#option-1-direct-table-access}
+
+We start by connecting to a LanceDB database path. The example below uses a local path in LanceDB OSS.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsConnect}
+    </CodeBlock>
+</CodeGroup>
+
+You can also connect LanceDB OSS directly to object storage. For credentials, endpoints, and provider-specific options, see
+[Configuring storage](/storage/configuration).
+
+### Option 2: Remote tables {#option-2-remote-tables}
+
+If you're using LanceDB [Enterprise](/enterprise), you can connect using a `db://` URI,
+along with any necessary credentials. Simply replace the local path with a remote `uri`
+that points to where your data is stored, and you're ready to go.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="python">
+    { "import lancedb\n\n" }
+    {PyConnectEnterpriseQuickstart}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectEnterpriseQuickstart}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n\n" }
+    {RsConnectEnterpriseQuickstart}
+    </CodeBlock>
+</CodeGroup >
+
+<Note>
+- When you connect to a remote URI (Enterprise), `open_table(...)` returns a *remote* table.
+Remote tables support core operations (ingest, search, update, delete), but some convenience
+methods for bulk data export are not available.
+- In the Python SDK, `table.to_arrow()` and `table.to_pandas()` are not implemented for remote tables.
+To retrieve data, use search queries instead: `table.search(query).limit(n).to_arrow()`.
+</Note>
+
+## Create a table and ingest data {#create-a-table-and-ingest-data}
+
+### From JSON {#from-json}
+LanceDB stores records in Lance tables. Each row is a record and each column
+holds a field or related metadata. The simplest way to start is to obtain the source
+data as a list of JSON records that includes a vector column and any metadata
+fields you care about.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicImports}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicImports}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicImports}
+    </CodeBlock>
+</CodeGroup >
+
+Load the data from the JSON file:
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyDataLoad}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDataLoad}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDataLoad}
+    </CodeBlock>
+</CodeGroup >
+
+You can now create a LanceDB table from the loaded data. By default, creating a table with a name
+that already exists raises an error. Use `mode="overwrite"` only when you intentionally want to
+replace the existing table and its data, or use `exist_ok` / `existOk` when repeatable setup should
+reuse the existing table instead of writing the supplied rows again.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicCreateTable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicCreateTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicCreateTable}
+    </CodeBlock>
+</CodeGroup >
+
+<Info>
+If you want to avoid overwriting an existing table, omit the overwrite mode. For append-only
+ingestion into a table that already exists, open the table and call `add(...)` instead of
+`create_table(...)`. For repeatable setup with `exist_ok` / `existOk`, see
+[Handle existing tables](/tables/create#handle-existing-tables).
+</Info>
+
+For more ingestion patterns, including PyArrow tables, Python `pyarrow.dataset.Dataset` inputs,
+empty tables, and Python `LanceModel` schemas with nested fields, see
+[Ingesting data](/tables/create/).
+
+### From Pandas DataFrames {#from-pandas-dataframes}
+<Badge color="green">Python Only</Badge>
+
+You can create LanceDB tables directly from [Pandas](https://pandas.pydata.org/) DataFrames. Simply
+obtain the source data as a Pandas DataFrame, then create the table
+and directly ingest to it.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicCreateTablePandas}
+    </CodeBlock>
+</CodeGroup>
+
+### From Polars DataFrames {#from-polars-dataframes}
+<Badge color="green">Python Only</Badge>
+
+You can also create LanceDB tables directly from [Polars](https://www.pola.rs/) DataFrames. Simply
+obtain the source data as a Polars DataFrame, then create the table
+and directly ingest to it.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicCreateTablePolars}
+    </CodeBlock>
+</CodeGroup>
+
+### From an Arrow schema {#from-an-arrow-schema}
+
+If you want to create an _empty_ table without any data -- say you want to
+define the schema first and then incrementally add data later -- you can
+do so by defining an Arrow schema explicitly.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicCreateEmptyTable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicCreateEmptyTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicCreateEmptyTable}
+    </CodeBlock>
+</CodeGroup>
+
+Once the empty table is defined, LanceDB is ready to accept new data via
+the `add` method, as shown in the next section.
+
+<Card title="Display table schema" icon="book">
+LanceDB tables are type-aware, leveraging Apache Arrow under the hood.
+You can display a given table's schema using the `schema` property or
+method. For example, in Python, running `print(table.schema)` would show
+something like the following:
+
+```txt expandable=true
+id: int64
+name: string
+role: string
+description: string
+vector: fixed_size_list<item: float>[4]
+  child 0, item: float
+stats: struct<courage: int64, magic: int64, strength: int64, wisdom: int64>
+  child 0, courage: int64
+  child 1, magic: int64
+  child 2, strength: int64
+  child 3, wisdom: int64
+```
+</Card>
+
+## Append data to a table {#append-data-to-a-table}
+
+LanceDB tables are mutable, and you can append new records to existing tables.
+If you're starting with a fresh session, connect to the database and open the
+existing table named `camelot`.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicOpenTable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicOpenTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicOpenTable}
+    </CodeBlock>
+</CodeGroup>
+
+Prepare the new records to add. Here, we add two new magical characters
+via the `add` method. For the Rust snippet, you can find the helper functions in the
+[code](https://github.com/lancedb/docs/blob/main/tests/rs/basic_usage.rs).
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicAddData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicAddData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicAddData}
+    </CodeBlock>
+</CodeGroup>
+
+We now have two new records in the table. Let's begin to query our data!
+
+## Vector search {#vector-search}
+
+It's straightforward to run vector similarity search in LanceDB. Let's answer
+some questions about the data using vector search with projections (returning only
+the desired columns).
+
+> Q1: _Who are the characters similar to "wizard"?_
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicVectorSearchQ1}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicVectorSearchQ1}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicVectorSearchQ1}
+    </CodeBlock>
+</CodeGroup>
+
+| name | role | description |
+| --- | --- | --- |
+| Merlin | Wizard and Advisor | A powerful wizard and prophet |
+| The Lady of the Lake | Mystical Guardian | A mysterious supernatural figu… |
+| Morgan le Fay | Sorceress | A powerful enchantress, Arthur… |
+| Queen Guinevere | Queen of Camelot | Arthur's queen, admired for he… |
+| Sir Galahad | Knight of the Round Table | The purest and most virtuous k… |
+
+We have Merlin, The Lady of the Lake, and Morgan le Fay in the top results, who
+all have magical abilities.
+
+Next, let's try to answer a different question that involves vector search while
+filtering on a nested struct field. Filtering is done using the `where` method,
+into which you can pass SQL-like expressions.
+
+> Q2: _Who are the characters similar to "wizard" with high magic stats?_
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="Python">
+    {PyBasicVectorSearchQ2}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicVectorSearchQ2}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicVectorSearchQ2}
+    </CodeBlock>
+</CodeGroup>
+
+| name | role | description |
+| --- | --- | --- |
+| Merlin | Wizard and Advisor | A powerful wizard and prophet |
+| The Lady of the Lake | Mystical Guardian | A mysterious supernatural figu… |
+| Morgan le Fay | Sorceress | A powerful enchantress, Arthur… |
+
+Only three characters have magical abilities greater than 3. Merlin is
+clearly the most magical of them all!
+
+## Filtered search {#filtered-search}
+
+You can also run traditional analytics-style search queries that do not
+involve vectors. For example, let's find the strongest characters in
+the dataset. In the query below, we leave the `search` method empty to indicate
+that we don't want to use any vector for similarity search (in TypeScript/Rust,
+use `query()` instead), and use the `where` method to filter on the `strength` field.
+
+> Q3: _Who are the strongest characters?_
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python">
+    {PyBasicVectorSearchQ3}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicVectorSearchQ3}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicVectorSearchQ3}
+    </CodeBlock>
+</CodeGroup>
+
+| name | role | description |
+| --- | --- | --- |
+| Sir Galahad | Knight of the Round Table | The purest and most virtuous k… |
+| Sir Gawain | Knight of the Round Table | A noble and honorable knight k… |
+| Sir Percival | Knight of the Round Table | A loyal and innocent knight wh… |
+| Sir Lancelot | Knight of the Round Table | Arthur's most skilled knight, … |
+| Mordred | Traitor Knight | Arthur's treacherous son or ne… |
+
+Clearly, the strongest characters are all Knights of the Round Table!
+
+<Note>
+Need SQL analytics like filters, aggregations, or joins on Lance tables? Use the DuckDB
+Lance extension to query Lance tables directly with SQL. See the
+[DuckDB integration guide](/integrations/data/duckdb).
+</Note>
+
+## Add column {#add-column}
+
+We can also add new columns to an existing LanceDB table using the `add_columns` method.
+For this example, let's add a new float column named `power` that shows the average
+of each character's strength, courage, magic, and wisdom stats.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python">
+    {PyBasicAddColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicAddColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicAddColumns}
+    </CodeBlock>
+</CodeGroup>
+
+The example above sums up the individual stats and divides by 4 to compute the average.
+The resulting average total stats is cast to an Arrow float type under the hood for the
+Lance table.
+
+We can display the results of this column in descending order of power.
+
+> Q4: _Who are the most powerful characters?_
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python">
+    {PyBasicVectorSearchQ4}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicVectorSearchQ4}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicVectorSearchQ4}
+    </CodeBlock>
+</CodeGroup>
+
+Note that LanceDB's `where` only filters rows, but doesn't sort them by applying an `ORDER BY`
+clause that you may be used to when working with SQL databases. 
+
+You can also sort the results after converting them to a Polars DataFrame.
+In TypeScript/Rust, you can sort the
+returned array in application code.
+
+<CodeBlock filename="Python" language="Python">
+{PyBasicSortPolars}
+</CodeBlock>
+
+| name | role | description | power |
+| --- | --- | --- | --- |
+| Merlin | Wizard and Advisor | A powerful wizard and prophet … | 4.0 |
+| Sir Galahad | Knight of the Round Table | The purest and most virtuous k… | 4.0 |
+| The Lady of the Lake | Mystical Guardian | A mysterious supernatural figu… | 3.75 |
+| Sir Lancelot | Knight of the Round Table | Arthur's most skilled knight, … | 3.5 |
+| Sir Gawain | Knight of the Round Table | A noble and honorable knight k… | 3.5 |
+
+Merlin and Sir Galahad are the most powerful characters when considering the average of
+all their abilities! Sir Lancelot and the Lady of the Lake follow closely behind.
+
+For column renames, type changes, nullability changes, and grouping multiple schema changes into
+one operation, see [Schema and data evolution](/tables/schema/).
+
+## Delete data {#delete-data}
+
+You can delete rows from a LanceDB table using the `delete` method with
+a filtering expression.
+
+Say we want to remove Mordred, the traitor knight, from our table.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python">
+    {PyBasicDeleteRows}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicDeleteRows}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicDeleteRows}
+    </CodeBlock>
+</CodeGroup>
+
+This will delete the row(s) where the `role` value matches "Traitor Knight".
+You can verify that the row has been deleted by running a search query again,
+and confirming that Mordred no longer appears in the results.
+
+## Drop column {#drop-column}
+
+If you want to remove or delete a column from an existing LanceDB table, you can use
+the `drop_columns` method.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python">
+    {PyBasicDropColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicDropColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicDropColumns}
+    </CodeBlock>
+</CodeGroup>
+
+This will remove the `power` column we added earlier from the table schema.
+
+## Drop table {#drop-table}
+
+If you want to delete an entire table from the database, you can use the
+`drop_table` method.
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python">
+    {PyBasicDropTable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBasicDropTable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBasicDropTable}
+    </CodeBlock>
+</CodeGroup>
+
+This will delete the `camelot` table from the connected LanceDB database.
+
+<Info>
+See the full code for these examples (including helper functions) in the
+`basic_usage` file for the appropriate client language in the
+[docs repo](https://github.com/lancedb/docs/tree/main/tests).
+</Info>
+
+## What about vector indexes? {#what-about-vector-indexes}
+
+LanceDB supports vector indexes to speed up similarity search on large datasets.
+For datasets up to a few hundred thousand vectors, LanceDB's highly efficient kNN
+(brute-force) retrieval of nearest neighbors is often sufficient. As your dataset
+grows larger, you can create vector indexes on your vector columns to accelerate
+search. See the [indexing](/indexing/) documentation for details on how to create and use
+vector indexes in LanceDB.
+
+## Next steps {#next-steps}
+Now that you've learned the basics of creating tables, adding data, running
+vector search, and modifying table schemas, you're ready to explore more
+advanced features of LanceDB. Below are some suggested next pages.
+
+<Columns cols={2}>
+  <Card
+    title="Ingesting data"
+    icon="cookie"
+    href="/tables/create/"
+  >
+    Learn the different approaches to creating and ingesting data into LanceDB tables from various sources.
+  </Card>
+  <Card
+    title="Update and modify tables"
+    icon="clone"
+    href="/tables/update/"
+  >
+    Learn how to update and modify existing LanceDB tables and their data.
+  </Card>
+  <Card
+    title="Schema & data evolution"
+    icon="boxes-stacked"
+    href="/tables/schema/"
+  >
+    Understand how to evolve your table schemas and data over time with LanceDB.
+  </Card>
+  <Card
+    title="Versioning and time travel"
+    icon="clock"
+    href="/tables/versioning/"
+  >
+    Explore LanceDB's built-in table versioning and time travel capabilities.
+  </Card>
+</Columns>

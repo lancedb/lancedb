@@ -1,0 +1,133 @@
+---
+title: "Reranking Search Results"
+sidebarTitle: "Overview"
+description: "Use a reranker to improve search relevance."
+icon: "sort-amount-down"
+keywords: ["re-ranking", "reranker", "rerank"]
+---
+
+import { PyRerankingLinearCombinationUsage, PyRerankingRrfUsage, PyRerankingCohereUsage } from '/snippets/integrations.mdx';
+
+Reranking is the process of re-ordering search results to improve relevance, often using a
+different model than the one used for the initial search. LanceDB has built-in support for reranking
+with models from Cohere, Sentence-Transformers, and more.
+
+### Quickstart {#quickstart}
+
+To use a reranker, you run a search and pass the results to the `rerank()` method. The examples below
+move from the simplest, model-free rerankers to a model-based one. Each is a complete, runnable script.
+
+**1. Linear combination (simplest).** `LinearCombinationReranker` normalizes the vector and full-text
+scores and blends them with a single `weight` (default `0.7`, favoring the vector score). It runs no
+model, and reranks [hybrid search](/search/hybrid-search) results.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingLinearCombinationUsage}
+  </CodeBlock>
+</CodeGroup>
+
+**2. Reciprocal Rank Fusion.** `RRFReranker` fuses results by rank position instead of raw score, so it
+sidesteps having to make vector and full-text scores comparable. It loads no model either, and it's the
+default reranker for hybrid search.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingRrfUsage}
+  </CodeBlock>
+</CodeGroup>
+
+**3. Cohere (model-based).** For higher relevance, a model-based reranker scores each result against the
+query with a trained model. `CohereReranker` works with vector, full-text, or hybrid search, and needs
+the `cohere` package plus either `COHERE_API_KEY` in the environment or an `api_key` argument.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingCohereUsage}
+  </CodeBlock>
+</CodeGroup>
+
+Reach for the model-free rerankers (`LinearCombinationReranker`, `RRFReranker`) when cost and latency
+matter most; reach for a model-based one like `CohereReranker` or `CrossEncoderReranker` when you need
+higher relevance and can afford to score every query and document pair with a model.
+
+### Supported Rerankers {#supported-rerankers}
+
+LanceDB supports the following rerankers out of the box. The first three are score-based and run no
+model; the rest are model-based. The built-in rerankers are documented in this section; the hosted
+providers that need an API key live under [integrations](/integrations/reranking).
+
+| Reranker                    | Default model                          |
+| --------------------------- | -------------------------------------- |
+| `RRFReranker`               | None (reciprocal rank fusion)          |
+| `LinearCombinationReranker` | None (weighted score blend)            |
+| `MRRReranker`               | None (weighted reciprocal rank)        |
+| `CohereReranker`            | `rerank-english-v3.0`                  |
+| `CrossEncoderReranker`      | `cross-encoder/ms-marco-TinyBERT-L-6`  |
+| `ColbertReranker`           | `colbert-ir/colbertv2.0`               |
+| `AnswerdotaiRerankers`      | `answerdotai/answerai-colbert-small-v1`|
+| `JinaReranker`              | `jina-reranker-v2-base-multilingual`   |
+| `OpenaiReranker`            | `gpt-4-turbo-preview`                  |
+| `VoyageAIReranker`          | No default (model name required)       |
+| `WatsonxReranker`           | `cross-encoder/ms-marco-minilm-l-12-v2`|
+
+The model-based rerankers need their provider package installed, and the hosted ones
+(`CohereReranker`, `JinaReranker`, `OpenaiReranker`, `VoyageAIReranker`, `WatsonxReranker`) also need an API key, passed
+as an `api_key` argument or set in the provider-specific environment variable.
+
+Rerankers add `_relevance_score` and return rows ordered by descending relevance. Python rerankers
+accept `return_score="relevance"` or `return_score="all"`; use `"all"` when you want to keep the
+original vector distance or FTS score columns for debugging. Model-based rerankers read from
+`column="text"` by default, so either return that column in the search results or pass a different
+column.
+
+Use `refine_factor` on vector or hybrid queries when you're reranking approximate IVF-PQ results and
+want a larger candidate pool before the final ranking step. A value of `3` asks LanceDB to fetch
+`limit * 3` candidates, refine them with the full vectors, and keep the requested `limit`. Higher
+values can improve recall, but they also increase query latency.
+
+<Note>
+**SDK coverage differs across languages**
+
+The provider-specific rerankers in the table above
+(`CohereReranker`, `CrossEncoderReranker`, `ColbertReranker`, and others under `lancedb.rerankers`)
+are currently **Python-only**. The TypeScript and Rust SDKs currently expose hybrid reranking through
+the generic `Reranker` interface (`rerankHybrid` / `rerank_hybrid`) and the built-in `RRFReranker`.
+In TypeScript, create the built-in RRF reranker with `await RRFReranker.create(k)`. To use a
+model-based reranker from TypeScript or Rust, you must implement the hybrid reranker interface
+yourself.
+</Note>
+
+
+### Multi-vector reranking {#multi-vector-reranking}
+Most rerankers support reranking based on multiple vectors. To rerank based on multiple vectors, you can pass a list of vectors to the `rerank` method. Here's an example of how to rerank based on multiple vector columns using the `CrossEncoderReranker`:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.rerankers import CrossEncoderReranker
+
+reranker = CrossEncoderReranker()
+
+query = "hello"
+
+# `deduplicate=True` requires `_rowid` on every input result set,
+# so call `.with_row_id(True)` on each search before passing it in.
+res1 = table.search(query, vector_column_name="vector").limit(3).with_row_id(True)
+res2 = table.search(query, vector_column_name="text_vector").limit(3).with_row_id(True)
+res3 = table.search(query, vector_column_name="meta_vector").limit(3).with_row_id(True)
+
+reranked = reranker.rerank_multivector([res1, res2, res3], deduplicate=True)
+```
+</CodeGroup>
+
+- Passing `deduplicate=True` to `rerank_multivector(...)` raises a `ValueError` if any of the
+input result sets is missing the `_rowid` column. Therefore, it's recommended to add `.with_row_id(True)` to every
+`table.search(...)` call before reranking, or omit `deduplicate=True` if you don't need it.
+- `RRFReranker.rerank_multivector(...)` always requires `_rowid` on its inputs, regardless of
+the `deduplicate` flag.
+
+## Creating Custom Rerankers {#creating-custom-rerankers}
+
+LanceDB also allows you to create custom rerankers by extending the base `Reranker` class. The custom reranker
+should implement the `rerank` method that takes a list of search results and returns a reranked list of
+search results. This is covered in more detail in the [creating custom rerankers](/reranking/custom-reranker/) section.

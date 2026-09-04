@@ -1,0 +1,26 @@
+---
+title: Search
+sidebarTitle: Overview
+description: "Comprehensive guide to all search capabilities in LanceDB including vector search, full-text search, hybrid search, and more."
+icon: "list"
+---
+
+| Feature | Description |
+|:---------------|:------------|
+| [Vector Search](/search/vector-search/) | Semantic similarity search with multiple distance metrics |
+| [Multivector Search](/search/multivector-search/) | Search using multiple vector embeddings per document |
+| [Full-Text Search](/search/full-text-search/) | Keyword-based search with BM25 and pre-filtering |
+| [Hybrid Search](/search/hybrid-search/) | Combines vector and full-text search with reranking |
+| [Filtering](/search/filtering/) | Filter results based on metadata fields |
+| [SQL Queries](/search/sql/index) | SQL query capabilities for data exploration and analytics |
+
+## Before you search {#before-you-search}
+
+- Vector search can run without an ANN index as an exhaustive scan. That's useful while prototyping, but build a vector index before relying on low-latency searches over larger tables.
+- Full-text and hybrid text search require an FTS index on the text column you query. If a table has multiple FTS indexes, specify the target column. FTS also supports phrase, boolean, boosted, multi-match, and fuzzy query forms when you need more than plain terms.
+- Phrase FTS queries require an index created with token positions enabled.
+- Multivector search currently uses cosine similarity and accepts either one query vector or a matrix of query vectors; every query vector must match the inner dimension of the multivector column.
+- Set an explicit `.limit(...)` for production queries. The default top-k is 10 for search builders,
+  but spelling it out makes latency and result-count assumptions visible. Query builders also
+  support controls such as prefilter/postfilter, distance ranges, row-id inclusion, offset
+  pagination, and Arrow/Pandas/list result materialization.
