@@ -1156,6 +1156,23 @@ impl Table {
         self.inner.schema().await
     }
 
+    /// Create a lazy DataFrame that scans this table.
+    ///
+    /// The returned DataFrame retains this table's database and namespace, so
+    /// [`crate::dataframe::DataFrame::execute`] needs no additional connection
+    /// or transport arguments.
+    pub async fn to_df(&self) -> Result<crate::dataframe::DataFrame> {
+        let database = self.database.clone().ok_or_else(|| Error::InvalidInput {
+            message: "this table is not bound to a database".to_string(),
+        })?;
+        crate::dataframe::DataFrame::from_open_table(
+            self.name(),
+            self.schema().await?,
+            database,
+            self.namespace(),
+        )
+    }
+
     /// Create a read-only handle pinned to the current active revision.
     #[doc(hidden)]
     pub async fn query_snapshot(&self) -> Result<Self> {

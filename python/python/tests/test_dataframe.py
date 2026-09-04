@@ -1,20 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import json
-
 import pyarrow as pa
 import pytest
-from datafusion.substrait import Serde
 
 import lancedb
 from lancedb import col
 from lancedb import sql_functions as F
-from lancedb._lancedb import NativeDataFrame
-from lancedb.dataframe import AsyncDataFrame, DataFrame
 
 
-def test_dataframe_builds_substrait_plan(tmp_path):
+def test_dataframe_builds_lazy_plan_from_open_table(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table(
         "MyEvents",
@@ -25,7 +20,8 @@ def test_dataframe_builds_substrait_plan(tmp_path):
     )
 
     frame = (
-        db.table("MyEvents")
+        db.open_table("MyEvents")
+        .to_df()
         .filter(col("active"))
         .aggregate(["region"], [F.sum(col("amount")).alias("total")])
         .sort(col("total").sort(ascending=False))
@@ -35,34 +31,26 @@ def test_dataframe_builds_substrait_plan(tmp_path):
     assert frame.schema == pa.schema(
         [pa.field("region", pa.string()), pa.field("total", pa.int64())]
     )
-    serialized = frame.to_substrait()
-    assert len(serialized) > 0
-    plan_json = json.loads(Serde.deserialize_bytes(serialized).to_json())
-    assert "MyEvents" in str(plan_json)
+    assert "MyEvents" in repr(frame)
 
-    total = db.table("MyEvents").aggregate(None, F.sum(col("amount")).alias("total"))
+    total = (
+        db.open_table("MyEvents")
+        .to_df()
+        .aggregate(None, F.sum(col("amount")).alias("total"))
+    )
     assert total.schema.names == ["total"]
 
     assert col("amount").sort().nulls_first is False
     assert col("amount").sort(ascending=False).nulls_first is True
-    assert "ASC NULLS LAST" in repr(db.table("MyEvents").sort("amount"))
+    assert "ASC NULLS LAST" in repr(db.open_table("MyEvents").to_df().sort("amount"))
 
 
 def test_dataframe_set_operations_build_plans(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("left", [{"id": 1}])
     db.create_table("right", [{"id": 2}])
-    left = db.table("left")
-    right = db.table("right")
-
-    assert (
-        left._inner.intersect(right._inner).to_substrait()
-        == left.intersect(right).to_substrait()
-    )
-    assert (
-        left._inner.except_(right._inner).to_substrait()
-        == left.except_all(right).to_substrait()
-    )
+    left = db.open_table("left").to_df()
+    right = db.open_table("right").to_df()
 
     for frame in [
         left.union(right),
@@ -72,14 +60,14 @@ def test_dataframe_set_operations_build_plans(tmp_path):
         left.except_all(right),
         left.except_all(right, distinct=True),
     ]:
-        assert frame.to_substrait()
+        assert frame.schema.names == ["id"]
 
 
 def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("events", [{"id": 1, "value": 10}])
 
-    source = db.table("events")
+    source = db.open_table("events").to_df()
     left = source.alias("left").with_column_renamed("value", "renamed")
     right = source.alias("right").with_column_renamed("value", "renamed")
     joined = left.join(right, on="id").select(
@@ -88,28 +76,18 @@ def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
     )
 
     assert joined.schema.names == ["left_value", "right_value"]
-    assert joined.to_substrait()
+    assert "Join" in repr(joined)
 
-    dotted = DataFrame(
-        db,
-        NativeDataFrame.from_table(
-            "dotted", pa.schema([pa.field("left.value", pa.int64())])
-        ),
-        ["public"],
-    )
+    db.create_table("dotted", pa.table({"left.value": [1]}))
+    dotted = db.open_table("dotted").to_df()
     assert dotted.select(dotted.col("left.value")).schema.names == ["left.value"]
     assert dotted.with_column_renamed("left.value", "value").schema.names == ["value"]
     assert dotted.drop("left.value").schema.names == []
 
-    right_key = DataFrame(
-        db,
-        NativeDataFrame.from_table(
-            "right_key", pa.schema([pa.field("id", pa.int64())])
-        ),
-        ["public"],
-    )
+    db.create_table("right_key", pa.table({"id": [1]}))
+    right_key = db.open_table("right_key").to_df()
     dotted_join = dotted.join(right_key, left_on="left.value", right_on="id")
-    assert dotted_join.to_substrait()
+    assert "Join" in repr(dotted_join)
 
     with pytest.raises(ValueError, match="missing"):
         dotted.with_column_renamed("missing", "value")
@@ -117,33 +95,15 @@ def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
         dotted.drop("missing")
 
 
-def test_dataframe_direct_execution_uses_connection(tmp_path):
+def test_dataframe_direct_execution_reports_unsupported_local_backend(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("events", [{"id": 1}])
-    frame = db.table("events").select("id")
+    frame = db.open_table("events").to_df().select("id")
 
-    class RecordingConnection:
-        def __init__(self):
-            self.calls = []
-
-        def execute_substrait(self, plan, **kwargs):
-            self.calls.append(("execute", plan, kwargs))
-            return "reader"
-
-        def execute_substrait_async(self, plan, **kwargs):
-            self.calls.append(("execute_async", plan, kwargs))
-            return "query"
-
-    connection = RecordingConnection()
-    frame._connection = connection
-
-    assert frame.execute() == "reader"
-    assert frame.execute_async() == "query"
-    assert [call[0] for call in connection.calls] == ["execute", "execute_async"]
-    assert all(call[2]["version"] for call in connection.calls)
-    assert all(
-        call[2]["default_namespace_path"] == ["public"] for call in connection.calls
-    )
+    with pytest.raises(NotImplementedError, match="DataFrame execution"):
+        frame.execute_async()
+    with pytest.raises(NotImplementedError, match="DataFrame execution"):
+        frame.execute()
 
 
 def test_dataframe_exports_are_public():
@@ -162,17 +122,12 @@ def test_sort_expr_uses_identity_equality():
 
 @pytest.mark.asyncio
 async def test_async_dataframe_direct_execution(tmp_path):
-    db = lancedb.connect(tmp_path)
-    db.create_table("events", [{"id": 1}])
-    sync_frame = db.table("events")
+    db = await lancedb.connect_async(tmp_path)
+    await db.create_table("events", [{"id": 1}])
+    table = await db.open_table("events")
+    frame = (await table.to_df()).select("id")
 
-    class RecordingAsyncConnection:
-        async def execute_substrait(self, plan, **kwargs):
-            return "reader"
-
-        async def execute_substrait_async(self, plan, **kwargs):
-            return "query"
-
-    frame = AsyncDataFrame(RecordingAsyncConnection(), sync_frame._inner, ["public"])
-    assert await frame.execute() == "reader"
-    assert await frame.execute_async() == "query"
+    with pytest.raises(NotImplementedError, match="DataFrame execution"):
+        await frame.execute_async()
+    with pytest.raises(NotImplementedError, match="DataFrame execution"):
+        await frame.execute()

@@ -818,25 +818,6 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def execute_substrait_async(
-        self,
-        plan: bytes,
-        *,
-        version: Optional[str] = None,
-        default_namespace_path: Optional[List[str]] = None,
-    ) -> SqlQuery:
-        """Start executing a Substrait plan through this remote connection."""
-        return SqlQuery(
-            LOOP.run(
-                self._conn.execute_substrait_async(
-                    plan,
-                    version=version,
-                    default_namespace_path=default_namespace_path,
-                )
-            )
-        )
-
-    @override
     def describe_query(self, query_id: UUID) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         return LOOP.run(

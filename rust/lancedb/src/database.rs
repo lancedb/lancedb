@@ -350,15 +350,16 @@ pub trait Database:
             message: "SQL is not supported by this database".to_string(),
         })
     }
-    /// Start executing a Substrait plan on a remote database.
-    async fn execute_substrait_async(
+    /// Execute a DataFrame plan on a supported database.
+    #[doc(hidden)]
+    async fn execute_dataframe(
         &self,
         _plan: &[u8],
         _version: &str,
         _default_namespace_path: &[String],
     ) -> Result<crate::sql::Query> {
         Err(crate::error::Error::NotSupported {
-            message: "Substrait execution is not supported by this database".to_string(),
+            message: "DataFrame execution is not supported by this database".to_string(),
         })
     }
     /// Describe a submitted SQL query by its connection-scoped id.

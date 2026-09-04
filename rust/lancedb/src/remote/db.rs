@@ -782,7 +782,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         client.submit(query, default_namespace_path).await
     }
 
-    async fn execute_substrait_async(
+    async fn execute_dataframe(
         &self,
         plan: &[u8],
         version: &str,

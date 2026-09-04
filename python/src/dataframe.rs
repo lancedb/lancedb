@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
-
-use arrow::{
-    datatypes::Schema,
-    pyarrow::{PyArrowType, ToPyArrow},
-};
+use arrow::pyarrow::ToPyArrow;
 use lancedb::dataframe::{DataFrame, JoinType};
 use pyo3::{
-    Bound, Py, PyAny, PyResult, Python, exceptions::PyValueError, pyclass, pyfunction, pymethods,
-    types::PyBytes,
+    Bound, Py, PyAny, PyRef, PyResult, Python, exceptions::PyValueError, pyclass, pyfunction,
+    pymethods,
 };
 
+use crate::error::PythonErrorExt;
 use crate::expr::PyExpr;
+use crate::runtime::future_into_py;
 
 fn dataframe_error(error: impl std::fmt::Display) -> pyo3::PyErr {
     PyValueError::new_err(error.to_string())
@@ -35,11 +32,7 @@ fn join_type(value: &str) -> PyResult<JoinType> {
     }
 }
 
-pub(crate) fn plan_version(plan: &[u8]) -> PyResult<String> {
-    lancedb::dataframe::plan_version(plan).map_err(dataframe_error)
-}
-
-/// Python binding around the language-neutral LanceDB DataFrame planner.
+/// Python binding around LanceDB's native DataFrame planner.
 #[pyclass(name = "NativeDataFrame", module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone)]
 pub struct NativeDataFrame {
@@ -47,18 +40,17 @@ pub struct NativeDataFrame {
 }
 
 impl NativeDataFrame {
+    pub(crate) fn new(inner: DataFrame) -> Self {
+        Self { inner }
+    }
+
     fn wrap(result: lancedb::Result<DataFrame>) -> PyResult<Self> {
-        result.map(|inner| Self { inner }).map_err(dataframe_error)
+        result.map(Self::new).map_err(dataframe_error)
     }
 }
 
 #[pymethods]
 impl NativeDataFrame {
-    #[staticmethod]
-    fn from_table(name: String, schema: PyArrowType<Schema>) -> PyResult<Self> {
-        Self::wrap(DataFrame::from_table(name, Arc::new(schema.0)))
-    }
-
     fn select(&self, expressions: Vec<PyExpr>) -> PyResult<Self> {
         Self::wrap(
             self.inner
@@ -155,15 +147,15 @@ impl NativeDataFrame {
             .map_err(dataframe_error)
     }
 
-    fn to_substrait(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
-        let plan = self.inner.to_substrait().map_err(dataframe_error)?;
-        Ok(PyBytes::new(py, plan.bytes()).unbind())
-    }
-
-    fn to_substrait_with_version(&self, py: Python<'_>) -> PyResult<(Py<PyBytes>, String)> {
-        let plan = self.inner.to_substrait().map_err(dataframe_error)?;
-        let (bytes, version) = plan.into_parts();
-        Ok((PyBytes::new(py, &bytes).unbind(), version))
+    fn execute_async(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .execute()
+                .await
+                .map(crate::sql::Query::new)
+                .infer_error()
+        })
     }
 
     fn __repr__(&self) -> String {

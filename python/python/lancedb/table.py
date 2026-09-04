@@ -56,6 +56,7 @@ import pyarrow.fs as pa_fs
 import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .dataframe import AsyncDataFrame, DataFrame
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .index import (
     BTree,
@@ -970,6 +971,11 @@ class Table(ABC):
         of this Table
 
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def to_df(self) -> DataFrame:
+        """Create a lazy DataFrame that scans this table."""
         raise NotImplementedError
 
     @property
@@ -2655,6 +2661,10 @@ class LanceTable(Table):
         pa.Schema
             A PyArrow schema object."""
         return LOOP.run(self._table.schema())
+
+    def to_df(self) -> DataFrame:
+        """Create a lazy DataFrame that scans this table."""
+        return DataFrame(LOOP.run(self._table._inner.to_dataframe()))
 
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
@@ -5183,6 +5193,10 @@ class AsyncTable:
 
         """
         return await self._inner.schema()
+
+    async def to_df(self) -> AsyncDataFrame:
+        """Create a lazy DataFrame that scans this table."""
+        return AsyncDataFrame(await self._inner.to_dataframe())
 
     async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """

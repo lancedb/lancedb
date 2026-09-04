@@ -81,19 +81,18 @@ for batch in query.reader():
 # await query.cancel()
 ```
 
-## DataFrames and Substrait
+## DataFrames
 
-Build lazy DataFusion-style plans on the client and submit them to a remote
-Flight SQL endpoint as Substrait. Transformations are immutable and do not
-execute or fetch data. `execute` opens the result reader, while `execute_async`
-returns the same query lifecycle handle used by remote SQL. Use `to_substrait`
-when the serialized plan is needed directly:
+Create a lazy DataFusion-style DataFrame from an opened table. Transformations
+are immutable and do not fetch data. `execute` opens the result reader, while
+`execute_async` returns the same query lifecycle handle used by remote SQL.
+LanceDB handles plan serialization and submission internally:
 
 ```python
 from lancedb import col
 from lancedb import sql_functions as F
 
-events = db.table("events", namespace_path=["production"])
+events = db.open_table("events", namespace_path=["production"]).to_df()
 frame = (
     events.filter(col("status") == "active")
     .aggregate(["region"], [F.sum(col("amount")).alias("total")])
@@ -103,10 +102,12 @@ frame = (
 
 reader = frame.execute()
 query = frame.execute_async()
-plan = frame.to_substrait()
 
-# Equivalent raw-plan submission:
-reader = db.execute_substrait(plan, default_namespace_path=["production"])
+# The async API has the same transformations.
+events = (await async_db.open_table("events", namespace_path=["production"]))
+frame = (await events.to_df()).filter(col("status") == "active").limit(10)
+reader = await frame.execute()
+query = await frame.execute_async()
 ```
 
 ::: lancedb.dataframe.DataFrame

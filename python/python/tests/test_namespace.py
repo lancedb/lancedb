@@ -599,61 +599,6 @@ class TestAsyncNamespaceConnection:
         table_names = await db.table_names()
         assert len(list(table_names)) == 0
 
-    async def test_dataframe_and_substrait_surface_forwards(self):
-        calls = []
-
-        class RecordingAsyncConnection:
-            async def table(self, name, **kwargs):
-                calls.append(("table", name, kwargs))
-                return "frame"
-
-            async def execute_substrait(self, plan, **kwargs):
-                calls.append(("execute_substrait", plan, kwargs))
-                return "reader"
-
-            async def execute_substrait_async(self, plan, **kwargs):
-                calls.append(("execute_substrait_async", plan, kwargs))
-                return "query"
-
-        db = lancedb.AsyncLanceNamespaceDBConnection(_inner=RecordingAsyncConnection())
-
-        assert await db.table("events", namespace_path=["production"]) == "frame"
-        assert (
-            await db.execute_substrait(
-                b"plan",
-                version="1.2.3",
-                default_namespace_path=["production"],
-            )
-            == "reader"
-        )
-        assert (
-            await db.execute_substrait_async(
-                b"plan",
-                version="1.2.3",
-                default_namespace_path=["production"],
-            )
-            == "query"
-        )
-        assert calls == [
-            ("table", "events", {"namespace_path": ["production"]}),
-            (
-                "execute_substrait",
-                b"plan",
-                {
-                    "version": "1.2.3",
-                    "default_namespace_path": ["production"],
-                },
-            ),
-            (
-                "execute_substrait_async",
-                b"plan",
-                {
-                    "version": "1.2.3",
-                    "default_namespace_path": ["production"],
-                },
-            ),
-        ]
-
     async def test_async_builtin_namespace_uses_rust_without_python_client(
         self, monkeypatch
     ):

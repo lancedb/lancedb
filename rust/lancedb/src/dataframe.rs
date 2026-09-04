@@ -1,28 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Immutable DataFusion logical plans for client DataFrame bindings.
+//! Lazy, immutable DataFrames for composing remote queries.
 //!
-//! This module is the language-neutral implementation behind LanceDB's
-//! DataFrame APIs. Bindings translate language values to [`crate::expr::DfExpr`]
-//! and delegate planning and Substrait serialization to [`DataFrame`].
+//! Create a DataFrame from an opened [`crate::Table`], apply DataFusion-style
+//! transformations, and call [`DataFrame::execute`] to submit the query. Query
+//! planning and transport serialization are handled by LanceDB.
 //!
 //! ```
-//! use std::sync::Arc;
-//! use arrow_schema::{DataType, Field, Schema};
-//! use lancedb::dataframe::DataFrame;
 //! use lancedb::expr::{col, lit};
+//! use lancedb::Table;
 //!
-//! let source = DataFrame::from_table(
-//!     "events",
-//!     Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-//! )?;
-//! let plan = source.filter(col("id").gt(lit(10_i64)))?.to_substrait()?;
-//! assert!(!plan.bytes().is_empty());
-//! # Ok::<(), lancedb::Error>(())
+//! # async fn query(table: &Table) -> lancedb::Result<()> {
+//! let query = table
+//!     .to_df()
+//!     .await?
+//!     .filter(col("id").gt(lit(10_i64)))?
+//!     .limit(10, 0)?
+//!     .execute()
+//!     .await?;
+//! let _results = query.reader().await?;
+//! # Ok(())
+//! # }
 //! ```
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow_schema::Schema;
 use datafusion::{
@@ -35,10 +37,12 @@ use datafusion_catalog::empty::EmptyTable;
 use datafusion_common::{Column, TableReference};
 use datafusion_expr::{Expr, SortExpr};
 use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
-use datafusion_substrait::{logical_plan::producer::to_substrait_plan, substrait::proto::Plan};
+use datafusion_substrait::logical_plan::producer::to_substrait_plan;
 use prost::Message;
 
-use crate::{Error, Result};
+use crate::{Error, Result, database::Database};
+
+static DATAFRAME_SESSION: LazyLock<SessionContext> = LazyLock::new(SessionContext::new);
 
 fn planning_error(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
@@ -82,66 +86,88 @@ impl From<JoinType> for DfJoinType {
     }
 }
 
-/// Serialized Substrait plan and the version declared by the plan.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EncodedSubstraitPlan {
+struct EncodedPlan {
     bytes: Vec<u8>,
     version: String,
 }
 
-impl EncodedSubstraitPlan {
-    /// Return the encoded Substrait protobuf.
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Return the Substrait version declared by the plan.
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
-    /// Consume the value into its encoded bytes and version.
-    pub fn into_parts(self) -> (Vec<u8>, String) {
-        (self.bytes, self.version)
-    }
+#[derive(Clone)]
+struct ExecutionContext {
+    database: Arc<dyn Database>,
+    default_namespace_path: Vec<String>,
 }
 
-/// An immutable DataFusion logical plan suitable for language bindings.
+/// An immutable, DataFusion-style logical query plan.
 #[derive(Clone)]
 pub struct DataFrame {
     inner: DfDataFrame,
+    execution: Option<ExecutionContext>,
 }
 
 impl DataFrame {
-    fn wrap(result: datafusion_common::Result<DfDataFrame>) -> Result<Self> {
-        result.map(|inner| Self { inner }).map_err(planning_error)
+    fn wrap(&self, result: datafusion_common::Result<DfDataFrame>) -> Result<Self> {
+        result
+            .map(|inner| Self {
+                inner,
+                execution: self.execution.clone(),
+            })
+            .map_err(planning_error)
     }
 
-    /// Create a lazy named-table scan with the supplied Arrow schema.
-    pub fn from_table(name: impl Into<String>, schema: Arc<Schema>) -> Result<Self> {
-        let context = SessionContext::new();
+    #[cfg(test)]
+    fn from_table(name: impl Into<String>, schema: Arc<Schema>) -> Result<Self> {
+        Self::from_table_with_execution(name, schema, None)
+    }
+
+    pub(crate) fn from_open_table(
+        name: impl Into<String>,
+        schema: Arc<Schema>,
+        database: Arc<dyn Database>,
+        namespace: &[String],
+    ) -> Result<Self> {
+        let default_namespace_path = if namespace.is_empty() {
+            vec!["public".to_string()]
+        } else {
+            namespace.to_vec()
+        };
+        Self::from_table_with_execution(
+            name,
+            schema,
+            Some(ExecutionContext {
+                database,
+                default_namespace_path,
+            }),
+        )
+    }
+
+    fn from_table_with_execution(
+        name: impl Into<String>,
+        schema: Arc<Schema>,
+        execution: Option<ExecutionContext>,
+    ) -> Result<Self> {
         let source = provider_as_source(Arc::new(EmptyTable::new(schema)));
         let plan = LogicalPlanBuilder::scan(TableReference::bare(name.into()), source, None)
             .and_then(LogicalPlanBuilder::build)
             .map_err(planning_error)?;
         Ok(Self {
-            inner: DfDataFrame::new(context.state(), plan),
+            inner: DfDataFrame::new(DATAFRAME_SESSION.state(), plan),
+            execution,
         })
     }
 
     /// Project expressions into a new DataFrame.
     pub fn select(&self, expressions: Vec<Expr>) -> Result<Self> {
-        Self::wrap(self.inner.clone().select(expressions))
+        self.wrap(self.inner.clone().select(expressions))
     }
 
     /// Keep rows matching a predicate.
     pub fn filter(&self, predicate: Expr) -> Result<Self> {
-        Self::wrap(self.inner.clone().filter(predicate))
+        self.wrap(self.inner.clone().filter(predicate))
     }
 
     /// Group rows and calculate aggregate expressions.
     pub fn aggregate(&self, groups: Vec<Expr>, aggregates: Vec<Expr>) -> Result<Self> {
-        Self::wrap(self.inner.clone().aggregate(groups, aggregates))
+        self.wrap(self.inner.clone().aggregate(groups, aggregates))
     }
 
     /// Sort by expressions expressed as `(expression, ascending, nulls_first)`.
@@ -150,23 +176,23 @@ impl DataFrame {
             .into_iter()
             .map(|(expr, ascending, nulls_first)| expr.sort(ascending, nulls_first))
             .collect();
-        Self::wrap(self.inner.clone().sort(expressions))
+        self.wrap(self.inner.clone().sort(expressions))
     }
 
     /// Limit the result to `count` rows after `offset` rows.
     pub fn limit(&self, count: usize, offset: usize) -> Result<Self> {
-        Self::wrap(self.inner.clone().limit(offset, Some(count)))
+        self.wrap(self.inner.clone().limit(offset, Some(count)))
     }
 
     /// Remove duplicate rows.
     pub fn distinct(&self) -> Result<Self> {
-        Self::wrap(self.inner.clone().distinct())
+        self.wrap(self.inner.clone().distinct())
     }
 
     /// Assign a relation alias, typically before a self join.
     pub fn alias(&self, name: impl Into<String>) -> Result<Self> {
         let name = name.into();
-        Self::wrap(self.inner.clone().alias(&name))
+        self.wrap(self.inner.clone().alias(&name))
     }
 
     /// Resolve a literal field name to a relation-qualified expression.
@@ -181,7 +207,7 @@ impl DataFrame {
 
     /// Add or replace a column.
     pub fn with_column(&self, name: &str, expression: Expr) -> Result<Self> {
-        Self::wrap(self.inner.clone().with_column(name, expression))
+        self.wrap(self.inner.clone().with_column(name, expression))
     }
 
     /// Drop literal field names, rejecting missing or ambiguous fields.
@@ -196,7 +222,7 @@ impl DataFrame {
                     .map_err(planning_error)
             })
             .collect::<Result<Vec<_>>>()?;
-        Self::wrap(self.inner.clone().drop_columns(&columns))
+        self.wrap(self.inner.clone().drop_columns(&columns))
     }
 
     /// Rename a literal field while retaining its relation qualifier.
@@ -221,7 +247,7 @@ impl DataFrame {
                 }
             })
             .collect::<Vec<_>>();
-        Self::wrap(self.inner.clone().select(projection))
+        self.wrap(self.inner.clone().select(projection))
     }
 
     /// Join two plans using corresponding equality keys.
@@ -237,12 +263,13 @@ impl DataFrame {
                 message: "left and right join key counts must match".to_string(),
             });
         }
+        self.validate_execution_context(other)?;
         let predicates = left_on
             .iter()
             .zip(right_on)
             .map(|(left, right)| Ok(self.column(left)?.eq(other.column(right)?)))
             .collect::<Result<Vec<_>>>()?;
-        Self::wrap(
+        self.wrap(
             self.inner
                 .clone()
                 .join_on(other.inner.clone(), how.into(), predicates),
@@ -251,28 +278,31 @@ impl DataFrame {
 
     /// Union two compatible plans, preserving duplicates when `all` is true.
     pub fn union(&self, other: &Self, all: bool) -> Result<Self> {
+        self.validate_execution_context(other)?;
         if all {
-            Self::wrap(self.inner.clone().union(other.inner.clone()))
+            self.wrap(self.inner.clone().union(other.inner.clone()))
         } else {
-            Self::wrap(self.inner.clone().union_distinct(other.inner.clone()))
+            self.wrap(self.inner.clone().union_distinct(other.inner.clone()))
         }
     }
 
     /// Intersect two compatible plans, preserving duplicates when `all` is true.
     pub fn intersect(&self, other: &Self, all: bool) -> Result<Self> {
+        self.validate_execution_context(other)?;
         if all {
-            Self::wrap(self.inner.clone().intersect(other.inner.clone()))
+            self.wrap(self.inner.clone().intersect(other.inner.clone()))
         } else {
-            Self::wrap(self.inner.clone().intersect_distinct(other.inner.clone()))
+            self.wrap(self.inner.clone().intersect_distinct(other.inner.clone()))
         }
     }
 
     /// Subtract a compatible plan, preserving duplicates when `all` is true.
     pub fn except(&self, other: &Self, all: bool) -> Result<Self> {
+        self.validate_execution_context(other)?;
         if all {
-            Self::wrap(self.inner.clone().except(other.inner.clone()))
+            self.wrap(self.inner.clone().except(other.inner.clone()))
         } else {
-            Self::wrap(self.inner.clone().except_distinct(other.inner.clone()))
+            self.wrap(self.inner.clone().except_distinct(other.inner.clone()))
         }
     }
 
@@ -281,8 +311,7 @@ impl DataFrame {
         self.inner.schema().as_arrow().clone()
     }
 
-    /// Serialize this logical plan to Substrait.
-    pub fn to_substrait(&self) -> Result<EncodedSubstraitPlan> {
+    fn encode_plan(&self) -> Result<EncodedPlan> {
         let (state, logical_plan) = self.inner.clone().into_parts();
         let plan = to_substrait_plan(&logical_plan, &state).map_err(planning_error)?;
         let version = plan
@@ -297,28 +326,50 @@ impl DataFrame {
             .ok_or_else(|| Error::Runtime {
                 message: "generated Substrait plan has no version".to_string(),
             })?;
-        Ok(EncodedSubstraitPlan {
+        Ok(EncodedPlan {
             bytes: plan.encode_to_vec(),
             version,
         })
+    }
+
+    /// Submit this plan and return its query lifecycle handle.
+    ///
+    /// Execution is available when the DataFrame was created from a table on
+    /// a backend that supports remote DataFrame queries.
+    pub async fn execute(&self) -> Result<crate::sql::Query> {
+        let execution = self.execution.as_ref().ok_or_else(|| Error::InvalidInput {
+            message: "this DataFrame is not bound to an opened table".to_string(),
+        })?;
+        let plan = self.encode_plan()?;
+        execution
+            .database
+            .execute_dataframe(
+                &plan.bytes,
+                &plan.version,
+                &execution.default_namespace_path,
+            )
+            .await
     }
 
     /// Render the logical plan for diagnostics.
     pub fn display(&self) -> String {
         self.inner.logical_plan().display_indent().to_string()
     }
-}
 
-/// Read the declared version from a serialized Substrait plan.
-pub fn plan_version(plan: &[u8]) -> Result<String> {
-    let plan = Plan::decode(plan).map_err(planning_error)?;
-    let version = plan.version.ok_or_else(|| Error::InvalidInput {
-        message: "Substrait plan does not contain a version".to_string(),
-    })?;
-    Ok(format!(
-        "{}.{}.{}",
-        version.major_number, version.minor_number, version.patch_number
-    ))
+    fn validate_execution_context(&self, other: &Self) -> Result<()> {
+        match (&self.execution, &other.execution) {
+            (None, None) => Ok(()),
+            (Some(left), Some(right))
+                if Arc::ptr_eq(&left.database, &right.database)
+                    && left.default_namespace_path == right.default_namespace_path =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::InvalidInput {
+                message: "DataFrames must come from the same connection and namespace".to_string(),
+            }),
+        }
+    }
 }
 
 /// Build a `SUM` aggregate expression.
@@ -377,9 +428,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(frame.schema().fields().len(), 2);
-        let encoded = frame.to_substrait().unwrap();
-        assert!(!encoded.bytes().is_empty());
-        assert_eq!(plan_version(encoded.bytes()).unwrap(), encoded.version());
+        let encoded = frame.encode_plan().unwrap();
+        assert!(!encoded.bytes.is_empty());
+        assert!(!encoded.version.is_empty());
     }
 
     #[test]
@@ -410,7 +461,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(joined.schema().fields().len(), 2);
-        assert!(!joined.to_substrait().unwrap().bytes().is_empty());
+        assert!(!joined.encode_plan().unwrap().bytes.is_empty());
     }
 
     #[test]
@@ -451,6 +502,6 @@ mod tests {
                 JoinType::Inner,
             )
             .unwrap();
-        assert!(!joined.to_substrait().unwrap().bytes().is_empty());
+        assert!(!joined.encode_plan().unwrap().bytes.is_empty());
     }
 }

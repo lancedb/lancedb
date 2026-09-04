@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from functools import reduce
-from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Iterable, Optional, Sequence, Union
 
 import pyarrow as pa
 
@@ -14,6 +14,7 @@ from ._lancedb import NativeDataFrame
 from .expr import Expr, SortExpr, col
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
+from .background_loop import LOOP
 
 if TYPE_CHECKING:
     from .arrow import AsyncRecordBatchReader
@@ -30,18 +31,11 @@ def _expression(value: Expression) -> Expr:
 
 
 class _DataFrameBase:
-    def __init__(
-        self,
-        connection: Any,
-        inner: NativeDataFrame,
-        default_namespace_path: Sequence[str],
-    ) -> None:
-        self._connection = connection
+    def __init__(self, inner: NativeDataFrame) -> None:
         self._inner = inner
-        self._default_namespace_path = list(default_namespace_path)
 
     def _wrap(self, inner: NativeDataFrame):
-        return type(self)(self._connection, inner, self._default_namespace_path)
+        return type(self)(inner)
 
     @property
     def schema(self) -> pa.Schema:
@@ -148,11 +142,7 @@ class _DataFrameBase:
         left_on: Optional[Union[str, Sequence[str]]] = None,
         right_on: Optional[Union[str, Sequence[str]]] = None,
     ):
-        """Join two plans from the same connection and default namespace."""
-        if self._connection is not other._connection:
-            raise ValueError("joined DataFrames must use the same connection")
-        if self._default_namespace_path != other._default_namespace_path:
-            raise ValueError("joined DataFrames must use the same default namespace")
+        """Join two plans from the same connection and namespace."""
         if on is not None:
             if left_on is not None or right_on is not None:
                 raise ValueError("use either on or left_on/right_on")
@@ -183,17 +173,8 @@ class _DataFrameBase:
         return self._wrap(self._inner.except_(other._inner, not distinct))
 
     def _validate_set_operation(self, other: "_DataFrameBase") -> None:
-        if self._connection is not other._connection:
-            raise ValueError("DataFrames must use the same connection")
-        if self._default_namespace_path != other._default_namespace_path:
-            raise ValueError("DataFrames must use the same default namespace")
-
-    def to_substrait(self) -> bytes:
-        """Serialize the current logical plan as a Substrait protobuf."""
-        return self._inner.to_substrait()
-
-    def _to_substrait_with_version(self) -> tuple[bytes, str]:
-        return self._inner.to_substrait_with_version()
+        if not isinstance(other, _DataFrameBase):
+            raise TypeError("set operations require another DataFrame")
 
     def __repr__(self) -> str:
         return repr(self._inner)
@@ -204,21 +185,11 @@ class DataFrame(_DataFrameBase):
 
     def execute(self) -> pa.RecordBatchReader:
         """Submit this plan and return a blocking Arrow reader."""
-        plan, version = self._to_substrait_with_version()
-        return self._connection.execute_substrait(
-            plan,
-            version=version,
-            default_namespace_path=self._default_namespace_path,
-        )
+        return self.execute_async().reader()
 
     def execute_async(self) -> SqlQuery:
         """Submit this plan and return its server-side query lifecycle handle."""
-        plan, version = self._to_substrait_with_version()
-        return self._connection.execute_substrait_async(
-            plan,
-            version=version,
-            default_namespace_path=self._default_namespace_path,
-        )
+        return SqlQuery(AsyncSqlQuery(LOOP.run(self._inner.execute_async())))
 
 
 class AsyncDataFrame(_DataFrameBase):
@@ -226,21 +197,11 @@ class AsyncDataFrame(_DataFrameBase):
 
     async def execute(self) -> "AsyncRecordBatchReader":
         """Submit this plan and return an asynchronous Arrow reader."""
-        plan, version = self._to_substrait_with_version()
-        return await self._connection.execute_substrait(
-            plan,
-            version=version,
-            default_namespace_path=self._default_namespace_path,
-        )
+        return await (await self.execute_async()).reader()
 
     async def execute_async(self) -> AsyncSqlQuery:
         """Submit this plan and return its server-side query lifecycle handle."""
-        plan, version = self._to_substrait_with_version()
-        return await self._connection.execute_substrait_async(
-            plan,
-            version=version,
-            default_namespace_path=self._default_namespace_path,
-        )
+        return AsyncSqlQuery(await self._inner.execute_async())
 
 
 __all__ = ["AsyncDataFrame", "DataFrame"]

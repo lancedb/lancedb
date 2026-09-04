@@ -8,7 +8,6 @@ use std::{
 };
 
 use crate::{
-    dataframe::plan_version,
     error::PythonErrorExt,
     namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
     runtime::future_into_py,
@@ -29,7 +28,7 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyAnyMethods, PyBytes, PyBytesMethods, PyDict, PyDictMethods, PyList, PyListMethods},
+    types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods},
 };
 
 #[pyclass]
@@ -138,32 +137,6 @@ impl Connection {
         future_into_py(self_.py(), async move {
             let operation = inner
                 .execute_query_async(query)
-                .default_namespace_path(default_namespace_path);
-            operation
-                .execute()
-                .await
-                .map(crate::sql::Query::new)
-                .infer_error()
-        })
-    }
-
-    #[pyo3(signature = (plan, *, version=None, default_namespace_path=None))]
-    pub fn execute_substrait_async<'a>(
-        self_: PyRef<'a, Self>,
-        plan: Bound<'_, PyBytes>,
-        version: Option<String>,
-        default_namespace_path: Option<Bound<'_, PyAny>>,
-    ) -> PyResult<Bound<'a, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        let plan = plan.as_bytes().to_vec();
-        let version = match version {
-            Some(version) => version,
-            None => plan_version(&plan)?,
-        };
-        let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
-        future_into_py(self_.py(), async move {
-            let operation = inner
-                .execute_substrait_async(plan, version)
                 .default_namespace_path(default_namespace_path);
             operation
                 .execute()
