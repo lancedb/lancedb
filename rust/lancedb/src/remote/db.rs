@@ -792,7 +792,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .sql_client
             .as_ref()
             .ok_or_else(|| Error::NotSupported {
-                message: "SQL is unavailable for this remote database client".to_string(),
+                message: "DataFrame execution is unavailable for this remote database client"
+                    .to_string(),
             })?;
         client
             .submit_substrait(plan, version, default_namespace_path)

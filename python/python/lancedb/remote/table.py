@@ -183,7 +183,7 @@ class RemoteTable(Table):
 
     def to_df(self) -> DataFrame:
         """Create a lazy DataFrame that scans this table."""
-        return DataFrame(LOOP.run(self._table._inner.to_dataframe()))
+        return DataFrame(LOOP.run(self._table.to_df())._inner)
 
     @property
     def version(self) -> int:

@@ -973,7 +973,6 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def to_df(self) -> DataFrame:
         """Create a lazy DataFrame that scans this table."""
         raise NotImplementedError
@@ -2664,7 +2663,7 @@ class LanceTable(Table):
 
     def to_df(self) -> DataFrame:
         """Create a lazy DataFrame that scans this table."""
-        return DataFrame(LOOP.run(self._table._inner.to_dataframe()))
+        return DataFrame(LOOP.run(self._table.to_df())._inner)
 
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""

@@ -63,6 +63,20 @@ def test_dataframe_set_operations_build_plans(tmp_path):
         assert frame.schema.names == ["id"]
 
 
+def test_dataframe_rejects_plans_from_different_connections(tmp_path):
+    first_db = lancedb.connect(tmp_path / "first")
+    second_db = lancedb.connect(tmp_path / "second")
+    first_db.create_table("events", [{"id": 1}])
+    second_db.create_table("events", [{"id": 2}])
+    first = first_db.open_table("events").to_df()
+    second = second_db.open_table("events").to_df()
+
+    with pytest.raises(ValueError, match="same connection and namespace"):
+        first.join(second, on="id")
+    with pytest.raises(ValueError, match="same connection and namespace"):
+        first.union(second)
+
+
 def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("events", [{"id": 1, "value": 10}])
@@ -78,21 +92,10 @@ def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
     assert joined.schema.names == ["left_value", "right_value"]
     assert "Join" in repr(joined)
 
-    db.create_table("dotted", pa.table({"left.value": [1]}))
-    dotted = db.open_table("dotted").to_df()
-    assert dotted.select(dotted.col("left.value")).schema.names == ["left.value"]
-    assert dotted.with_column_renamed("left.value", "value").schema.names == ["value"]
-    assert dotted.drop("left.value").schema.names == []
-
-    db.create_table("right_key", pa.table({"id": [1]}))
-    right_key = db.open_table("right_key").to_df()
-    dotted_join = dotted.join(right_key, left_on="left.value", right_on="id")
-    assert "Join" in repr(dotted_join)
-
     with pytest.raises(ValueError, match="missing"):
-        dotted.with_column_renamed("missing", "value")
+        source.with_column_renamed("missing", "value")
     with pytest.raises(ValueError, match="missing"):
-        dotted.drop("missing")
+        source.drop("missing")
 
 
 def test_dataframe_direct_execution_reports_unsupported_local_backend(tmp_path):

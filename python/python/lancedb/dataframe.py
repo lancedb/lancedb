@@ -183,13 +183,16 @@ class _DataFrameBase:
 class DataFrame(_DataFrameBase):
     """A lazy DataFusion-style plan submitted to a synchronous connection."""
 
+    async def _submit(self):
+        return await self._inner.execute_async()
+
     def execute(self) -> pa.RecordBatchReader:
         """Submit this plan and return a blocking Arrow reader."""
         return self.execute_async().reader()
 
     def execute_async(self) -> SqlQuery:
         """Submit this plan and return its server-side query lifecycle handle."""
-        return SqlQuery(AsyncSqlQuery(LOOP.run(self._inner.execute_async())))
+        return SqlQuery(AsyncSqlQuery(LOOP.run(self._submit())))
 
 
 class AsyncDataFrame(_DataFrameBase):
