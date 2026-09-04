@@ -509,6 +509,7 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
             "function",
             "inputs",
             "outputs",
+            "assignment",
             "input_schema",
             "output_schema",
         ],
@@ -555,6 +556,13 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
                 "nullable",
             ],
             "output mapping",
+        )?;
+    }
+    if let Some(assignment) = object.get("assignment") {
+        reject_unknown_object_fields(
+            assignment,
+            &["output_name", "output_field_id"],
+            "assignment mapping",
         )?;
     }
     Ok(())
@@ -2988,6 +2996,33 @@ mod tests {
             &binding,
         )
         .unwrap();
+
+        let schema = ArrowSchema::new_with_metadata(
+            valid_function_binding_schema(true, true, &binding)
+                .fields()
+                .to_vec(),
+            HashMap::from([(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                function_bindings_metadata(std::slice::from_ref(&binding)).unwrap(),
+            )]),
+        );
+        ensure_supported_function_metadata(&schema).unwrap();
+
+        let mut metadata: Value =
+            serde_json::from_str(schema.metadata().get(FUNCTION_BINDINGS_META_KEY).unwrap())
+                .unwrap();
+        metadata["bindings"][0]["assignment"]["future"] = Value::Bool(true);
+        let future_schema = ArrowSchema::new_with_metadata(
+            schema.fields().to_vec(),
+            HashMap::from([(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                serde_json::to_string(&metadata).unwrap(),
+            )]),
+        );
+        assert!(matches!(
+            ensure_supported_function_metadata(&future_schema),
+            Err(Error::NotSupported { .. })
+        ));
     }
 
     #[test]
