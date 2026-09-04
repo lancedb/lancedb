@@ -316,22 +316,29 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
                                 binding_id
                             ),
                         })?;
-                let output = binding
-                    .outputs()
-                    .get(output_ordinal as usize)
-                    .ok_or_else(|| Error::InvalidInput {
-                        message: format!(
-                            "Function output '{}' has invalid ordinal {}",
-                            field.name(),
-                            output_ordinal
-                        ),
-                    })?;
-                if output.output_name != field.name().as_str() {
+                let destination = if output_ordinal == FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL {
+                    binding
+                        .assignment()
+                        .map(|assignment| assignment.output_name.as_str())
+                } else {
+                    binding
+                        .outputs()
+                        .get(output_ordinal as usize)
+                        .map(|output| output.output_name.as_str())
+                }
+                .ok_or_else(|| Error::InvalidInput {
+                    message: format!(
+                        "Function output '{}' has invalid ordinal {}",
+                        field.name(),
+                        output_ordinal
+                    ),
+                })?;
+                if destination != field.name().as_str() {
                     return Err(Error::InvalidInput {
                         message: format!(
                             "Function output '{}' does not match binding destination '{}'",
                             field.name(),
-                            output.output_name
+                            destination
                         ),
                     });
                 }
