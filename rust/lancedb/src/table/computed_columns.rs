@@ -21,6 +21,7 @@
 //! [`computed_columns`] and [`computed_column_from_field`] read declarations
 //! back off a schema.
 
+use futures::StreamExt;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -1339,6 +1340,106 @@ pub(crate) fn ensure_batch_writes_no_computed_values(
     Ok(())
 }
 
+/// Validate every computed-column declaration `schema` carries against the
+/// schema itself: every field with declaration metadata is a complete
+/// declaration, a SQL declaration re-plans to the field it declares, a
+/// Function declaration satisfies the binding contract, and no declaration
+/// reads another computed column. What passes here is what `refresh_column`
+/// can execute.
+pub(crate) fn ensure_declarations_are_planned(schema: &ArrowSchema) -> Result<()> {
+    let invalid = |message: String| Error::InvalidInput { message };
+    // A field with any declaration key is a declaration; a partial one is
+    // not "no declaration", it is a broken one.
+    for field in schema.fields() {
+        if field.metadata().keys().any(|k| is_declaration_key(k))
+            && computed_column_from_field(field).is_none()
+        {
+            return Err(invalid(format!(
+                "field '{}' carries an incomplete computed-column declaration",
+                field.name()
+            )));
+        }
+    }
+    let declared: HashSet<String> = computed_columns(schema)
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    for column in computed_columns(schema) {
+        let field = schema.field_with_name(&column.name)?;
+        if !field.is_nullable() {
+            return Err(invalid(format!(
+                "computed column '{}' must be nullable until a refresh fills it",
+                column.name
+            )));
+        }
+        match &column.kind {
+            ComputedColumnKind::Sql { expression } => {
+                let others: Vec<ArrowField> = schema
+                    .fields()
+                    .iter()
+                    .filter(|f| f.name() != &column.name)
+                    .map(|f| f.as_ref().clone())
+                    .collect();
+                let bound = bind(Arc::new(ArrowSchema::new(others)), &column.name, expression)?;
+                if let Some(input) = bound.roots.iter().find(|r| declared.contains(*r)) {
+                    return Err(invalid(format!(
+                        "computed column '{}' reads computed column '{input}'",
+                        column.name
+                    )));
+                }
+                if &bound.data_type != field.data_type() {
+                    return Err(invalid(format!(
+                        "computed column '{}' is declared as {} but its expression yields {}",
+                        column.name,
+                        field.data_type(),
+                        bound.data_type
+                    )));
+                }
+                let mut declared_inputs = column.inputs.clone();
+                declared_inputs.sort();
+                if declared_inputs != bound.inputs {
+                    return Err(invalid(format!(
+                        "computed column '{}' declares inputs {:?} but its expression reads {:?}",
+                        column.name, declared_inputs, bound.inputs
+                    )));
+                }
+            }
+            ComputedColumnKind::Function { binding_id, .. } => {
+                // The binding validator resolves each input's leaf; the
+                // no-computed-input rule is about the root it hangs from.
+                let bindings = function_bindings(schema)?;
+                let Some(binding) = bindings.iter().find(|b| b.binding_id() == binding_id) else {
+                    continue; // reported by the binding validator below
+                };
+                // Roots come from the canonical path parser: a quoted
+                // top-level name may itself contain a dot.
+                if let Some(input) = binding
+                    .inputs()
+                    .iter()
+                    .filter_map(|input| resolve_field_path(schema, &input.field_path).ok())
+                    .map(|resolved| resolved.root.name().as_str())
+                    .find(|r| declared.contains(*r))
+                {
+                    return Err(invalid(format!(
+                        "computed column '{}' reads computed column '{input}'",
+                        column.name
+                    )));
+                }
+            }
+            ComputedColumnKind::Unrecognized { kind } => {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "computed column '{}' is defined by '{kind}', which this version \
+                         of lancedb cannot fill",
+                        column.name
+                    ),
+                });
+            }
+        }
+    }
+    ensure_supported_function_metadata(schema)
+}
+
 /// Reject fields carrying declaration metadata that did not come through
 /// [`plan`]. One authority for creation, overwrite and raw transforms.
 pub(crate) fn ensure_no_foreign_declarations<'a>(
@@ -1795,6 +1896,54 @@ pub(super) async fn add_foreign_kind(table: &crate::Table, name: &str, kind: &st
     )
     .await
     .unwrap();
+}
+
+/// Admit a table's initial data: every declaration it carries is validated,
+/// and the stream refuses any batch with values in a computed column, whose
+/// values come from refresh alone. One boundary for every way a table is
+/// created.
+pub(crate) fn admit_create_source<S: lance_datafusion::utils::StreamingWriteSource>(
+    batches: S,
+) -> Result<UnfilledDeclarations<S>> {
+    let schema = batches.arrow_schema();
+    ensure_declarations_are_planned(&schema)?;
+    let declared = computed_columns(&schema)
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    Ok(UnfilledDeclarations {
+        inner: batches,
+        declared,
+    })
+}
+
+/// A write source whose computed columns must arrive unfilled.
+pub(crate) struct UnfilledDeclarations<S> {
+    inner: S,
+    declared: Vec<String>,
+}
+
+impl<S: lance_datafusion::utils::StreamingWriteSource> lance_datafusion::utils::StreamingWriteSource
+    for UnfilledDeclarations<S>
+{
+    fn arrow_schema(&self) -> SchemaRef {
+        self.inner.arrow_schema()
+    }
+
+    fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
+        if self.declared.is_empty() {
+            return self.inner.into_stream();
+        }
+        let schema = self.inner.arrow_schema();
+        let declared = self.declared;
+        let stream = self.inner.into_stream().map(move |batch| {
+            let batch = batch?;
+            ensure_batch_writes_no_computed_values(&declared, &batch)
+                .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
+            Ok(batch)
+        });
+        Box::pin(datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream))
+    }
 }
 
 #[cfg(test)]
@@ -2584,6 +2733,8 @@ mod tests {
         );
     }
 
+    /// A create carries a declaration only if it re-plans completely; this
+    /// one lacks its inputs and is refused before its forged value matters.
     #[tokio::test]
     async fn test_create_table_cannot_inject_a_declaration() {
         let conn = connect("memory://").execute().await.unwrap();
@@ -2611,7 +2762,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, Error::InvalidInput { message } if message.contains("computed()")),
+            matches!(&err, Error::InvalidInput { message } if message.contains("computed column 'doubled'")),
             "{err:?}"
         );
     }
