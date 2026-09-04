@@ -24,10 +24,7 @@
 //! # }
 //! ```
 
-use std::sync::{
-    Arc, LazyLock, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use arrow_schema::Schema;
 use async_trait::async_trait;
@@ -41,7 +38,10 @@ use datafusion_common::{Column, TableReference};
 use datafusion_expr::{Expr, SortExpr};
 use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
 use datafusion_substrait::logical_plan::producer::to_substrait_plan;
-use futures::TryStreamExt;
+use futures::{
+    TryStreamExt,
+    stream::{AbortHandle, abortable},
+};
 use prost::Message;
 use uuid::Uuid;
 
@@ -115,15 +115,15 @@ struct ExecutionContext {
 struct LocalQueryHandle {
     id: Uuid,
     stream: Mutex<Option<SendableRecordBatchStream>>,
-    cancelled: AtomicBool,
+    abort_handle: AbortHandle,
 }
 
 impl LocalQueryHandle {
-    fn new(stream: SendableRecordBatchStream) -> Self {
+    fn new(stream: SendableRecordBatchStream, abort_handle: AbortHandle) -> Self {
         Self {
             id: Uuid::now_v7(),
             stream: Mutex::new(Some(stream)),
-            cancelled: AtomicBool::new(false),
+            abort_handle,
         }
     }
 }
@@ -135,7 +135,7 @@ impl QueryHandle for LocalQueryHandle {
     }
 
     async fn describe(&self) -> Result<QueryDescription> {
-        let cancelled = self.cancelled.load(Ordering::SeqCst);
+        let cancelled = self.abort_handle.is_aborted();
         Ok(QueryDescription {
             id: self.id,
             status: if cancelled {
@@ -149,7 +149,7 @@ impl QueryHandle for LocalQueryHandle {
     }
 
     async fn reader(&self) -> Result<SendableRecordBatchStream> {
-        if self.cancelled.load(Ordering::SeqCst) {
+        if self.abort_handle.is_aborted() {
             return Err(Error::Runtime {
                 message: "DataFrame query was cancelled".to_string(),
             });
@@ -164,7 +164,7 @@ impl QueryHandle for LocalQueryHandle {
     }
 
     async fn cancel(&self) -> Result<()> {
-        self.cancelled.store(true, Ordering::SeqCst);
+        self.abort_handle.abort();
         self.stream.lock().unwrap().take();
         Ok(())
     }
@@ -438,8 +438,12 @@ impl DataFrame {
                 .map_err(planning_error)?;
             let schema = stream.schema();
             let stream = stream.map_err(planning_error);
+            let (stream, abort_handle) = abortable(stream);
             let stream = Box::pin(SimpleRecordBatchStream::new(stream, schema));
-            Ok(Query::new(Arc::new(LocalQueryHandle::new(stream))))
+            Ok(Query::new(Arc::new(LocalQueryHandle::new(
+                stream,
+                abort_handle,
+            ))))
         }
     }
 
@@ -635,5 +639,13 @@ mod tests {
         let batches: Vec<RecordBatch> = query.reader().await.unwrap().try_collect().await.unwrap();
         assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
         assert!(query.reader().await.is_err());
+
+        let cancelled = table.to_df().await.unwrap().execute().await.unwrap();
+        cancelled.cancel().await.unwrap();
+        assert_eq!(
+            cancelled.describe().await.unwrap().status,
+            QueryStatus::Cancelled
+        );
+        assert!(cancelled.reader().await.is_err());
     }
 }
