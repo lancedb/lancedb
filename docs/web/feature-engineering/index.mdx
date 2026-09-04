@@ -1,16 +1,21 @@
 ---
-title: "Feature engineering"
+title: "LanceDB Feature Engineering"
 sidebarTitle: "Overview"
-description: "Derive columns and tables from data already in LanceDB, without moving it somewhere else to compute."
+description: "Derive columns and tables from data already in the lakehouse, without moving it somewhere else to compute."
 icon: layer-group
-keywords: ["feature engineering", "computed columns", "materialized views", "functions", "udf"]
+keywords: ["feature engineering", "computed columns", "materialized views", "functions", "lakehouse"]
 ---
 
-Feature engineering in LanceDB happens where the data already is. Rather than
-exporting a table, computing somewhere else and writing the result back, you
-declare what a column or a table should contain and let LanceDB fill it.
+Feature engineering happens where the data already is. Rather than exporting a
+table, computing somewhere else and writing the result back, you declare what a
+column or a table should contain and let LanceDB fill it.
 
-Three mechanisms cover different shapes of that problem. They compose — a
+**Functions and materialized views are objects in the Lance Multimodal
+Lakehouse**, alongside tables and indexes. They are created, versioned, and
+refreshed like anything else in it — not a separate system bolted alongside, and
+not a pipeline you assemble out of external orchestration.
+
+Three mechanisms cover different shapes of the problem. They compose — a
 materialized view can select computed columns, and a computed column can be
 filled by a registered function — but each is worth understanding on its own.
 

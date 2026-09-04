@@ -1,14 +1,14 @@
 ---
 title: "Materialized views"
 sidebarTitle: "Materialized views"
-description: "Derive a table from a query over another table, and keep it current incrementally."
+description: "A lakehouse object: a table defined by a query over another table, kept current incrementally."
 icon: table
 keywords: ["materialized view", "create_materialized_view", "refresh", "incremental"]
 ---
 
-A materialized view is a table whose contents are defined by a query over
-another table. The query is recorded in the view's schema; a refresh computes
-the rows.
+A materialized view is a lakehouse object: a table whose contents are defined by
+a query over another table. The query is recorded in the view's schema; a
+refresh computes the rows.
 
 The result is an ordinary table. It can be queried, indexed, and searched, and
 it appears in `table_names()` — nothing about reading it is special.
@@ -74,23 +74,22 @@ Concurrent refreshes of one view do not duplicate rows. If two plan the same
 source rows, they conflict on commit and the loser raises rather than writing
 them twice — so a retry loop around `refresh()` is safe.
 
-## Local databases only {#availability}
+## Creating one against a deployment {#availability}
 
 <Warning>
-**This** materialized view — the one created through `lancedb.connect(...)` — is
-supported on local databases only. Calling `create_materialized_view` on a
-remote `db://` connection raises `NotImplementedError`.
+`create_materialized_view` on this client builds a view over a **local**
+database. Called on a remote `db://` connection it raises
+`NotImplementedError`.
 
-Enterprise has its own materialized views, created through a different client
-with the same method name. If you are working against an Enterprise deployment,
-that is the one you want; see the Enterprise feature engineering documentation.
-The two are not the same feature and the method name is unfortunately shared, so
-it is worth being sure which client you are holding.
+Views exist on Enterprise deployments too, where a refresh runs across the
+cluster rather than in your process — but they are created through the
+Enterprise feature engineering interface rather than this method. See the
+Enterprise documentation if that is where your data lives.
 </Warning>
 
-Note the direction, which is the reverse of
-[functions](/feature-engineering/functions): those run only against Cloud and
-Enterprise and raise locally. Neither mechanism is available on both.
+The direction is the reverse of [functions](/feature-engineering/functions),
+which register only against Cloud and Enterprise and raise locally. Worth
+knowing before concluding either is unavailable.
 
 ## Working with the view {#working-with-the-view}
 
