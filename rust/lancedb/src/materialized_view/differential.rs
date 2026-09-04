@@ -31,20 +31,18 @@ use crate::table::{CompactionOptions, OptimizeAction, Table};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SrcOp {
     /// Fresh non-colliding ids of both parities, so every other op has
-    /// view-resident rows to act on: the only op that should refresh
-    /// incrementally.
+    /// view-resident rows to act on.
     AppendNew,
-    /// Deletion in surviving fragments must break the pure-append check.
+    /// Deletion requires a rebuild until the delta API returns before-images.
     DeleteEven,
     /// An in-place update; on the filtered shape it crosses the predicate,
     /// so rows must leave the view.
     UpdateOddScore,
-    /// Fragment rewrite/renumber must break the pure-append check.
+    /// Fragment rewrite/renumber has an empty logical row delta.
     Compact,
-    /// A column the view does not read must NOT force a rebuild.
+    /// A column the view does not read produces an empty logical row delta.
     AddColumn,
-    /// merge_insert commits an Update whose by-source arm deletes rows, so a
-    /// classifier that reads Update as "changed only" loses those deletions.
+    /// merge_insert whose by-source arm deletes rows requires a rebuild.
     MergeDropLargest,
     /// merge_insert that both changes existing rows and inserts new ones in
     /// one transaction.
@@ -433,8 +431,8 @@ async fn differential_exhaustive_deep() {
 }
 
 /// Named interleavings that double as repro handles. The mode assertions pin
-/// the classifier, which value comparison alone cannot: a wrongly rebuilt
-/// view still matches the oracle.
+/// incremental evaluation, which value comparison alone cannot: a wrongly
+/// rebuilt view still matches the oracle.
 #[tokio::test(flavor = "multi_thread")]
 async fn differential_named_regressions() {
     // An append is the one op that must stay incremental.
@@ -482,7 +480,8 @@ async fn differential_named_regressions() {
     case.view.refresh().execute().await.unwrap();
     let before = case.view_rows().await.len();
     case.apply(SrcOp::UpdateOddScore).await;
-    case.view.refresh().execute().await.unwrap();
+    let result = case.view.refresh().execute().await.unwrap();
+    assert_eq!(result.mode, RefreshMode::Incremental);
     let after = case.view_rows().await.len();
     assert!(
         after < before,

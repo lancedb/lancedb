@@ -184,7 +184,7 @@ def test_scalar_select_is_one_column(tmp_path):
     view = db.create_materialized_view("just_name", "people", select="name")
     view.refresh()
     rows = view.table.search().to_list()
-    assert set(rows[0]) - {"__source_row_id"} == {"name"}
+    assert set(rows[0]) == {"name"}
     assert sorted(row["name"] for row in rows) == ["ada", "grace", "kid"]
 
 
@@ -195,7 +195,7 @@ async def test_async_scalar_select_is_one_column(tmp_path):
     view = await db.create_materialized_view("just_name", "people", select="name")
     await view.refresh()
     rows = await view.table.query().to_list()
-    assert set(rows[0]) - {"__source_row_id"} == {"name"}
+    assert set(rows[0]) == {"name"}
 
 
 def test_limit_above_i64_max_is_refused(tmp_path):

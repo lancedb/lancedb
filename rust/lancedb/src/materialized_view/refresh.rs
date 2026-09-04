@@ -4,12 +4,10 @@
 //! Refreshing materialized views.
 //!
 //! A refresh pins one source version and brings the view to exactly the
-//! definition's result at that version: added rows are computed and appended,
-//! removed or changed rows are evicted by provenance id and recomputed in the
-//! same pass. Compaction outputs cost nothing, which is only sound while
-//! [`SOURCE_ROW_ID_COLUMN`] stays valid across the rewrite. Anything the
-//! classifier cannot prove intact rebuilds; an indexed rebuild swaps all
-//! fragments in one commit that retains index definitions.
+//! definition's result at that version. Incremental refresh evaluates the
+//! definition over inserted rows and both images of updated rows, consolidates
+//! the signed output into a bag delta, and applies that delta atomically.
+//! Source deletions rebuild until DatasetDelta can return their before-images.
 //!
 //! The watermark ([`SOURCE_VERSION_META_KEY`]) lands in a follow-up commit; a
 //! crash or race between the two leaves the view visibly unstamped and the
@@ -24,10 +22,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
-use arrow_array::{RecordBatch, UInt64Array};
-use arrow_schema::{Schema as ArrowSchema, SchemaRef};
+use arrow_array::{RecordBatch, RecordBatchOptions, UInt64Array};
+use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::ScalarValue;
 use datafusion::error::DataFusionError;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::{col, lit};
@@ -36,19 +35,19 @@ use lance::Dataset;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::transaction::{Operation, Transaction};
 use lance::dataset::write::delete::DeleteBuilder;
-use lance::dataset::write::merge_insert::inserted_rows::{
-    KeyExistenceFilter, KeyExistenceFilterBuilder, KeyValue,
+use lance::dataset::write::merge_insert::inserted_rows::{FilterType, KeyExistenceFilter};
+use lance::dataset::{
+    CommitBuilder, InsertBuilder, ProjectionRequest, WriteDestination, WriteMode, WriteParams,
 };
-use lance::dataset::{CommitBuilder, InsertBuilder, WriteDestination, WriteMode, WriteParams};
-use lance_core::{ROW_CREATED_AT_VERSION, ROW_ID, ROW_LAST_UPDATED_AT_VERSION};
+use lance_core::{ROW_ID, WILDCARD};
+use lance_datafusion::planner::Planner;
 use lance_file::version::ConcreteFileVersion;
 use lance_table::format::Fragment;
 use serde::{Deserialize, Serialize};
 
 use super::{
     DEFINITION_META_KEY, INCARNATION_META_KEY, MaterializedViewDefinition,
-    REFRESHED_AT_MS_META_KEY, SOURCE_ROW_ID_COLUMN, SOURCE_VERSION_META_KEY,
-    definition_to_metadata,
+    REFRESHED_AT_MS_META_KEY, SOURCE_VERSION_META_KEY, definition_to_metadata,
 };
 use crate::database::OpenTableRequest;
 use crate::table::{NativeTable, NativeTableExt, Table};
@@ -60,7 +59,7 @@ use crate::{Error, Result};
 pub enum RefreshMode {
     /// The view was recomputed from scratch.
     Rebuild,
-    /// Rows from source fragments added since the last refresh were appended.
+    /// A DatasetDelta was evaluated and reconciled against the view.
     Incremental,
     /// The view was already at the requested source version.
     NoOp,
@@ -71,9 +70,9 @@ pub enum RefreshMode {
 pub struct RefreshMaterializedViewResult {
     /// How the view was brought up to date.
     pub mode: RefreshMode,
-    /// Rows written to the view: everything on a rebuild, and on an
-    /// incremental refresh both the rows added and the rows recomputed in
-    /// place of ones the source changed.
+    /// Rows appended to the view: everything on a rebuild, and the net
+    /// positive bag-delta rows on an incremental refresh. Rows removed by
+    /// deletion vectors are not included.
     pub rows_written: u64,
     /// The source table version the view now reflects.
     pub source_version: u64,
@@ -167,7 +166,7 @@ pub(crate) async fn execute_refresh(
         .map(|p| (p.output.clone(), p.expression.clone()))
         .collect();
     validate_inputs(&source_ds, definition)?;
-    let (replanned, mut planned_fields, _renames) = super::plan(
+    let (replanned, planned_fields, _renames) = super::plan(
         source_schema,
         &definition.source_table,
         &definition.source_namespace,
@@ -175,11 +174,6 @@ pub(crate) async fn execute_refresh(
         definition.filter.as_deref(),
         definition.limit,
     )?;
-    planned_fields.push(arrow_schema::Field::new(
-        SOURCE_ROW_ID_COLUMN,
-        arrow_schema::DataType::UInt64,
-        false,
-    ));
     let physical = ArrowSchema::from(view_ds.schema());
     let planned_shape: Vec<_> = planned_fields
         .iter()
@@ -245,26 +239,16 @@ pub(crate) async fn execute_refresh(
     }
 
     let watermark = watermark.filter(|_| view_intact);
-    match plan_increment(
-        &source_ds,
-        source_version,
-        watermark,
-        recorded_ts,
-        full,
-        definition,
-    )
-    .await
-    {
-        Some(increment) => {
+    match incremental_base(&source_ds, source_version, watermark, recorded_ts, full).await {
+        Some(base) => {
             let reconciled = incremental(
                 view_native,
                 &view_ds,
                 &source_ds,
                 source_version,
                 source_ts,
-                increment,
+                &base,
                 definition,
-                watermark,
                 expected_incarnation,
             )
             .await?;
@@ -302,19 +286,19 @@ pub(crate) async fn execute_refresh(
     }
 }
 
-/// The source fragments whose rows are new since the watermark, or `None`
-/// where the view has to rebuild. Two tiers: the transaction walk is exact
-/// where it applies; the fragment-signature check is the fallback for deltas
-/// the walk cannot read, and under it any fragment churn rebuilds.
-async fn plan_increment(
+/// Return the source snapshot named by a trustworthy watermark. Incremental
+/// evaluation needs it for updated-row before-images.
+async fn incremental_base(
     source_ds: &Dataset,
     source_version: u64,
     watermark: Option<u64>,
     recorded_ts: Option<u128>,
     full: bool,
-    definition: &MaterializedViewDefinition,
-) -> Option<Increment> {
+) -> Option<Dataset> {
     if full {
+        return None;
+    }
+    if source_ds.manifest.data_storage_format.lance_file_format() == ConcreteFileVersion::V1 {
         return None;
     }
     let watermark = watermark?;
@@ -322,233 +306,10 @@ async fn plan_increment(
         return None;
     }
     let old = source_ds.checkout_version(watermark).await.ok()?;
-    // A recreated source reuses version numbers, never their timestamps: a
-    // mismatch means the watermark describes a different incarnation.
     if recorded_ts != Some(old.manifest.timestamp_nanos) {
         return None;
     }
-    let old_ids: HashSet<u64> = old.get_fragments().iter().map(|f| f.id() as u64).collect();
-    let live: Vec<Fragment> = source_ds
-        .get_fragments()
-        .iter()
-        .map(|f| f.metadata().clone())
-        .collect();
-
-    if let Some(delta) = appends_and_rewrites(source_ds, watermark, source_version).await {
-        // A rewrite that consumed a fragment neither present at the watermark
-        // nor produced by an earlier rewrite swallowed a mid-delta append;
-        // its rows cannot be told apart from already-materialized ones.
-        let folded = delta
-            .rewritten
-            .iter()
-            .any(|id| !old_ids.contains(id) && !delta.produced.contains(id));
-        if folded {
-            return None;
-        }
-        // An update rewrites a whole fragment. If it touched one the watermark
-        // never saw, that fragment holds rows appended since -- new rows the
-        // update did not change, which the recompute does not cover and which
-        // this fragment's exclusion from the append set would drop.
-        if delta
-            .updated_in_place
-            .iter()
-            .any(|id| !old_ids.contains(id))
-        {
-            return None;
-        }
-        // Rows past the cap left every delta when the watermark advanced, so
-        // a capped view cannot reconcile a removal incrementally. The rebuild
-        // is cheap for the same reason it is capped: the scan stops there.
-        if definition.limit.is_some() && (delta.deleted_rows || delta.updated_rows) {
-            return None;
-        }
-        // Legacy storage cannot serve the row-version columns update
-        // discovery scans; deletes and appends need none of them.
-        if delta.updated_rows
-            && source_ds.manifest.data_storage_format.lance_file_format() == ConcreteFileVersion::V1
-        {
-            return None;
-        }
-        // Every other fragment new at head is an append: appends and rewrites
-        // are the only operations in the delta that add fragments, and the
-        // rewrite outputs are already-materialized rows rearranged.
-        return Some(Increment {
-            appended: live
-                .into_iter()
-                .filter(|f| !old_ids.contains(&f.id) && !delta.produced.contains(&f.id))
-                .collect(),
-            evict_deleted: delta.deleted_rows,
-            replace_updated: delta.updated_rows,
-        });
-    }
-
-    is_pure_append(&old, source_ds, &relevant_field_ids(source_ds, definition)).then(|| Increment {
-        appended: live
-            .into_iter()
-            .filter(|f| !old_ids.contains(&f.id))
-            .collect(),
-        evict_deleted: false,
-        replace_updated: false,
-    })
-}
-
-/// Version gap beyond which per-version transaction reads stop being cheaper
-/// than one fragment scan.
-const MAX_TRANSACTION_WALK: u64 = 512;
-
-/// Fragment ids moved by the `Rewrite` operations of the delta. Only rewrite
-/// ids are real in transaction files (an Append's are placeholders assigned
-/// at commit), so appends are derived as new-at-head minus rewrite outputs.
-/// What an incremental refresh must do to bring the view up to date.
-struct Increment {
-    /// Source fragments whose rows are not in the view yet.
-    appended: Vec<Fragment>,
-    /// Source rows left the range, so the view holds rows to evict.
-    evict_deleted: bool,
-    /// Source rows changed in the range, so the view holds rows to replace.
-    replace_updated: bool,
-}
-
-struct TxnDelta {
-    /// Fragments consumed by `Rewrite` operations.
-    rewritten: HashSet<u64>,
-    /// Fragments produced by `Rewrite` operations.
-    produced: HashSet<u64>,
-    /// The delta removed source rows, so the view holds rows to evict.
-    deleted_rows: bool,
-    /// The delta changed source rows in place, so the view holds rows to
-    /// recompute.
-    updated_rows: bool,
-    /// Fragments an update modified in place, as opposed to produced.
-    updated_in_place: HashSet<u64>,
-}
-
-/// Read the delta from the transaction log, `None` where it holds anything
-/// but appends and rewrites or cannot be read; `None` only sends the caller
-/// to a slower check. `ReserveFragments` moves no rows and rides along.
-async fn appends_and_rewrites(cur: &Dataset, from: u64, to: u64) -> Option<TxnDelta> {
-    if to <= from || to - from > MAX_TRANSACTION_WALK {
-        return None;
-    }
-    let mut delta = TxnDelta {
-        rewritten: HashSet::new(),
-        produced: HashSet::new(),
-        deleted_rows: false,
-        updated_rows: false,
-        updated_in_place: HashSet::new(),
-    };
-    for version in (from + 1)..=to {
-        let Ok(Some(txn)) = cur.read_transaction_by_version(version).await else {
-            return None;
-        };
-        match txn.operation {
-            Operation::Append { .. } | Operation::ReserveFragments { .. } => {}
-            // A delete removes source rows without changing the ones that
-            // remain, so the view's other rows stay valid: the refresh
-            // evicts exactly the ids that left.
-            Operation::Delete { .. } => delta.deleted_rows = true,
-            // Update outputs carry no new rows, so they are excluded from
-            // the append set like rewrite outputs; the changed rows are
-            // replaced individually below.
-            Operation::Update {
-                removed_fragment_ids,
-                new_fragments,
-                updated_fragments,
-                ..
-            } => {
-                delta.updated_rows = true;
-                // merge_insert reaches here too, and its by-source arm deletes
-                // rows rather than changing them.
-                delta.deleted_rows = true;
-                delta.rewritten.extend(removed_fragment_ids.iter().copied());
-                // Only pre-existing fragment ids are real here; created ones
-                // are placeholders. Rewritten rows are excluded by creation
-                // version below, not by fragment identity.
-                delta
-                    .produced
-                    .extend(updated_fragments.iter().map(|f| f.id));
-                delta
-                    .updated_in_place
-                    .extend(updated_fragments.iter().map(|f| f.id));
-                let _ = new_fragments;
-            }
-            Operation::Rewrite { groups, .. } => {
-                for group in groups {
-                    delta
-                        .rewritten
-                        .extend(group.old_fragments.iter().map(|f| f.id));
-                    delta
-                        .produced
-                        .extend(group.new_fragments.iter().map(|f| f.id));
-                }
-            }
-            _ => return None,
-        }
-    }
-    Some(delta)
-}
-
-/// Fallback pure-append check: every old fragment still present with an
-/// identical signature over the columns the view reads. Compaction, deletes
-/// and updates each break it and force a rebuild; a change to a column the
-/// view does not read leaves it alone, which is what lets this tier pass
-/// deltas the transaction walk cannot.
-fn is_pure_append(old: &Dataset, cur: &Dataset, relevant: &HashSet<i32>) -> bool {
-    let signature = |fragment: &lance::dataset::fragment::FileFragment| {
-        fragment_signature(fragment.metadata(), relevant)
-    };
-    let current: HashSet<(u64, String)> = cur.get_fragments().iter().map(signature).collect();
-    old.get_fragments()
-        .iter()
-        .all(|fragment| current.contains(&signature(fragment)))
-}
-
-/// A fragment's identity as the view observes it: data files and overlays
-/// touching the columns it reads, plus the deletion file. Overlays change no
-/// file path, so they must be part of the signature.
-fn fragment_signature(metadata: &Fragment, relevant: &HashSet<i32>) -> (u64, String) {
-    let touches_relevant =
-        |fields: &[i32]| relevant.is_empty() || fields.iter().any(|id| relevant.contains(id));
-    let mut files: Vec<&str> = metadata
-        .files
-        .iter()
-        .filter(|file| touches_relevant(&file.fields))
-        .map(|file| file.path.as_str())
-        .collect();
-    files.sort_unstable();
-    let mut overlays: Vec<String> = metadata
-        .overlays
-        .iter()
-        .filter(|overlay| touches_relevant(&overlay.data_file.fields))
-        .map(|overlay| format!("{}@{}", overlay.data_file.path, overlay.committed_version))
-        .collect();
-    overlays.sort_unstable();
-    (
-        metadata.id,
-        format!(
-            "{}|{}|{:?}",
-            files.join(","),
-            overlays.join(","),
-            metadata.deletion_file
-        ),
-    )
-}
-
-/// Field ids (with struct descendants) of the source columns the view reads.
-fn relevant_field_ids(source: &Dataset, definition: &MaterializedViewDefinition) -> HashSet<i32> {
-    fn collect(field: &lance_core::datatypes::Field, ids: &mut HashSet<i32>) {
-        ids.insert(field.id);
-        for child in &field.children {
-            collect(child, ids);
-        }
-    }
-    let mut ids = HashSet::new();
-    for input in &definition.inputs {
-        if let Some(field) = source.schema().field(input) {
-            collect(field, &mut ids);
-        }
-    }
-    ids
+    Some(old)
 }
 
 /// Error if a column the view reads no longer exists in the source.
@@ -568,7 +329,7 @@ fn validate_inputs(source: &Dataset, definition: &MaterializedViewDefinition) ->
 }
 
 /// Reject MemWAL/LSM state on a refresh participant: un-compacted tiers are
-/// invisible to the fragment-planned refresh scan. An active write spec and
+/// invisible to DatasetDelta and the rebuild scan. An active write spec and
 /// retained rows both disqualify; shard directories on storage are the
 /// durable evidence of the latter.
 pub(crate) async fn ensure_no_mem_wal(dataset: &Dataset, role: &str, name: &str) -> Result<()> {
@@ -622,86 +383,210 @@ async fn incremental(
     source_ds: &Dataset,
     source_version: u64,
     source_ts: u128,
-    increment: Increment,
+    base: &Dataset,
     definition: &MaterializedViewDefinition,
-    watermark: Option<u64>,
     expected_incarnation: Option<&str>,
 ) -> Result<Option<RefreshMaterializedViewResult>> {
-    let new_fragments = increment.appended;
-    let watermark_version = watermark.unwrap_or(0);
-    // Provenance ids this refresh removes: dropped rows, plus changed rows
-    // recomputed in the same commit. One view row per source row makes the
-    // eviction exact. Staged, not committed: removals ride with the rows
-    // that replace them, so a reader never sees the view without either.
-    let mut eviction = Eviction::new(view_ds, EVICTION_CHUNK);
-    let mut updated_rows = false;
-    if (increment.evict_deleted || increment.replace_updated)
-        && let Some(watermark) = watermark
+    let base_inputs = super::project_schema(&ArrowSchema::from(base.schema()), &definition.inputs);
+    let current_inputs =
+        super::project_schema(&ArrowSchema::from(source_ds.schema()), &definition.inputs);
+    if base_inputs != current_inputs {
+        return Ok(None);
+    }
+    let delta = source_ds
+        .delta()
+        .with_begin_version(base.version().version)
+        .with_end_version(source_version)
+        .build()?;
+    let version_gap = source_version.saturating_sub(base.version().version);
+    if version_gap > MAX_TRANSACTION_WALK {
+        return Ok(None);
+    }
+    let Ok(transactions) = delta.list_transactions().await else {
+        return Ok(None);
+    };
+    if transactions.len() != version_gap as usize
+        || transactions
+            .iter()
+            .any(|transaction| delta_operation_requires_rebuild(&transaction.operation))
     {
-        let delta = source_ds
-            .delta()
-            .with_begin_version(watermark)
-            .with_end_version(source_version)
-            .build()?;
-        // Reconciling holds the delta's provenance ids in staged deletion
-        // vectors; past the cap, the streamed rebuild is the bounded path.
-        let cap = eviction_rebuild_cap();
-        let mut evicted = 0usize;
-        if increment.evict_deleted {
-            let mut stream = delta.get_deleted_row_ids().await?;
-            while let Some(batch) = stream.try_next().await? {
-                let ids = row_ids_of(&batch)?;
-                evicted += ids.len();
-                if evicted > cap {
-                    return Ok(None);
-                }
-                eviction.push(ids).await?;
+        return Ok(None);
+    }
+    let has_updated_rows = transactions
+        .iter()
+        .any(|transaction| matches!(transaction.operation, Operation::Update { .. }));
+
+    let mut deleted = delta.get_deleted_row_ids().await?;
+    while let Some(batch) = deleted.try_next().await? {
+        if batch.num_rows() > 0 {
+            return Ok(None);
+        }
+    }
+
+    let mut inserted = delta.get_inserted_rows().await?;
+    if definition.limit.is_some() {
+        while let Some(batch) = inserted.try_next().await? {
+            if batch.num_rows() > 0 {
+                return Ok(None);
             }
         }
-        if increment.replace_updated {
-            // Ids only: `get_updated_rows` carries every column of every
-            // updated row, and discovery needs none of them.
-            let mut scanner = source_ds.scan();
-            scanner.with_row_id().project(&[ROW_CREATED_AT_VERSION])?;
-            // A fixed bound: the configured default could make one discovery
-            // batch arbitrarily large before the fallback cap is consulted.
-            scanner.batch_size(8192);
-            scanner.filter(&format!(
-                "{ROW_CREATED_AT_VERSION} <= {watermark} 
-                 AND {ROW_LAST_UPDATED_AT_VERSION} > {watermark} 
-                 AND {ROW_LAST_UPDATED_AT_VERSION} <= {source_version}"
-            ))?;
-            let mut stream = scanner.try_into_stream().await?;
-            while let Some(batch) = stream.try_next().await? {
-                let ids = row_ids_of(&batch)?;
-                evicted += ids.len();
-                if evicted > cap {
+        if has_updated_rows {
+            let mut updated = delta.get_updated_rows().await?;
+            while let Some(batch) = updated.try_next().await? {
+                if batch.num_rows() > 0 {
                     return Ok(None);
                 }
-                updated_rows |= !ids.is_empty();
-                eviction.push(ids).await?;
             }
         }
     }
-    let eviction = eviction.finish().await?;
 
-    // The cap counts rows already materialized, in first-materialized order.
-    let remaining = match definition.limit {
-        Some(limit) => {
-            let held = view_ds.count_rows(None).await? as u64;
-            Some(limit.saturating_sub(held))
+    let evaluator = DeltaEvaluator::new(source_ds, definition, view_ds)?;
+    if !has_updated_rows {
+        let output_schema = evaluator.output_schema.clone();
+        let evaluator = Arc::new(evaluator);
+        let rows_written = Arc::new(AtomicU64::new(0));
+        let counted = rows_written.clone();
+        let mapped = inserted.map(move |batch| {
+            let batch = batch.map_err(|error| DataFusionError::External(Box::new(error)))?;
+            let batch = evaluator
+                .evaluate(&batch)
+                .map_err(|error| DataFusionError::External(Box::new(error)))?;
+            counted.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+            Ok(batch)
+        });
+        let stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(output_schema, mapped));
+        let new_fragments = stage_addition_stream(view_ds, stream).await?;
+        let rows_written = rows_written.load(Ordering::Relaxed);
+        let appended = if rows_written == 0 {
+            view_ds.clone()
+        } else {
+            publish(
+                view_ds,
+                None,
+                new_fragments,
+                Some(refresh_filter()),
+                expected_incarnation,
+            )
+            .await?
+        };
+        let version = stamp_watermark(
+            view_native,
+            appended,
+            source_version,
+            source_ts,
+            None,
+            expected_incarnation,
+        )
+        .await?;
+        return Ok(Some(RefreshMaterializedViewResult {
+            mode: RefreshMode::Incremental,
+            rows_written,
+            source_version,
+            version,
+        }));
+    }
+
+    let cap = delta_rebuild_cap(view_ds.uri());
+    let byte_cap = delta_byte_rebuild_cap();
+    let mut evaluated_rows = 0usize;
+    let mut evaluated_bytes = 0usize;
+    let mut weights = HashMap::new();
+
+    while let Some(batch) = inserted.try_next().await? {
+        evaluated_rows = evaluated_rows.saturating_add(batch.num_rows());
+        if evaluated_rows > cap {
+            return Ok(None);
         }
-        None => None,
+        if !accumulate(
+            &mut weights,
+            &evaluator.evaluate(&batch)?,
+            1,
+            &mut evaluated_bytes,
+            byte_cap,
+        )? {
+            return Ok(None);
+        }
+    }
+
+    let mut updated_ids = Vec::new();
+    let mut updated = delta.get_updated_rows().await?;
+    while let Some(batch) = updated.try_next().await? {
+        evaluated_rows = evaluated_rows.saturating_add(batch.num_rows().saturating_mul(2));
+        if evaluated_rows > cap {
+            return Ok(None);
+        }
+        updated_ids.extend(row_ids_of(&batch)?.values().iter().copied());
+        if !accumulate(
+            &mut weights,
+            &evaluator.evaluate(&batch)?,
+            1,
+            &mut evaluated_bytes,
+            byte_cap,
+        )? {
+            return Ok(None);
+        }
+    }
+
+    let before_columns: Vec<&str> = evaluator
+        .read_schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect();
+    let before_schema = if before_columns.is_empty() {
+        match base.schema().fields.first() {
+            Some(field) => Arc::new(base.schema().project(&[field.name.as_str()])?),
+            None => Arc::new(base.schema().clone()),
+        }
+    } else {
+        Arc::new(base.schema().project(&before_columns)?)
     };
+    for ids in updated_ids.chunks(8192) {
+        let before = base
+            .take_rows(ids, ProjectionRequest::Schema(before_schema.clone()))
+            .await?;
+        if !accumulate(
+            &mut weights,
+            &evaluator.evaluate(&before)?,
+            -1,
+            &mut evaluated_bytes,
+            byte_cap,
+        )? {
+            return Ok(None);
+        }
+    }
+
+    weights.retain(|_, weight| *weight != 0);
+    let mut removals: HashMap<Vec<ScalarValue>, usize> = weights
+        .iter()
+        .filter_map(|(row, weight)| (*weight < 0).then_some((row.clone(), (-*weight) as usize)))
+        .collect();
+    if !removals.is_empty() {
+        let view_rows = view_ds.count_rows(None).await?;
+        let schema = ArrowSchema::from(view_ds.schema());
+        if view_reconciliation_exceeds_budget(&schema, view_rows) {
+            return Ok(None);
+        }
+    }
+    let Some(evicted_ids) = select_view_rows(view_ds, &mut removals).await? else {
+        return Ok(None);
+    };
+    let mut eviction = Eviction::new(view_ds, EVICTION_CHUNK);
+    eviction.push_slice(&evicted_ids).await?;
+    let eviction = eviction.finish().await?;
+    let additions = positive_batch(&weights, Arc::new(ArrowSchema::from(view_ds.schema())))?;
+    let rows_written = additions
+        .as_ref()
+        .map_or(0, |batch| batch.num_rows() as u64);
 
     let mut result = RefreshMaterializedViewResult {
         mode: RefreshMode::Incremental,
-        rows_written: 0,
+        rows_written,
         source_version,
         version: view_ds.version().version,
     };
-    let nothing_to_add = (new_fragments.is_empty() && !updated_rows) || remaining == Some(0);
-    if nothing_to_add && eviction.is_none() {
+    if additions.is_none() && eviction.is_none() {
         result.version = stamp_watermark(
             view_native,
             view_ds.clone(),
@@ -713,139 +598,15 @@ async fn incremental(
         .await?;
         return Ok(Some(result));
     }
-    // Rows left but none arrive: the removals still have to be published.
-    if nothing_to_add {
-        let filter = refresh_filter(&empty_keys(view_ds)?)?;
-        let published = publish(
-            view_ds,
-            eviction,
-            Vec::new(),
-            Some(filter),
-            expected_incarnation,
-        )
-        .await?;
-        result.version = stamp_watermark(
-            view_native,
-            published,
-            source_version,
-            source_ts,
-            None,
-            expected_incarnation,
-        )
-        .await?;
-        return Ok(Some(result));
-    }
-
-    // Appends carry the view's schema as it stands; the watermark moves in a
-    // follow-up commit (see the module docs for the crash window).
-    let schema = Arc::new(ArrowSchema::from(view_ds.schema()));
-    let rows_written = Arc::new(AtomicU64::new(0));
-    // compute_stream counts what it produces; the truncation below can drop
-    // some of that, so the written count comes from the tee instead.
-    let computed = Arc::new(AtomicU64::new(0));
-    let mut stream = compute_stream(
-        source_ds,
-        definition,
-        RowScope {
-            fragments: Some(new_fragments),
-            // An update rewrites whole fragments, so a fragment new at head
-            // can hold rows the view already has. Their creation version
-            // does not change, so it -- not fragment identity -- says which
-            // rows are new.
-            created_after: increment.replace_updated.then_some(watermark_version),
-            limit: remaining,
-            ..Default::default()
-        },
-        schema.clone(),
-        computed.clone(),
-    )
-    .await?;
-
-    // The updated rows' current values, computed the same way and appended
-    // in the same commit as the new fragments' rows.
-    if updated_rows {
-        let recomputed = compute_stream(
-            source_ds,
-            definition,
-            RowScope {
-                updated_between: Some((watermark_version, source_version)),
-                ..Default::default()
-            },
-            schema.clone(),
-            computed.clone(),
-        )
-        .await?;
-        stream = Box::pin(RecordBatchStreamAdapter::new(
-            schema.clone(),
-            recomputed.chain(stream),
-        ));
-    }
-
-    // Nothing survived the filter: the watermark still has to advance or the
-    // same fragments would be rescanned forever, but any removals still do.
-    let Some(first) = stream.try_next().await? else {
-        let published = if eviction.is_some() {
-            publish(
-                view_ds,
-                eviction,
-                Vec::new(),
-                Some(refresh_filter(&empty_keys(view_ds)?)?),
-                expected_incarnation,
-            )
-            .await?
-        } else {
-            view_ds.clone()
-        };
-        result.version = stamp_watermark(
-            view_native,
-            published,
-            source_version,
-            source_ts,
-            None,
-            expected_incarnation,
-        )
-        .await?;
-        return Ok(Some(result));
-    };
-    let stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
-        schema,
-        futures::stream::iter([Ok(first)]).chain(stream),
-    ));
-
-    // Any two refreshes of one view must not both commit: the filter's
-    // shared token makes lance reject the loser on key overlap however
-    // their planned rows relate.
-    let keys = Arc::new(StdMutex::new(KeyExistenceFilterBuilder::new(vec![
-        source_row_id_field_id(view_ds)?,
-    ])));
-    let stream = collect_source_row_ids(stream, keys.clone(), rows_written.clone());
-
-    let ds = Arc::new(view_ds.clone());
-    let write_txn = InsertBuilder::new(WriteDestination::Dataset(ds.clone()))
-        .with_params(&WriteParams {
-            mode: WriteMode::Append,
-            ..Default::default()
-        })
-        .execute_uncommitted_stream(stream)
-        .await?;
-    let Operation::Append {
-        fragments: new_fragments,
-    } = write_txn.operation
-    else {
-        return Err(Error::Runtime {
-            message: "expected an append when staging the view's new rows".into(),
-        });
-    };
-    let filter = refresh_filter(&keys)?;
+    let new_fragments = stage_additions(view_ds, additions).await?;
     let appended = publish(
         view_ds,
         eviction,
         new_fragments,
-        Some(filter),
+        Some(refresh_filter()),
         expected_incarnation,
     )
     .await?;
-    result.rows_written = rows_written.load(Ordering::Relaxed);
     result.version = stamp_watermark(
         view_native,
         appended,
@@ -856,6 +617,262 @@ async fn incremental(
     )
     .await?;
     Ok(Some(result))
+}
+
+fn delta_operation_requires_rebuild(operation: &Operation) -> bool {
+    match operation {
+        Operation::Append { .. }
+        | Operation::CreateIndex { .. }
+        | Operation::Delete { .. }
+        | Operation::Merge { .. }
+        | Operation::Project { .. }
+        | Operation::ReserveFragments { .. }
+        | Operation::Rewrite { .. }
+        | Operation::Update { .. }
+        | Operation::UpdateBases { .. }
+        | Operation::UpdateConfig { .. }
+        | Operation::UpdateMemWalState { .. } => false,
+        Operation::Clone { .. }
+        | Operation::DataOverlay { .. }
+        | Operation::DataReplacement { .. }
+        | Operation::Overwrite { .. }
+        | Operation::Restore { .. } => true,
+    }
+}
+
+struct DeltaEvaluator {
+    read_schema: SchemaRef,
+    output_schema: SchemaRef,
+    filter: Option<Arc<dyn PhysicalExpr>>,
+    projections: Vec<Arc<dyn PhysicalExpr>>,
+}
+
+impl DeltaEvaluator {
+    fn new(
+        source: &Dataset,
+        definition: &MaterializedViewDefinition,
+        view: &Dataset,
+    ) -> Result<Self> {
+        let source_schema = Arc::new(ArrowSchema::from(source.schema()));
+        let read_schema = super::project_schema(&source_schema, &definition.inputs);
+        let source_planner = Planner::new(source_schema);
+        let read_planner = Planner::new(read_schema.clone());
+        let bind = |expression: &str, filter: bool| -> Result<Arc<dyn PhysicalExpr>> {
+            let logical = if filter {
+                source_planner.parse_filter(expression)
+            } else {
+                source_planner.parse_expr(expression)
+            }
+            .and_then(|expr| source_planner.optimize_expr(expr))
+            .map_err(|error| Error::Runtime {
+                message: format!("failed to plan materialized-view delta expression: {error}"),
+            })?;
+            read_planner
+                .create_physical_expr(&logical)
+                .map_err(|error| Error::Runtime {
+                    message: format!("failed to bind materialized-view delta expression: {error}"),
+                })
+        };
+        let filter = definition
+            .filter
+            .as_deref()
+            .map(|expression| bind(expression, true))
+            .transpose()?;
+        let projections = definition
+            .projections
+            .iter()
+            .map(|projection| bind(&projection.expression, false))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            read_schema,
+            output_schema: Arc::new(ArrowSchema::from(view.schema())),
+            filter,
+            projections,
+        })
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> Result<RecordBatch> {
+        let columns = self
+            .read_schema
+            .fields()
+            .iter()
+            .map(|field| {
+                batch
+                    .column_by_name(field.name())
+                    .cloned()
+                    .ok_or_else(|| Error::Runtime {
+                        message: format!(
+                            "source delta is missing materialized-view input '{}'",
+                            field.name()
+                        ),
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut input = RecordBatch::try_new_with_options(
+            self.read_schema.clone(),
+            columns,
+            &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+        )?;
+        if let Some(filter) = &self.filter {
+            let mask = filter
+                .evaluate(&input)
+                .and_then(|value| value.into_array(input.num_rows()))
+                .map_err(|error| Error::Runtime {
+                    message: format!("failed to evaluate materialized-view delta filter: {error}"),
+                })?;
+            let mask = mask.as_boolean_opt().ok_or_else(|| Error::Runtime {
+                message: "materialized-view delta filter did not produce booleans".into(),
+            })?;
+            input = arrow_select::filter::filter_record_batch(&input, mask)?;
+        }
+        let columns = self
+            .projections
+            .iter()
+            .map(|projection| {
+                projection
+                    .evaluate(&input)
+                    .and_then(|value| value.into_array(input.num_rows()))
+                    .map_err(|error| Error::Runtime {
+                        message: format!(
+                            "failed to evaluate materialized-view delta projection: {error}"
+                        ),
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(RecordBatch::try_new_with_options(
+            self.output_schema.clone(),
+            columns,
+            &RecordBatchOptions::new().with_row_count(Some(input.num_rows())),
+        )?)
+    }
+}
+
+fn accumulate(
+    weights: &mut HashMap<Vec<ScalarValue>, i64>,
+    batch: &RecordBatch,
+    sign: i64,
+    evaluated_bytes: &mut usize,
+    byte_cap: usize,
+) -> Result<bool> {
+    for row in 0..batch.num_rows() {
+        let mut key = batch
+            .columns()
+            .iter()
+            .map(|column| {
+                ScalarValue::try_from_array(column.as_ref(), row).map_err(|error| Error::Runtime {
+                    message: format!("failed to encode materialized-view delta row: {error}"),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        key.iter_mut().for_each(ScalarValue::compact);
+        *evaluated_bytes = (*evaluated_bytes).saturating_add(ScalarValue::size_of_vec(&key));
+        if *evaluated_bytes > byte_cap {
+            return Ok(false);
+        }
+        *weights.entry(key).or_default() += sign;
+    }
+    Ok(true)
+}
+
+fn positive_batch(
+    weights: &HashMap<Vec<ScalarValue>, i64>,
+    schema: SchemaRef,
+) -> Result<Option<RecordBatch>> {
+    let rows: Vec<&Vec<ScalarValue>> = weights
+        .iter()
+        .flat_map(|(row, weight)| std::iter::repeat_n(row, (*weight).max(0) as usize))
+        .collect();
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let columns = (0..schema.fields().len())
+        .map(|column| {
+            ScalarValue::iter_to_array(rows.iter().map(|row| row[column].clone())).map_err(
+                |error| Error::Runtime {
+                    message: format!("failed to materialize positive view delta: {error}"),
+                },
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(RecordBatch::try_new(schema, columns)?))
+}
+
+async fn select_view_rows(
+    view: &Dataset,
+    needed: &mut HashMap<Vec<ScalarValue>, usize>,
+) -> Result<Option<Vec<u64>>> {
+    if needed.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let schema = ArrowSchema::from(view.schema());
+    let mut scanner = view.scan();
+    scanner.with_row_id().project(&[WILDCARD, ROW_ID])?;
+    let mut stream = scanner.try_into_stream().await?;
+    let mut selected = Vec::new();
+    while let Some(batch) = stream.try_next().await? {
+        let row_ids = row_ids_of(&batch)?;
+        for row in 0..batch.num_rows() {
+            let key = schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    let column =
+                        batch
+                            .column_by_name(field.name())
+                            .ok_or_else(|| Error::Runtime {
+                                message: format!("view scan is missing output '{}'", field.name()),
+                            })?;
+                    ScalarValue::try_from_array(column.as_ref(), row).map_err(|error| {
+                        Error::Runtime {
+                            message: format!("failed to encode materialized-view row: {error}"),
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if let Some(count) = needed.get_mut(&key)
+                && *count > 0
+            {
+                selected.push(row_ids.value(row));
+                *count -= 1;
+            }
+        }
+        needed.retain(|_, count| *count > 0);
+        if needed.is_empty() {
+            return Ok(Some(selected));
+        }
+    }
+    Ok(None)
+}
+
+async fn stage_additions(view: &Dataset, batch: Option<RecordBatch>) -> Result<Vec<Fragment>> {
+    let Some(batch) = batch else {
+        return Ok(Vec::new());
+    };
+    let schema = batch.schema();
+    let stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
+        schema,
+        futures::stream::iter([Ok(batch)]),
+    ));
+    stage_addition_stream(view, stream).await
+}
+
+async fn stage_addition_stream(
+    view: &Dataset,
+    stream: SendableRecordBatchStream,
+) -> Result<Vec<Fragment>> {
+    let transaction = InsertBuilder::new(WriteDestination::Dataset(Arc::new(view.clone())))
+        .with_params(&WriteParams {
+            mode: WriteMode::Append,
+            ..Default::default()
+        })
+        .execute_uncommitted_stream(stream)
+        .await?;
+    let Operation::Append { fragments } = transaction.operation else {
+        return Err(Error::Runtime {
+            message: "expected an append when staging the view's delta rows".into(),
+        });
+    };
+    Ok(fragments)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -876,22 +893,16 @@ async fn rebuild(
         definition,
         RowScope {
             limit: definition.limit,
-            ..Default::default()
         },
         schema,
         rows_written.clone(),
     )
     .await?;
-    let keys = Arc::new(StdMutex::new(KeyExistenceFilterBuilder::new(vec![
-        source_row_id_field_id(view_ds)?,
-    ])));
-    let stream = collect_source_row_ids(stream, keys.clone(), Arc::new(AtomicU64::new(0)));
     // Every rebuild is one fragment swap, indexed or not: an Update commit
     // carries no schema metadata, so it cannot erase a definition update
     // that raced in the way an overwrite (which adopts its stream's schema)
     // durably would -- and it must land on the planned generation or abort.
-    let replaced =
-        replace_retaining_indices(view_ds.clone(), stream, keys, expected_incarnation).await?;
+    let replaced = replace_retaining_indices(view_ds.clone(), stream, expected_incarnation).await?;
     let version = stamp_watermark(
         view_native,
         replaced,
@@ -916,7 +927,6 @@ async fn rebuild(
 async fn replace_retaining_indices(
     view_ds: Dataset,
     stream: SendableRecordBatchStream,
-    keys: Arc<StdMutex<KeyExistenceFilterBuilder>>,
     expected_incarnation: Option<&str>,
 ) -> Result<Dataset> {
     let ds = Arc::new(view_ds);
@@ -942,8 +952,6 @@ async fn replace_retaining_indices(
         });
     };
 
-    // Built only now: the tee fills as the staging drains the stream.
-    let filter = refresh_filter(&keys)?;
     let transaction = Transaction::new(
         read_version,
         Operation::Update {
@@ -956,7 +964,7 @@ async fn replace_retaining_indices(
             update_mode: None,
             // Two refreshes that materialized the same source rows must not
             // both land -- a raced first rebuild would double the view.
-            inserted_rows_filter: Some(filter),
+            inserted_rows_filter: Some(refresh_filter()),
             updated_fragment_offsets: None,
         },
         None,
@@ -1072,20 +1080,9 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
-/// Evaluate the definition over `source`, restricted to `fragments` when
-/// given, as batches in the view's schema. The filter is pushed into the
-/// scan; projections are `(name, expression)` pairs, never spliced into SQL;
-/// [`SOURCE_ROW_ID_COLUMN`] is filled by the scan's row id.
-/// Which source rows a compute pass reads.
+/// Evaluate the definition over the source as batches in the view's schema.
 #[derive(Default)]
 struct RowScope {
-    /// Read only these fragments.
-    fragments: Option<Vec<Fragment>>,
-    /// Read only rows created after this version.
-    created_after: Option<u64>,
-    /// Read only rows changed in place after the first version and no later
-    /// than the second.
-    updated_between: Option<(u64, u64)>,
     /// Stop after this many rows.
     limit: Option<u64>,
 }
@@ -1097,40 +1094,10 @@ async fn compute_stream(
     schema: SchemaRef,
     rows_written: Arc<AtomicU64>,
 ) -> Result<SendableRecordBatchStream> {
-    let RowScope {
-        fragments,
-        created_after,
-        updated_between,
-        limit,
-    } = scope;
+    let RowScope { limit } = scope;
     let mut scanner = source.scan();
-    if let Some(fragments) = fragments {
-        scanner.with_fragments(fragments);
-    }
-    scanner.with_row_id();
-    // Narrowing keeps the definition's filter, so a row updated out of the
-    // view simply does not come back. Changed rows are named by the predicate
-    // `DatasetDelta::get_updated_rows` uses, not its streamed ids: an id list
-    // grows with the delta, this does not.
-    let updated_filter = updated_between.map(|(from, to)| {
-        format!(
-            "{ROW_CREATED_AT_VERSION} <= {from} \
-             AND {ROW_LAST_UPDATED_AT_VERSION} > {from} \
-             AND {ROW_LAST_UPDATED_AT_VERSION} <= {to}"
-        )
-    });
-    let created_filter =
-        created_after.map(|version| format!("{ROW_CREATED_AT_VERSION} > {version}"));
-    let clauses: Vec<String> = definition
-        .filter
-        .clone()
-        .map(|f| format!("({f})"))
-        .into_iter()
-        .chain(updated_filter)
-        .chain(created_filter)
-        .collect();
-    if !clauses.is_empty() {
-        scanner.filter(&clauses.join(" AND "))?;
+    if let Some(filter) = &definition.filter {
+        scanner.filter(filter)?;
     }
     let transforms: Vec<(&str, &str)> = definition
         .projections
@@ -1158,12 +1125,7 @@ async fn compute_stream(
         let batch = batch.map_err(|e| DataFusionError::External(Box::new(e)))?;
         let mut columns = Vec::with_capacity(out_schema.fields().len());
         for field in out_schema.fields() {
-            let name = if field.name() == SOURCE_ROW_ID_COLUMN {
-                ROW_ID
-            } else {
-                field.name()
-            };
-            let column = batch.column_by_name(name).ok_or_else(|| {
+            let column = batch.column_by_name(field.name()).ok_or_else(|| {
                 DataFusionError::Internal(format!(
                     "view column '{}' is not produced by the view's definition",
                     field.name()
@@ -1178,9 +1140,8 @@ async fn compute_stream(
 }
 
 /// Commit the view's removals and additions as one change, on the exact
-/// generation the refresh planned from. Lance rejects an overlapping
-/// provenance key, but an unrelated write to the view is not a key conflict,
-/// so the generation is checked here too.
+/// generation the refresh planned from. A shared refresh token rejects a
+/// concurrent refresh; the generation check catches every other view write.
 async fn publish(
     view_ds: &Dataset,
     eviction: Option<(Vec<Fragment>, Vec<u64>)>,
@@ -1238,47 +1199,93 @@ fn row_ids_of(batch: &RecordBatch) -> Result<&UInt64Array> {
         })
 }
 
-/// A provenance id no source row can hold, carried in every refresh's
-/// inserted-rows filter: any two refreshes of one view overlap on it, so
-/// the loser of a race conflicts at commit whatever rows each planned.
+/// A shared token carried by every refresh commit so concurrent refreshes
+/// conflict even though the view has no physical reconciliation key.
 const REFRESH_TOKEN_ID: u64 = u64::MAX;
 
-/// A builder with no collected keys, for publishes that only remove rows.
-fn empty_keys(view_ds: &Dataset) -> Result<Arc<StdMutex<KeyExistenceFilterBuilder>>> {
-    Ok(Arc::new(StdMutex::new(KeyExistenceFilterBuilder::new(
-        vec![source_row_id_field_id(view_ds)?],
-    ))))
+fn refresh_filter() -> KeyExistenceFilter {
+    KeyExistenceFilter {
+        field_ids: Vec::new(),
+        filter: FilterType::ExactSet(HashSet::from([REFRESH_TOKEN_ID])),
+    }
 }
 
-/// An inserted-rows filter holding the refresh token plus whatever the
-/// tee collected.
-fn refresh_filter(keys: &Arc<StdMutex<KeyExistenceFilterBuilder>>) -> Result<KeyExistenceFilter> {
-    let mut keys = keys.lock().map_err(|_| Error::Runtime {
-        message: "the provenance key filter was poisoned mid-refresh".into(),
-    })?;
-    keys.insert(KeyValue::UInt64(REFRESH_TOKEN_ID))
-        .map_err(|e| Error::Runtime {
-            message: format!("failed to mark the refresh's filter: {e}"),
-        })?;
-    Ok(keys.build())
-}
-
-/// Reconciled ids past this fall back to the streamed rebuild, whose memory
+/// Delta rows past this fall back to the streamed rebuild, whose memory
 /// does not grow with the delta.
-fn eviction_rebuild_cap() -> usize {
+fn delta_rebuild_cap(_view_uri: &str) -> usize {
     #[cfg(test)]
-    if let Some(cap) = tests::eviction_cap_override() {
+    if let Some(cap) = tests::delta_cap_override(_view_uri) {
         return cap;
     }
     4 * 1024 * 1024
 }
 
-/// Provenance ids per staged eviction: the delete predicate carries one
+/// Version gap beyond which reading every transaction is more expensive than
+/// rebuilding and more likely to encounter cleaned history.
+const MAX_TRANSACTION_WALK: u64 = 512;
+
+/// Bound the encoded output values held while consolidating a delta. The
+/// positive batch and hash table temporarily duplicate some of this memory.
+fn delta_byte_rebuild_cap() -> usize {
+    128 * 1024 * 1024
+}
+
+/// Exact bag subtraction decodes and hashes view values row-wise. Past this
+/// estimated scan-work budget the columnar rebuild is the cheaper path.
+const VIEW_RECONCILIATION_SCAN_BYTE_CAP: usize = 128 * 1024 * 1024;
+
+fn view_reconciliation_exceeds_budget(schema: &ArrowSchema, rows: usize) -> bool {
+    let row_bytes = schema.fields().iter().fold(0usize, |total, field| {
+        total.saturating_add(
+            std::mem::size_of::<ScalarValue>()
+                .saturating_add(estimated_value_width(field.data_type())),
+        )
+    });
+    rows.saturating_mul(row_bytes) > VIEW_RECONCILIATION_SCAN_BYTE_CAP
+}
+
+fn estimated_value_width(data_type: &DataType) -> usize {
+    if let Some(width) = data_type.primitive_width() {
+        return width;
+    }
+    match data_type {
+        DataType::Null => 0,
+        DataType::Boolean => 1,
+        DataType::FixedSizeBinary(width) => (*width).max(0) as usize,
+        DataType::FixedSizeList(child, len) => {
+            ((*len).max(0) as usize).saturating_mul(estimated_value_width(child.data_type()))
+        }
+        DataType::Struct(fields) => fields.iter().fold(0usize, |total, field| {
+            total.saturating_add(estimated_value_width(field.data_type()))
+        }),
+        DataType::Union(fields, _) => fields
+            .iter()
+            .map(|(_, field)| estimated_value_width(field.data_type()))
+            .max()
+            .unwrap_or_default(),
+        DataType::Dictionary(_, values) => estimated_value_width(values),
+        DataType::RunEndEncoded(_, values) => estimated_value_width(values.data_type()),
+        DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Utf8View
+        | DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::List(_)
+        | DataType::ListView(_)
+        | DataType::LargeList(_)
+        | DataType::LargeListView(_)
+        | DataType::Map(_, _) => 256,
+        _ => 64,
+    }
+}
+
+/// View row ids per staged eviction: the delete predicate carries one
 /// literal per id, so a whole delta at once is unbounded. Each chunk costs a
-/// pass over the view's provenance column, which is why it is not smaller.
+/// pass over the view's virtual row id, which is why it is not smaller.
 const EVICTION_CHUNK: usize = 64 * 1024;
 
-/// Accumulates the view's removals from bounded chunks of provenance ids into
+/// Accumulates the view's removals from bounded chunks of virtual row ids into
 /// the one set of fragment changes the refresh publishes.
 struct Eviction {
     /// The view as the chunks staged so far leave it. A chunk's delete has to
@@ -1311,8 +1318,13 @@ impl Eviction {
 
     /// Fill a chunk at a time. Taking the batch whole and splitting it would
     /// hold a fragment's worth of ids and recopy the tail per chunk.
+    #[cfg(test)]
     async fn push(&mut self, ids: &UInt64Array) -> Result<()> {
-        for id in ids.values() {
+        self.push_slice(ids.values()).await
+    }
+
+    async fn push_slice(&mut self, ids: &[u64]) -> Result<()> {
+        for id in ids {
             self.pending.push(*id);
             #[cfg(test)]
             {
@@ -1361,7 +1373,7 @@ impl Eviction {
 
 /// The view as staged removals leave it, without committing them. Fragments
 /// are replaced in place so the fragment bitmap stays in step; an emptied one
-/// is left alone, since the delta names each provenance id only once.
+/// is left alone, since the selected virtual row ids are unique.
 fn advance(view_ds: &Dataset, updated: &[Fragment]) -> Dataset {
     if updated.is_empty() {
         return view_ds.clone();
@@ -1385,7 +1397,7 @@ fn advance(view_ds: &Dataset, updated: &[Fragment]) -> Dataset {
 async fn stage_eviction(view_ds: &Dataset, ids: &[u64]) -> Result<(Vec<Fragment>, Vec<u64>)> {
     // An expression rather than SQL text: the id list is a value here, not a
     // predicate string that grows with the delta and has to be parsed.
-    let predicate = col(SOURCE_ROW_ID_COLUMN).in_list(
+    let predicate = col(ROW_ID).in_list(
         ids.iter()
             .map(|id| lit(ScalarValue::UInt64(Some(*id))))
             .collect(),
@@ -1405,49 +1417,6 @@ async fn stage_eviction(view_ds: &Dataset, ids: &[u64]) -> Result<(Vec<Fragment>
         });
     };
     Ok((updated_fragments, deleted_fragment_ids))
-}
-
-fn source_row_id_field_id(view_ds: &Dataset) -> Result<i32> {
-    view_ds
-        .schema()
-        .field(SOURCE_ROW_ID_COLUMN)
-        .map(|f| f.id)
-        .ok_or_else(|| Error::Runtime {
-            message: format!("the view has no '{SOURCE_ROW_ID_COLUMN}' column"),
-        })
-}
-
-/// Tee the provenance ids of everything written into `keys`.
-fn collect_source_row_ids(
-    stream: SendableRecordBatchStream,
-    keys: Arc<StdMutex<KeyExistenceFilterBuilder>>,
-    written: Arc<AtomicU64>,
-) -> SendableRecordBatchStream {
-    let schema = stream.schema();
-    let mapped = stream.map(move |batch| {
-        let batch = batch?;
-        let column = batch
-            .column_by_name(SOURCE_ROW_ID_COLUMN)
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "'{SOURCE_ROW_ID_COLUMN}' is missing from the rows being written"
-                ))
-            })?
-            .as_primitive_opt::<UInt64Type>()
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!("'{SOURCE_ROW_ID_COLUMN}' is not a uint64"))
-            })?;
-        let mut keys = keys
-            .lock()
-            .map_err(|_| DataFusionError::Internal("provenance key filter poisoned".into()))?;
-        for id in column.values() {
-            keys.insert(KeyValue::UInt64(*id))
-                .map_err(|e| DataFusionError::Internal(e.to_string()))?;
-        }
-        written.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-        Ok(batch)
-    });
-    Box::pin(RecordBatchStreamAdapter::new(schema, mapped))
 }
 
 #[cfg(test)]
@@ -1471,9 +1440,13 @@ mod tests {
 
     /// The rendezvous below is one global pair, so the cases that use it run
     /// one at a time rather than trading each other's signals.
-    pub(super) static EVICTION_CAP: StdMutex<Option<usize>> = StdMutex::new(None);
-    pub(super) fn eviction_cap_override() -> Option<usize> {
-        *EVICTION_CAP.lock().unwrap()
+    pub(super) static DELTA_CAP: StdMutex<Option<(String, usize)>> = StdMutex::new(None);
+    pub(super) fn delta_cap_override(view_uri: &str) -> Option<usize> {
+        DELTA_CAP
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|(target, cap)| (target == view_uri).then_some(*cap))
     }
 
     pub(super) static DRIFT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -1516,7 +1489,8 @@ mod tests {
             })
             .unwrap_or(0)
     }
-    use arrow_array::{Int32Array, record_batch};
+    use arrow_array::types::Float32Type;
+    use arrow_array::{ArrayRef, FixedSizeListArray, Float64Array, Int32Array, record_batch};
     use futures::TryStreamExt;
     use lance::dataset::NewColumnTransform;
     use lance_file::version::LanceFileVersion;
@@ -1587,6 +1561,46 @@ mod tests {
     async fn append(table: &Table, values: Vec<i32>) {
         let batch = record_batch!(("x", Int32, values)).unwrap();
         table.add(batch).execute().await.unwrap();
+    }
+
+    #[test]
+    fn operations_invisible_to_row_deltas_require_rebuild() {
+        assert!(delta_operation_requires_rebuild(&Operation::DataOverlay {
+            groups: Vec::new(),
+        }));
+        assert!(delta_operation_requires_rebuild(&Operation::Restore {
+            version: 1,
+        }));
+        assert!(!delta_operation_requires_rebuild(&Operation::Append {
+            fragments: Vec::new(),
+        }));
+    }
+
+    #[test]
+    fn bag_delta_respects_the_byte_budget() {
+        let batch = record_batch!(("x", Int32, [1])).unwrap();
+        let mut weights = HashMap::new();
+        let mut evaluated_bytes = 0;
+
+        assert!(!accumulate(&mut weights, &batch, 1, &mut evaluated_bytes, 1,).unwrap());
+    }
+
+    #[test]
+    fn wide_views_use_the_columnar_rebuild_path() {
+        let item = Arc::new(arrow_schema::Field::new("item", DataType::Float32, true));
+        let wide = ArrowSchema::new(vec![arrow_schema::Field::new(
+            "vector",
+            DataType::FixedSizeList(item, 768),
+            true,
+        )]);
+        let narrow = ArrowSchema::new(vec![arrow_schema::Field::new(
+            "value",
+            DataType::Int32,
+            true,
+        )]);
+
+        assert!(view_reconciliation_exceeds_budget(&wide, 1_000_000));
+        assert!(!view_reconciliation_exceeds_budget(&narrow, 1_000));
     }
 
     #[tokio::test]
@@ -1734,6 +1748,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_vector_append_streams_without_bag_encoding() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let vectors = |value| {
+            Arc::new(
+                FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                    [Some(vec![Some(value); 768])],
+                    768,
+                ),
+            ) as ArrayRef
+        };
+        let batch = RecordBatch::try_from_iter([
+            ("id", Arc::new(Int32Array::from(vec![1])) as ArrayRef),
+            ("vector", vectors(1.0)),
+        ])
+        .unwrap();
+        let source = conn
+            .create_table("vector_src", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("vector_view", "vector_src")
+            .select([("vector", "vector")])
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+
+        source
+            .add(
+                RecordBatch::try_from_iter([
+                    ("id", Arc::new(Int32Array::from(vec![2])) as ArrayRef),
+                    ("vector", vectors(2.0)),
+                ])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.rows_written, 1);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
+
+        source
+            .update()
+            .column("id", "id + 10")
+            .only_if("id = 1")
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.rows_written, 0);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
     async fn test_incremental_applies_the_filter() {
         let (conn, source) = db_with_source(vec![1, 20]).await;
         let view = conn
@@ -1796,8 +1870,129 @@ mod tests {
         assert_eq!(read(view.table(), "twice").await, vec![2, 6, 40]);
     }
 
-    /// Legacy storage cannot serve the row-version columns update discovery
-    /// scans; appends stay incremental, updates rebuild rather than fail.
+    #[tokio::test]
+    async fn test_update_reconciles_duplicate_output_rows_as_a_bag() {
+        let (conn, source) = db_with_source(vec![1, 1, 2]).await;
+        let view = conn
+            .create_materialized_view("parity", "src")
+            .select([("bucket", "x % 2")])
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(read(view.table(), "bucket").await, vec![0, 1, 1]);
+
+        source
+            .update()
+            .column("x", "4")
+            .only_if("x = 1")
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.rows_written, 2);
+        assert_eq!(read(view.table(), "bucket").await, vec![0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn test_update_reconciles_filter_transitions() {
+        let (conn, source) = db_with_source(vec![1, 20]).await;
+        let view = conn
+            .create_materialized_view("big_updates", "src")
+            .select([("x", "x")])
+            .only_if("x > 10")
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+
+        source
+            .update()
+            .column("x", "30")
+            .only_if("x = 1")
+            .execute()
+            .await
+            .unwrap();
+        let entered = view.refresh().execute().await.unwrap();
+        assert_eq!(entered.mode, RefreshMode::Incremental);
+        assert_eq!(read(view.table(), "x").await, vec![20, 30]);
+
+        source
+            .update()
+            .column("x", "2")
+            .only_if("x = 20")
+            .execute()
+            .await
+            .unwrap();
+        let left = view.refresh().execute().await.unwrap();
+        assert_eq!(left.mode, RefreshMode::Incremental);
+        assert_eq!(left.rows_written, 0);
+        assert_eq!(read(view.table(), "x").await, vec![30]);
+    }
+
+    #[tokio::test]
+    async fn test_update_reconciles_null_and_float_keys() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("value", Float64, [Some(f64::NAN), None, Some(-0.0)])
+        )
+        .unwrap();
+        let source = conn
+            .create_table("float_src", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("float_view", "float_src")
+            .select([("value", "value")])
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+
+        for (id, value) in [(1, "1.0"), (2, "2.0"), (3, "0.0")] {
+            source
+                .update()
+                .column("value", value)
+                .only_if(format!("id = {id}"))
+                .execute()
+                .await
+                .unwrap();
+        }
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.rows_written, 3);
+
+        let batches = view
+            .table()
+            .query()
+            .select(Select::columns(&["value"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut values: Vec<f64> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch["value"]
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .iter()
+                    .flatten()
+            })
+            .collect();
+        values.sort_by(f64::total_cmp);
+        assert_eq!(values, vec![0.0, 1.0, 2.0]);
+    }
+
+    /// Legacy storage cannot serve DatasetDelta row streams, so it rebuilds
+    /// rather than retaining the former fragment-classification path.
     #[tokio::test]
     async fn test_a_legacy_storage_source_is_reconciled() {
         let conn = connect("memory://").execute().await.unwrap();
@@ -1828,7 +2023,7 @@ mod tests {
             .await
             .unwrap();
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.mode, RefreshMode::Rebuild);
         assert_eq!(read(view.table(), "twice").await, vec![2, 4, 6, 8]);
 
         source
@@ -1844,15 +2039,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_evicts_the_view_rows_it_removed() {
+    async fn test_delete_rebuilds_without_before_images() {
         let (_conn, source, view) = refreshed_doubled(vec![1, 2, 3]).await;
 
-        // A delete removes source rows without changing the ones that
-        // remain, so the view evicts exactly those rows and keeps the rest
-        // rather than recomputing every row it already held.
         source.delete("x = 2").await.unwrap();
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.mode, RefreshMode::Rebuild);
         assert_eq!(read(view.table(), "twice").await, vec![2, 6]);
 
         // A delete and an append in one span: both are applied.
@@ -1863,13 +2055,28 @@ mod tests {
             .await
             .unwrap();
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.mode, RefreshMode::Rebuild);
         assert_eq!(read(view.table(), "twice").await, vec![6, 8]);
     }
 
-    /// merge_insert commits an `Update`, and its by-source arm removes rows
-    /// rather than changing them, so the classifier must treat that
-    /// transaction form as a source of deletions.
+    #[tokio::test]
+    async fn test_restore_rebuilds_rows_hidden_from_the_delta_streams() {
+        let (_conn, source, view) = refreshed_doubled(vec![1, 2, 3]).await;
+        let original_version = source.version().await.unwrap();
+
+        source.delete("x = 2").await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(read(view.table(), "twice").await, vec![2, 6]);
+
+        source.checkout(original_version).await.unwrap();
+        source.restore().await.unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(read(view.table(), "twice").await, vec![2, 4, 6]);
+    }
+
+    /// merge_insert's by-source arm removes rows, which rebuilds until the
+    /// delta API can return deleted-row before-images.
     #[tokio::test]
     async fn test_merge_insert_by_source_delete_evicts_the_view_rows() {
         let (_conn, source, view) = refreshed_doubled(vec![1, 2, 3]).await;
@@ -1881,7 +2088,7 @@ mod tests {
         merge.execute(Box::new(reader)).await.unwrap();
 
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.mode, RefreshMode::Rebuild);
         assert_eq!(read(view.table(), "twice").await, vec![2, 6]);
     }
 
@@ -2023,11 +2230,20 @@ mod tests {
         assert_eq!(read(&after, "twice").await, vec![22, 24, 26]);
     }
 
-    async fn provenance_by_x(table: &Table) -> HashMap<i32, u64> {
-        let batches = table
-            .query()
-            .select(Select::columns(&["x", SOURCE_ROW_ID_COLUMN]))
-            .execute()
+    async fn row_id_by_x(table: &Table) -> HashMap<i32, u64> {
+        let dataset = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .as_ref()
+            .clone();
+        let mut scanner = dataset.scan();
+        scanner.with_row_id().project(&["x", ROW_ID]).unwrap();
+        let batches = scanner
+            .try_into_stream()
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -2037,7 +2253,7 @@ mod tests {
             .iter()
             .flat_map(|batch| {
                 let xs = batch["x"].as_any().downcast_ref::<Int32Array>().unwrap();
-                let ids = batch[SOURCE_ROW_ID_COLUMN].as_primitive::<UInt64Type>();
+                let ids = batch[ROW_ID].as_primitive::<UInt64Type>();
                 (0..batch.num_rows())
                     .map(|i| (xs.value(i), ids.value(i)))
                     .collect::<Vec<_>>()
@@ -2055,10 +2271,10 @@ mod tests {
 
         let native = view.table().as_native().unwrap();
         let view_ds = native.dataset.get().await.unwrap().as_ref().clone();
-        let provenance = provenance_by_x(view.table()).await;
+        let row_ids = row_id_by_x(view.table()).await;
 
         let mut eviction = Eviction::new(&view_ds, 2);
-        let batch = UInt64Array::from_iter_values([1, 2, 3, 4].map(|x| provenance[&x]));
+        let batch = UInt64Array::from_iter_values([1, 2, 3, 4].map(|x| row_ids[&x]));
         eviction.push(&batch).await.unwrap();
         assert_eq!(
             eviction.peak, 2,
@@ -2098,12 +2314,7 @@ mod tests {
         // The other process's first rebuild, reduced to its commit. Its
         // source rows are DISJOINT from ours -- the sentinel alone must make
         // the two rebuilds conflict.
-        let batch = record_batch!(
-            ("x", Int32, [8, 9]),
-            ("twice", Int32, [16, 18]),
-            ("__source_row_id", UInt64, [7u64, 8])
-        )
-        .unwrap();
+        let batch = record_batch!(("x", Int32, [8, 9]), ("twice", Int32, [16, 18])).unwrap();
         let schema = Arc::new(ArrowSchema::from(view_ds.schema()));
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -2118,10 +2329,6 @@ mod tests {
             schema.clone(),
             futures::stream::iter([Ok(batch)]),
         ));
-        let keys = Arc::new(StdMutex::new(KeyExistenceFilterBuilder::new(vec![
-            source_row_id_field_id(&view_ds).unwrap(),
-        ])));
-        let stream = collect_source_row_ids(stream, keys.clone(), Arc::new(AtomicU64::new(0)));
         let write_txn = InsertBuilder::new(WriteDestination::Dataset(Arc::new(view_ds.clone())))
             .with_params(&WriteParams {
                 mode: WriteMode::Append,
@@ -2132,12 +2339,6 @@ mod tests {
             .unwrap();
         let Operation::Append { fragments } = write_txn.operation else {
             panic!("expected an append");
-        };
-        let filter = {
-            let mut keys = keys.lock().unwrap();
-            keys.insert(KeyValue::UInt64(super::REFRESH_TOKEN_ID))
-                .unwrap();
-            keys.build()
         };
         CommitBuilder::new(WriteDestination::Dataset(Arc::new(view_ds.clone())))
             .execute(Transaction::new(
@@ -2150,7 +2351,7 @@ mod tests {
                     compacted_sstables: Vec::new(),
                     fields_for_preserving_frag_bitmap: Vec::new(),
                     update_mode: None,
-                    inserted_rows_filter: Some(filter),
+                    inserted_rows_filter: Some(refresh_filter()),
                     updated_fragment_offsets: None,
                 },
                 None,
@@ -2196,12 +2397,7 @@ mod tests {
 
         // The concurrent refresh, reduced to its commit: disjoint rows, the
         // shared token alone must collide.
-        let batch = record_batch!(
-            ("x", Int32, [9]),
-            ("twice", Int32, [18]),
-            ("__source_row_id", UInt64, [8u64])
-        )
-        .unwrap();
+        let batch = record_batch!(("x", Int32, [9]), ("twice", Int32, [18])).unwrap();
         let schema = Arc::new(ArrowSchema::from(view_ds.schema()));
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -2216,8 +2412,6 @@ mod tests {
             schema.clone(),
             futures::stream::iter([Ok(batch)]),
         ));
-        let keys = empty_keys(&view_ds).unwrap();
-        let stream = collect_source_row_ids(stream, keys.clone(), Arc::new(AtomicU64::new(0)));
         let write_txn = InsertBuilder::new(WriteDestination::Dataset(Arc::new(view_ds.clone())))
             .with_params(&WriteParams {
                 mode: WriteMode::Append,
@@ -2229,7 +2423,6 @@ mod tests {
         let Operation::Append { fragments } = write_txn.operation else {
             panic!("expected an append");
         };
-        let filter = refresh_filter(&keys).unwrap();
         CommitBuilder::new(WriteDestination::Dataset(Arc::new(view_ds.clone())))
             .execute(Transaction::new(
                 view_ds.version().version,
@@ -2241,7 +2434,7 @@ mod tests {
                     compacted_sstables: Vec::new(),
                     fields_for_preserving_frag_bitmap: Vec::new(),
                     update_mode: None,
-                    inserted_rows_filter: Some(filter),
+                    inserted_rows_filter: Some(refresh_filter()),
                     updated_fragment_offsets: None,
                 },
                 None,
@@ -2263,31 +2456,60 @@ mod tests {
         );
     }
 
-    /// Past the eviction cap the refresh falls back to the streamed rebuild,
-    /// and the result is identical either way.
+    /// Appends stream without a bag, while updates past the bag cap fall back
+    /// to the streamed rebuild. Both produce the same result.
     #[tokio::test]
-    async fn test_oversized_delta_falls_back_to_rebuild() {
+    async fn test_only_bag_deltas_are_subject_to_the_row_cap() {
         let (conn, source) = db_with_source((1..=20).collect()).await;
-        let view = doubled_view(&conn).await;
+        let view = conn
+            .create_materialized_view("bag_cap", "src")
+            .select([("x", "x"), ("twice", "x * 2")])
+            .execute()
+            .await
+            .unwrap();
         view.refresh().execute().await.unwrap();
+        let view_uri = view
+            .table()
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .uri()
+            .to_string();
 
-        source.delete("x <= 10").await.unwrap();
-        *tests::EVICTION_CAP.lock().unwrap() = Some(4);
+        append(&source, (21..=30).collect()).await;
+        *tests::DELTA_CAP.lock().unwrap() = Some((view_uri.clone(), 4));
         let result = view.refresh().execute().await;
-        *tests::EVICTION_CAP.lock().unwrap() = None;
+        *tests::DELTA_CAP.lock().unwrap() = None;
         let result = result.unwrap();
         assert_eq!(
             result.mode,
-            RefreshMode::Rebuild,
-            "ten evictions, cap of four"
+            RefreshMode::Incremental,
+            "streamed inserts do not occupy the bag"
         );
-        assert_eq!(read(view.table(), "x").await, (11..=20).collect::<Vec<_>>());
+        assert_eq!(read(view.table(), "x").await, (1..=30).collect::<Vec<_>>());
 
-        // Under the cap the same shape stays incremental.
-        source.delete("x = 11").await.unwrap();
+        source
+            .update()
+            .column("x", "x + 100")
+            .only_if("x <= 3")
+            .execute()
+            .await
+            .unwrap();
+        *tests::DELTA_CAP.lock().unwrap() = Some((view_uri, 4));
+        let result = view.refresh().execute().await;
+        *tests::DELTA_CAP.lock().unwrap() = None;
+        assert_eq!(result.unwrap().mode, RefreshMode::Rebuild);
+
+        append(&source, vec![31]).await;
         let result = view.refresh().execute().await.unwrap();
         assert_eq!(result.mode, RefreshMode::Incremental);
-        assert_eq!(read(view.table(), "x").await, (12..=20).collect::<Vec<_>>());
+        let mut expected = (4..=31).collect::<Vec<_>>();
+        expected.extend([101, 102, 103]);
+        expected.sort();
+        assert_eq!(read(view.table(), "x").await, expected);
     }
 
     /// A cap of zero is a view that holds nothing, not a view without a cap.
@@ -2388,17 +2610,16 @@ mod tests {
         assert_eq!(read(view.table(), "twice").await, vec![2, 4, 6]);
     }
 
-    /// An append swallowed by a later compaction cannot be told apart from
-    /// the rows the view already holds, so the refresh rebuilds -- once --
-    /// rather than duplicate or drop.
+    /// DatasetDelta identifies an append even when a later compaction folds
+    /// its fragment into existing data.
     #[tokio::test]
-    async fn test_append_folded_into_compaction_rebuilds() {
+    async fn test_append_folded_into_compaction_stays_incremental() {
         let (_conn, source, view) = refreshed_doubled(vec![1]).await;
 
         append(&source, vec![2]).await;
         compact(&source).await;
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.mode, RefreshMode::Incremental);
         assert_eq!(read(view.table(), "twice").await, vec![2, 4]);
     }
 
@@ -2504,17 +2725,19 @@ mod tests {
         let result = view.refresh().execute().await.unwrap();
         assert_eq!(result.rows_written, 3);
 
-        // The cap counts already-held rows, so only one appended row lands.
+        // A changed capped view rebuilds because rows previously skipped at
+        // the cap are outside the incremental watermark.
         append(&source, vec![4, 5, 6]).await;
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.mode, RefreshMode::Incremental);
-        assert_eq!(result.rows_written, 1);
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 4);
         assert_eq!(view.table().count_rows(None).await.unwrap(), 4);
 
-        // At the cap, later appends only move the watermark.
+        // Further row changes rebuild for the same reason.
         append(&source, vec![7]).await;
         let result = view.refresh().execute().await.unwrap();
-        assert_eq!(result.rows_written, 0);
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 4);
         assert_eq!(
             view.refresh().execute().await.unwrap().mode,
             RefreshMode::NoOp
@@ -2580,26 +2803,12 @@ mod tests {
         );
     }
 
-    /// Provenance: every view row records the source row that produced it.
     #[tokio::test]
-    async fn test_source_row_ids_are_recorded() {
+    async fn test_view_schema_has_no_source_row_id() {
         let (_conn, _, view) = refreshed_doubled(vec![1, 2, 3]).await;
-
-        let batches = view
-            .table()
-            .query()
-            .select(Select::columns(&[SOURCE_ROW_ID_COLUMN]))
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total, 3);
-        for batch in &batches {
-            assert_eq!(batch[SOURCE_ROW_ID_COLUMN].null_count(), 0);
-        }
+        let schema = view.table().schema().await.unwrap();
+        assert!(schema.field_with_name("__source_row_id").is_err());
+        assert_eq!(schema.fields().len(), 2);
     }
 
     #[tokio::test]
@@ -2655,9 +2864,7 @@ mod tests {
         assert_eq!(read(view.table(), "twice").await, vec![2, 4]);
     }
 
-    /// Views chain: a view's stable row ids and provenance column make it a
-    /// source like any other, and the default projection takes its declared
-    /// columns without copying its provenance.
+    /// Views chain: a view's stable row ids make it a source like any other.
     #[tokio::test]
     async fn test_a_view_can_source_another_view() {
         let (conn, source) = db_with_source(vec![1, 2, 30]).await;
@@ -2670,13 +2877,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        assert!(
-            second
-                .definition()
-                .projections
-                .iter()
-                .all(|p| p.output != SOURCE_ROW_ID_COLUMN)
-        );
+        assert_eq!(second.definition().projections.len(), 2);
         let result = second.refresh().execute().await.unwrap();
         assert_eq!(result.rows_written, 1);
         assert_eq!(read(second.table(), "twice").await, vec![60]);
@@ -2983,47 +3184,6 @@ mod tests {
 
         let err = view.refresh().execute().await.unwrap_err();
         assert!(matches!(err, Error::Schema { message } if message.contains("does not produce")),);
-    }
-
-    /// An overlay replaces cell values without changing any file path; the
-    /// signature must see it, scoped to the columns the view reads like
-    /// data files are.
-    #[test]
-    fn test_fragment_signature_sees_overlays() {
-        use lance_file::version::ConcreteFileVersion;
-        use lance_table::format::DataFile;
-        use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
-
-        let base = Fragment::new(7);
-        let mut file = DataFile::new_unstarted("f0.lance", ConcreteFileVersion::V2_1);
-        file.fields = vec![0, 1].into();
-        let mut with_file = base.clone();
-        with_file.files.push(file.clone());
-
-        let overlay = |field: i32| {
-            let mut data_file = DataFile::new_unstarted("o0.lance", ConcreteFileVersion::V2_1);
-            data_file.fields = vec![field].into();
-            DataOverlayFile {
-                data_file,
-                coverage: OverlayCoverage::PerField(Vec::new()),
-                committed_version: 9,
-            }
-        };
-        let relevant: HashSet<i32> = [0].into_iter().collect();
-
-        let mut overlaid_relevant = with_file.clone();
-        overlaid_relevant.overlays.push(overlay(0));
-        assert_ne!(
-            fragment_signature(&with_file, &relevant),
-            fragment_signature(&overlaid_relevant, &relevant),
-        );
-
-        let mut overlaid_unrelated = with_file.clone();
-        overlaid_unrelated.overlays.push(overlay(5));
-        assert_eq!(
-            fragment_signature(&with_file, &relevant),
-            fragment_signature(&overlaid_unrelated, &relevant),
-        );
     }
 
     /// An output whose name needs quoting flows through as a projection

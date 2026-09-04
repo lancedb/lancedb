@@ -326,9 +326,9 @@ export abstract class Connection {
    * metadata; `view.refresh()` computes the rows. The view is a normal
    * table: it can be queried, indexed and searched, and it appears in
    * `tableNames`. The source table must have stable row ids (create it with
-   * the `newTableEnableStableRowIds` storage option); they keep the view's
-   * provenance valid across source compactions and cannot be enabled after
-   * a table exists. Local databases only.
+   * the `newTableEnableStableRowIds` storage option); DatasetDelta uses them
+   * to retrieve update before-images, and they cannot be enabled after a
+   * table exists. Local databases only.
    */
   abstract createMaterializedView(
     name: string,
