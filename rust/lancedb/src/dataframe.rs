@@ -163,7 +163,7 @@ impl Drop for LocalStreamState {
 }
 
 fn prepare_local_stream(
-    stream: SendableRecordBatchStream,
+    stream: datafusion_physical_plan::SendableRecordBatchStream,
 ) -> (SendableRecordBatchStream, AbortHandle, Arc<AtomicU8>) {
     let schema = stream.schema();
     let stream = stream.map_err(execution_error);
@@ -774,7 +774,9 @@ mod tests {
         let stream = futures::stream::iter([Err(Error::Runtime {
             message: "broken stream".to_string(),
         })]);
-        let stream = Box::pin(SimpleRecordBatchStream::new(stream, schema));
+        let stream = Box::pin(
+            datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream),
+        );
         let (mut stream, _abort_handle, status) = prepare_local_stream(stream);
 
         assert!(stream.try_next().await.is_err());
