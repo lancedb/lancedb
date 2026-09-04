@@ -42,12 +42,13 @@ use datafusion_common::{Column, TableReference};
 use datafusion_expr::{Expr, SortExpr};
 use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
 use datafusion_substrait::logical_plan::producer::to_substrait_plan;
+use futures::TryStreamExt;
 use prost::Message;
 use uuid::Uuid;
 
 use crate::{
     Error, Result,
-    arrow::SendableRecordBatchStream,
+    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     database::Database,
     sql::{Query, QueryDescription, QueryHandle, QueryStatus},
     table::{BaseTable, datafusion::BaseTableAdapter},
@@ -432,6 +433,9 @@ impl DataFrame {
                 .execute_stream()
                 .await
                 .map_err(planning_error)?;
+            let schema = stream.schema();
+            let stream = stream.map_err(planning_error);
+            let stream = Box::pin(SimpleRecordBatchStream::new(stream, schema));
             Ok(Query::new(Arc::new(LocalQueryHandle::new(stream))))
         }
     }
