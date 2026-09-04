@@ -1192,6 +1192,9 @@ impl Table {
     /// valid empty blobs contain empty byte strings. Prefer
     /// [`Self::fetch_blob_files`] for large selections.
     ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids.
+    ///
     /// ```
     /// use arrow_array::UInt64Array;
     /// use futures::TryStreamExt;
@@ -1233,6 +1236,9 @@ impl Table {
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
     ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids.
+    ///
     /// ```
     /// use lancedb::blob::BlobRangeRequest;
     ///
@@ -1270,6 +1276,9 @@ impl Table {
     ///
     /// Same length and order as `row_ids`. Null rows are `None`. Bytes are not
     /// read from disk until a call to [`BlobFile::read`].
+    ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids.
     ///
     /// ```
     /// # use lancedb::Table;

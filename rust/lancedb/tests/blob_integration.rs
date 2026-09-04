@@ -111,7 +111,7 @@ async fn query_image_struct(table: &Table) -> StructArray {
 }
 
 #[tokio::test]
-async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Result<()> {
+async fn declaring_blob_column_uses_v2_2_and_default_row_ids() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = db
@@ -120,12 +120,12 @@ async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Resu
         .await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
 
 #[tokio::test]
-async fn explicit_stable_row_id_setting_wins_over_blob_default() -> Result<()> {
+async fn blob_create_honors_disabled_stable_row_ids() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = db
@@ -179,7 +179,7 @@ async fn creating_with_blob_data_bumps_format() -> Result<()> {
     let table = db.create_table("t", batch).execute().await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
     assert_eq!(table.count_rows(None).await?, 1);
     Ok(())
 }
@@ -277,7 +277,7 @@ async fn add_rejects_uncoercible_blob_input() -> Result<()> {
 }
 
 #[tokio::test]
-async fn connection_level_stable_row_id_setting_wins_over_blob_default() -> Result<()> {
+async fn connection_disables_stable_row_ids_on_blob_create() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap())
         .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "false")
@@ -294,13 +294,30 @@ async fn connection_level_stable_row_id_setting_wins_over_blob_default() -> Resu
 }
 
 #[tokio::test]
-async fn namespace_create_applies_blob_defaults() -> Result<()> {
+async fn namespace_blob_create_uses_v2_2_and_default_row_ids() -> Result<()> {
     let tmp = tempdir().unwrap();
     let mut properties = std::collections::HashMap::new();
     properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
     let db = connect_namespace("dir", properties).execute().await?;
     let table = db
         .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(!uses_stable_row_ids(&table).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn namespace_create_honors_enabled_stable_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let mut properties = std::collections::HashMap::new();
+    properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
+    let db = connect_namespace("dir", properties).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
         .execute()
         .await?;
 
@@ -430,6 +447,35 @@ async fn collect_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
         .collect())
 }
 
+fn assert_missing_blob_row_ids(err: &Error) {
+    assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    let message = err.to_string();
+    assert!(message.contains("row ids"), "{message}");
+    assert!(!message.contains("rowaddr"), "{message}");
+    assert!(!message.contains("fragment"), "{message}");
+}
+
+async fn assert_fetch_apis_reject_missing_row_ids(table: &Table, row_ids: &[u64]) -> Result<()> {
+    let err = table.fetch_blobs("image", row_ids).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+
+    let err = table.fetch_blob_files("image", row_ids).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+
+    let err = table
+        .fetch_blob_ranges(
+            "image",
+            row_ids
+                .iter()
+                .copied()
+                .map(|row_id| BlobRangeRequest::new(row_id, 0, 1)),
+        )
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
 #[tokio::test]
 async fn fetch_blobs_round_trips_bytes() -> Result<()> {
     let tmp = tempdir().unwrap();
@@ -482,7 +528,7 @@ async fn fetch_blobs_round_trips_nested_blob_column() -> Result<()> {
     let table = db.create_table("t", batch).execute().await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
 
     let ids = collect_row_ids(&table).await?;
     let bytes = table.fetch_blobs("info.blob", &ids).await?;
@@ -656,8 +702,7 @@ async fn fetch_blob_ranges_validates_requests() -> Result<()> {
         .fetch_blob_ranges("image", [BlobRangeRequest::new(u64::MAX, 0, 1)])
         .await
         .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+    assert_missing_blob_row_ids(&err);
     Ok(())
 }
 
@@ -690,7 +735,21 @@ async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
 
     let err = table.fetch_blobs("image", &[u64::MAX]).await.unwrap_err();
-    assert!(err.to_string().contains("row IDs"));
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_files_rejects_missing_fragment_row_addr() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let err = table
+        .fetch_blob_files("image", &[1u64 << 32])
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
     Ok(())
 }
 
@@ -700,24 +759,25 @@ async fn fetch_blob_apis_reject_mixed_valid_and_missing_row_ids() -> Result<()> 
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
     let row_id = collect_row_ids(&table).await?[0];
-    let row_ids = [u64::MAX, row_id];
+    let missing_row_addr = 1u64 << 32;
+    let row_ids = [missing_row_addr, row_id];
+    assert_fetch_apis_reject_missing_row_ids(&table, &row_ids).await
+}
 
-    let err = table.fetch_blobs("image", &row_ids).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+#[tokio::test]
+async fn fetch_blob_apis_reject_deleted_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"one".as_slice()), Some(b"two")])
+            .await?;
+    let pairs = collect_id_rowid(&table).await?;
+    let deleted_row_addr = pairs.iter().find(|(id, _)| *id == 2).unwrap().1;
+    let live_row_addr = pairs.iter().find(|(id, _)| *id == 1).unwrap().1;
 
-    let err = table.fetch_blob_files("image", &row_ids).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+    table.delete("id = 2").await?;
 
-    let requests = row_ids.map(|row_id| BlobRangeRequest::new(row_id, 0, 1));
-    let err = table
-        .fetch_blob_ranges("image", requests)
-        .await
-        .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
-    Ok(())
+    assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_addr, live_row_addr]).await
 }
 
 #[tokio::test]
@@ -920,7 +980,10 @@ async fn fetch_blobs_after_delete() -> Result<()> {
 #[tokio::test]
 async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<()> {
     let tmp = tempdir().unwrap();
-    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+        .execute()
+        .await?;
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"frag-one".as_slice())]).await?;
     table
         .add(binary_input_batch(&[2], &[Some(b"frag-two".as_slice())]))

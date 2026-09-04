@@ -1793,6 +1793,9 @@ class Table(ABC):
         The result has the same length and order as ``row_ids``. Null blobs
         produce null slots; valid empty blobs produce ``b""``.
 
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
+
         Convenience for small payloads. For large values use
         :meth:`fetch_blob_files`.
         """
@@ -1810,6 +1813,9 @@ class Table(ABC):
         The result has the same length and order as ``requests``; null blobs
         produce null slots and empty ranges on non-null blobs produce ``b""``.
 
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
+
         Row IDs can be obtained from a query with ``with_row_id(True)``. This
         API is currently supported only by local tables.
         """
@@ -1825,6 +1831,9 @@ class Table(ABC):
         ``_rowid`` or a ``_lance_row_id`` field on the blob descriptor. Null
         rows are ``None``. Remote tables require LanceDB Cloud server 0.5.0 or
         newer.
+
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
         """
 
     @abstractmethod
