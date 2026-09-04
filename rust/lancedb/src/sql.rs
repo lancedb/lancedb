@@ -77,7 +77,6 @@ impl std::fmt::Debug for Query {
 }
 
 impl Query {
-    #[cfg(feature = "remote")]
     pub(crate) fn new(handle: Arc<dyn QueryHandle>) -> Self {
         Self { handle }
     }

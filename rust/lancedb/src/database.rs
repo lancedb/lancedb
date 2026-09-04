@@ -362,6 +362,11 @@ pub trait Database:
             message: "DataFrame execution is not supported by this database".to_string(),
         })
     }
+    /// Whether DataFrames should be serialized and submitted to this database.
+    #[doc(hidden)]
+    fn executes_dataframe_remotely(&self) -> bool {
+        false
+    }
     /// Describe a submitted SQL query by its connection-scoped id.
     async fn describe_query(&self, _query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
         Err(crate::error::Error::NotSupported {

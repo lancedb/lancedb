@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Lazy, immutable DataFrames for composing remote queries.
+//! Lazy, immutable DataFrames for composing local or remote queries.
 //!
 //! Create a DataFrame from an opened [`crate::Table`], apply DataFusion-style
 //! transformations, and call [`DataFrame::execute`] to submit the query. Query
@@ -24,9 +24,13 @@
 //! # }
 //! ```
 
-use std::sync::{Arc, LazyLock};
+use std::sync::{
+    Arc, LazyLock, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use arrow_schema::Schema;
+use async_trait::async_trait;
 use datafusion::{
     dataframe::DataFrame as DfDataFrame,
     datasource::provider_as_source,
@@ -39,8 +43,15 @@ use datafusion_expr::{Expr, SortExpr};
 use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
 use datafusion_substrait::logical_plan::producer::to_substrait_plan;
 use prost::Message;
+use uuid::Uuid;
 
-use crate::{Error, Result, database::Database};
+use crate::{
+    Error, Result,
+    arrow::SendableRecordBatchStream,
+    database::Database,
+    sql::{Query, QueryDescription, QueryHandle, QueryStatus},
+    table::{BaseTable, datafusion::BaseTableAdapter},
+};
 
 static DATAFRAME_SESSION: LazyLock<SessionContext> = LazyLock::new(SessionContext::new);
 
@@ -95,6 +106,65 @@ struct EncodedPlan {
 struct ExecutionContext {
     database: Arc<dyn Database>,
     default_namespace_path: Vec<String>,
+    execute_remotely: bool,
+}
+
+struct LocalQueryHandle {
+    id: Uuid,
+    stream: Mutex<Option<SendableRecordBatchStream>>,
+    cancelled: AtomicBool,
+}
+
+impl LocalQueryHandle {
+    fn new(stream: SendableRecordBatchStream) -> Self {
+        Self {
+            id: Uuid::now_v7(),
+            stream: Mutex::new(Some(stream)),
+            cancelled: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl QueryHandle for LocalQueryHandle {
+    fn id(&self) -> Uuid {
+        self.id
+    }
+
+    async fn describe(&self) -> Result<QueryDescription> {
+        let cancelled = self.cancelled.load(Ordering::SeqCst);
+        Ok(QueryDescription {
+            id: self.id,
+            status: if cancelled {
+                QueryStatus::Cancelled
+            } else {
+                QueryStatus::Finished
+            },
+            progress: Some(1.0),
+            expires_at: None,
+        })
+    }
+
+    async fn reader(&self) -> Result<SendableRecordBatchStream> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(Error::Runtime {
+                message: "DataFrame query was cancelled".to_string(),
+            });
+        }
+        self.stream
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| Error::Runtime {
+                message: "DataFrame query results can only be consumed once".to_string(),
+            })
+    }
+
+    async fn cancel(&self) -> Result<()> {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.stream.lock().unwrap().take();
+        Ok(())
+    }
 }
 
 /// An immutable, DataFusion-style logical query plan.
@@ -119,9 +189,9 @@ impl DataFrame {
         Self::from_table_with_execution(name, schema, None)
     }
 
-    pub(crate) fn from_open_table(
+    pub(crate) async fn from_open_table(
         name: impl Into<String>,
-        schema: Arc<Schema>,
+        table: Arc<dyn BaseTable>,
         database: Arc<dyn Database>,
         namespace: &[String],
     ) -> Result<Self> {
@@ -130,14 +200,19 @@ impl DataFrame {
         } else {
             namespace.to_vec()
         };
-        Self::from_table_with_execution(
-            name,
-            schema,
-            Some(ExecutionContext {
+        let source = provider_as_source(Arc::new(BaseTableAdapter::try_new(table).await?));
+        let execute_remotely = database.executes_dataframe_remotely();
+        let plan = LogicalPlanBuilder::scan(TableReference::bare(name.into()), source, None)
+            .and_then(LogicalPlanBuilder::build)
+            .map_err(planning_error)?;
+        Ok(Self {
+            inner: DfDataFrame::new(DATAFRAME_SESSION.state(), plan),
+            execution: Some(ExecutionContext {
                 database,
                 default_namespace_path,
+                execute_remotely,
             }),
-        )
+        })
     }
 
     fn from_table_with_execution(
@@ -334,21 +409,31 @@ impl DataFrame {
 
     /// Submit this plan and return its query lifecycle handle.
     ///
-    /// Execution is available when the DataFrame was created from a table on
-    /// a backend that supports remote DataFrame queries.
+    /// Local tables execute in-process. Remote tables serialize the logical
+    /// plan and submit it to the remote query service.
     pub async fn execute(&self) -> Result<crate::sql::Query> {
         let execution = self.execution.as_ref().ok_or_else(|| Error::InvalidInput {
             message: "this DataFrame is not bound to an opened table".to_string(),
         })?;
-        let plan = self.encode_plan()?;
-        execution
-            .database
-            .execute_dataframe(
-                &plan.bytes,
-                &plan.version,
-                &execution.default_namespace_path,
-            )
-            .await
+        if execution.execute_remotely {
+            let plan = self.encode_plan()?;
+            execution
+                .database
+                .execute_dataframe(
+                    &plan.bytes,
+                    &plan.version,
+                    &execution.default_namespace_path,
+                )
+                .await
+        } else {
+            let stream = self
+                .inner
+                .clone()
+                .execute_stream()
+                .await
+                .map_err(planning_error)?;
+            Ok(Query::new(Arc::new(LocalQueryHandle::new(stream))))
+        }
     }
 
     /// Render the logical plan for diagnostics.
@@ -399,10 +484,15 @@ pub fn aggregate_count(expr: Expr) -> Expr {
 
 #[cfg(test)]
 mod tests {
+    use arrow_array::{Int64Array, RecordBatch};
     use arrow_schema::{DataType, Field};
+    use futures::TryStreamExt;
 
     use super::*;
-    use crate::expr::{col, lit};
+    use crate::{
+        connect,
+        expr::{col, lit},
+    };
 
     fn events() -> DataFrame {
         DataFrame::from_table(
@@ -503,5 +593,40 @@ mod tests {
             )
             .unwrap();
         assert!(!joined.encode_plan().unwrap().bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn executes_local_plan_in_process() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = connect(directory.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))])
+                .unwrap();
+        let table = database
+            .create_table("events", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let query = table
+            .to_df()
+            .await
+            .unwrap()
+            .filter(col("id").gt(lit(1_i64)))
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            query.describe().await.unwrap().status,
+            QueryStatus::Finished
+        );
+        let batches: Vec<RecordBatch> = query.reader().await.unwrap().try_collect().await.unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert!(query.reader().await.is_err());
     }
 }

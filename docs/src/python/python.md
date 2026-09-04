@@ -110,6 +110,9 @@ reader = await frame.execute()
 query = await frame.execute_async()
 ```
 
+Local tables execute the same plans in-process. Remote tables submit them to
+the remote query service.
+
 ::: lancedb.dataframe.DataFrame
     options:
         inherited_members: true

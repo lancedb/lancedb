@@ -98,15 +98,33 @@ def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
         source.drop("missing")
 
 
-def test_dataframe_direct_execution_reports_unsupported_local_backend(tmp_path):
+def test_dataframe_executes_local_plan_in_process(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("events", [{"id": 1}])
     frame = db.open_table("events").to_df().select("id")
 
-    with pytest.raises(NotImplementedError, match="DataFrame execution"):
-        frame.execute_async()
-    with pytest.raises(NotImplementedError, match="DataFrame execution"):
-        frame.execute()
+    assert frame.execute().read_all().to_pydict() == {"id": [1]}
+    query = frame.execute_async()
+    assert query.describe().status == "finished"
+    assert query.reader().read_all().to_pydict() == {"id": [1]}
+
+
+def test_dataframe_rejects_checked_out_versions_and_branches(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("events", [{"id": 1}])
+    version = table.version
+    table.add([{"id": 2}])
+
+    table.checkout(version)
+    with pytest.raises(NotImplementedError, match="checked-out versions or branches"):
+        table.to_df()
+
+    table.checkout_latest()
+    assert table.to_df().schema.names == ["id"]
+
+    branch = table.branches.create("exp")
+    with pytest.raises(NotImplementedError, match="checked-out versions or branches"):
+        branch.to_df()
 
 
 def test_dataframe_exports_are_public():
@@ -124,13 +142,17 @@ def test_sort_expr_uses_identity_equality():
 
 
 @pytest.mark.asyncio
-async def test_async_dataframe_direct_execution(tmp_path):
+async def test_async_dataframe_executes_local_plan_in_process(tmp_path):
     db = await lancedb.connect_async(tmp_path)
     await db.create_table("events", [{"id": 1}])
     table = await db.open_table("events")
     frame = (await table.to_df()).select("id")
 
-    with pytest.raises(NotImplementedError, match="DataFrame execution"):
-        await frame.execute_async()
-    with pytest.raises(NotImplementedError, match="DataFrame execution"):
-        await frame.execute()
+    assert [
+        batch.to_pydict() for batch in await (await frame.execute()).read_all()
+    ] == [{"id": [1]}]
+    query = await frame.execute_async()
+    assert (await query.describe()).status == "finished"
+    assert [batch.to_pydict() for batch in await (await query.reader()).read_all()] == [
+        {"id": [1]}
+    ]

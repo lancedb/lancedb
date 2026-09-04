@@ -800,6 +800,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .await
     }
 
+    fn executes_dataframe_remotely(&self) -> bool {
+        true
+    }
+
     async fn describe_query(&self, query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
         let client = self
             .sql_client

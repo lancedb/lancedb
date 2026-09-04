@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Lazy DataFrame plans for remote LanceDB execution."""
+"""Lazy DataFrame plans for local and remote LanceDB execution."""
 
 from __future__ import annotations
 

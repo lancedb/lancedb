@@ -1178,10 +1178,11 @@ impl Table {
         })?;
         crate::dataframe::DataFrame::from_open_table(
             self.name(),
-            self.schema().await?,
+            self.inner.clone(),
             database,
             self.namespace(),
         )
+        .await
     }
 
     /// Create a read-only handle pinned to the current active revision.
