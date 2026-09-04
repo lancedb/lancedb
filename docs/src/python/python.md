@@ -81,6 +81,61 @@ for batch in query.reader():
 # await query.cancel()
 ```
 
+## DataFrames
+
+Create a lazy DataFusion-style DataFrame from an opened table. Transformations
+are immutable and do not fetch data. `execute` opens the result reader, while
+`execute_async` returns a query lifecycle handle that can be inspected or cancelled.
+LanceDB handles plan conversion and submission internally:
+
+```python
+from lancedb import col
+from lancedb import sql_functions as F
+
+events = db.open_table("events", namespace_path=["production"]).to_df()
+frame = (
+    events.filter(col("status") == "active")
+    .aggregate(["region"], [F.sum(col("amount")).alias("total")])
+    .sort(col("total").sort(ascending=False))
+    .limit(10)
+)
+
+# Choose the blocking reader for a direct result.
+reader = frame.execute()
+
+# Or submit separately and retain a lifecycle handle.
+query = frame.execute_async()
+query.cancel()
+
+# The async API has the same transformations.
+events = await async_db.open_table("events", namespace_path=["production"])
+frame = (await events.to_df()).filter(col("status") == "active").limit(10)
+# Choose the reader or the lifecycle-handle form.
+reader = await frame.execute()
+query = await frame.execute_async()
+await query.cancel()
+```
+
+Local tables execute the plans in-process. Remote tables convert plans to SQL
+and submit them through the remote query service.
+
+::: lancedb.dataframe.DataFrame
+    options:
+        inherited_members: true
+
+::: lancedb.dataframe.AsyncDataFrame
+    options:
+        inherited_members: true
+
+::: lancedb.sql_functions
+    options:
+        members:
+            - avg
+            - count
+            - max
+            - min
+            - sum
+
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
@@ -176,6 +231,8 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 [select][lancedb.query.LanceQueryBuilder.select].
 
 ::: lancedb.expr.Expr
+
+::: lancedb.expr.SortExpr
 
 ::: lancedb.expr.col
 

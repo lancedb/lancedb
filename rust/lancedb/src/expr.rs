@@ -28,6 +28,7 @@ use arrow_schema::DataType;
 use datafusion_expr::{Expr, ScalarUDF, expr_fn::cast};
 use datafusion_functions::string::expr_fn as string_expr_fn;
 
+pub use datafusion_common::ScalarValue;
 pub use datafusion_expr::lit;
 
 /// Create a column reference expression, preserving the name exactly as given.
