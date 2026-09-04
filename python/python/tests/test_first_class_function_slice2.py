@@ -869,19 +869,22 @@ def test_named_struct_function_preserves_nullable_result_fields():
         ("failure_code", False),
     ]
 
-    with pytest.raises(ValueError, match="at least one non-nullable field"):
+    @udf(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.schema(
+            [
+                pa.field("result", pa.int64(), nullable=True),
+                pa.field("failure_code", pa.int32(), nullable=True),
+            ]
+        ),
+    )
+    def all_nullable(value):
+        return {"result": value, "failure_code": None}
 
-        @udf(
-            input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
-            output_schema=pa.schema(
-                [
-                    pa.field("result", pa.int64(), nullable=True),
-                    pa.field("failure_code", pa.int32(), nullable=True),
-                ]
-            ),
-        )
-        def all_nullable(value):
-            return {"result": value, "failure_code": 0}
+    assert all(
+        field.nullable
+        for field in all_nullable.registration_request.signature.output.fields
+    )
 
 
 def test_metadata_marked_blob_field_uses_the_semantic_type():

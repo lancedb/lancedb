@@ -60,6 +60,10 @@ pub const FUNCTION_BINDING_ID_META_KEY: &str = "computed_column.function.binding
 /// Field metadata key holding this sibling's ordered Function output ordinal.
 pub const FUNCTION_OUTPUT_ORDINAL_META_KEY: &str = "computed_column.function.output_ordinal";
 
+/// Reserved Function output ordinal for an internal flattened-result
+/// assignment column.
+pub const FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL: u32 = u32::MAX;
+
 /// Schema metadata key holding all immutable Function bindings.
 pub const FUNCTION_BINDINGS_META_KEY: &str = "lancedb::function_bindings";
 
@@ -926,9 +930,58 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             output_fields.push(json.fields.into_iter().next().unwrap());
         }
     }
-    if binding.outputs().iter().all(|output| output.nullable) {
+    if let Some(assignment) = binding.assignment() {
+        if binding
+            .outputs()
+            .iter()
+            .any(|output| output.result_field == WHOLE_RESULT_FIELD)
+        {
+            return Err(invalid_function(format!(
+                "Function binding '{}' cannot attach an assignment column to a whole result",
+                binding.binding_id()
+            )));
+        }
+        let field = schema
+            .field_with_name(&assignment.output_name)
+            .map_err(|_| {
+                invalid_function(format!(
+                    "Function binding '{}' assignment column '{}' is missing",
+                    binding.binding_id(),
+                    assignment.output_name
+                ))
+            })?;
+        let metadata = field.metadata();
+        if field.data_type() != &DataType::Boolean
+            || !field.is_nullable()
+            || metadata.get(COMPUTED_COLUMN_META_KEY).map(String::as_str) != Some("true")
+            || metadata.get(KIND_META_KEY).map(String::as_str) != Some(FUNCTION_KIND)
+            || metadata
+                .get(FUNCTION_BINDING_ID_META_KEY)
+                .map(String::as_str)
+                != Some(binding.binding_id())
+            || metadata
+                .get(FUNCTION_OUTPUT_ORDINAL_META_KEY)
+                .and_then(|value| value.parse::<u32>().ok())
+                != Some(FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL)
+        {
+            return Err(invalid_function(format!(
+                "Function binding '{}' assignment column no longer matches its declaration",
+                binding.binding_id()
+            )));
+        }
+        let json = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            ArrowField::new(assignment.output_name.clone(), DataType::Boolean, true),
+        ]))
+        .map_err(|e| invalid_function(format!("invalid Function assignment schema: {e}")))?;
+        output_fields.push(json.fields.into_iter().next().unwrap());
+    } else if binding.outputs().iter().all(|output| output.nullable)
+        && binding
+            .outputs()
+            .iter()
+            .all(|output| output.result_field != WHOLE_RESULT_FIELD)
+    {
         return Err(invalid_function(format!(
-            "Function binding '{}' has no non-nullable assignment field",
+            "Function binding '{}' has no flattened-result assignment column",
             binding.binding_id()
         )));
     }
@@ -1085,11 +1138,6 @@ pub(crate) fn plan_function_application(
             if result_names.len() != output.fields.len() {
                 return Err(invalid_function(
                     "named-struct Function result field names must be unique",
-                ));
-            }
-            if output.fields.iter().all(|field| field.nullable) {
-                return Err(invalid_function(
-                    "named-struct Function output must contain at least one non-nullable field",
                 ));
             }
             let unknown = application
@@ -2866,6 +2914,17 @@ mod tests {
                     &inputs,
                 ));
         }
+        if let Some(assignment) = binding.assignment() {
+            fields.push(
+                ArrowField::new(&assignment.output_name, DataType::Boolean, true).with_metadata(
+                    function_computed_column_metadata(
+                        binding.binding_id(),
+                        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL,
+                        &inputs,
+                    ),
+                ),
+            );
+        }
         ArrowSchema::new(fields)
     }
 
@@ -2884,27 +2943,44 @@ mod tests {
     }
 
     #[test]
-    fn test_binding_preserves_nullable_outputs_with_an_assignment_field() {
+    fn test_binding_preserves_all_nullable_outputs_with_an_assignment_column() {
         let mut raw_binding: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
         ))
         .unwrap();
         raw_binding["outputs"][0]["nullable"] = Value::Bool(true);
-        let binding: FunctionBinding = serde_json::from_value(raw_binding.clone()).unwrap();
+        raw_binding["outputs"][1]["nullable"] = Value::Bool(true);
+        let without_assignment: FunctionBinding =
+            serde_json::from_value(raw_binding.clone()).unwrap();
+        let error = ensure_binding_matches_schema(
+            &valid_function_binding_schema(true, true, &without_assignment),
+            &without_assignment,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("flattened-result assignment column")
+        );
+
+        raw_binding["assignment"] = serde_json::json!({
+            "output_name": "__function_assignment_fb_01K3TEXT",
+            "output_field_id": -1,
+        });
+        raw_binding["output_schema"]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "__function_assignment_fb_01K3TEXT",
+                "nullable": true,
+                "type": {"type": "bool"},
+            }));
+        let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
         ensure_binding_matches_schema(
             &valid_function_binding_schema(true, true, &binding),
             &binding,
         )
         .unwrap();
-
-        raw_binding["outputs"][1]["nullable"] = Value::Bool(true);
-        let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
-        let error = ensure_binding_matches_schema(
-            &valid_function_binding_schema(true, true, &binding),
-            &binding,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("non-nullable assignment field"));
     }
 
     #[test]
@@ -3130,6 +3206,7 @@ mod tests {
     fn test_named_struct_plan_preserves_nullable_result_fields() {
         let mut value = serde_json::to_value(named_struct_application("{}")).unwrap();
         value["output"]["fields"][0]["nullable"] = Value::Bool(true);
+        value["output"]["fields"][1]["nullable"] = Value::Bool(true);
         let application = FunctionApplication::from_json(&value.to_string()).unwrap();
 
         let expanded =
@@ -3151,7 +3228,7 @@ mod tests {
             .as_ref()
             .unwrap();
         assert!(fields[0].nullable);
-        assert!(!fields[1].nullable);
+        assert!(fields[1].nullable);
     }
 
     #[test]

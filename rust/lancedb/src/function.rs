@@ -583,8 +583,7 @@ pub struct InputBinding {
 /// Ordered result-field to table-field mapping for a Function binding.
 ///
 /// `nullable` describes the logical Function result. Physical computed-column
-/// fields remain nullable while unassigned; at least one logically non-nullable
-/// mapping is therefore required to distinguish an assigned row.
+/// fields remain nullable while unassigned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputMapping {
     pub result_field: String,
@@ -595,6 +594,14 @@ pub struct OutputMapping {
     pub nullable: bool,
 }
 
+/// Internal physical column preserving the parent validity of a flattened
+/// named-struct result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignmentMapping {
+    pub output_name: String,
+    pub output_field_id: i32,
+}
+
 /// Immutable Function binding persisted by the Enterprise table service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionBinding {
@@ -602,6 +609,8 @@ pub struct FunctionBinding {
     function: FunctionVersionRef,
     inputs: Vec<InputBinding>,
     outputs: Vec<OutputMapping>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assignment: Option<AssignmentMapping>,
     /// Exact Arrow schema presented to the Function, encoded with the Lance
     /// Namespace Arrow JSON representation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -626,6 +635,10 @@ impl FunctionBinding {
 
     pub fn outputs(&self) -> &[OutputMapping] {
         &self.outputs
+    }
+
+    pub fn assignment(&self) -> Option<&AssignmentMapping> {
+        self.assignment.as_ref()
     }
 
     pub fn input_schema(&self) -> Option<&Value> {

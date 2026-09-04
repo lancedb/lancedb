@@ -23,6 +23,7 @@ from .expr import Expr, col, lit, func
 from .schema import blob, vector
 from .job import AsyncJob, Job
 from .functions import (
+    AssignmentMapping as AssignmentMapping,
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
