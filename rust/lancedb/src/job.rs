@@ -52,21 +52,36 @@ impl TerminalResult {
     }
 
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
+        // `request_id` is only ever `Some` via `TerminalResult::remote`, which
+        // is only constructed behind the `remote` feature (see
+        // `crate::remote::job`). `Error::Http` is likewise `remote`-gated, so
+        // the `Some` arms below must be too — without `remote` the case is
+        // unreachable, but the match still needs a value of type `Error`.
         let value = self.value.ok_or_else(|| match &self.request_id {
+            #[cfg(feature = "remote")]
             Some(request_id) => Error::Http {
                 source: "successful typed job response did not contain a result".into(),
                 request_id: request_id.clone(),
                 status_code: None,
+            },
+            #[cfg(not(feature = "remote"))]
+            Some(_) => Error::Runtime {
+                message: "successful typed job did not contain a result".to_string(),
             },
             None => Error::Runtime {
                 message: "successful typed job did not contain a result".to_string(),
             },
         })?;
         serde_json::from_value(value).map_err(|error| match self.request_id {
+            #[cfg(feature = "remote")]
             Some(request_id) => Error::Http {
                 source: format!("failed to parse typed job result: {error}").into(),
                 request_id,
                 status_code: None,
+            },
+            #[cfg(not(feature = "remote"))]
+            Some(_) => Error::Runtime {
+                message: format!("failed to parse typed job result: {error}"),
             },
             None => Error::Runtime {
                 message: format!("failed to parse typed job result: {error}"),
