@@ -77,14 +77,20 @@ them twice — so a retry loop around `refresh()` is safe.
 ## Local databases only {#availability}
 
 <Warning>
-Materialized views are supported on **local databases**. Calling
-`create_materialized_view` on a remote connection raises `NotImplementedError`.
+**This** materialized view — the one created through `lancedb.connect(...)` — is
+supported on local databases only. Calling `create_materialized_view` on a
+remote `db://` connection raises `NotImplementedError`.
 
-This is the reverse of [functions](/feature-engineering/functions), which run
-only against Cloud and Enterprise. If you are deriving tables on a remote
-database, a [computed column](/feature-engineering/computed-columns) filled by a
-server job is usually the closer fit.
+Enterprise has its own materialized views, created through a different client
+with the same method name. If you are working against an Enterprise deployment,
+that is the one you want; see the Enterprise feature engineering documentation.
+The two are not the same feature and the method name is unfortunately shared, so
+it is worth being sure which client you are holding.
 </Warning>
+
+Note the direction, which is the reverse of
+[functions](/feature-engineering/functions): those run only against Cloud and
+Enterprise and raise locally. Neither mechanism is available on both.
 
 ## Working with the view {#working-with-the-view}
 
