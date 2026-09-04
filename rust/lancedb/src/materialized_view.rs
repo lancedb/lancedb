@@ -31,7 +31,7 @@ use crate::function::FunctionBinding;
 use crate::table::Table;
 use crate::table::computed_columns::{
     FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,
-    ensure_supported_function_metadata, function_bindings_metadata,
+    ensure_declarations_are_planned, function_bindings_metadata,
 };
 use crate::table::refresh::quote_identifier;
 use crate::table::{ColumnDefinition, ColumnKind};
@@ -672,8 +672,9 @@ impl PreparedDeclaration {
         &self.definition
     }
 
-    /// The schema the view will have: the visible columns in declaration
-    /// order, [`SOURCE_ROW_ID_COLUMN`], then any internal Function inputs.
+    /// The schema the view will have: the declared columns in order, any
+    /// internal projections added by [`PreparedDeclaration::input_column`],
+    /// then [`SOURCE_ROW_ID_COLUMN`].
     pub fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -727,16 +728,49 @@ impl PreparedDeclaration {
         Ok(name)
     }
 
-    /// Add computed columns, each at its position among the view's visible
+    /// Add computed columns, each at its position among the declared
     /// columns, with the bindings any of them name.
     ///
-    /// A field carries a table computed-column declaration and refresh never
-    /// computes it: every row refresh writes carries NULL there, and whoever
-    /// owns the declaration fills it. A commit that rewrites only computed
-    /// columns is a fill, the one commit on a view refresh does not treat as
-    /// drift. A declaration reads only columns the view holds (see
-    /// [`PreparedDeclaration::input_column`]); the computed-column contract
-    /// is validated over the assembled schema.
+    /// Refresh never computes such a column: every row it writes carries
+    /// NULL there, and the declaration's owner fills it, `refresh_column`
+    /// for a SQL declaration. A commit that fills only computed columns is
+    /// the one commit on a view refresh does not treat as drift. Declarations
+    /// are validated over the assembled schema, and read only columns the
+    /// view holds (see [`PreparedDeclaration::input_column`]).
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # use std::collections::HashMap;
+    /// # use arrow_schema::{DataType, Field};
+    /// # use lancedb::materialized_view::prepare_declaration;
+    /// # use lancedb::table::computed_columns::{
+    /// #     COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,
+    /// # };
+    /// # async fn declare(source: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut prepared = prepare_declaration(
+    ///     source,
+    ///     Some(&[("id".into(), "id".into())]),
+    ///     None,
+    ///     None,
+    /// )
+    /// .await?;
+    /// // `text` is not projected; the view holds it internally for the column to read.
+    /// let text = prepared.input_column("text")?;
+    /// let length = Field::new("length", DataType::Int32, true).with_metadata(HashMap::from([
+    ///     (COMPUTED_COLUMN_META_KEY.into(), "true".into()),
+    ///     (KIND_META_KEY.into(), SQL_KIND.into()),
+    ///     (EXPRESSION_META_KEY.into(), format!("length({text})")),
+    ///     (INPUTS_META_KEY.into(), format!("[\"{text}\"]")),
+    /// ]));
+    /// let view = prepared
+    ///     .with_computed_columns(vec![(1, length)], &[])?
+    ///     .create("lengths")
+    ///     .await?;
+    /// view.refresh().execute().await?; // rows land with `length` NULL
+    /// view.table().refresh_column("length").await?; // filled
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_computed_columns(
         mut self,
         columns: Vec<(usize, ArrowField)>,
@@ -807,7 +841,7 @@ impl PreparedDeclaration {
         }
         rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
         let schema = ArrowSchema::new_with_metadata(fields, metadata);
-        ensure_supported_function_metadata(&schema)?;
+        ensure_declarations_are_planned(&schema)?;
         self.schema = Arc::new(schema);
         Ok(self)
     }
@@ -864,7 +898,6 @@ impl PreparedDeclaration {
             Box::new(arrow_array::RecordBatchIterator::new(empty, schema));
         let mut request = CreateTableRequest::new(name.to_string(), Box::new(reader));
         request.namespace_path = namespace_path.to_vec();
-        request.planned_declarations = !computed_columns(&self.schema).is_empty();
         let write_params = request
             .write_options
             .lance_write_params
@@ -2824,6 +2857,139 @@ mod tests {
             .map(|f| f.name().clone())
             .collect();
         assert_eq!(names, ["id", "left", "right", SOURCE_ROW_ID_COLUMN]);
+    }
+
+    /// A SQL declaration as `add_columns().computed()` records it.
+    pub fn sql_field(
+        name: &str,
+        data_type: DataType,
+        expression: &str,
+        inputs: &str,
+    ) -> ArrowField {
+        use crate::table::computed_columns::{
+            COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,
+        };
+        ArrowField::new(name, data_type, true).with_metadata(HashMap::from([
+            (COMPUTED_COLUMN_META_KEY.to_string(), "true".to_string()),
+            (KIND_META_KEY.to_string(), SQL_KIND.to_string()),
+            (EXPRESSION_META_KEY.to_string(), expression.to_string()),
+            (INPUTS_META_KEY.to_string(), inputs.to_string()),
+        ]))
+    }
+
+    /// A SQL declaration is re-planned at admission: it must parse against
+    /// the view, yield the declared type, and read the inputs it declares.
+    #[tokio::test]
+    async fn a_sql_declaration_is_planned_at_admission() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let fails = |prepared: PreparedDeclaration, field: ArrowField| {
+            prepared
+                .with_computed_columns(vec![(1, field)], &[])
+                .err()
+                .map(|e| e.to_string())
+                .expect("the declaration should be refused")
+        };
+        let prepared = prepared_people(&conn).await;
+        let err = fails(
+            prepared.clone(),
+            sql_field("bad", DataType::Int32, "missing + 1", r#"["missing"]"#),
+        );
+        assert!(err.contains("missing"), "{err}");
+        let err = fails(
+            prepared.clone(),
+            sql_field("wide", DataType::Int64, "id + 1", r#"["id"]"#),
+        );
+        assert!(
+            err.contains("declared as Int64 but its expression yields Int32"),
+            "{err}"
+        );
+        let err = fails(
+            prepared.clone(),
+            sql_field("lying", DataType::Int32, "id + 1", r#"["name"]"#),
+        );
+        assert!(err.contains("declares inputs"), "{err}");
+
+        let view = prepared
+            .with_computed_columns(
+                vec![(1, sql_field("next", DataType::Int32, "id + 1", r#"["id"]"#))],
+                &[],
+            )
+            .unwrap()
+            .create("v")
+            .await
+            .unwrap();
+        let names: Vec<String> = view
+            .table()
+            .schema()
+            .await
+            .unwrap()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["id", "next", "name", SOURCE_ROW_ID_COLUMN]);
+    }
+
+    /// Creation persists a declaration only when it re-plans and the data
+    /// carries no values for it, whichever door created the table.
+    #[tokio::test]
+    async fn a_created_table_cannot_carry_computed_values() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("x", DataType::Int32, false),
+            sql_field("forged", DataType::Int32, "x + 1", r#"["x"]"#),
+        ]));
+        let filled = arrow_array::RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::from(vec![999])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("forged", filled)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be written directly"), "{err}");
+        assert!(
+            !conn
+                .table_names()
+                .execute()
+                .await
+                .unwrap()
+                .contains(&"forged".to_string())
+        );
+
+        let unfilled = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::new_null(1)),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("declared", unfilled)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.refresh_column("forged").await.unwrap().rows_filled, 1);
+
+        let bogus = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("x", DataType::Int32, false),
+            sql_field("bad", DataType::Int32, "missing + 1", r#"["missing"]"#),
+        ]));
+        let batch = arrow_array::RecordBatch::new_empty(bogus);
+        let err = conn
+            .create_table("bogus", batch)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing"), "{err}");
     }
 
     /// A projected column keeps its nullability; a computed value is

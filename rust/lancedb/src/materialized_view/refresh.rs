@@ -52,7 +52,7 @@ use super::{
 };
 use crate::database::OpenTableRequest;
 use crate::table::computed_columns::{
-    computed_column_from_field, computed_columns, ensure_supported_function_metadata,
+    computed_column_from_field, computed_columns, ensure_declarations_are_planned,
 };
 use crate::table::{NativeTable, NativeTableExt, Table};
 use crate::{Error, Result};
@@ -201,7 +201,7 @@ pub(crate) async fn execute_refresh(
             ),
         });
     }
-    ensure_supported_function_metadata(&physical)?;
+    ensure_declarations_are_planned(&physical)?;
     let physical_planned: Vec<&FieldRef> = physical
         .fields()
         .iter()
@@ -1123,9 +1123,9 @@ struct RowScope {
 }
 
 /// Whether every commit on the view after `recorded` is a fill of its
-/// computed columns: a column rewrite touching only those fields and
-/// neither adding nor removing rows. A version whose transaction cannot be
-/// read is not proven, so it counts as drift.
+/// computed columns: a column rewrite or data replacement touching only
+/// those fields and neither adding nor removing rows. A version whose
+/// transaction cannot be read is not proven, so it counts as drift.
 async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Result<bool> {
     let physical = ArrowSchema::from(view_ds.schema());
     let computed_fields: Vec<u32> = computed_columns(&physical)
@@ -1140,19 +1140,35 @@ async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Resul
         let Some(transaction) = view_ds.read_transaction_by_version(version).await? else {
             return Ok(false);
         };
-        let fill = matches!(
-            &transaction.operation,
+        let fill = match &transaction.operation {
             Operation::Update {
                 removed_fragment_ids,
                 new_fragments,
                 fields_modified,
                 update_mode: Some(UpdateMode::RewriteColumns),
                 ..
-            } if removed_fragment_ids.is_empty()
-                && new_fragments.is_empty()
-                && !fields_modified.is_empty()
-                && fields_modified.iter().all(|field| computed_fields.contains(field))
-        );
+            } => {
+                removed_fragment_ids.is_empty()
+                    && new_fragments.is_empty()
+                    && !fields_modified.is_empty()
+                    && fields_modified
+                        .iter()
+                        .all(|field| computed_fields.contains(field))
+            }
+            // What `refresh_column` commits for a SQL declaration.
+            Operation::DataReplacement { replacements } => {
+                !replacements.is_empty()
+                    && replacements.iter().all(|group| {
+                        !group.1.fields.is_empty()
+                            && group
+                                .1
+                                .fields
+                                .iter()
+                                .all(|field| computed_fields.contains(&(*field as u32)))
+                    })
+            }
+            _ => false,
+        };
         if !fill {
             return Ok(false);
         }
@@ -3495,6 +3511,80 @@ mod tests {
             unfilled(&view).await,
             4,
             "rewritten and new rows are unfilled"
+        );
+    }
+
+    /// A SQL declaration is filled by `refresh_column` on the view, which
+    /// commits a data replacement; the next refresh continues from its
+    /// watermark and keeps what the fill wrote, and only rows the view added
+    /// since come back unfilled.
+    #[tokio::test]
+    async fn test_a_sql_fill_is_not_drift() {
+        use crate::materialized_view::tests::{people, sql_field};
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = people(&conn).await;
+        let view = crate::materialized_view::prepare_declaration(
+            &source,
+            Some(&[("id".to_string(), "id".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_computed_columns(
+            vec![(
+                1,
+                sql_field("next", arrow_schema::DataType::Int32, "id + 1", r#"["id"]"#),
+            )],
+            &[],
+        )
+        .unwrap()
+        .create("v")
+        .await
+        .unwrap();
+        let filled = || async {
+            view.table()
+                .count_rows(Some("next = id + 1".to_string()))
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Rebuild
+        );
+        assert_eq!(
+            view.table()
+                .refresh_column("next")
+                .await
+                .unwrap()
+                .rows_filled,
+            3
+        );
+        assert_eq!(filled().await, 3);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+        assert_eq!(filled().await, 3);
+
+        append_people(&conn, vec![4], vec!["d"]).await;
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Incremental
+        );
+        assert_eq!(filled().await, 3);
+        assert_eq!(
+            view.table()
+                .refresh_column("next")
+                .await
+                .unwrap()
+                .rows_filled,
+            1
+        );
+        assert_eq!(filled().await, 4);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
         );
     }
 }

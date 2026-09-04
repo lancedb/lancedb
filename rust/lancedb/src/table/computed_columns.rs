@@ -1268,6 +1268,72 @@ pub(crate) fn ensure_batch_writes_no_computed_values(
     Ok(())
 }
 
+/// Validate every computed-column declaration `schema` carries against the
+/// schema itself: a SQL declaration re-plans to the field it declares, a
+/// Function declaration satisfies the binding contract, and no declaration
+/// reads another computed column. What passes here is what `refresh_column`
+/// can execute.
+pub(crate) fn ensure_declarations_are_planned(schema: &ArrowSchema) -> Result<()> {
+    let invalid = |message: String| Error::InvalidInput { message };
+    let declared: HashSet<String> = computed_columns(schema)
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    for column in computed_columns(schema) {
+        let field = schema.field_with_name(&column.name)?;
+        if !field.is_nullable() {
+            return Err(invalid(format!(
+                "computed column '{}' must be nullable until a refresh fills it",
+                column.name
+            )));
+        }
+        match &column.kind {
+            ComputedColumnKind::Sql { expression } => {
+                let others: Vec<ArrowField> = schema
+                    .fields()
+                    .iter()
+                    .filter(|f| f.name() != &column.name)
+                    .map(|f| f.as_ref().clone())
+                    .collect();
+                let bound = bind(Arc::new(ArrowSchema::new(others)), &column.name, expression)?;
+                if let Some(input) = bound.roots.iter().find(|r| declared.contains(*r)) {
+                    return Err(invalid(format!(
+                        "computed column '{}' reads computed column '{input}'",
+                        column.name
+                    )));
+                }
+                if &bound.data_type != field.data_type() {
+                    return Err(invalid(format!(
+                        "computed column '{}' is declared as {} but its expression yields {}",
+                        column.name,
+                        field.data_type(),
+                        bound.data_type
+                    )));
+                }
+                let mut declared_inputs = column.inputs.clone();
+                declared_inputs.sort();
+                if declared_inputs != bound.inputs {
+                    return Err(invalid(format!(
+                        "computed column '{}' declares inputs {:?} but its expression reads {:?}",
+                        column.name, declared_inputs, bound.inputs
+                    )));
+                }
+            }
+            ComputedColumnKind::Function { .. } => {}
+            ComputedColumnKind::Unrecognized { kind } => {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "computed column '{}' is defined by '{kind}', which this version \
+                         of lancedb cannot fill",
+                        column.name
+                    ),
+                });
+            }
+        }
+    }
+    ensure_supported_function_metadata(schema)
+}
+
 /// Reject fields carrying declaration metadata that did not come through
 /// [`plan`]. One authority for creation, overwrite and raw transforms.
 pub(crate) fn ensure_no_foreign_declarations<'a>(
@@ -2513,6 +2579,8 @@ mod tests {
         );
     }
 
+    /// A create carries a declaration only if it re-plans completely; this
+    /// one lacks its inputs and is refused before its forged value matters.
     #[tokio::test]
     async fn test_create_table_cannot_inject_a_declaration() {
         let conn = connect("memory://").execute().await.unwrap();
@@ -2540,7 +2608,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, Error::InvalidInput { message } if message.contains("computed()")),
+            matches!(&err, Error::InvalidInput { message } if message.contains("computed column 'doubled'")),
             "{err:?}"
         );
     }

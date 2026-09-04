@@ -132,10 +132,6 @@ pub struct CreateTableRequest {
     /// Optional namespace client for server-side query execution.
     /// When set, queries will be executed on the namespace server instead of locally.
     pub namespace_client: Option<Arc<dyn LanceNamespace>>,
-    /// The schema's computed-column declarations were planned by this crate
-    /// (a materialized-view declaration). A caller-supplied schema must leave
-    /// this false: creation then refuses declaration metadata.
-    pub planned_declarations: bool,
 }
 
 impl CreateTableRequest {
@@ -148,7 +144,6 @@ impl CreateTableRequest {
             write_options: WriteOptions::default(),
             location: None,
             namespace_client: None,
-            planned_declarations: false,
         }
     }
 }
