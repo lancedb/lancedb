@@ -37,7 +37,6 @@ use datafusion::{
     execution::context::SessionContext,
     logical_expr::{JoinType as DfJoinType, LogicalPlanBuilder},
 };
-use datafusion_catalog::empty::EmptyTable;
 use datafusion_common::{Column, TableReference};
 use datafusion_expr::{Expr, SortExpr};
 use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
@@ -45,6 +44,9 @@ use datafusion_substrait::logical_plan::producer::to_substrait_plan;
 use futures::TryStreamExt;
 use prost::Message;
 use uuid::Uuid;
+
+#[cfg(test)]
+use datafusion_catalog::empty::EmptyTable;
 
 use crate::{
     Error, Result,
