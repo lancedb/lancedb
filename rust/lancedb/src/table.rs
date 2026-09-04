@@ -2794,8 +2794,11 @@ impl NativeTable {
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+        planned_declarations: bool,
     ) -> Result<Self> {
-        computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
+        if !planned_declarations {
+            computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
+        }
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2855,6 +2858,7 @@ impl NativeTable {
             read_consistency_interval,
             namespace_client,
             pushdown_operations,
+            false,
         )
         .await
     }
@@ -4270,6 +4274,7 @@ mod tests {
             None,
             None,
             HashSet::new(),
+            false,
         )
         .await
         .unwrap();

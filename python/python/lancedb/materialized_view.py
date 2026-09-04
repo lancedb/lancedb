@@ -46,6 +46,8 @@ class MaterializedViewDefinition:
     """Namespace holding the source table; empty is the root namespace."""
     function_columns: List[str] = field(default_factory=list)
     """View columns a registered Function fills after each refresh."""
+    function_inputs: List[str] = field(default_factory=list)
+    """Source columns a Function reads that the view holds as internal columns."""
 
 
 def _definition_from_schema(
@@ -80,6 +82,7 @@ def _definition_from_schema(
         inputs=value.get("inputs", []),
         source_namespace=value.get("source_namespace", []),
         function_columns=value.get("function_columns", []),
+        function_inputs=value.get("function_inputs", []),
     )
 
 

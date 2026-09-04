@@ -51,7 +51,7 @@ use super::{
     definition_to_metadata,
 };
 use crate::database::OpenTableRequest;
-use crate::table::computed_columns::{ComputedColumnKind, computed_column_from_field};
+use crate::table::refresh::quote_identifier;
 use crate::table::{NativeTable, NativeTableExt, Table};
 use crate::{Error, Result};
 
@@ -162,62 +162,38 @@ pub(crate) async fn execute_refresh(
     // require its planned output to be exactly the view's physical schema: a
     // definition the stored table cannot represent must not be certified.
     let source_schema = Arc::new(ArrowSchema::from(source_ds.schema()));
+    let source_schema_ref = source_schema.clone();
     let projections: Vec<(String, String)> = definition
         .projections
         .iter()
         .map(|p| (p.output.clone(), p.expression.clone()))
         .collect();
     validate_inputs(&source_ds, definition)?;
-    let (mut replanned, mut planned_fields, _renames) = super::plan(
+    let (mut replanned, planned_fields, _renames) = super::plan(
         source_schema,
         &definition.source_table,
         &definition.source_namespace,
-        &projections,
+        Some(&projections),
         definition.filter.as_deref(),
         definition.limit,
     )?;
-    // Function columns are not planned from the source: the view's own
-    // schema declares them, and the definition only names them.
+    // Function columns and inputs are not planned from the source: the
+    // view's own schema declares them, and the definition names them.
     replanned.function_columns = definition.function_columns.clone();
-    planned_fields.push(arrow_schema::Field::new(
-        SOURCE_ROW_ID_COLUMN,
-        arrow_schema::DataType::UInt64,
-        false,
-    ));
+    replanned.function_inputs = definition.function_inputs.clone();
+    super::record_function_inputs(&mut replanned);
     let physical = ArrowSchema::from(view_ds.schema());
-    for name in &definition.function_columns {
-        let field = physical
-            .field_with_name(name)
-            .ok()
-            .filter(|field| {
-                matches!(
-                    computed_column_from_field(field).map(|column| column.kind),
-                    Some(ComputedColumnKind::Function { .. })
-                )
-            })
-            .ok_or_else(|| Error::Schema {
-                message: format!(
-                    "function column '{name}' of view '{}' no longer carries its \
-                     Function binding; recreate the view",
-                    view.name()
-                ),
-            })?;
-        planned_fields.push(arrow_schema::Field::new(
-            name,
-            field.data_type().clone(),
-            field.is_nullable(),
-        ));
-    }
-    let planned_shape: Vec<_> = planned_fields
-        .iter()
-        .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
-        .collect();
-    let physical_shape: Vec<_> = physical
-        .fields()
-        .iter()
-        .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
-        .collect();
-    if planned_shape != physical_shape {
+    let expected =
+        super::expected_fields(&physical, planned_fields, &replanned, &source_schema_ref)?;
+    // A projected column that became nullable at the source still fits the
+    // view's nullable field; the reverse would not.
+    let matches = expected.len() == physical.fields().len()
+        && expected.iter().zip(physical.fields()).all(|(e, p)| {
+            e.name() == p.name()
+                && e.data_type() == p.data_type()
+                && (p.is_nullable() || !e.is_nullable())
+        });
+    if !matches {
         return Err(Error::Schema {
             message: format!(
                 "the stored definition of view '{}' does not produce this \
@@ -1208,10 +1184,16 @@ async fn compute_stream(
     if !clauses.is_empty() {
         scanner.filter(&clauses.join(" AND "))?;
     }
+    let inputs: Vec<(String, String)> = definition
+        .function_inputs
+        .iter()
+        .map(|c| (super::input_column_name(c), quote_identifier(c)))
+        .collect();
     let transforms: Vec<(&str, &str)> = definition
         .projections
         .iter()
         .map(|p| (p.output.as_str(), p.expression.as_str()))
+        .chain(inputs.iter().map(|(o, e)| (o.as_str(), e.as_str())))
         .collect();
     scanner.project_with_transform(&transforms)?;
     // A scan reads a limit of zero as no limit at all, so a view capped at
@@ -2849,7 +2831,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1]).await;
         let prepared = crate::materialized_view::prepare_declaration(
             &source,
-            &[("x".into(), "x".into()), ("twice".into(), "x * 2".into())],
+            Some(&[("x".into(), "x".into()), ("twice".into(), "x * 2".into())]),
             None,
             None,
         )
@@ -3016,6 +2998,7 @@ mod tests {
             limit: None,
             inputs: vec!["x".into()],
             function_columns: Vec::new(),
+            function_inputs: Vec::new(),
         };
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -3051,6 +3034,7 @@ mod tests {
             limit: None,
             inputs: vec!["x".into()],
             function_columns: Vec::new(),
+            function_inputs: Vec::new(),
         };
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -3222,17 +3206,17 @@ mod tests {
         let source = people(conn).await;
         let view = crate::materialized_view::prepare_declaration(
             &source,
-            &[
+            Some(&[
                 ("id".to_string(), "id".to_string()),
                 ("name".to_string(), "name".to_string()),
-            ],
+            ]),
             None,
             None,
         )
         .await
         .unwrap()
         .with_function_columns(
-            vec![function_field("emb", "fb_1", "name")],
+            vec![(2, function_field("emb", "fb_1", "name"))],
             &[test_binding("fb_1", "name", "emb")],
         )
         .unwrap()
@@ -3334,7 +3318,10 @@ mod tests {
             "the binding envelope was lost"
         );
         assert!(
-            computed_column_from_field(schema.field_with_name("emb").unwrap()).is_some(),
+            crate::table::computed_columns::computed_column_from_field(
+                schema.field_with_name("emb").unwrap()
+            )
+            .is_some(),
             "the field declaration was lost"
         );
         assert_eq!(
@@ -3397,8 +3384,117 @@ mod tests {
             .unwrap();
         let err = view.refresh().execute().await.unwrap_err().to_string();
         assert!(
-            err.contains("no longer carries its Function binding"),
+            err.contains("declaration metadata does not match binding 'fb_1'"),
             "{err}"
+        );
+    }
+
+    /// The schema-level binding envelope is validated before any refresh
+    /// mutation: without it there is no complete binding for the fill.
+    #[tokio::test]
+    async fn test_a_view_without_its_binding_envelope_is_refused() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_function_view(&conn).await;
+        let native = view.table().as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_schema_metadata(vec![(
+                crate::table::computed_columns::FUNCTION_BINDINGS_META_KEY.to_string(),
+                None,
+            )])
+            .await
+            .unwrap();
+        let err = view.refresh().execute().await.unwrap_err().to_string();
+        assert!(err.contains("references missing binding 'fb_1'"), "{err}");
+    }
+
+    /// An input the view does not project is materialized on every refresh
+    /// path, in declaration order, with the source's values.
+    #[tokio::test]
+    async fn test_function_inputs_are_materialized_and_refreshed() {
+        use crate::materialized_view::tests::{function_field, strict_people, test_binding};
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = strict_people(&conn).await;
+        let mut prepared = crate::materialized_view::prepare_declaration(
+            &source,
+            Some(&[("id".to_string(), "id".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let input = prepared.input_column("name").unwrap();
+        let view = prepared
+            .with_function_columns(
+                vec![(1, function_field("emb", "fb_1", &input))],
+                &[test_binding("fb_1", &input, "emb")],
+            )
+            .unwrap()
+            .create("v")
+            .await
+            .unwrap();
+        let names = |schema: &ArrowSchema| -> Vec<String> {
+            schema.fields().iter().map(|f| f.name().clone()).collect()
+        };
+        assert_eq!(
+            names(&view.table().schema().await.unwrap()),
+            ["id", "emb", SOURCE_ROW_ID_COLUMN, "__input_name"]
+        );
+
+        let unfilled_inputs = || async {
+            view.table()
+                .count_rows(Some("__input_name IS NULL".to_string()))
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Rebuild
+        );
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
+        assert_eq!(unfilled_inputs().await, 0);
+
+        let more = arrow_array::RecordBatch::try_new(
+            source.schema().await.unwrap(),
+            vec![
+                Arc::new(Int32Array::from(vec![4])),
+                Arc::new(arrow_array::StringArray::from(vec!["d"])),
+            ],
+        )
+        .unwrap();
+        source.add(more).execute().await.unwrap();
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Incremental
+        );
+        assert_eq!(unfilled_inputs().await, 0);
+        assert_eq!(
+            view.table()
+                .count_rows(Some("__input_name = 'd'".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        source
+            .update()
+            .column("name", "'z'")
+            .only_if("id = 1")
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            view.table()
+                .count_rows(Some("__input_name = 'z'".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            unfilled(&view).await,
+            4,
+            "rewritten and new rows are unfilled"
         );
     }
 }

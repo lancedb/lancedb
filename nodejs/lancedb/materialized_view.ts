@@ -23,6 +23,8 @@ export interface MaterializedViewDefinition {
   sourceNamespace: string[];
   /** View columns a registered Function fills after each refresh. */
   functionColumns: string[];
+  /** Source columns a Function reads that the view holds as internal columns. */
+  functionInputs: string[];
 }
 
 /**
@@ -118,6 +120,7 @@ export function definitionFromMetadata(
     inputs: value.inputs ?? [],
     sourceNamespace: value.source_namespace ?? [],
     functionColumns: value.function_columns ?? [],
+    functionInputs: value.function_inputs ?? [],
   };
 }
 

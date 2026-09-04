@@ -1059,6 +1059,7 @@ impl Database for ListingDatabase {
             self.read_consistency_interval,
             request.namespace_client,
             HashSet::new(), // listing database doesn't support server-side queries
+            request.planned_declarations,
         )
         .await
         {
@@ -1527,6 +1528,7 @@ mod tests {
             db.create_table(CreateTableRequest {
                 name: name.to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
@@ -1747,6 +1749,7 @@ mod tests {
         CreateTableRequest {
             name: name.to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -1849,6 +1852,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "test".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -1906,6 +1910,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "root_table".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -1965,6 +1970,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "test".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -2005,6 +2011,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "test".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(
                 RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
                     .unwrap(),
@@ -2098,6 +2105,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "source_table".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
@@ -2160,6 +2168,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "source_with_data".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(batch) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
@@ -2222,6 +2231,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -2259,6 +2269,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -2300,6 +2311,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -2341,6 +2353,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -2398,6 +2411,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -2452,6 +2466,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "versioned_source".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(batch1) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
@@ -2527,6 +2542,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "tagged_source".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
@@ -2603,6 +2619,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "independent_source".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
@@ -2679,6 +2696,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "latest_version_source".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
@@ -2768,6 +2786,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "test_stable".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
@@ -2819,6 +2838,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "test_stable_table_level".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options,
@@ -2892,6 +2912,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "test_override".to_string(),
                 namespace_path: vec![],
+                planned_declarations: false,
                 data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options,
@@ -3184,6 +3205,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "table1".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -3196,6 +3218,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "table2".to_string(),
             namespace_path: vec![],
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -3318,6 +3341,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "managed_table".to_string(),
             namespace_path: namespace_path.clone(),
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -3365,6 +3389,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "nested_table".to_string(),
             namespace_path: namespace_path.clone(),
+            planned_declarations: false,
             data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
