@@ -1186,12 +1186,14 @@ def _package_source(function: Callable[..., Any]) -> bytes:
 
 
 class UdfDefinition:
-    """A scalar Python callable prepared for remote Function registration.
+    """A Python callable prepared for remote Function registration.
 
     Instances are created with :func:`udf`. Calling an instance executes the
-    original scalar Python function, which keeps local unit testing ordinary.
-    Remote execution adapts that scalar callable to the internal Arrow batch
-    ABI described by the registration artifact.
+    original Python function, which keeps local unit testing ordinary. By
+    default remote execution invokes the callable once per row. A callable
+    whose parameters are all annotated as ``pyarrow.Array`` receives whole
+    Arrow arrays and returns a ``pyarrow.Array`` instead. This authoring choice
+    is independent of the internal artifact adapter in the registration request.
     """
 
     def __init__(
@@ -1305,7 +1307,7 @@ def udf(
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ):
-    """Prepare a scalar Python callable for remote Function registration.
+    """Prepare a Python callable for remote Function registration.
 
     Input and output signatures are inferred from supported annotations. For
     Arrow types annotations cannot express precisely, pass ``input_schema``
@@ -1316,7 +1318,9 @@ def udf(
     Parameters
     ----------
     function : Callable, optional
-        The synchronous scalar callable to package.
+        The synchronous callable to package. Annotate every parameter as
+        ``pyarrow.Array`` to opt into vectorized execution; a matching return
+        annotation documents that the callable returns an Arrow array.
     name : str, optional
         The remote Function name. Defaults to the callable name.
     input_schema : pyarrow.Schema, optional
@@ -1368,6 +1372,19 @@ def udf(
     ...     return value * 2
     >>> gpu_score.registration_request.runtime.gpu
     True
+    >>> import pyarrow as pa
+    >>> import lancedb
+    >>> @udf(
+    ...     input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+    ...     output_schema=lancedb.blob("copy", nullable=False),
+    ... )
+    ... def copy_blobs(image: pa.Array) -> pa.Array:
+    ...     return image
+
+    Blob v2 input is exposed as ``pyarrow.LargeBinaryArray`` in vectorized
+    mode (and as ``bytes`` in row mode). Return a ``LargeBinaryArray`` with the
+    declared nullability. Use :func:`lancedb.blob` in the explicit schemas;
+    plain ``pyarrow.large_binary()`` does not carry Blob v2 semantics.
     """
 
     def decorate(target: Callable[..., Any]) -> UdfDefinition:
