@@ -940,9 +940,12 @@ def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
 
     output = _cast_to_target_schema(data.to_reader(), target).read_all()
 
+    # The coercion goes through Arrow's C data interface, which turns the extension name
+    # back into its registered pyarrow type whether the target carried it as a type or,
+    # as here, as field metadata.
     image = output["image"].chunk(0)
-    assert not isinstance(image.type, pa.ExtensionType)
-    assert image.to_pylist() == [
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.to_pylist() == [
         {"data": b"hello", "uri": None, "position": None, "size": None},
         None,
     ]
@@ -1044,7 +1047,10 @@ def test_cast_to_target_schema_accepts_pylance_blob_v2():
     ]
 
 
-def test_cast_to_target_schema_rejects_different_blob_v2_class():
+def test_cast_to_target_schema_accepts_a_foreign_blob_v2_class():
+    """A different pyarrow class with the same extension name and storage is the same
+    Arrow type once it crosses the C data interface, so it needs no coercion."""
+
     class OtherBlobType(pa.ExtensionType):
         def __init__(self):
             super().__init__(lancedb.BlobType().storage_type, "lance.blob.v2")
@@ -1063,8 +1069,11 @@ def test_cast_to_target_schema_rejects_different_blob_v2_class():
     data = pa.table({"image": source})
     target = pa.schema([lancedb.blob("image")])
 
-    with pytest.raises(pa.ArrowTypeError, match="different extension type"):
-        _cast_to_target_schema(data.to_reader(), target).read_all()
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.field("data").to_pylist() == [b"hello"]
 
 
 def test_sanitize_data_stream():

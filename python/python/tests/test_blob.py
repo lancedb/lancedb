@@ -748,6 +748,80 @@ def test_fetch_blobs_preserves_null_and_empty_values():
     assert blobs[3].as_py() == b"present"
 
 
+def test_add_all_null_list_to_blob_column():
+    table = _blob_table("all_null_add", [{"id": 1, "image": None}])
+
+    hits = table.search().to_arrow()
+    blobs = table.fetch_blobs("image", hits)
+    assert len(blobs) == 1
+    assert blobs[0].as_py() is None
+
+
+def test_add_all_null_list_to_blob_column_with_sanitizer():
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("all_null_sanitized_add", schema=schema)
+
+    table.add([{"id": 1, "image": None}], on_bad_vectors="fill")
+
+    hits = table.search().to_arrow()
+    blobs = table.fetch_blobs("image", hits)
+    assert len(blobs) == 1
+    assert blobs[0].as_py() is None
+
+
+def test_add_all_null_list_to_nested_blob_column():
+    db = lancedb.connect("memory:///")
+    blob_field = lancedb.blob("image")
+    info_field = pa.field("info", pa.struct([blob_field]))
+    info = pa.StructArray.from_arrays(
+        [_blob_array("image", [b"seed"])], fields=[blob_field]
+    )
+    seed = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), info],
+        schema=pa.schema([pa.field("id", pa.int64()), info_field]),
+    )
+    table = db.create_table("nested_null_add", data=seed)
+
+    table.add([{"id": 1, "info": {"image": None}}])
+    table.add([{"id": 2, "info": {"image": None}}], on_bad_vectors="fill")
+
+    hits = table.search().where("id > 0").to_arrow()
+    blobs = table.fetch_blobs("info.image", hits)
+    assert len(blobs) == 2
+    assert all(blob.as_py() is None for blob in blobs)
+
+
+@pytest.mark.parametrize("large_list", [False, True], ids=["list", "large_list"])
+def test_add_list_of_dicts_to_blob_list_column(large_list):
+    db = lancedb.connect("memory:///")
+    blob_field = lancedb.blob("image")
+    blob_values = _blob_array("image", [b"seed"])
+    if large_list:
+        items_field = pa.field("items", pa.large_list(blob_field))
+        items = pa.LargeListArray.from_arrays(
+            pa.array([0, 1], type=pa.int64()), blob_values
+        )
+    else:
+        items_field = pa.field("items", pa.list_(blob_field))
+        items = pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), blob_values)
+    seed = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), items],
+        schema=pa.schema([pa.field("id", pa.int64()), items_field]),
+    )
+    table = db.create_table(f"blob_{large_list}_list_add", data=seed)
+
+    table.add([{"id": 1, "items": [None]}])
+    table.add(
+        [{"id": 2, "items": [b"a", None]}],
+        on_bad_vectors="fill",
+    )
+
+    ids = table.search().select(["id"]).to_arrow()["id"].to_pylist()
+    assert sorted(ids) == [0, 1, 2]
+    assert pa.types.is_large_list(table.schema.field("items").type) is large_list
+
+
 def test_fetch_blob_ranges_aligns_repeated_ranges_and_nulls():
     table = _blob_table(
         "range_alignment",

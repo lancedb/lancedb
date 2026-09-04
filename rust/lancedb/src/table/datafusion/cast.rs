@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+//! Coerces write-path input into the shape the table declares.
+//!
+//! [`cast_to_table_schema`] pairs each table column with the input column of the same name
+//! and coerces it in two phases: [`write_schema::resolve_write_field`] decides which field
+//! Lance should receive, then the [`RULES`] below build the expression that produces it.
+
 use std::sync::Arc;
 
 use arrow_cast::can_cast_types;
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
-use datafusion::functions::core::{get_field, named_struct};
-use datafusion_common::ScalarValue;
 use datafusion_common::config::ConfigOptions;
-use datafusion_physical_expr::ScalarFunctionExpr;
-use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
-use lance_arrow::FieldExt;
-use lance_arrow::json::{is_arrow_json_field, is_json_field};
 
 use super::blob_coerce::coerce_blob_expr;
+use super::extension::ExtensionKind;
+use super::list_expr::{CoerceListValues, list_item, list_of, same_list_kind};
+use super::struct_expr::{StructChild, build_struct, cast_to_field, get_field_expr};
+use super::write_schema::resolve_write_field;
 use crate::{Error, Result};
 
 pub fn cast_to_table_schema(
@@ -43,18 +47,53 @@ pub fn cast_to_table_schema(
     Ok(Arc::new(projection))
 }
 
+/// One column of the write path, as the rules see it.
+struct WriteColumn<'a> {
+    /// Reads the column out of the input.
+    input_expr: Arc<dyn PhysicalExpr>,
+    input_field: &'a FieldRef,
+    /// The field Lance should receive; see [`resolve_write_field`].
+    write_field: &'a FieldRef,
+    config: &'a Arc<ConfigOptions>,
+}
+
+/// A coercion rule: `Ok(None)` means it does not apply and the next one should be tried.
+type Rule = fn(&WriteColumn) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>>;
+
+/// The rules that synthesize a column, tried in order, with [`cast_column`] as the fallback
+/// when none of them applies.
+///
+/// The order is behaviour, not taste:
+///
+/// * A blob column is built out of whatever the input happens to be - raw bytes, a URI, a
+///   partial struct - which no later rule would attempt, so it goes first.
+/// * A struct is rebuilt child by child, because that is the only way to line up input whose
+///   children are reordered or partial. It has to precede [`cast_column`], which would ask
+///   arrow for a struct cast and get an error for anything but an exact positional match.
+/// * A list is rebuilt with its items coerced by these same rules, one level down, for the
+///   cases arrow's list cast cannot reach: items that have to be synthesized rather than
+///   cast, such as a blob column inside a list, and a change of list kind, where arrow's
+///   cast mishandles a sliced input. Like the struct rebuild it has to precede
+///   [`cast_column`].
+///
+/// Rules that were needed before phase one existed and are now subsumed by [`cast_column`]:
+/// JSON no longer needs one because [`resolve_write_field`] asks for an `arrow.json` field
+/// that a plain cast can satisfy, and null input needs none because arrow casts `Null` into
+/// any type as an all-null array.
+const RULES: &[Rule] = &[blob_column, rebuild_struct, coerce_list_items];
+
 /// Build expressions to project input fields to match the table schema.
 ///
-/// For each table field that exists in the input, produce an expression that
-/// reads from the input and casts if needed. Fields in the table but not in the
-/// input are omitted (the storage layer handles missing columns).
+/// For each table field that exists in the input, produce an expression that reads from the
+/// input and coerces it. Fields in the table but not in the input are omitted (the storage
+/// layer handles missing columns).
 fn build_field_exprs(
     input_fields: &Fields,
     table_fields: &Fields,
     get_input_expr: &dyn Fn(usize) -> Arc<dyn PhysicalExpr>,
 ) -> Result<Vec<(Arc<dyn PhysicalExpr>, FieldRef)>> {
     let config = Arc::new(ConfigOptions::default());
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(table_fields.len());
 
     for table_field in table_fields {
         let Some(input_idx) = input_fields
@@ -65,110 +104,191 @@ fn build_field_exprs(
         };
 
         let input_field = &input_fields[input_idx];
-        let input_expr = get_input_expr(input_idx);
-
-        // Special case: input is arrow.json (PyArrow pa.json_() extension type backed by
-        // Utf8/LargeUtf8) and the table field is lance.json (backed by LargeBinary).
-        // Lance-core's write path already handles the arrow.json → lance.json conversion
-        // (including JSONB encoding), so we pass the expression through unchanged and let
-        // lance-core deal with it. Attempting to cast Utf8 → LargeBinary here would
-        // produce a field whose metadata still identifies it as arrow.json, which then
-        // causes a schema-mismatch error inside lance-core.
-        if is_arrow_json_field(input_field) && is_json_field(table_field) {
-            result.push((input_expr, Arc::clone(input_field) as FieldRef));
-            continue;
-        }
-
-        // Blob columns accept raw binary on write; exact matches pass through below.
-        if table_field.is_blob_v2() && input_field.as_ref() != table_field.as_ref() {
-            result.push(coerce_blob_expr(
-                input_expr,
-                input_field,
-                table_field,
-                &config,
-            )?);
-            continue;
-        }
-
-        let expr = match (input_field.data_type(), table_field.data_type()) {
-            // Both are structs: recurse into sub-fields to handle subschemas and casts.
-            (DataType::Struct(in_children), DataType::Struct(tbl_children))
-                if in_children != tbl_children =>
-            {
-                let sub_exprs = build_field_exprs(in_children, tbl_children, &|child_idx| {
-                    let child_name = in_children[child_idx].name();
-                    Arc::new(ScalarFunctionExpr::new(
-                        &format!("get_field({child_name})"),
-                        get_field(),
-                        vec![
-                            input_expr.clone(),
-                            Arc::new(Literal::new(ScalarValue::from(child_name.as_str()))),
-                        ],
-                        Arc::new(in_children[child_idx].as_ref().clone()),
-                        config.clone(),
-                    )) as Arc<dyn PhysicalExpr>
-                })?;
-
-                let output_struct_fields: Fields = sub_exprs
-                    .iter()
-                    .map(|(_, f)| f.clone())
-                    .collect::<Vec<_>>()
-                    .into();
-                let output_field: FieldRef = Arc::new(Field::new(
-                    table_field.name(),
-                    DataType::Struct(output_struct_fields),
-                    table_field.is_nullable(),
-                ));
-
-                // Build named_struct(lit("a"), expr_a, lit("b"), expr_b, ...)
-                let mut ns_args: Vec<Arc<dyn PhysicalExpr>> = Vec::new();
-                for (sub_expr, sub_field) in &sub_exprs {
-                    ns_args.push(Arc::new(Literal::new(ScalarValue::from(
-                        sub_field.name().as_str(),
-                    ))));
-                    ns_args.push(sub_expr.clone());
-                }
-
-                let ns_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
-                    &format!("named_struct({})", table_field.name()),
-                    named_struct(),
-                    ns_args,
-                    output_field.clone(),
-                    config.clone(),
-                ));
-
-                result.push((ns_expr, output_field));
-                continue;
-            }
-            // Types match: pass through.
-            (inp, tbl) if inp == tbl => input_expr,
-            // Types differ: cast.
-            // safe: false (the default) means overflow/truncation errors surface at execution time.
-            (_, _) if can_cast_types(input_field.data_type(), table_field.data_type()) => Arc::new(
-                CastExpr::new(input_expr, table_field.data_type().clone(), None),
-            )
-                as Arc<dyn PhysicalExpr>,
-            (inp, tbl) => {
-                return Err(Error::InvalidInput {
-                    message: format!(
-                        "cannot cast field '{}' from {} to {}",
-                        table_field.name(),
-                        inp,
-                        tbl,
-                    ),
-                });
-            }
+        let write_field = resolve_write_field(input_field, table_field);
+        let column = WriteColumn {
+            input_expr: get_input_expr(input_idx),
+            input_field,
+            write_field: &write_field,
+            config: &config,
         };
 
-        let output_field = Arc::new(Field::new(
-            table_field.name(),
-            table_field.data_type().clone(),
-            table_field.is_nullable(),
-        ));
-        result.push((expr, output_field));
+        let mut coerced = None;
+        for rule in RULES {
+            coerced = rule(&column)?;
+            if coerced.is_some() {
+                break;
+            }
+        }
+        result.push(match coerced {
+            Some(coerced) => coerced,
+            None => cast_column(&column)?,
+        });
     }
 
     Ok(result)
+}
+
+/// Blob columns accept raw bytes, a URI or a partial struct on write, and the struct Lance
+/// stores is synthesized from whichever arrived.
+///
+/// All-null input is declined: there is no blob to describe, and the fallback cast turns
+/// `Null` into null structs without any of this.
+fn blob_column(column: &WriteColumn) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>> {
+    if ExtensionKind::of(column.write_field) != ExtensionKind::BlobV2
+        || column.input_field.as_ref() == column.write_field.as_ref()
+        || column.input_field.data_type() == &DataType::Null
+    {
+        return Ok(None);
+    }
+    coerce_blob_expr(
+        column.input_expr.clone(),
+        column.input_field,
+        column.write_field,
+        column.config,
+    )
+    .map(Some)
+}
+
+/// Rebuild a struct child by child, so that input whose children are reordered, partial or
+/// themselves in need of coercion still lines up with what the table declares.
+fn rebuild_struct(column: &WriteColumn) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>> {
+    let (DataType::Struct(input_children), DataType::Struct(write_children)) = (
+        column.input_field.data_type(),
+        column.write_field.data_type(),
+    ) else {
+        return Ok(None);
+    };
+    if input_children == write_children {
+        return Ok(None);
+    }
+
+    let config = column.config.clone();
+    let input_expr = column.input_expr.clone();
+    let children = build_field_exprs(input_children, write_children, &|child_idx| {
+        get_field_expr(input_expr.clone(), &input_children[child_idx], &config)
+    })?;
+
+    let output_field: FieldRef = Arc::new(Field::new(
+        column.write_field.name(),
+        DataType::Struct(children.iter().map(|(_, f)| f.clone()).collect()),
+        column.write_field.is_nullable(),
+    ));
+    let children = children
+        .into_iter()
+        .map(|(value, field)| StructChild { field, value })
+        .collect();
+
+    let nulls_from = column
+        .input_field
+        .is_nullable()
+        .then(|| column.input_expr.clone());
+    let expr = build_struct(children, &output_field, nulls_from, column.config)?;
+    Ok(Some((expr, output_field)))
+}
+
+/// Rebuild a list column, coercing its items with the same rules.
+///
+/// This is how items needing more than a cast — a blob synthesized from raw bytes, say — are
+/// reached inside a list. It also normalizes the list's offsets to start at zero, which is
+/// what makes the cast to a fixed-size list correct: arrow's cast reads the values buffer
+/// from index zero regardless of where the offsets point, so a sliced input would otherwise
+/// be written a row or more out of step.
+///
+/// Declines a list arrow can cast on its own, which is any list of the same kind whose items
+/// only need a cast (a widened item type, a JSON leaf relabelled by phase one).
+fn coerce_list_items(column: &WriteColumn) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>> {
+    let (Some(input_item), Some(write_item)) = (
+        list_item(column.input_field.data_type()),
+        list_item(column.write_field.data_type()),
+    ) else {
+        return Ok(None);
+    };
+    let arrow_can_do_it =
+        input_item == write_item || can_cast_types(input_item.data_type(), write_item.data_type());
+    if arrow_can_do_it
+        && same_list_kind(
+            column.input_field.data_type(),
+            column.write_field.data_type(),
+        )
+    {
+        return Ok(None);
+    }
+
+    // A list has exactly one child, so the items line up positionally however they are
+    // named. Renaming the input's item to the table's is what lets them be matched by name
+    // like the columns of a struct, so the same rules apply to both.
+    let item_name = write_item.name();
+    // Nullable whatever the input field says: the values array's own nulls are what the
+    // synthetic batch has to accept, and a list's item field is often mislabelled.
+    let input_item: FieldRef = Arc::new(
+        input_item
+            .as_ref()
+            .clone()
+            .with_name(item_name)
+            .with_nullable(true),
+    );
+    let item_fields = Fields::from(vec![write_item.clone()]);
+    let input_fields = Fields::from(vec![input_item.clone()]);
+    let mut coerced = build_field_exprs(&input_fields, &item_fields, &|_| {
+        Arc::new(Column::new(item_name, 0)) as Arc<dyn PhysicalExpr>
+    })?;
+    let Some((values_expr, values_field)) = coerced.pop() else {
+        return Ok(None);
+    };
+
+    // The rebuilt list reuses the input's offsets and validity, so it comes out as the same
+    // kind of list the input was. A table field that asks for another kind (a fixed-size list
+    // of blobs, say) is reached by casting afterwards, which arrow can do once the items are
+    // the type it is expecting.
+    let rebuilt_field: FieldRef = Arc::new(list_of(
+        column.write_field,
+        column.input_field.data_type(),
+        values_field.clone(),
+    )?);
+    let rebuilt: Arc<dyn PhysicalExpr> = Arc::new(CoerceListValues::new(
+        column.input_expr.clone(),
+        values_expr,
+        input_item,
+        rebuilt_field.clone(),
+    )?);
+
+    let output_field: FieldRef = Arc::new(list_of(
+        column.write_field,
+        column.write_field.data_type(),
+        values_field,
+    )?);
+    if output_field == rebuilt_field {
+        return Ok(Some((rebuilt, output_field)));
+    }
+    Ok(Some((cast_to_field(rebuilt, &output_field), output_field)))
+}
+
+/// Pass the column through if it already matches, otherwise cast it to the write field.
+fn cast_column(column: &WriteColumn) -> Result<(Arc<dyn PhysicalExpr>, FieldRef)> {
+    let write_field = column.write_field.clone();
+
+    if column.input_field == &write_field {
+        return Ok((column.input_expr.clone(), write_field));
+    }
+
+    // Types can match while the field does not, when the input is missing the metadata that
+    // marks it as an extension column. Arrow casts a type to itself by cloning, so this pays
+    // nothing beyond stamping the field on.
+    if column.input_field.data_type() == write_field.data_type()
+        || can_cast_types(column.input_field.data_type(), write_field.data_type())
+    {
+        let expr = cast_to_field(column.input_expr.clone(), &write_field);
+        return Ok((expr, write_field));
+    }
+
+    Err(Error::InvalidInput {
+        message: format!(
+            "cannot cast field '{}' from {} to {}",
+            write_field.name(),
+            column.input_field.data_type(),
+            write_field.data_type(),
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -714,5 +834,380 @@ mod tests {
         assert_eq!(v0, r#"{"x": 1}"#);
         assert!(result.column(0).is_null(1));
         assert_eq!(v2, r#"{"y": 2}"#);
+    }
+
+    /// Plain JSON text (what pyarrow infers for a column of `str`, and what a caller writing
+    /// JSON by hand supplies) has to be labelled arrow.json so lance-core encodes it as JSONB.
+    /// Casting it to the table field's LargeBinary storage type would store the raw text.
+    #[rstest::rstest]
+    #[case::utf8(DataType::Utf8, DataType::Utf8)]
+    #[case::large_utf8(DataType::LargeUtf8, DataType::LargeUtf8)]
+    #[case::utf8_view(DataType::Utf8View, DataType::Utf8)]
+    #[tokio::test]
+    async fn test_unlabelled_string_into_lance_json_gets_arrow_json_label(
+        #[case] input_type: DataType,
+        #[case] expected_type: DataType,
+    ) {
+        use lance_arrow::json::{is_arrow_json_field, json_field};
+
+        let table_schema = Schema::new(vec![json_field("data", true)]);
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new("data", input_type, true)]));
+        let values = vec![Some(r#"{"x": 1}"#), None];
+        let input_array = arrow_cast::cast(
+            &StringArray::from(values) as &dyn arrow_array::Array,
+            input_schema.field(0).data_type(),
+        )
+        .unwrap();
+        let input_batch = RecordBatch::try_new(input_schema, vec![input_array]).unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("data").unwrap().clone();
+        assert_eq!(out_field.data_type(), &expected_type);
+        assert!(
+            is_arrow_json_field(&out_field),
+            "output field must be labelled arrow.json, got {:?}",
+            out_field.metadata()
+        );
+
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 2);
+        assert_eq!(result.column(0).null_count(), 1);
+    }
+
+    /// A json leaf inside a list is relabelled too. The outer field is a list, so without
+    /// recursing into it the generic container cast would turn the text into LargeBinary
+    /// labelled lance.json - an append that succeeds but stores unreadable JSON.
+    #[rstest::rstest]
+    #[case::unlabelled(DataType::Utf8, false)]
+    #[case::already_labelled(DataType::Utf8, true)]
+    #[tokio::test]
+    async fn test_unlabelled_list_item_into_lance_json_gets_arrow_json_label(
+        #[case] item_type: DataType,
+        #[case] input_labelled: bool,
+    ) {
+        use lance_arrow::json::{is_arrow_json_field, json_field};
+
+        use crate::table::datafusion::extension::arrow_json_field;
+
+        let table_schema = Schema::new(vec![Field::new(
+            "docs",
+            DataType::List(Arc::new(json_field("item", true))),
+            true,
+        )]);
+
+        let input_item = if input_labelled {
+            Arc::new(arrow_json_field("item", item_type, true))
+        } else {
+            Arc::new(Field::new("item", item_type, true))
+        };
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "docs",
+            DataType::List(input_item.clone()),
+            true,
+        )]));
+        let values = StringArray::from(vec![Some(r#"{"k": 1}"#), Some(r#"{"k": 2}"#)]);
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(ListArray::new(
+                input_item,
+                OffsetBuffer::new(vec![0, 1, 2].into()),
+                Arc::new(values),
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("docs").unwrap().clone();
+        let DataType::List(out_item) = out_field.data_type() else {
+            panic!("expected a list, got {}", out_field.data_type());
+        };
+        assert!(
+            is_arrow_json_field(out_item),
+            "the list item must be labelled arrow.json, got {out_item:?}"
+        );
+
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    /// The same, for a json column nested inside a struct: the struct is rebuilt from its
+    /// children, so the label has to travel on the child field.
+    #[tokio::test]
+    async fn test_unlabelled_struct_child_into_lance_json_gets_arrow_json_label() {
+        use lance_arrow::json::{is_arrow_json_field, json_field};
+
+        let table_schema = Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(
+                vec![
+                    Field::new("id", DataType::Int64, true),
+                    json_field("value", true),
+                ]
+                .into(),
+            ),
+            true,
+        )]);
+
+        let input_children: Fields = vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("value", DataType::Utf8, true),
+        ]
+        .into();
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StructArray::new(
+                input_children,
+                vec![
+                    Arc::new(Int64Array::from(vec![1, 2])),
+                    Arc::new(StringArray::from(vec![Some(r#"{"a": 1}"#), None])),
+                ],
+                None,
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("info").unwrap().clone();
+        let DataType::Struct(out_children) = out_field.data_type() else {
+            panic!("expected a struct, got {}", out_field.data_type());
+        };
+        let value = out_children.iter().find(|f| f.name() == "value").unwrap();
+        assert!(
+            is_arrow_json_field(value),
+            "nested field must be labelled arrow.json, got {:?}",
+            value.metadata()
+        );
+
+        let result = collect(projected).await;
+        let info: &StructArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(info.column_by_name("value").unwrap().null_count(), 1);
+    }
+
+    /// An all-null column comes through as `DataType::Null` (pyarrow infers that for a batch
+    /// of dicts whose values are all `None`). The lance.json extension metadata lives on the
+    /// field alone, so it has to be carried into the output schema or lance-core rejects the
+    /// batch with a "json vs large_binary" schema mismatch.
+    #[tokio::test]
+    async fn test_null_column_into_lance_json_keeps_extension_metadata() {
+        use lance_arrow::ARROW_EXT_NAME_KEY;
+        use lance_arrow::json::{JSON_EXT_NAME, json_field};
+
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            json_field("data", true),
+        ]);
+
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("data", DataType::Null, true),
+        ]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(Int64Array::from(vec![0, 1, 2])),
+                arrow_array::new_null_array(&DataType::Null, 3),
+            ],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("data").unwrap().clone();
+        assert_eq!(out_field.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            out_field
+                .metadata()
+                .get(ARROW_EXT_NAME_KEY)
+                .map(|s| s.as_str()),
+            Some(JSON_EXT_NAME),
+            "output field must still identify itself as lance.json"
+        );
+
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 3);
+        assert_eq!(result.column_by_name("data").unwrap().null_count(), 3);
+    }
+
+    /// The same, for a lance.json column nested inside a struct: the struct is rebuilt from
+    /// its children, so each child field must keep its own metadata, and a null struct must
+    /// stay null even though it is rebuilt child by child.
+    #[tokio::test]
+    async fn test_null_struct_child_into_lance_json_keeps_extension_metadata() {
+        use lance_arrow::ARROW_EXT_NAME_KEY;
+        use lance_arrow::json::{JSON_EXT_NAME, json_field};
+
+        let table_schema = Schema::new(vec![Field::new(
+            "meta",
+            DataType::Struct(
+                vec![
+                    Field::new("id", DataType::Int64, true),
+                    json_field("doc", true),
+                ]
+                .into(),
+            ),
+            true,
+        )]);
+
+        let input_children: Fields = vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("doc", DataType::Null, true),
+        ]
+        .into();
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "meta",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StructArray::new(
+                input_children,
+                vec![
+                    Arc::new(Int64Array::from(vec![7, 8])),
+                    arrow_array::new_null_array(&DataType::Null, 2),
+                ],
+                Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let out_field = projected.schema().field_with_name("meta").unwrap().clone();
+        let DataType::Struct(out_children) = out_field.data_type() else {
+            panic!("expected a struct, got {}", out_field.data_type());
+        };
+        let doc = out_children.iter().find(|f| f.name() == "doc").unwrap();
+        assert_eq!(doc.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            doc.metadata().get(ARROW_EXT_NAME_KEY).map(|s| s.as_str()),
+            Some(JSON_EXT_NAME)
+        );
+
+        let result = collect(projected).await;
+        let meta: &StructArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert!(meta.is_null(0), "a null struct must stay null once rebuilt");
+        assert!(meta.is_valid(1));
+        assert_eq!(meta.column_by_name("doc").unwrap().null_count(), 2);
+    }
+
+    /// Any struct whose children need adjusting is rebuilt child by child, so the parent's
+    /// nulls have to be restored afterwards - not only for the extension-column cases.
+    #[tokio::test]
+    async fn test_null_struct_stays_null_when_child_is_cast() {
+        let input_children: Fields = vec![Field::new("x", DataType::Int32, true)].into();
+        let table_schema = Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(vec![Field::new("x", DataType::Int64, true)].into()),
+            true,
+        )]);
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StructArray::new(
+                input_children,
+                vec![Arc::new(Int32Array::from(vec![5, 6]))],
+                Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let result = collect(projected).await;
+        let s: &StructArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert!(s.is_null(0));
+        assert!(s.is_valid(1));
+        let x: &Int64Array = s.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(x.value(1), 6);
+    }
+
+    /// Lance rejects a non-nullable child that carries nulls even where the parent masks
+    /// them, so the null rows have to keep the placeholder children the input gave them.
+    #[tokio::test]
+    async fn test_null_struct_keeps_children_of_a_non_nullable_child() {
+        let input_children: Fields = vec![Field::new("x", DataType::Int32, false)].into();
+        let table_schema = Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(vec![Field::new("x", DataType::Int64, false)].into()),
+            true,
+        )]);
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StructArray::new(
+                input_children,
+                vec![Arc::new(Int32Array::from(vec![0, 6]))],
+                Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+            ))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let result = collect(projected).await;
+        let s: &StructArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert!(s.is_null(0));
+        assert!(s.is_valid(1));
+        let x: &Int64Array = s.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(x.null_count(), 0);
+        assert_eq!(x.value(1), 6);
+    }
+
+    /// A `Null` input column against a plain table column writes nulls too, including for
+    /// target types that a DataFusion cast would not reach.
+    #[tokio::test]
+    async fn test_null_column_into_struct_column() {
+        let children: Fields = vec![Field::new("x", DataType::Int32, true)].into();
+        let table_schema = Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(children.clone()),
+            true,
+        )]);
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Null, true)]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![arrow_array::new_null_array(&DataType::Null, 2)],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+        assert_eq!(
+            projected.schema().field_with_name("s").unwrap().data_type(),
+            &DataType::Struct(children)
+        );
+
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 2);
+        assert_eq!(result.column(0).null_count(), 2);
     }
 }
