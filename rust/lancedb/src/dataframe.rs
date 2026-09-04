@@ -122,6 +122,7 @@ struct ExecutionContext {
     database: Arc<dyn Database>,
     default_namespace_path: Vec<String>,
     execute_remotely: bool,
+    source_tables: Vec<Arc<dyn BaseTable>>,
 }
 
 struct LocalQueryHandle {
@@ -312,6 +313,7 @@ impl DataFrame {
                 database,
                 default_namespace_path,
                 execute_remotely,
+                source_tables: vec![table],
             }),
         })
     }
@@ -451,7 +453,8 @@ impl DataFrame {
             .zip(right_on)
             .map(|(left, right)| Ok(self.column(left)?.eq(other.column(right)?)))
             .collect::<Result<Vec<_>>>()?;
-        self.wrap(
+        self.wrap_binary(
+            other,
             self.inner
                 .clone()
                 .join_on(other.inner.clone(), how.into(), predicates),
@@ -462,9 +465,12 @@ impl DataFrame {
     pub fn union(&self, other: &Self, all: bool) -> Result<Self> {
         self.validate_execution_context(other)?;
         if all {
-            self.wrap(self.inner.clone().union(other.inner.clone()))
+            self.wrap_binary(other, self.inner.clone().union(other.inner.clone()))
         } else {
-            self.wrap(self.inner.clone().union_distinct(other.inner.clone()))
+            self.wrap_binary(
+                other,
+                self.inner.clone().union_distinct(other.inner.clone()),
+            )
         }
     }
 
@@ -472,9 +478,12 @@ impl DataFrame {
     pub fn intersect(&self, other: &Self, all: bool) -> Result<Self> {
         self.validate_execution_context(other)?;
         if all {
-            self.wrap(self.inner.clone().intersect(other.inner.clone()))
+            self.wrap_binary(other, self.inner.clone().intersect(other.inner.clone()))
         } else {
-            self.wrap(self.inner.clone().intersect_distinct(other.inner.clone()))
+            self.wrap_binary(
+                other,
+                self.inner.clone().intersect_distinct(other.inner.clone()),
+            )
         }
     }
 
@@ -482,9 +491,12 @@ impl DataFrame {
     pub fn except(&self, other: &Self, all: bool) -> Result<Self> {
         self.validate_execution_context(other)?;
         if all {
-            self.wrap(self.inner.clone().except(other.inner.clone()))
+            self.wrap_binary(other, self.inner.clone().except(other.inner.clone()))
         } else {
-            self.wrap(self.inner.clone().except_distinct(other.inner.clone()))
+            self.wrap_binary(
+                other,
+                self.inner.clone().except_distinct(other.inner.clone()),
+            )
         }
     }
 
@@ -522,6 +534,16 @@ impl DataFrame {
         let execution = self.execution.as_ref().ok_or_else(|| Error::InvalidInput {
             message: "this DataFrame is not bound to an opened table".to_string(),
         })?;
+        if execution
+            .source_tables
+            .iter()
+            .any(|table| table.current_branch().is_some() || table.is_time_travel())
+        {
+            return Err(Error::NotSupported {
+                message: "DataFrames do not yet support checked-out versions or branches"
+                    .to_string(),
+            });
+        }
         if execution.execute_remotely {
             let plan = self.encode_plan()?;
             execution
@@ -566,6 +588,31 @@ impl DataFrame {
                 message: "DataFrames must come from the same connection and namespace".to_string(),
             }),
         }
+    }
+
+    fn wrap_binary(
+        &self,
+        other: &Self,
+        result: datafusion_common::Result<DfDataFrame>,
+    ) -> Result<Self> {
+        result
+            .map(|inner| {
+                let mut execution = self.execution.clone();
+                if let (Some(execution), Some(other_execution)) = (&mut execution, &other.execution)
+                {
+                    for table in &other_execution.source_tables {
+                        if !execution
+                            .source_tables
+                            .iter()
+                            .any(|source| Arc::ptr_eq(source, table))
+                        {
+                            execution.source_tables.push(table.clone());
+                        }
+                    }
+                }
+                Self { inner, execution }
+            })
+            .map_err(planning_error)
     }
 }
 

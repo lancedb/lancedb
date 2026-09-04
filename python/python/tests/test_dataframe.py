@@ -142,16 +142,20 @@ def test_dataframe_rejects_checked_out_versions_and_branches(tmp_path):
         branch.to_df()
 
 
-def test_dataframe_uses_table_snapshot_from_plan_creation(tmp_path):
+def test_dataframe_uses_latest_table_data_and_rejects_later_checkout(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("events", [{"id": 1}])
     version = table.version
-    table.add([{"id": 2}])
     frame = table.to_df()
+
+    table.add([{"id": 2}])
+
+    assert frame.execute().read_all().to_pydict() == {"id": [1, 2]}
 
     table.checkout(version)
 
-    assert frame.execute().read_all().to_pydict() == {"id": [1, 2]}
+    with pytest.raises(NotImplementedError, match="checked-out versions or branches"):
+        frame.execute()
 
 
 def test_dataframe_exports_are_public():
