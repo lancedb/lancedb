@@ -234,6 +234,16 @@ def test_table_names(tmp_db: lancedb.DBConnection):
     assert len(result) == 3
 
 
+def test_table_names_does_not_truncate_by_default(tmp_db: lancedb.DBConnection):
+    for idx in range(12):
+        tmp_db.create_table(f"table_{idx:02d}", data=[{"id": idx}])
+
+    result = tmp_db.table_names()
+
+    assert len(result) == 12
+    assert result == [f"table_{idx:02d}" for idx in range(12)]
+
+
 def test_db_contains_and_len_include_all_table_name_pages(tmp_db: lancedb.DBConnection):
     for idx in range(20):
         tmp_db.create_table(f"table_{idx}", data=[{"id": idx}])
