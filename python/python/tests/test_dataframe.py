@@ -22,7 +22,7 @@ def test_dataframe_builds_lazy_plan_from_open_table(tmp_path):
     frame = (
         db.open_table("MyEvents")
         .to_df()
-        .filter(col("active"))
+        .filter("active")
         .aggregate(["region"], [F.sum(col("amount")).alias("total")])
         .sort(col("total").sort(ascending=False))
         .limit(10)
@@ -45,6 +45,8 @@ def test_dataframe_builds_lazy_plan_from_open_table(tmp_path):
     assert col("amount").sort().nulls_first is False
     assert col("amount").sort(ascending=False).nulls_first is True
     assert "ASC NULLS LAST" in repr(db.open_table("MyEvents").to_df().sort("amount"))
+    with pytest.raises(ValueError, match="at least one expression"):
+        db.open_table("MyEvents").to_df().sort()
 
 
 def test_dataframe_set_operations_build_plans(tmp_path):
@@ -79,6 +81,8 @@ def test_dataframe_rejects_plans_from_different_connections(tmp_path):
         first.union(second)
     with pytest.raises(ValueError, match="at least one key"):
         first.join(first, on=[])
+    with pytest.raises(TypeError, match="another DataFrame"):
+        first.join(object(), on="id")
 
 
 def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
@@ -113,6 +117,12 @@ def test_dataframe_executes_local_plan_in_process(tmp_path):
     assert query.reader().read_all().to_pydict() == {"id": [1]}
     assert query.describe().status == "finished"
 
+    cancelled = frame.execute_async()
+    reader = cancelled.reader()
+    cancelled.cancel()
+    with pytest.raises(RuntimeError, match="cancelled"):
+        reader.read_all()
+
 
 def test_dataframe_rejects_checked_out_versions_and_branches(tmp_path):
     db = lancedb.connect(tmp_path)
@@ -130,6 +140,18 @@ def test_dataframe_rejects_checked_out_versions_and_branches(tmp_path):
     branch = table.branches.create("exp")
     with pytest.raises(NotImplementedError, match="checked-out versions or branches"):
         branch.to_df()
+
+
+def test_dataframe_uses_table_snapshot_from_plan_creation(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("events", [{"id": 1}])
+    version = table.version
+    table.add([{"id": 2}])
+    frame = table.to_df()
+
+    table.checkout(version)
+
+    assert frame.execute().read_all().to_pydict() == {"id": [1, 2]}
 
 
 def test_dataframe_exports_are_public():

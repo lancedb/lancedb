@@ -85,7 +85,7 @@ for batch in query.reader():
 
 Create a lazy DataFusion-style DataFrame from an opened table. Transformations
 are immutable and do not fetch data. `execute` opens the result reader, while
-`execute_async` returns the same query lifecycle handle used by remote SQL.
+`execute_async` returns a query lifecycle handle that can be inspected or cancelled.
 LanceDB handles plan serialization and submission internally:
 
 ```python
@@ -100,13 +100,17 @@ frame = (
     .limit(10)
 )
 
+# Choose the blocking reader for a direct result.
 reader = frame.execute()
+
+# Or submit separately and retain a lifecycle handle.
 query = frame.execute_async()
 query.cancel()
 
 # The async API has the same transformations.
 events = (await async_db.open_table("events", namespace_path=["production"]))
 frame = (await events.to_df()).filter(col("status") == "active").limit(10)
+# Choose the reader or the lifecycle-handle form.
 reader = await frame.execute()
 query = await frame.execute_async()
 await query.cancel()

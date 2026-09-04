@@ -21,7 +21,7 @@ fn join_type(value: &str) -> PyResult<JoinType> {
         "inner" => Ok(JoinType::Inner),
         "left" | "left_outer" => Ok(JoinType::Left),
         "right" | "right_outer" => Ok(JoinType::Right),
-        "full" | "full_outer" => Ok(JoinType::Full),
+        "full" | "full_outer" | "outer" => Ok(JoinType::Full),
         "semi" | "left_semi" => Ok(JoinType::LeftSemi),
         "right_semi" => Ok(JoinType::RightSemi),
         "anti" | "left_anti" => Ok(JoinType::LeftAnti),

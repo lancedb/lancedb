@@ -131,6 +131,76 @@ struct LocalQueryHandle {
     status: Arc<AtomicU8>,
 }
 
+struct LocalStreamState {
+    status: Arc<AtomicU8>,
+    terminal: bool,
+}
+
+impl LocalStreamState {
+    fn new(status: Arc<AtomicU8>) -> Self {
+        Self {
+            status,
+            terminal: false,
+        }
+    }
+
+    fn finish(&mut self) {
+        let _ = self
+            .status
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst);
+        self.terminal = true;
+    }
+}
+
+impl Drop for LocalStreamState {
+    fn drop(&mut self) {
+        if !self.terminal {
+            let _ = self
+                .status
+                .compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst);
+        }
+    }
+}
+
+fn prepare_local_stream(
+    stream: SendableRecordBatchStream,
+) -> (SendableRecordBatchStream, AbortHandle, Arc<AtomicU8>) {
+    let schema = stream.schema();
+    let stream = stream.map_err(execution_error);
+    let (stream, abort_handle) = abortable(stream);
+    let status = Arc::new(AtomicU8::new(0));
+    let mut stream_state = LocalStreamState::new(status.clone());
+    let mut stream = Box::pin(stream);
+    let stream = poll_fn(move |context| {
+        if stream_state.terminal {
+            return Poll::Ready(None);
+        }
+
+        match stream.as_mut().poll_next(context) {
+            Poll::Ready(Some(Err(error))) => {
+                stream_state.finish();
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) if stream_state.status.load(Ordering::SeqCst) == 2 => {
+                stream_state.terminal = true;
+                Poll::Ready(Some(Err(Error::Runtime {
+                    message: "DataFrame query was cancelled".to_string(),
+                })))
+            }
+            Poll::Ready(None) => {
+                stream_state.finish();
+                Poll::Ready(None)
+            }
+            other => other,
+        }
+    });
+    (
+        Box::pin(SimpleRecordBatchStream::new(stream, schema)),
+        abort_handle,
+        status,
+    )
+}
+
 impl LocalQueryHandle {
     fn new(
         stream: SendableRecordBatchStream,
@@ -469,21 +539,7 @@ impl DataFrame {
                 .execute_stream()
                 .await
                 .map_err(execution_error)?;
-            let schema = stream.schema();
-            let stream = stream.map_err(execution_error);
-            let (stream, abort_handle) = abortable(stream);
-            let status = Arc::new(AtomicU8::new(0));
-            let stream_status = status.clone();
-            let mut stream = Box::pin(stream);
-            let stream = poll_fn(move |context| match stream.as_mut().poll_next(context) {
-                Poll::Ready(None) => {
-                    let _ =
-                        stream_status.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst);
-                    Poll::Ready(None)
-                }
-                other => other,
-            });
-            let stream = Box::pin(SimpleRecordBatchStream::new(stream, schema));
+            let (stream, abort_handle, status) = prepare_local_stream(stream);
             Ok(Query::new(Arc::new(LocalQueryHandle::new(
                 stream,
                 abort_handle,
@@ -693,5 +749,35 @@ mod tests {
             QueryStatus::Cancelled
         );
         assert!(cancelled.reader().await.is_err());
+
+        let cancelled = table.to_df().await.unwrap().execute().await.unwrap();
+        let mut reader = cancelled.reader().await.unwrap();
+        cancelled.cancel().await.unwrap();
+        assert!(reader.try_next().await.is_err());
+        assert_eq!(
+            cancelled.describe().await.unwrap().status,
+            QueryStatus::Cancelled
+        );
+
+        let abandoned = table.to_df().await.unwrap().execute().await.unwrap();
+        let reader = abandoned.reader().await.unwrap();
+        drop(reader);
+        assert_eq!(
+            abandoned.describe().await.unwrap().status,
+            QueryStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn local_stream_error_is_terminal() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let stream = futures::stream::iter([Err(Error::Runtime {
+            message: "broken stream".to_string(),
+        })]);
+        let stream = Box::pin(SimpleRecordBatchStream::new(stream, schema));
+        let (mut stream, _abort_handle, status) = prepare_local_stream(stream);
+
+        assert!(stream.try_next().await.is_err());
+        assert_eq!(status.load(Ordering::SeqCst), 1);
     }
 }

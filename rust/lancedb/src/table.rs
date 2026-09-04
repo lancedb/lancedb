@@ -1176,9 +1176,10 @@ impl Table {
         let database = self.database.clone().ok_or_else(|| Error::InvalidInput {
             message: "this table is not bound to a database".to_string(),
         })?;
+        let snapshot = self.query_snapshot().await?;
         crate::dataframe::DataFrame::from_open_table(
             self.name(),
-            self.inner.clone(),
+            snapshot.inner,
             database,
             self.namespace(),
         )

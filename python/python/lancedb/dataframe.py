@@ -50,11 +50,14 @@ class _DataFrameBase:
             self._inner.select([_expression(value)._inner for value in expressions])
         )
 
-    def filter(self, *predicates: Expr):
+    def filter(self, *predicates: Expression):
         """Keep rows matching every predicate."""
         if not predicates:
             raise ValueError("filter requires at least one predicate")
-        predicate = reduce(lambda left, right: left & right, predicates)
+        predicate = reduce(
+            lambda left, right: left & right,
+            (_expression(value) for value in predicates),
+        )
         return self._wrap(self._inner.filter(predicate._inner))
 
     def aggregate(
@@ -83,6 +86,8 @@ class _DataFrameBase:
 
     def sort(self, *expressions: Union[Expression, SortExpr]):
         """Sort rows using DataFusion-style sort expressions."""
+        if not expressions:
+            raise ValueError("sort requires at least one expression")
         sorts = []
         for value in expressions:
             if isinstance(value, SortExpr):
@@ -150,6 +155,8 @@ class _DataFrameBase:
         right_on: Optional[Union[str, Sequence[str]]] = None,
     ):
         """Join two plans from the same connection and namespace."""
+        if not isinstance(other, _DataFrameBase):
+            raise TypeError("join requires another DataFrame")
         if on is not None:
             if left_on is not None or right_on is not None:
                 raise ValueError("use either on or left_on/right_on")
@@ -198,7 +205,7 @@ class DataFrame(_DataFrameBase):
         return self.execute_async().reader()
 
     def execute_async(self) -> SqlQuery:
-        """Submit this plan and return its server-side query lifecycle handle."""
+        """Submit this plan and return its query lifecycle handle."""
         return SqlQuery(AsyncSqlQuery(LOOP.run(self._submit())))
 
 
@@ -210,7 +217,7 @@ class AsyncDataFrame(_DataFrameBase):
         return await (await self.execute_async()).reader()
 
     async def execute_async(self) -> AsyncSqlQuery:
-        """Submit this plan and return its server-side query lifecycle handle."""
+        """Submit this plan and return its query lifecycle handle."""
         return AsyncSqlQuery(await self._inner.execute_async())
 
 

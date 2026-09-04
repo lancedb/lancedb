@@ -61,7 +61,8 @@ pub(crate) trait QueryHandle: Send + Sync {
 ///
 /// The handle can be inspected, opened as an Arrow reader, or cancelled. Remote
 /// SQL and DataFrame queries execute on the server; local DataFrames execute
-/// in-process. Dropping the handle does not cancel the query.
+/// in-process. Dropping a remote handle does not cancel the query; dropping an
+/// unfinished local reader abandons that in-process query.
 /// Identifier lookup is scoped to the connection that submitted the query and
 /// is not a durable resume mechanism.
 pub struct Query {

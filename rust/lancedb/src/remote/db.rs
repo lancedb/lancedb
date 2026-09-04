@@ -801,7 +801,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     fn executes_dataframe_remotely(&self) -> bool {
-        true
+        self.sql_client.is_some()
     }
 
     async fn describe_query(&self, query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
