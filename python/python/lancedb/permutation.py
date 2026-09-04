@@ -597,7 +597,7 @@ class Permutation:
         if split is not None:
             if permutation_table is None:
                 raise ValueError(
-                    "Cannot create a permutation on split `{split}`"
+                    f"Cannot create a permutation on split `{split}`"
                     " because no permutation table is provided"
                 )
             if isinstance(split, str):
