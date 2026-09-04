@@ -1127,12 +1127,21 @@ struct RowScope {
 /// those fields and neither adding nor removing rows. A version whose
 /// transaction cannot be read is not proven, so it counts as drift.
 async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Result<bool> {
+    // A fill may write any field under a computed column, so the whole
+    // subtree counts, not only the root.
     let physical = ArrowSchema::from(view_ds.schema());
-    let computed_fields: Vec<u32> = computed_columns(&physical)
-        .iter()
-        .filter_map(|c| view_ds.schema().field(&c.name))
-        .map(|field| field.id as u32)
-        .collect();
+    fn subtree(field: &lance_core::datatypes::Field, ids: &mut Vec<u32>) {
+        ids.push(field.id as u32);
+        for child in &field.children {
+            subtree(child, ids);
+        }
+    }
+    let mut computed_fields = Vec::new();
+    for column in computed_columns(&physical) {
+        if let Some(field) = view_ds.schema().field(&column.name) {
+            subtree(field, &mut computed_fields);
+        }
+    }
     if computed_fields.is_empty() {
         return Ok(false);
     }
@@ -3585,6 +3594,61 @@ mod tests {
         assert_eq!(
             view.refresh().execute().await.unwrap().mode,
             RefreshMode::NoOp
+        );
+    }
+
+    /// A fill of a nested computed column writes its child fields; that is
+    /// still a fill, not drift.
+    #[tokio::test]
+    async fn test_a_nested_sql_fill_is_not_drift() {
+        use crate::materialized_view::tests::{people, sql_field};
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = people(&conn).await;
+        let payload = sql_field(
+            "payload",
+            arrow_schema::DataType::Struct(
+                vec![arrow_schema::Field::new(
+                    "value",
+                    arrow_schema::DataType::Utf8,
+                    true,
+                )]
+                .into(),
+            ),
+            "named_struct('value', name)",
+            r#"["name"]"#,
+        );
+        let view = crate::materialized_view::prepare_declaration(
+            &source,
+            Some(&[("name".to_string(), "name".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_computed_columns(vec![(1, payload)], &[])
+        .unwrap()
+        .create("v")
+        .await
+        .unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            view.table()
+                .refresh_column("payload")
+                .await
+                .unwrap()
+                .rows_filled,
+            3
+        );
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+        assert_eq!(
+            view.table()
+                .count_rows(Some("payload.value = name".to_string()))
+                .await
+                .unwrap(),
+            3
         );
     }
 }

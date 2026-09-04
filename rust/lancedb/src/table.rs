@@ -2826,13 +2826,12 @@ impl NativeTable {
         // A declaration may come along only if it re-plans to what it
         // declares and the data carries no values for it: what a create can
         // persist is exactly what `add_columns().computed()` would have.
-        let declared: Vec<String> = computed_columns::computed_columns(&batches.arrow_schema())
+        let schema = batches.arrow_schema();
+        computed_columns::ensure_declarations_are_planned(&schema)?;
+        let declared: Vec<String> = computed_columns::computed_columns(&schema)
             .into_iter()
             .map(|c| c.name)
             .collect();
-        if !declared.is_empty() {
-            computed_columns::ensure_declarations_are_planned(&batches.arrow_schema())?;
-        }
         let batches = UnfilledDeclarations {
             inner: batches,
             declared,

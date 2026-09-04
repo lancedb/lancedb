@@ -648,10 +648,12 @@ fn project_schema(schema: &ArrowSchema, columns: &[String]) -> SchemaRef {
 pub struct PreparedDeclaration {
     schema: SchemaRef,
     definition: MaterializedViewDefinition,
-    /// The source schema and the projection lineage, for placing a
-    /// Function's inputs.
+    /// The source schema and the projection lineage, for placing a computed
+    /// column's inputs; `internal_inputs` counts the projections
+    /// [`PreparedDeclaration::input_column`] added after the declared ones.
     source_schema: SchemaRef,
     lineage: Lineage,
+    internal_inputs: usize,
     /// The source's own database: the only place
     /// [`PreparedDeclaration::create`] will put the view, because refresh
     /// resolves the recorded source coordinate through the view's database.
@@ -718,6 +720,7 @@ impl PreparedDeclaration {
             .entry(source_column.to_string())
             .or_default()
             .push(name.clone());
+        self.internal_inputs += 1;
         let mut metadata = self.schema.metadata().clone();
         rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
         metadata.insert(
@@ -857,13 +860,8 @@ impl PreparedDeclaration {
     /// Columns the declaration lists: everything before the internal
     /// projections and the provenance column.
     fn visible_count(&self) -> usize {
-        self.schema
-            .fields()
-            .iter()
-            .take_while(|f| {
-                f.name() != SOURCE_ROW_ID_COLUMN && !f.name().starts_with(INPUT_COLUMN_PREFIX)
-            })
-            .count()
+        self.definition.projections.len() - self.internal_inputs
+            + computed_columns(&self.schema).len()
     }
 
     /// Create the view table and verify it, consuming the declaration.
@@ -1063,6 +1061,17 @@ pub async fn prepare_declaration(
         resolved.name(),
     )
     .await?;
+    // The internal-input prefix belongs to the declaration alone; the
+    // replan at refresh sees those projections and must accept them.
+    if let Some(reserved) = projections
+        .unwrap_or_default()
+        .iter()
+        .find(|(output, _)| output.starts_with(INPUT_COLUMN_PREFIX))
+    {
+        return Err(Error::InvalidInput {
+            message: format!("view column name '{}' is reserved", reserved.0),
+        });
+    }
     let source_schema = resolved.schema().await?;
     let source_metadata = source_schema.metadata().clone();
     let (definition, mut fields, lineage) = plan(
@@ -1100,6 +1109,7 @@ pub async fn prepare_declaration(
         definition,
         source_schema,
         lineage,
+        internal_inputs: 0,
         database,
     })
 }
@@ -2978,6 +2988,33 @@ mod tests {
             .unwrap();
         assert_eq!(table.refresh_column("forged").await.unwrap().rows_filled, 1);
 
+        // A declaration with only its marker is broken, not absent.
+        let half = ArrowField::new("half", DataType::Int32, true).with_metadata(HashMap::from([(
+            crate::table::computed_columns::COMPUTED_COLUMN_META_KEY.to_string(),
+            "true".to_string(),
+        )]));
+        let batch = arrow_array::RecordBatch::try_new(
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("x", DataType::Int32, false),
+                half,
+            ])),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::from(vec![999])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("half", batch)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("incomplete computed-column declaration"),
+            "{err}"
+        );
+
         let bogus = Arc::new(ArrowSchema::new(vec![
             ArrowField::new("x", DataType::Int32, false),
             sql_field("bad", DataType::Int32, "missing + 1", r#"["missing"]"#),
@@ -2990,6 +3027,51 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("missing"), "{err}");
+    }
+
+    /// The internal-input prefix is reserved for the declaration, like the
+    /// provenance column, so an alias cannot masquerade as an internal input.
+    #[tokio::test]
+    async fn the_internal_input_prefix_is_reserved() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = people(&conn).await;
+        let err = prepare_declaration(
+            &source,
+            Some(&[("__input_x".to_string(), "name".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("'__input_x' is reserved"), "{err}");
+    }
+
+    /// A computed column may not read another, through any path: a
+    /// Function bound to a child of a computed struct is refused like a SQL
+    /// declaration over it.
+    #[tokio::test]
+    async fn a_computed_column_cannot_read_a_computed_root() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let prepared = prepared_people(&conn).await;
+        let payload = sql_field(
+            "payload",
+            DataType::Struct(vec![ArrowField::new("value", DataType::Utf8, true)].into()),
+            "named_struct('value', name)",
+            r#"["name"]"#,
+        );
+        let err = prepared
+            .with_computed_columns(
+                vec![
+                    (2, payload),
+                    (3, computed_field("emb", "fb_dependent", "payload.value")),
+                ],
+                &[test_binding("fb_dependent", "payload.value", "emb")],
+            )
+            .err()
+            .map(|e| e.to_string())
+            .expect("a computed root as a Function input should be refused");
+        assert!(err.contains("reads computed column 'payload'"), "{err}");
     }
 
     /// A projected column keeps its nullability; a computed value is

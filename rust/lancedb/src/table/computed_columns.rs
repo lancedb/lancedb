@@ -1269,12 +1269,25 @@ pub(crate) fn ensure_batch_writes_no_computed_values(
 }
 
 /// Validate every computed-column declaration `schema` carries against the
-/// schema itself: a SQL declaration re-plans to the field it declares, a
+/// schema itself: every field with declaration metadata is a complete
+/// declaration, a SQL declaration re-plans to the field it declares, a
 /// Function declaration satisfies the binding contract, and no declaration
 /// reads another computed column. What passes here is what `refresh_column`
 /// can execute.
 pub(crate) fn ensure_declarations_are_planned(schema: &ArrowSchema) -> Result<()> {
     let invalid = |message: String| Error::InvalidInput { message };
+    // A field with any declaration key is a declaration; a partial one is
+    // not "no declaration", it is a broken one.
+    for field in schema.fields() {
+        if field.metadata().keys().any(|k| is_declaration_key(k))
+            && computed_column_from_field(field).is_none()
+        {
+            return Err(invalid(format!(
+                "field '{}' carries an incomplete computed-column declaration",
+                field.name()
+            )));
+        }
+    }
     let declared: HashSet<String> = computed_columns(schema)
         .into_iter()
         .map(|c| c.name)
@@ -1319,7 +1332,25 @@ pub(crate) fn ensure_declarations_are_planned(schema: &ArrowSchema) -> Result<()
                     )));
                 }
             }
-            ComputedColumnKind::Function { .. } => {}
+            ComputedColumnKind::Function { binding_id, .. } => {
+                // The binding validator resolves each input's leaf; the
+                // no-computed-input rule is about the root it hangs from.
+                let bindings = function_bindings(schema)?;
+                let Some(binding) = bindings.iter().find(|b| b.binding_id() == binding_id) else {
+                    continue; // reported by the binding validator below
+                };
+                if let Some(input) = binding
+                    .inputs()
+                    .iter()
+                    .map(|input| root(&input.field_path))
+                    .find(|r| declared.contains(*r))
+                {
+                    return Err(invalid(format!(
+                        "computed column '{}' reads computed column '{input}'",
+                        column.name
+                    )));
+                }
+            }
             ComputedColumnKind::Unrecognized { kind } => {
                 return Err(Error::NotSupported {
                     message: format!(
