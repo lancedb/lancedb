@@ -21,7 +21,8 @@ use lance_namespace::models::{
 use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
+    JobDescription, JobInfo, OpenTableRequest, ReadConsistency, RepairDatabaseResponse,
+    TableNamesRequest,
 };
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
@@ -1202,6 +1203,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         resp.json().await.err_to_http(request_id)
     }
 
+    async fn repair(&self) -> Result<RepairDatabaseResponse> {
+        Err(Error::NotSupported {
+            message: "Repair is not supported for remote databases".to_string(),
+        })
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -2958,5 +2964,17 @@ mod tests {
         job.wait().await.unwrap();
         assert_eq!(job.status().await.unwrap(), "finished");
         assert!(polls.load(Ordering::SeqCst) >= 3);
+    }
+
+    #[tokio::test]
+    async fn test_conn_repair_not_supported() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body("{}".to_string())
+                .unwrap()
+        });
+        let result = conn.repair().await;
+        assert!(matches!(result, Err(Error::NotSupported { .. })));
     }
 }

@@ -1247,3 +1247,44 @@ def test_namespace_client_namespace_connection(tmp_path):
 
     assert isinstance(ns_client, DirectoryNamespace)
     assert str(tmp_path) in ns_client.namespace_id()
+
+
+def test_repair_sync(tmp_path):
+    db = lancedb.connect(tmp_path)
+    assert db.repair() == []
+
+    data = [{"id": 1, "text": "hello", "vector": [1.0, 2.0]}]
+    db.create_table("valid_table", data=data)
+
+    stub_path = tmp_path / "corrupted_stub.lance"
+    stub_path.mkdir()
+
+    purged = db.repair()
+    assert purged == ["corrupted_stub"]
+    assert not stub_path.exists()
+    assert list(db.table_names()) == ["valid_table"]
+
+    tbl = db.open_table("valid_table")
+    assert tbl.count_rows() == 1
+    assert db.repair() == []
+
+
+@pytest.mark.asyncio
+async def test_repair_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    assert await db.repair() == []
+
+    data = [{"id": 1, "text": "hello", "vector": [1.0, 2.0]}]
+    await db.create_table("valid_table", data=data)
+
+    stub_path = tmp_path / "corrupted_stub.lance"
+    stub_path.mkdir()
+
+    purged = await db.repair()
+    assert purged == ["corrupted_stub"]
+    assert not stub_path.exists()
+    assert list(await db.table_names()) == ["valid_table"]
+
+    tbl = await db.open_table("valid_table")
+    assert await tbl.count_rows() == 1
+    assert await db.repair() == []

@@ -655,6 +655,32 @@ class DBConnection(EnforceOverrides):
             namespace_path = []
         raise NotImplementedError
 
+    def repair(self) -> List[str]:
+        """Repair the database by purging corrupted or empty table stubs across all
+        namespaces.
+
+        This is an administrative maintenance command. It attempts to repair
+        unopenable table stubs across all namespaces in the database. Tables that
+        fail to open due to corruption but still contain raw data files, or tables
+        that encounter transient I/O errors during manifest loading, are safely
+        skipped and preserved.
+
+        Safety / Concurrency Precondition
+        ---------------------------------
+        ``repair`` must not be executed concurrently with new table creations
+        (``create_table``), as in-flight writes performed during new table
+        creation (which declare the table in the catalog before committing the
+        initial manifest) may be detected as uninitialized stubs and purged.
+        Normal reads and writes (appends, updates, merges) on existing tables are
+        unaffected.
+
+        Returns
+        -------
+        List[str]
+            A list of table identifiers that were purged during repair.
+        """
+        raise NotImplementedError
+
     @property
     def uri(self) -> str:
         return self._uri
@@ -1426,6 +1452,10 @@ class LanceDBConnection(DBConnection):
         if namespace_path is None:
             namespace_path = []
         LOOP.run(self._conn.drop_all_tables(namespace_path=namespace_path))
+
+    @override
+    def repair(self) -> List[str]:
+        return LOOP.run(self._conn.repair())
 
     @override
     def rename_table(
@@ -2288,6 +2318,32 @@ class AsyncConnection(object):
         if namespace_path is None:
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
+
+    async def repair(self) -> List[str]:
+        """Repair the database by purging corrupted or empty table stubs across all
+        namespaces.
+
+        This is an administrative maintenance command. It attempts to repair
+        unopenable table stubs across all namespaces in the database. Tables that
+        fail to open due to corruption but still contain raw data files, or tables
+        that encounter transient I/O errors during manifest loading, are safely
+        skipped and preserved.
+
+        Safety / Concurrency Precondition
+        ---------------------------------
+        ``repair`` must not be executed concurrently with new table creations
+        (``create_table``), as in-flight writes performed during new table
+        creation (which declare the table in the catalog before committing the
+        initial manifest) may be detected as uninitialized stubs and purged.
+        Normal reads and writes (appends, updates, merges) on existing tables are
+        unaffected.
+
+        Returns
+        -------
+        List[str]
+            A list of table identifiers that were purged during repair.
+        """
+        return await self._inner.repair()
 
     def job(self, job_id: str) -> AsyncJob:
         """An [AsyncJob][lancedb.job.AsyncJob] handle for a server-side job

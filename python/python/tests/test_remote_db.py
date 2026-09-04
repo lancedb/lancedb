@@ -2580,3 +2580,26 @@ def test_remote_connection_jobs_surface():
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
+
+
+def test_remote_db_repair_not_supported():
+    def handler(request):
+        request.send_response(200)
+        request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(NotImplementedError, match="repair is not supported"):
+            db.repair()
+
+
+@pytest.mark.asyncio
+async def test_remote_db_async_repair_not_supported():
+    def handler(request):
+        request.send_response(200)
+        request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        with pytest.raises(
+            RuntimeError, match="Repair is not supported for remote databases"
+        ):
+            await db.repair()

@@ -6,9 +6,12 @@
 import tempfile
 import shutil
 import importlib
+from pathlib import Path
+from urllib.parse import urlparse
 import pytest
 import pyarrow as pa
 import lancedb
+from lance_namespace import DescribeTableRequest
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.namespace import _MAX_QUERY_K
 from lancedb.table import AsyncTable, LanceTable
@@ -70,6 +73,20 @@ def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
     # pushdown is not routed to Rust.
     table._route_pushdown_to_rust = False
     return table
+
+
+def _corrupt_namespace_table_on_disk(namespace_client, table_id):
+    res = namespace_client.describe_table(DescribeTableRequest(id=table_id))
+    loc = res.location
+    parsed = urlparse(loc)
+    path = Path(parsed.path if parsed.scheme == "file" else loc)
+    versions_path = path / "_versions"
+    if versions_path.exists():
+        shutil.rmtree(versions_path)
+    data_path = path / "data"
+    if data_path.exists():
+        shutil.rmtree(data_path)
+    return path
 
 
 class TestNamespaceConnection:
@@ -575,6 +592,41 @@ class TestNamespaceConnection:
         db.drop_namespace(["namespace_a"])
         db.drop_namespace(["namespace_b"])
 
+    def test_repair_through_namespace(self):
+        """Test repairing corrupted or empty table stubs through namespace
+        connection."""
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert db.repair() == []
+
+        db.create_namespace(["test_ns"])
+        data = [{"id": 1, "vector": [1.0, 2.0]}]
+        db.create_table("valid_root", data=data)
+        db.create_table("valid_nested", data=data, namespace_path=["test_ns"])
+        db.create_table("stub_root", data=data)
+        db.create_table("stub_nested", data=data, namespace_path=["test_ns"])
+
+        # Corrupt the stubs by removing manifests and data
+        client = db.namespace_client()
+        root_stub_path = _corrupt_namespace_table_on_disk(client, ["stub_root"])
+        nested_stub_path = _corrupt_namespace_table_on_disk(
+            client, ["test_ns", "stub_nested"]
+        )
+
+        purged = db.repair()
+        assert set(purged) == {"stub_root", "test_ns/stub_nested"}
+        assert not root_stub_path.exists()
+        assert not nested_stub_path.exists()
+
+        assert "valid_root" in list(db.table_names())
+        assert "valid_nested" in list(db.table_names(namespace_path=["test_ns"]))
+
+        tbl_root = db.open_table("valid_root")
+        assert tbl_root.count_rows() == 1
+        tbl_nested = db.open_table("valid_nested", namespace_path=["test_ns"])
+        assert tbl_nested.count_rows() == 1
+
+        assert db.repair() == []
+
 
 @pytest.mark.asyncio
 class TestAsyncNamespaceConnection:
@@ -852,6 +904,41 @@ class TestAsyncNamespaceConnection:
         # Verify all tables are gone from child namespace
         table_names = await db.table_names(namespace_path=["test_ns"])
         assert len(list(table_names)) == 0
+
+    async def test_repair_through_namespace_async(self):
+        """Test repairing corrupted or empty table stubs through async namespace
+        connection."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert await db.repair() == []
+
+        await db.create_namespace(["test_ns"])
+        data = [{"id": 1, "vector": [1.0, 2.0]}]
+        await db.create_table("valid_root", data=data)
+        await db.create_table("valid_nested", data=data, namespace_path=["test_ns"])
+        await db.create_table("stub_root", data=data)
+        await db.create_table("stub_nested", data=data, namespace_path=["test_ns"])
+
+        # Corrupt the stubs by removing manifests and data
+        client = await db.namespace_client()
+        root_stub_path = _corrupt_namespace_table_on_disk(client, ["stub_root"])
+        nested_stub_path = _corrupt_namespace_table_on_disk(
+            client, ["test_ns", "stub_nested"]
+        )
+
+        purged = await db.repair()
+        assert set(purged) == {"stub_root", "test_ns/stub_nested"}
+        assert not root_stub_path.exists()
+        assert not nested_stub_path.exists()
+
+        assert "valid_root" in list(await db.table_names())
+        assert "valid_nested" in list(await db.table_names(namespace_path=["test_ns"]))
+
+        tbl_root = await db.open_table("valid_root")
+        assert await tbl_root.count_rows() == 1
+        tbl_nested = await db.open_table("valid_nested", namespace_path=["test_ns"])
+        assert await tbl_nested.count_rows() == 1
+
+        assert await db.repair() == []
 
 
 class TestPushdownOperations:

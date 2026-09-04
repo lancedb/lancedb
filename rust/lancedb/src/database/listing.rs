@@ -35,7 +35,7 @@ use lance_namespace::models::{
 
 use super::{
     BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, TableNamesRequest,
+    OpenTableRequest, RepairDatabaseResponse, TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -880,6 +880,28 @@ impl ListingDatabase {
             CreateTableMode::Overwrite => unreachable!(),
         }
     }
+    /// Returns `true` if the table's `data/` directory contains `.lance` files.
+    ///
+    /// Defaults to `true` on any error so that we never accidentally purge a
+    /// table we simply couldn't inspect.
+    async fn table_has_raw_data(&self, table_path: &object_store::path::Path) -> bool {
+        use futures::StreamExt;
+
+        let mut stream = self
+            .object_store
+            .list(Some(table_path.clone().join("data")));
+        while let Some(res) = stream.next().await {
+            match res {
+                Ok(m) => {
+                    if m.location.extension() == Some(LANCE_FILE_EXTENSION) && m.size > 0 {
+                        return true;
+                    }
+                }
+                Err(_) => return true,
+            }
+        }
+        false
+    }
 }
 
 #[async_trait::async_trait]
@@ -1263,6 +1285,64 @@ impl Database for ListingDatabase {
         self.drop_tables(tables).await
     }
 
+    async fn repair(&self) -> Result<RepairDatabaseResponse> {
+        let mut purged_tables = vec![];
+
+        // Repair root namespace
+        let mut page_token = None;
+        loop {
+            let response = self
+                .list_tables(ListTablesRequest {
+                    page_token: page_token.clone(),
+                    ..Default::default()
+                })
+                .await?;
+
+            for table in response.tables {
+                let open_req = OpenTableRequest {
+                    name: table.clone(),
+                    index_cache_size: Some(0),
+                    ..Default::default()
+                };
+                match self.open_table(open_req).await {
+                    Ok(table) => drop(table),
+                    Err(Error::TableNotFound { .. })
+                    | Err(Error::TableCorrupted { .. })
+                    | Err(Error::Lance {
+                        source: lance::Error::CorruptFile { .. },
+                    }) => {
+                        let table_path = self
+                            .base_path
+                            .clone()
+                            .join(format!("{}.{}", table, LANCE_FILE_EXTENSION));
+                        if self.table_has_raw_data(&table_path).await {
+                            log::warn!(
+                                "Table '{}' is corrupted but contains raw files. Skipping automatic purge.",
+                                table
+                            );
+                        } else if let Err(e) = self.drop_table(&table, &[]).await {
+                            log::warn!("Failed to drop corrupted table {}: {}", table, e);
+                        } else {
+                            purged_tables.push(table);
+                        }
+                    }
+                    Err(other_err) => {
+                        log::warn!("Unexpected error checking table '{}': {}", table, other_err);
+                    }
+                }
+            }
+
+            if response.page_token.is_none() || response.page_token.as_deref() == Some("") {
+                break;
+            }
+            page_token = response.page_token;
+        }
+
+        // Visit child namespaces only (root was already safely repaired above)
+        purged_tables.extend(self.namespace_database.repair_child_namespaces(&[]).await?);
+
+        Ok(RepairDatabaseResponse { purged_tables })
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -1742,10 +1822,23 @@ mod tests {
         }
     }
 
+    fn create_test_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap()
+    }
+
     fn create_request(name: &str, data: Box<dyn Scannable>) -> CreateTableRequest {
+        create_request_in_ns(name, vec![], data)
+    }
+
+    fn create_request_in_ns(
+        name: &str,
+        namespace_path: Vec<String>,
+        data: Box<dyn Scannable>,
+    ) -> CreateTableRequest {
         CreateTableRequest {
             name: name.to_string(),
-            namespace_path: vec![],
+            namespace_path,
             data,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
@@ -3433,5 +3526,321 @@ mod tests {
             .await
             .unwrap();
         assert!(post_drop.tables.is_empty());
+    }
+
+    async fn corrupt_nested_table_on_disk(
+        db: &ListingDatabase,
+        table_id: Vec<String>,
+        remove_data: bool,
+    ) -> std::path::PathBuf {
+        let ns_client = db.namespace_client().await.unwrap();
+        let describe = ns_client
+            .describe_table(lance_namespace::models::DescribeTableRequest {
+                id: Some(table_id),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let loc = describe.location.expect("table location not found");
+        let path = if let Ok(url) = url::Url::parse(&loc) {
+            url.to_file_path()
+                .unwrap_or_else(|_| std::path::PathBuf::from(&loc))
+        } else {
+            std::path::PathBuf::from(loc)
+        };
+        let versions_path = path.join("_versions");
+        if versions_path.exists() {
+            std::fs::remove_dir_all(&versions_path).unwrap();
+        }
+        if remove_data {
+            let data_path = path.join("data");
+            if data_path.exists() {
+                std::fs::remove_dir_all(data_path).unwrap();
+            }
+        }
+        path
+    }
+
+    #[tokio::test]
+    async fn test_listing_repair() {
+        let (tmp_dir, db) = setup_database().await;
+        let batch = create_test_batch();
+
+        // 1. Root namespace: valid table, empty stub (to purge), and corrupted with data (to preserve)
+        db.create_table(create_request("root_valid", Box::new(batch.clone())))
+            .await
+            .unwrap();
+        db.create_table(create_request("root_with_data", Box::new(batch.clone())))
+            .await
+            .unwrap();
+
+        let stub_path = tmp_dir
+            .path()
+            .join(format!("root_stub.{}", LANCE_FILE_EXTENSION));
+        std::fs::create_dir_all(&stub_path).unwrap();
+
+        let versions_dir = tmp_dir
+            .path()
+            .join(format!("root_with_data.{}/_versions", LANCE_FILE_EXTENSION));
+        if versions_dir.exists() {
+            std::fs::remove_dir_all(&versions_dir).unwrap();
+        }
+
+        // 2. Nested namespace: valid, empty stub (to purge), and corrupted with data (to preserve)
+        let ns_path = vec!["parent".to_string(), "child".to_string()];
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["parent".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(ns_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        db.create_table(create_request_in_ns(
+            "nested_valid",
+            ns_path.clone(),
+            Box::new(batch.clone()),
+        ))
+        .await
+        .unwrap();
+        db.create_table(create_request_in_ns(
+            "nested_stub",
+            ns_path.clone(),
+            Box::new(batch.clone()),
+        ))
+        .await
+        .unwrap();
+        db.create_table(create_request_in_ns(
+            "nested_with_data",
+            ns_path.clone(),
+            Box::new(batch),
+        ))
+        .await
+        .unwrap();
+
+        corrupt_nested_table_on_disk(
+            &db,
+            vec!["parent".into(), "child".into(), "nested_stub".into()],
+            true,
+        )
+        .await;
+        let preserved_path = corrupt_nested_table_on_disk(
+            &db,
+            vec!["parent".into(), "child".into(), "nested_with_data".into()],
+            false,
+        )
+        .await;
+
+        // Execute repair
+        let resp = db.repair().await.unwrap();
+        assert_eq!(
+            resp.purged_tables,
+            vec![
+                "root_stub".to_string(),
+                "parent/child/nested_stub".to_string()
+            ]
+        );
+
+        // Verify root tables post repair
+        let root_tables = db.list_tables(ListTablesRequest::default()).await.unwrap();
+        assert_eq!(
+            root_tables.tables,
+            vec!["root_valid".to_string(), "root_with_data".to_string()]
+        );
+        assert!(!stub_path.exists());
+        assert!(
+            tmp_dir
+                .path()
+                .join(format!("root_with_data.{}", LANCE_FILE_EXTENSION))
+                .exists()
+        );
+
+        // Verify nested tables post repair
+        let nested_tables = db
+            .list_tables(ListTablesRequest {
+                id: Some(ns_path),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            nested_tables.tables,
+            vec!["nested_valid".to_string(), "nested_with_data".to_string()]
+        );
+        assert!(preserved_path.exists());
+    }
+
+    #[derive(Debug)]
+    struct InjectedFailureStore {
+        inner: Arc<dyn object_store::ObjectStore>,
+        fail_prefix: String,
+    }
+
+    impl std::fmt::Display for InjectedFailureStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "InjectedFailureStore")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl object_store::ObjectStore for InjectedFailureStore {
+        async fn put_opts(
+            &self,
+            location: &object_store::path::Path,
+            payload: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &object_store::path::Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &object_store::path::Path,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            if location.as_ref().contains(&self.fail_prefix) {
+                return Err(object_store::Error::Generic {
+                    store: "InjectedFailureStore",
+                    source: "injected manifest read I/O error".into(),
+                });
+            }
+            self.inner.get_opts(location, options).await
+        }
+
+        async fn get_ranges(
+            &self,
+            location: &object_store::path::Path,
+            ranges: &[std::ops::Range<u64>],
+        ) -> object_store::Result<Vec<bytes::Bytes>> {
+            if location.as_ref().contains(&self.fail_prefix) {
+                return Err(object_store::Error::Generic {
+                    store: "InjectedFailureStore",
+                    source: "injected manifest read I/O error".into(),
+                });
+            }
+            self.inner.get_ranges(location, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<
+                'static,
+                object_store::Result<object_store::path::Path>,
+            >,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+        {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list(prefix)
+        }
+
+        fn list_with_offset(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+            offset: &object_store::path::Path,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list_with_offset(prefix, offset)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::RenameOptions,
+        ) -> object_store::Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    #[derive(Debug)]
+    struct InjectedFailureWrapper {
+        fail_prefix: String,
+    }
+
+    impl WrappingObjectStore for InjectedFailureWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            inner: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            Arc::new(InjectedFailureStore {
+                inner,
+                fail_prefix: self.fail_prefix.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repair_preserves_table_on_injected_manifest_read_failure() {
+        let (tmp_dir, mut db) = setup_database().await;
+        let wrapper = Arc::new(InjectedFailureWrapper {
+            fail_prefix: "injected_error_table".to_string(),
+        });
+        db.store_wrapper = Some(wrapper);
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+
+        // 1. Create a table that will experience injected read failure
+        db.create_table(CreateTableRequest::new(
+            "injected_error_table".to_string(),
+            Box::new(batch.clone()),
+        ))
+        .await
+        .unwrap();
+
+        // 2. Create an actual empty stub that should be purged
+        let stub_path = tmp_dir
+            .path()
+            .join(format!("empty_stub.{}", LANCE_FILE_EXTENSION));
+        std::fs::create_dir_all(&stub_path).unwrap();
+
+        // Run repair
+        let resp = db.repair().await.unwrap();
+
+        // Only empty_stub should be purged; injected_error_table must be preserved
+        assert_eq!(resp.purged_tables, vec!["empty_stub".to_string()]);
+
+        let tables = db.list_tables(ListTablesRequest::default()).await.unwrap();
+        assert!(tables.tables.contains(&"injected_error_table".to_string()));
+        assert!(!tables.tables.contains(&"empty_stub".to_string()));
     }
 }

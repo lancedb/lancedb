@@ -24,7 +24,7 @@ use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, Database, DatabaseOptions, JobDescription, JobInfo, OpenTableRequest,
-    ReadConsistency, TableNamesRequest,
+    ReadConsistency, RepairDatabaseResponse, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -745,6 +745,30 @@ impl Connection {
         self.internal.drop_all_tables(namespace_path).await
     }
 
+    /// Repair the database by purging corrupted or empty table stubs.
+    ///
+    /// Attempts to repair unopenable table stubs across all namespaces in the database.
+    /// Tables that fail to open due to corruption but still contain raw data files, or tables
+    /// that encounter transient I/O errors during manifest loading, are safely skipped and preserved.
+    ///
+    /// # Precondition
+    /// This is an administrative maintenance command. `repair` must not be executed concurrently
+    /// with new table creations (`create_table`), as in-flight writes performed during new table
+    /// creation (which declare the table in the catalog before committing the initial manifest)
+    /// may be detected as uninitialized stubs and purged. Normal reads and writes (appends,
+    /// updates, merges) on existing tables are unaffected.
+    ///
+    /// ```rust
+    /// # use lancedb::Connection;
+    /// # async fn repair_db(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    /// let response = conn.repair().await?;
+    /// println!("Purged tables: {:?}", response.purged_tables);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn repair(&self) -> Result<RepairDatabaseResponse> {
+        self.internal.repair().await
+    }
     /// List immediate child namespace names in the given namespace
     pub async fn list_namespaces(
         &self,
