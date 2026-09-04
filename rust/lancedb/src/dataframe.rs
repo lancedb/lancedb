@@ -151,6 +151,13 @@ impl LocalStreamState {
             .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst);
         self.terminal = true;
     }
+
+    fn fail(&mut self) {
+        let _ = self
+            .status
+            .compare_exchange(0, 3, Ordering::SeqCst, Ordering::SeqCst);
+        self.terminal = true;
+    }
 }
 
 impl Drop for LocalStreamState {
@@ -179,7 +186,7 @@ fn prepare_local_stream(
 
         match stream.as_mut().poll_next(context) {
             Poll::Ready(Some(Err(error))) => {
-                stream_state.finish();
+                stream_state.fail();
                 Poll::Ready(Some(Err(error)))
             }
             Poll::Ready(None) if stream_state.status.load(Ordering::SeqCst) == 2 => {
@@ -220,6 +227,7 @@ impl LocalQueryHandle {
         match self.status.load(Ordering::SeqCst) {
             1 => QueryStatus::Finished,
             2 => QueryStatus::Cancelled,
+            3 => QueryStatus::Failed,
             _ => QueryStatus::Running,
         }
     }
@@ -824,9 +832,17 @@ mod tests {
         let stream = Box::pin(
             datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream),
         );
-        let (mut stream, _abort_handle, status) = prepare_local_stream(stream);
+        let (stream, abort_handle, status) = prepare_local_stream(stream);
+        let query = Query::new(Arc::new(LocalQueryHandle::new(
+            stream,
+            abort_handle,
+            status,
+        )));
+        let mut stream = query.reader().await.unwrap();
 
         assert!(stream.try_next().await.is_err());
-        assert_eq!(status.load(Ordering::SeqCst), 1);
+        let description = query.describe().await.unwrap();
+        assert_eq!(description.status, QueryStatus::Failed);
+        assert_eq!(description.progress, None);
     }
 }

@@ -18,6 +18,8 @@ pub enum QueryStatus {
     Running,
     /// The server has made the complete result available.
     Finished,
+    /// Query execution terminated with an error.
+    Failed,
     /// The server accepted cancellation but has not confirmed it yet.
     Cancelling,
     /// The server confirmed cancellation.
@@ -29,6 +31,7 @@ impl fmt::Display for QueryStatus {
         formatter.write_str(match self {
             Self::Running => "running",
             Self::Finished => "finished",
+            Self::Failed => "failed",
             Self::Cancelling => "cancelling",
             Self::Cancelled => "cancelled",
         })
@@ -118,6 +121,7 @@ mod tests {
     fn query_status_display_is_stable() {
         assert_eq!(QueryStatus::Running.to_string(), "running");
         assert_eq!(QueryStatus::Finished.to_string(), "finished");
+        assert_eq!(QueryStatus::Failed.to_string(), "failed");
         assert_eq!(QueryStatus::Cancelling.to_string(), "cancelling");
         assert_eq!(QueryStatus::Cancelled.to_string(), "cancelled");
     }
