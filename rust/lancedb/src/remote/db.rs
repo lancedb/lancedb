@@ -26,7 +26,9 @@ use crate::database::{
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
-use crate::remote::job::{DescribeJobResponse, RemoteJob, job_state_to_client};
+use crate::remote::job::{
+    DescribeJobResponse, PauseJobResponse, RemoteJob, ResumeJobResponse, job_state_to_client,
+};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
@@ -751,6 +753,40 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }) => Ok(false),
             Err(err) => Err(err),
         }
+    }
+
+    async fn pause_job(&self, job_id: &str) -> Result<crate::database::PauseJobStatus> {
+        let req = self
+            .client
+            .post("/v1/jobs/pause")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: PauseJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(if body.paused {
+            crate::database::PauseJobStatus::Pausing
+        } else if body.committing {
+            crate::database::PauseJobStatus::Committing
+        } else {
+            crate::database::PauseJobStatus::AlreadyPaused
+        })
+    }
+
+    async fn resume_job(&self, job_id: &str) -> Result<crate::database::ResumeJobStatus> {
+        let req = self
+            .client
+            .post("/v1/jobs/resume")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: ResumeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(if body.resumed {
+            crate::database::ResumeJobStatus::Resumed
+        } else if body.still_pausing {
+            crate::database::ResumeJobStatus::StillPausing
+        } else {
+            crate::database::ResumeJobStatus::NotPaused
+        })
     }
 
     async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<arrow_array::RecordBatch>> {
@@ -2710,6 +2746,45 @@ mod tests {
                 .unwrap()
         });
         assert!(!conn.cancel_job("nope").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_pause_and_resume_job() {
+        use crate::database::{PauseJobStatus, ResumeJobStatus};
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/pause");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "paused": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.pause_job("job-1").await.unwrap(),
+            PauseJobStatus::Pausing
+        );
+
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "paused": false, "committing": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.pause_job("job-1").await.unwrap(),
+            PauseJobStatus::Committing
+        );
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/resume");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "resumed": false, "still_pausing": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.resume_job("job-1").await.unwrap(),
+            ResumeJobStatus::StillPausing
+        );
     }
 
     #[tokio::test]

@@ -788,6 +788,22 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.cancel_job(job_id))
 
     @override
+    def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
+
+        Returns "pausing", "already_paused", or "committing".
+        """
+        return LOOP.run(self._conn.pause_job(job_id))
+
+    @override
+    def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Returns "resumed", "still_pausing", or "not_paused".
+        """
+        return LOOP.run(self._conn.resume_job(job_id))
+
+    @override
     def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
         """The lifecycle event history of a server-side job, as Arrow batches.
 

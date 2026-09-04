@@ -731,6 +731,30 @@ impl Connection {
         })
     }
 
+    pub fn pause_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let status = inner.pause_job(&job_id).await.infer_error()?;
+            Ok(match status {
+                lancedb::database::PauseJobStatus::Pausing => "pausing",
+                lancedb::database::PauseJobStatus::AlreadyPaused => "already_paused",
+                lancedb::database::PauseJobStatus::Committing => "committing",
+            })
+        })
+    }
+
+    pub fn resume_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let status = inner.resume_job(&job_id).await.infer_error()?;
+            Ok(match status {
+                lancedb::database::ResumeJobStatus::Resumed => "resumed",
+                lancedb::database::ResumeJobStatus::StillPausing => "still_pausing",
+                lancedb::database::ResumeJobStatus::NotPaused => "not_paused",
+            })
+        })
+    }
+
     #[pyo3(signature = (job_id=None))]
     pub fn job_history(
         self_: PyRef<'_, Self>,
