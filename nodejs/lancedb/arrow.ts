@@ -71,6 +71,30 @@ export type FieldLike =
       metadata?: Map<string, string>;
     };
 
+/**
+ * Create an Arrow field backed by LanceDB's JSON extension type.
+ *
+ * @param name - The field name.
+ * @param nullable - Whether the field accepts null values.
+ * @example
+ * ```ts
+ * import { connect, makeJsonField } from "@lancedb/lancedb";
+ * import { Schema } from "apache-arrow";
+ *
+ * const schema = new Schema([makeJsonField("metadata")]);
+ * const db = await connect("/path/to/database");
+ * await db.createTable("items", [{ metadata: '{"source":"api"}' }], { schema });
+ * ```
+ */
+export function makeJsonField(name: string, nullable = true): Field {
+  return new Field(
+    name,
+    new Utf8(),
+    nullable,
+    new Map([["ARROW:extension:name", "arrow.json"]]),
+  );
+}
+
 export type DataLike =
   | import("apache-arrow").Data
   | {
