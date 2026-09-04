@@ -213,7 +213,8 @@ class Expr:
         ascending: bool = True,
         nulls_first: Optional[bool] = None,
     ) -> "SortExpr":
-        """Create a sort expression for :meth:`lancedb.dataframe.DataFrame.sort`."""
+        """Create a sort expression for
+        [DataFrame.sort][lancedb.dataframe.DataFrame.sort]."""
         return SortExpr(self, ascending=ascending, nulls_first=nulls_first)
 
     # ── type cast ────────────────────────────────────────────────────────────

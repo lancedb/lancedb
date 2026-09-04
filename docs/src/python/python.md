@@ -102,12 +102,14 @@ frame = (
 
 reader = frame.execute()
 query = frame.execute_async()
+query.cancel()
 
 # The async API has the same transformations.
 events = (await async_db.open_table("events", namespace_path=["production"]))
 frame = (await events.to_df()).filter(col("status") == "active").limit(10)
 reader = await frame.execute()
 query = await frame.execute_async()
+await query.cancel()
 ```
 
 Local tables execute the same plans in-process. Remote tables submit them to

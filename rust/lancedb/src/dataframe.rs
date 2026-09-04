@@ -24,7 +24,13 @@
 //! # }
 //! ```
 
-use std::sync::{Arc, LazyLock, Mutex};
+use std::{
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
+    task::Poll,
+};
 
 use arrow_schema::Schema;
 use async_trait::async_trait;
@@ -39,8 +45,8 @@ use datafusion_expr::{Expr, SortExpr};
 use datafusion_functions_aggregate::expr_fn::{avg, count, max, min, sum};
 use datafusion_substrait::logical_plan::producer::to_substrait_plan;
 use futures::{
-    TryStreamExt,
-    stream::{AbortHandle, abortable},
+    Stream, TryStreamExt,
+    stream::{AbortHandle, abortable, poll_fn},
 };
 use prost::Message;
 use uuid::Uuid;
@@ -60,6 +66,12 @@ static DATAFRAME_SESSION: LazyLock<SessionContext> = LazyLock::new(SessionContex
 
 fn planning_error(error: impl std::fmt::Display) -> Error {
     Error::InvalidInput {
+        message: error.to_string(),
+    }
+}
+
+fn execution_error(error: impl std::fmt::Display) -> Error {
+    Error::Runtime {
         message: error.to_string(),
     }
 }
@@ -116,14 +128,28 @@ struct LocalQueryHandle {
     id: Uuid,
     stream: Mutex<Option<SendableRecordBatchStream>>,
     abort_handle: AbortHandle,
+    status: Arc<AtomicU8>,
 }
 
 impl LocalQueryHandle {
-    fn new(stream: SendableRecordBatchStream, abort_handle: AbortHandle) -> Self {
+    fn new(
+        stream: SendableRecordBatchStream,
+        abort_handle: AbortHandle,
+        status: Arc<AtomicU8>,
+    ) -> Self {
         Self {
             id: Uuid::now_v7(),
             stream: Mutex::new(Some(stream)),
             abort_handle,
+            status,
+        }
+    }
+
+    fn status(&self) -> QueryStatus {
+        match self.status.load(Ordering::SeqCst) {
+            1 => QueryStatus::Finished,
+            2 => QueryStatus::Cancelled,
+            _ => QueryStatus::Running,
         }
     }
 }
@@ -135,15 +161,11 @@ impl QueryHandle for LocalQueryHandle {
     }
 
     async fn describe(&self) -> Result<QueryDescription> {
-        let cancelled = self.abort_handle.is_aborted();
+        let status = self.status();
         Ok(QueryDescription {
             id: self.id,
-            status: if cancelled {
-                QueryStatus::Cancelled
-            } else {
-                QueryStatus::Finished
-            },
-            progress: Some(1.0),
+            status,
+            progress: (status == QueryStatus::Finished).then_some(1.0),
             expires_at: None,
         })
     }
@@ -164,8 +186,14 @@ impl QueryHandle for LocalQueryHandle {
     }
 
     async fn cancel(&self) -> Result<()> {
-        self.abort_handle.abort();
-        self.stream.lock().unwrap().take();
+        if self
+            .status
+            .compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.abort_handle.abort();
+            self.stream.lock().unwrap().take();
+        }
         Ok(())
     }
 }
@@ -342,6 +370,11 @@ impl DataFrame {
                 message: "left and right join key counts must match".to_string(),
             });
         }
+        if left_on.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "join requires at least one key".to_string(),
+            });
+        }
         self.validate_execution_context(other)?;
         let predicates = left_on
             .iter()
@@ -435,14 +468,26 @@ impl DataFrame {
                 .clone()
                 .execute_stream()
                 .await
-                .map_err(planning_error)?;
+                .map_err(execution_error)?;
             let schema = stream.schema();
-            let stream = stream.map_err(planning_error);
+            let stream = stream.map_err(execution_error);
             let (stream, abort_handle) = abortable(stream);
+            let status = Arc::new(AtomicU8::new(0));
+            let stream_status = status.clone();
+            let mut stream = Box::pin(stream);
+            let stream = poll_fn(move |context| match stream.as_mut().poll_next(context) {
+                Poll::Ready(None) => {
+                    let _ =
+                        stream_status.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst);
+                    Poll::Ready(None)
+                }
+                other => other,
+            });
             let stream = Box::pin(SimpleRecordBatchStream::new(stream, schema));
             Ok(Query::new(Arc::new(LocalQueryHandle::new(
                 stream,
                 abort_handle,
+                status,
             ))))
         }
     }
@@ -632,12 +677,13 @@ mod tests {
             .execute()
             .await
             .unwrap();
+        assert_eq!(query.describe().await.unwrap().status, QueryStatus::Running);
+        let batches: Vec<RecordBatch> = query.reader().await.unwrap().try_collect().await.unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
         assert_eq!(
             query.describe().await.unwrap().status,
             QueryStatus::Finished
         );
-        let batches: Vec<RecordBatch> = query.reader().await.unwrap().try_collect().await.unwrap();
-        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
         assert!(query.reader().await.is_err());
 
         let cancelled = table.to_df().await.unwrap().execute().await.unwrap();

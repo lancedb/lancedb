@@ -39,6 +39,8 @@ def test_dataframe_builds_lazy_plan_from_open_table(tmp_path):
         .aggregate(None, F.sum(col("amount")).alias("total"))
     )
     assert total.schema.names == ["total"]
+    with pytest.raises(TypeError, match="aggregates must contain Expr"):
+        db.open_table("MyEvents").to_df().aggregate(None, "amount")
 
     assert col("amount").sort().nulls_first is False
     assert col("amount").sort(ascending=False).nulls_first is True
@@ -75,6 +77,8 @@ def test_dataframe_rejects_plans_from_different_connections(tmp_path):
         first.join(second, on="id")
     with pytest.raises(ValueError, match="same connection and namespace"):
         first.union(second)
+    with pytest.raises(ValueError, match="at least one key"):
+        first.join(first, on=[])
 
 
 def test_dataframe_qualified_columns_disambiguate_aliased_join(tmp_path):
@@ -105,8 +109,9 @@ def test_dataframe_executes_local_plan_in_process(tmp_path):
 
     assert frame.execute().read_all().to_pydict() == {"id": [1]}
     query = frame.execute_async()
-    assert query.describe().status == "finished"
+    assert query.describe().status == "running"
     assert query.reader().read_all().to_pydict() == {"id": [1]}
+    assert query.describe().status == "finished"
 
 
 def test_dataframe_rejects_checked_out_versions_and_branches(tmp_path):
@@ -152,7 +157,8 @@ async def test_async_dataframe_executes_local_plan_in_process(tmp_path):
         batch.to_pydict() for batch in await (await frame.execute()).read_all()
     ] == [{"id": [1]}]
     query = await frame.execute_async()
-    assert (await query.describe()).status == "finished"
+    assert (await query.describe()).status == "running"
     assert [batch.to_pydict() for batch in await (await query.reader()).read_all()] == [
         {"id": [1]}
     ]
+    assert (await query.describe()).status == "finished"

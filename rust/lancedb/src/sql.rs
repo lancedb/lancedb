@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Handles to SQL queries running on a remote database.
+//! Lifecycle handles for submitted queries.
 
 use std::{fmt, sync::Arc};
 
@@ -57,10 +57,11 @@ pub(crate) trait QueryHandle: Send + Sync {
     async fn cancel(&self) -> Result<()>;
 }
 
-/// A handle to a submitted SQL query.
+/// A handle to a submitted query.
 ///
-/// The handle can be inspected, opened as an Arrow reader, or cancelled.
-/// Dropping it does not cancel the server-side query.
+/// The handle can be inspected, opened as an Arrow reader, or cancelled. Remote
+/// SQL and DataFrame queries execute on the server; local DataFrames execute
+/// in-process. Dropping the handle does not cancel the query.
 /// Identifier lookup is scoped to the connection that submitted the query and
 /// is not a durable resume mechanism.
 pub struct Query {
@@ -91,11 +92,10 @@ impl Query {
         self.handle.describe().await
     }
 
-    /// Wait for the initial result stream and return its Arrow record batches.
+    /// Return the query's Arrow record batches.
     ///
-    /// The stream can begin yielding partial results before query execution is
-    /// complete. It continues polling for newly available result endpoints
-    /// until the query finishes and all endpoints have been consumed.
+    /// Remote streams can yield partial results before execution is complete;
+    /// local streams evaluate the DataFusion plan as they are consumed.
     ///
     /// Results are single-consumer. Calling this method more than once on the
     /// same handle returns an error.

@@ -196,6 +196,7 @@ impl SqlClient {
         self.submit_descriptor(
             FlightDescriptor::new_cmd(command.as_any().encode_to_vec()),
             default_namespace_path,
+            "SQL query submission",
         )
         .await
     }
@@ -216,6 +217,7 @@ impl SqlClient {
         self.submit_descriptor(
             FlightDescriptor::new_cmd(command.as_any().encode_to_vec()),
             default_namespace_path,
+            "DataFrame submission",
         )
         .await
     }
@@ -224,9 +226,10 @@ impl SqlClient {
         &self,
         descriptor: FlightDescriptor,
         default_namespace_path: &[String],
+        operation: &'static str,
     ) -> Result<Query> {
         let timeout = self.inner.overall_timeout()?;
-        with_overall_timeout(timeout, "SQL query submission", async {
+        with_overall_timeout(timeout, operation, async {
             validate_namespace_path(default_namespace_path)?;
             let poll_info = self.inner.poll(descriptor, default_namespace_path).await?;
             let query_id = Uuid::now_v7();

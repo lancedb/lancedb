@@ -69,7 +69,14 @@ class _DataFrameBase:
             group_values = [group_by]
         else:
             group_values = list(group_by)
-        aggregate_values = [aggregates] if isinstance(aggregates, Expr) else aggregates
+        if isinstance(aggregates, Expr):
+            aggregate_values = [aggregates]
+        elif isinstance(aggregates, str):
+            raise TypeError("aggregates must contain Expr values")
+        else:
+            aggregate_values = list(aggregates)
+        if not all(isinstance(value, Expr) for value in aggregate_values):
+            raise TypeError("aggregates must contain Expr values")
         groups = [_expression(value)._inner for value in group_values]
         aggregate_exprs = [value._inner for value in aggregate_values]
         return self._wrap(self._inner.aggregate(groups, aggregate_exprs))
@@ -111,7 +118,7 @@ class _DataFrameBase:
         return Expr(self._inner.column(name))
 
     def column(self, name: str) -> Expr:
-        """Alias for :meth:`col`."""
+        """Alias for [DataFrame.col][lancedb.dataframe.DataFrame.col]."""
         return self.col(name)
 
     def with_column(self, name: str, expression: Expr):
