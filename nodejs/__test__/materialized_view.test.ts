@@ -62,18 +62,6 @@ describe("materialized views", () => {
     expect(definition.sourceTable).toBe("people");
     expect(definition.sourceNamespace).toEqual(["ns"]);
 
-    // "function_select" carries columns the server fills after refresh.
-    const withFunctions = new Map([
-      [
-        DEFINITION_META_KEY,
-        '{"kind":"function_select","source_table":"people","function_columns":["emb"]}',
-      ],
-    ]);
-    expect(definitionFromMetadata(withFunctions, "v").functionColumns).toEqual([
-      "emb",
-    ]);
-    expect(definition.functionColumns).toEqual([]);
-
     const unknown = new Map([
       [DEFINITION_META_KEY, '{"kind":"select_v3","source_table":"people"}'],
     ]);

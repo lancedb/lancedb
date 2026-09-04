@@ -44,10 +44,6 @@ class MaterializedViewDefinition:
     """Source columns the projections and filter read."""
     source_namespace: List[str] = field(default_factory=list)
     """Namespace holding the source table; empty is the root namespace."""
-    function_columns: List[str] = field(default_factory=list)
-    """View columns a registered Function fills after each refresh."""
-    function_inputs: List[str] = field(default_factory=list)
-    """Source columns a Function reads that the view holds as internal columns."""
 
 
 def _definition_from_schema(
@@ -59,15 +55,8 @@ def _definition_from_schema(
         raise ValueError(f"Table '{name}' is not a materialized view")
     value = json.loads(raw)
     kind = value.get("kind")
-    # Each kind is a version boundary: "namespaced_select" keeps older readers
-    # from resolving the source at root, and the "function_*" kinds keep them
-    # from reporting a view with server-filled columns as malformed.
-    if kind not in (
-        "select",
-        "namespaced_select",
-        "function_select",
-        "namespaced_function_select",
-    ):
+    # "namespaced_select" keeps older readers from resolving the source at root.
+    if kind not in ("select", "namespaced_select"):
         raise NotImplementedError(
             f"materialized view '{name}' is defined by '{kind}', which this "
             "version of lancedb cannot refresh"
@@ -81,8 +70,6 @@ def _definition_from_schema(
         limit=value.get("limit"),
         inputs=value.get("inputs", []),
         source_namespace=value.get("source_namespace", []),
-        function_columns=value.get("function_columns", []),
-        function_inputs=value.get("function_inputs", []),
     )
 
 

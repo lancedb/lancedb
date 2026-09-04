@@ -14,7 +14,7 @@ pub mod refresh;
 #[cfg(test)]
 mod differential;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, FieldRef, Schema as ArrowSchema, SchemaRef};
@@ -30,8 +30,8 @@ use crate::embeddings::EmbeddingDefinition;
 use crate::function::FunctionBinding;
 use crate::table::Table;
 use crate::table::computed_columns::{
-    ComputedColumnKind, FUNCTION_BINDINGS_META_KEY, computed_column_from_field,
-    ensure_supported_function_metadata, function_bindings, function_bindings_metadata,
+    FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,
+    ensure_supported_function_metadata, function_bindings_metadata,
 };
 use crate::table::refresh::quote_identifier;
 use crate::table::{ColumnDefinition, ColumnKind};
@@ -88,22 +88,6 @@ pub const SELECT_KIND: &str = "select";
 /// instead of a wrong-table refresh.
 pub const NAMESPACED_SELECT_KIND: &str = "namespaced_select";
 
-/// The `select` form with function columns: outputs a registered Function
-/// fills after each refresh (see [`PreparedDeclaration::with_function_columns`]).
-/// Its own kind, so a reader without the concept refuses the view instead of
-/// reporting its schema as not matching its definition.
-pub const FUNCTION_SELECT_KIND: &str = "function_select";
-
-/// [`FUNCTION_SELECT_KIND`] over a namespaced source.
-pub const NAMESPACED_FUNCTION_SELECT_KIND: &str = "namespaced_function_select";
-
-const KNOWN_KINDS: [&str; 4] = [
-    SELECT_KIND,
-    NAMESPACED_SELECT_KIND,
-    FUNCTION_SELECT_KIND,
-    NAMESPACED_FUNCTION_SELECT_KIND,
-];
-
 /// Which view outputs each source column is projected to directly. A column
 /// may be projected more than once, so each carries every name the view gives
 /// it, in projection order.
@@ -138,51 +122,16 @@ pub struct MaterializedViewDefinition {
     /// Source columns the projections and filter read, derived at creation.
     #[serde(default)]
     pub inputs: Vec<String>,
-    /// View columns a registered Function fills after each refresh, in view
-    /// schema order after the projections. Refresh writes them as NULL and
-    /// never reads them; the binding lives in the view's field and schema
-    /// metadata exactly as a table's Function column does.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub function_columns: Vec<String>,
-    /// Source columns a Function reads that the view does not project. Each
-    /// is materialized as an internal column named by [`input_column_name`],
-    /// after [`SOURCE_ROW_ID_COLUMN`], with the source field's type and
-    /// nullability.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub function_inputs: Vec<String>,
 }
 
-/// Prefix of the internal columns holding a Function's unprojected inputs.
+/// Prefix of the internal columns holding source columns a computed column
+/// reads without the view projecting them; see
+/// [`PreparedDeclaration::input_column`].
 pub const INPUT_COLUMN_PREFIX: &str = "__input_";
 
 /// The internal view column holding a copy of `source_column`.
 pub fn input_column_name(source_column: &str) -> String {
     format!("{INPUT_COLUMN_PREFIX}{source_column}")
-}
-
-/// Function inputs are source columns the view reads, so they count as
-/// inputs for the refresh's source-schema check.
-fn record_function_inputs(definition: &mut MaterializedViewDefinition) {
-    definition
-        .inputs
-        .extend(definition.function_inputs.iter().cloned());
-    definition.inputs.sort();
-    definition.inputs.dedup();
-}
-
-/// The kind tag a definition serializes under. Each combination of namespaced
-/// source and function columns is its own kind, so a reader that predates
-/// either concept refuses the view rather than misreading it.
-fn definition_kind(definition: &MaterializedViewDefinition) -> &'static str {
-    match (
-        definition.source_namespace.is_empty(),
-        definition.function_columns.is_empty(),
-    ) {
-        (true, true) => SELECT_KIND,
-        (false, true) => NAMESPACED_SELECT_KIND,
-        (true, false) => FUNCTION_SELECT_KIND,
-        (false, false) => NAMESPACED_FUNCTION_SELECT_KIND,
-    }
 }
 
 /// A view definition as read back from schema metadata. Non-exhaustive so a
@@ -206,7 +155,12 @@ pub(crate) fn definition_to_metadata(definition: &MaterializedViewDefinition) ->
     let mut value = serde_json::to_value(definition).map_err(|e| Error::Runtime {
         message: format!("failed to serialize view definition: {e}"),
     })?;
-    value["kind"] = serde_json::Value::String(definition_kind(definition).to_string());
+    let kind = if definition.source_namespace.is_empty() {
+        SELECT_KIND
+    } else {
+        NAMESPACED_SELECT_KIND
+    };
+    value["kind"] = serde_json::Value::String(kind.to_string());
     Ok(value.to_string())
 }
 
@@ -227,7 +181,7 @@ pub fn materialized_view_kind(
         .get("kind")
         .and_then(|k| k.as_str())
         .ok_or_else(|| unreadable(&"missing kind tag"))?;
-    if !KNOWN_KINDS.contains(&kind) {
+    if kind != SELECT_KIND && kind != NAMESPACED_SELECT_KIND {
         return Ok(Some(MaterializedViewKind::Unrecognized {
             kind: kind.to_string(),
         }));
@@ -235,15 +189,11 @@ pub fn materialized_view_kind(
     let kind = kind.to_string();
     let definition: MaterializedViewDefinition =
         serde_json::from_value(value).map_err(|e| unreadable(&e))?;
-    // No correct writer produces a kind that disagrees with its definition,
-    // or function inputs without function columns.
-    if definition.function_columns.is_empty() && !definition.function_inputs.is_empty() {
-        return Err(unreadable(&"function inputs without function columns"));
-    }
-    if kind != definition_kind(&definition) {
+    // No correct writer produces a kind that disagrees with its namespace.
+    if (kind == SELECT_KIND) != definition.source_namespace.is_empty() {
         return Err(unreadable(&format!(
-            "kind '{kind}' does not match its source namespace {:?} and function columns {:?}",
-            definition.source_namespace, definition.function_columns
+            "kind '{kind}' does not match its source namespace {:?}",
+            definition.source_namespace
         )));
     }
     Ok(Some(MaterializedViewKind::Select(definition)))
@@ -424,8 +374,6 @@ pub(crate) fn plan(
         filter,
         limit,
         inputs,
-        function_columns: Vec::new(),
-        function_inputs: Vec::new(),
     };
     Ok((definition, fields, lineage))
 }
@@ -730,46 +678,45 @@ impl PreparedDeclaration {
         &self.schema
     }
 
-    /// The view column a Function reads `source_column` from: the column
-    /// the view projects it to, if any, otherwise an internal copy added
-    /// here with the source field's type and nullability.
+    /// The view column that holds `source_column` for a computed column to
+    /// read: the column the view projects it to, if any, otherwise an
+    /// internal projection added here, named by [`input_column_name`].
     pub fn input_column(&mut self, source_column: &str) -> Result<String> {
         if let Some(output) = self.lineage.get(source_column).and_then(|o| o.first()) {
             return Ok(output.clone());
         }
         let name = input_column_name(source_column);
-        if self
-            .definition
-            .function_inputs
-            .iter()
-            .any(|c| c == source_column)
-        {
-            return Ok(name);
-        }
         let field = self
             .source_schema
             .field_with_name(source_column)
             .map_err(|_| Error::InvalidInput {
-                message: format!(
-                    "the source has no column '{source_column}' for a Function to read"
-                ),
+                message: format!("the source has no column '{source_column}' to read"),
             })?;
         if self.schema.field_with_name(&name).is_ok() {
             return Err(Error::ColumnAlreadyExists { name });
         }
+        let row_id = self.row_id_index()?;
         let mut fields: Vec<ArrowField> = self
             .schema
             .fields()
             .iter()
             .map(|f| f.as_ref().clone())
             .collect();
-        fields.push(without_declarations(
-            &field.as_ref().clone().with_name(name.clone()),
-        ));
-        self.definition
-            .function_inputs
-            .push(source_column.to_string());
-        record_function_inputs(&mut self.definition);
+        fields.insert(
+            row_id,
+            without_declarations(&field.as_ref().clone().with_name(name.clone())),
+        );
+        self.definition.projections.push(ViewProjection {
+            output: name.clone(),
+            expression: quote_identifier(source_column),
+        });
+        self.definition.inputs.push(source_column.to_string());
+        self.definition.inputs.sort();
+        self.definition.inputs.dedup();
+        self.lineage
+            .entry(source_column.to_string())
+            .or_default()
+            .push(name.clone());
         let mut metadata = self.schema.metadata().clone();
         rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
         metadata.insert(
@@ -780,57 +727,45 @@ impl PreparedDeclaration {
         Ok(name)
     }
 
-    /// Add columns a registered Function fills after each refresh, each at
-    /// its position among the view's visible columns.
+    /// Add computed columns, each at its position among the view's visible
+    /// columns, with the bindings any of them name.
     ///
-    /// A field carries a table Function column's declaration (see
-    /// [`crate::table::computed_columns::function_computed_column_metadata`])
-    /// naming one of `bindings`, and a binding reads only columns
-    /// [`PreparedDeclaration::input_column`] returned. Refresh writes these
-    /// columns as NULL; a fill rewrites only them, and is the one commit on
-    /// a view that refresh does not treat as drift.
-    pub fn with_function_columns(
+    /// A field carries a table computed-column declaration and refresh never
+    /// computes it: every row refresh writes carries NULL there, and whoever
+    /// owns the declaration fills it. A commit that rewrites only computed
+    /// columns is a fill, the one commit on a view refresh does not treat as
+    /// drift. A declaration reads only columns the view holds (see
+    /// [`PreparedDeclaration::input_column`]); the computed-column contract
+    /// is validated over the assembled schema.
+    pub fn with_computed_columns(
         mut self,
         columns: Vec<(usize, ArrowField)>,
         bindings: &[FunctionBinding],
     ) -> Result<Self> {
         let invalid = |message: String| Error::InvalidInput { message };
         if columns.is_empty() {
+            return Err(invalid("at least one computed column is needed".into()));
+        }
+        if !computed_columns(&self.schema).is_empty() {
             return Err(invalid(
-                "a view needs at least one function column to declare".into(),
+                "computed columns were already declared on this view".into(),
             ));
         }
-        if !self.definition.function_columns.is_empty() {
+        if self.definition.projections.is_empty() {
             return Err(invalid(
-                "function columns were already declared on this view".into(),
+                "a view of computed columns alone must read at least one source column".into(),
             ));
         }
-        let row_id = self
-            .schema
-            .index_of(SOURCE_ROW_ID_COLUMN)
-            .map_err(|e| Error::Runtime {
-                message: e.to_string(),
-            })?;
-        let mut visible: Vec<ArrowField> = self.schema.fields()[..row_id]
-            .iter()
-            .map(|f| f.as_ref().clone())
-            .collect();
-        let internal: Vec<ArrowField> = self.schema.fields()[row_id + 1..]
-            .iter()
-            .map(|f| f.as_ref().clone())
-            .collect();
-        let by_id: HashMap<&str, &FunctionBinding> =
-            bindings.iter().map(|b| (b.binding_id(), b)).collect();
-        let mut declared: HashSet<String> = self
+        let visible_count = self.visible_count();
+        let mut fields: Vec<ArrowField> = self
             .schema
             .fields()
             .iter()
-            .map(|f| f.name().clone())
+            .map(|f| f.as_ref().clone())
             .collect();
         let mut columns = columns;
         columns.sort_by_key(|(position, _)| *position);
-        let mut function_columns = Vec::with_capacity(columns.len());
-        for (position, field) in &columns {
+        for (inserted, (position, field)) in columns.iter().enumerate() {
             let name = field.name().as_str();
             if name == SOURCE_ROW_ID_COLUMN
                 || name == ROW_ID
@@ -838,112 +773,63 @@ impl PreparedDeclaration {
             {
                 return Err(invalid(format!("view column name '{name}' is reserved")));
             }
-            if !declared.insert(name.to_string()) {
+            if fields.iter().any(|f| f.name() == name) {
                 return Err(Error::ColumnAlreadyExists {
                     name: name.to_string(),
                 });
             }
             if !field.is_nullable() {
                 return Err(invalid(format!(
-                    "function column '{name}' must be nullable until a refresh fills it"
+                    "computed column '{name}' must be nullable until a refresh fills it"
                 )));
             }
-            let Some(ComputedColumnKind::Function {
-                binding_id,
-                output_ordinal,
-            }) = computed_column_from_field(field).map(|column| column.kind)
-            else {
+            if computed_column_from_field(field).is_none() {
                 return Err(invalid(format!(
-                    "function column '{name}' does not carry a declared Function binding"
-                )));
-            };
-            let Some(binding) = by_id.get(binding_id.as_str()) else {
-                return Err(invalid(format!(
-                    "function column '{name}' names Function binding '{binding_id}', which was not supplied"
-                )));
-            };
-            if !binding
-                .outputs()
-                .iter()
-                .any(|o| o.output_ordinal == output_ordinal && o.output_name == name)
-            {
-                return Err(invalid(format!(
-                    "function column '{name}' is not output {output_ordinal} of Function binding '{binding_id}'"
+                    "column '{name}' does not carry a computed-column declaration"
                 )));
             }
-            if *position > visible.len() {
+            let limit = visible_count + inserted;
+            if *position > limit {
                 return Err(invalid(format!(
-                    "function column '{name}' is placed at {position}, past the view's {} columns",
-                    visible.len()
+                    "computed column '{name}' is placed at {position}, past the view's {limit} columns"
                 )));
             }
-            visible.insert(*position, field.clone());
-            function_columns.push(name.to_string());
+            // Positions index the select list, which counts the computed
+            // columns already inserted before this one.
+            fields.insert(*position, field.clone());
         }
-        let readable: HashSet<&str> = visible
-            .iter()
-            .chain(internal.iter())
-            .map(|f| f.name().as_str())
-            .filter(|name| !function_columns.iter().any(|c| c == name))
-            .collect();
-        for binding in bindings {
-            for output in binding.outputs() {
-                let declared = columns.iter().any(|(_, f)| {
-                    f.name() == &output.output_name
-                        && matches!(
-                            computed_column_from_field(f).map(|c| c.kind),
-                            Some(ComputedColumnKind::Function { ref binding_id, output_ordinal })
-                                if binding_id == binding.binding_id() && output_ordinal == output.output_ordinal
-                        )
-                });
-                if !declared {
-                    return Err(invalid(format!(
-                        "Function binding '{}' output '{}' has no view column",
-                        binding.binding_id(),
-                        output.output_name
-                    )));
-                }
-            }
-            for input in binding.inputs() {
-                let root = input.field_path.split('.').next().unwrap_or_default();
-                if !readable.contains(root) {
-                    return Err(invalid(format!(
-                        "Function binding '{}' reads '{}', which is not a column the view holds; \
-                         declare it with input_column",
-                        binding.binding_id(),
-                        input.field_path
-                    )));
-                }
-            }
-        }
-
-        if self.definition.projections.is_empty() && internal.is_empty() {
-            return Err(invalid(
-                "a view of function columns alone must read at least one source column".into(),
-            ));
-        }
-        let mut all = visible;
-        all.push(ArrowField::new(
-            SOURCE_ROW_ID_COLUMN,
-            DataType::UInt64,
-            false,
-        ));
-        all.extend(internal);
         let mut metadata = self.schema.metadata().clone();
-        metadata.insert(
-            FUNCTION_BINDINGS_META_KEY.to_string(),
-            function_bindings_metadata(bindings)?,
-        );
-        rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &all)?;
-        self.definition.function_columns = function_columns;
-        metadata.insert(
-            DEFINITION_META_KEY.to_string(),
-            definition_to_metadata(&self.definition)?,
-        );
-        let schema = ArrowSchema::new_with_metadata(all, metadata);
+        if !bindings.is_empty() {
+            metadata.insert(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                function_bindings_metadata(bindings)?,
+            );
+        }
+        rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
+        let schema = ArrowSchema::new_with_metadata(fields, metadata);
         ensure_supported_function_metadata(&schema)?;
         self.schema = Arc::new(schema);
         Ok(self)
+    }
+
+    fn row_id_index(&self) -> Result<usize> {
+        self.schema
+            .index_of(SOURCE_ROW_ID_COLUMN)
+            .map_err(|e| Error::Runtime {
+                message: e.to_string(),
+            })
+    }
+
+    /// Columns the declaration lists: everything before the internal
+    /// projections and the provenance column.
+    fn visible_count(&self) -> usize {
+        self.schema
+            .fields()
+            .iter()
+            .take_while(|f| {
+                f.name() != SOURCE_ROW_ID_COLUMN && !f.name().starts_with(INPUT_COLUMN_PREFIX)
+            })
+            .count()
     }
 
     /// Create the view table and verify it, consuming the declaration.
@@ -978,7 +864,7 @@ impl PreparedDeclaration {
             Box::new(arrow_array::RecordBatchIterator::new(empty, schema));
         let mut request = CreateTableRequest::new(name.to_string(), Box::new(reader));
         request.namespace_path = namespace_path.to_vec();
-        request.planned_declarations = !self.definition.function_columns.is_empty();
+        request.planned_declarations = !computed_columns(&self.schema).is_empty();
         let write_params = request
             .write_options
             .lance_write_params
@@ -1057,102 +943,6 @@ fn rewrite_column_definitions(
     Ok(())
 }
 
-/// The fields a view's physical schema must carry, in the physical order:
-/// each planned projection by position, [`SOURCE_ROW_ID_COLUMN`], each
-/// internal Function input from the source, and each function column as
-/// declared, its binding validated against the schema-level envelope.
-pub(crate) fn expected_fields(
-    physical: &ArrowSchema,
-    planned: Vec<ArrowField>,
-    definition: &MaterializedViewDefinition,
-    source_schema: &ArrowSchema,
-) -> Result<Vec<ArrowField>> {
-    let schema_error = |message: String| Error::Schema { message };
-    let bindings: HashMap<String, FunctionBinding> = if definition.function_columns.is_empty() {
-        HashMap::new()
-    } else {
-        ensure_supported_function_metadata(physical)?;
-        function_bindings(physical)?
-            .into_iter()
-            .map(|b| (b.binding_id().to_string(), b))
-            .collect()
-    };
-    let mut planned = planned.into_iter();
-    let mut seen_functions = 0;
-    let mut seen_inputs = 0;
-    let mut expected = Vec::with_capacity(physical.fields().len());
-    for field in physical.fields() {
-        let name = field.name().as_str();
-        if name == SOURCE_ROW_ID_COLUMN {
-            expected.push(ArrowField::new(
-                SOURCE_ROW_ID_COLUMN,
-                DataType::UInt64,
-                false,
-            ));
-        } else if definition.function_columns.iter().any(|c| c == name) {
-            let declaration = computed_column_from_field(field).map(|c| c.kind);
-            let Some(ComputedColumnKind::Function {
-                binding_id,
-                output_ordinal,
-            }) = declaration
-            else {
-                return Err(schema_error(format!(
-                    "function column '{name}' no longer carries its Function binding; recreate the view"
-                )));
-            };
-            let bound = bindings.get(&binding_id).is_some_and(|b| {
-                b.outputs()
-                    .iter()
-                    .any(|o| o.output_ordinal == output_ordinal && o.output_name == name)
-            });
-            if !bound || !field.is_nullable() {
-                return Err(schema_error(format!(
-                    "function column '{name}' no longer carries its Function binding; recreate the view"
-                )));
-            }
-            seen_functions += 1;
-            expected.push(ArrowField::new(name, field.data_type().clone(), true));
-        } else if let Some(source) = definition
-            .function_inputs
-            .iter()
-            .find(|c| input_column_name(c) == name)
-        {
-            let source_field = source_schema.field_with_name(source).map_err(|_| {
-                schema_error(format!(
-                    "the source no longer has column '{source}', which a Function of this view reads"
-                ))
-            })?;
-            seen_inputs += 1;
-            expected.push(ArrowField::new(
-                name,
-                source_field.data_type().clone(),
-                source_field.is_nullable(),
-            ));
-        } else if let Some(next) = planned.next() {
-            expected.push(next);
-        } else {
-            return Err(schema_error(format!(
-                "the stored definition does not produce view column '{name}'; recreate the view"
-            )));
-        }
-    }
-    if planned.next().is_some()
-        || seen_functions != definition.function_columns.len()
-        || seen_inputs != definition.function_inputs.len()
-    {
-        return Err(schema_error(
-            "the stored definition does not produce this view's schema; recreate the view".into(),
-        ));
-    }
-    Ok(expected)
-}
-
-/// Validate a view declaration against its live source and hold what its
-/// creation needs. The declaration is canonicalized through the coordinate a
-/// refresh will resolve -- name and namespace both -- so a handle that does
-/// not resolve back to itself is rejected. Same creation-time checks as
-/// [`Connection::create_materialized_view`].
-///
 /// `projections` of `None` selects every source column, as `SELECT *`;
 /// `Some(&[])` declares no projected column, for a view of function
 /// columns alone.
@@ -1656,8 +1446,6 @@ mod tests {
                 filter: Some("age >= 18".into()),
                 limit: Some(10),
                 inputs: vec!["age".into(), "name".into()],
-                function_columns: Vec::new(),
-                function_inputs: Vec::new(),
             }
         );
 
@@ -2659,8 +2447,6 @@ mod tests {
             filter: None,
             limit: None,
             inputs: vec!["name".to_string()],
-            function_columns: Vec::new(),
-            function_inputs: Vec::new(),
         }
     }
 
@@ -2747,8 +2533,9 @@ mod tests {
         .unwrap()
     }
 
-    /// A function column as the server declares it on a table.
-    pub fn function_field(name: &str, binding_id: &str, input: &str) -> ArrowField {
+    /// A computed column as the server declares it on a table: bound to a
+    /// registered Function.
+    pub fn computed_field(name: &str, binding_id: &str, input: &str) -> ArrowField {
         ArrowField::new(name, DataType::Int32, true).with_metadata(
             crate::table::computed_columns::function_computed_column_metadata(
                 binding_id,
@@ -2805,12 +2592,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_function_column_is_declared_null_with_its_binding() {
+    async fn a_computed_column_is_declared_null_with_its_binding() {
         let conn = connect("memory://").execute().await.unwrap();
         let view = prepared_people(&conn)
             .await
-            .with_function_columns(
-                vec![(2, function_field("emb", "fb_1", "name"))],
+            .with_computed_columns(
+                vec![(2, computed_field("emb", "fb_1", "name"))],
                 &[test_binding("fb_1", "name", "emb")],
             )
             .unwrap()
@@ -2821,30 +2608,25 @@ mod tests {
         let schema = view.table().schema().await.unwrap();
         let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
         assert_eq!(names, ["id", "name", "emb", SOURCE_ROW_ID_COLUMN]);
-        let emb = schema.field_with_name("emb").unwrap();
-        assert!(emb.is_nullable());
-        assert_eq!(
-            computed_column_from_field(emb).map(|c| c.kind),
-            Some(ComputedColumnKind::Function {
-                binding_id: "fb_1".into(),
-                output_ordinal: 0
-            })
-        );
+        let declared: Vec<String> = computed_columns(&schema)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(declared, ["emb"]);
         let bindings = crate::table::computed_columns::function_bindings(&schema).unwrap();
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].binding_id(), "fb_1");
-        assert_eq!(view.definition().function_columns, ["emb"]);
+        // The stored definition is the plain select it always was.
         let stored: serde_json::Value =
             serde_json::from_str(&schema.metadata()[DEFINITION_META_KEY]).unwrap();
-        assert_eq!(stored["kind"], FUNCTION_SELECT_KIND);
+        assert_eq!(stored["kind"], SELECT_KIND);
+        assert_eq!(view.definition().projections.len(), 2);
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
-
-        let reopened = conn.open_materialized_view("v").await.unwrap();
-        assert_eq!(reopened.definition().function_columns, ["emb"]);
+        assert_eq!(conn.open_materialized_view("v").await.unwrap().name(), "v");
     }
 
     #[tokio::test]
-    async fn function_column_declarations_are_validated() {
+    async fn computed_column_declarations_are_validated() {
         let conn = connect("memory://").execute().await.unwrap();
         let prepared = prepared_people(&conn).await;
         let binding = test_binding("fb_1", "name", "emb");
@@ -2852,12 +2634,12 @@ mod tests {
                      columns: Vec<(usize, ArrowField)>,
                      bindings: &[FunctionBinding]| {
             prepared
-                .with_function_columns(columns, bindings)
+                .with_computed_columns(columns, bindings)
                 .err()
                 .map(|e| e.to_string())
                 .expect("the declaration should be refused")
         };
-        let emb = |binding_id: &str| function_field("emb", binding_id, "name");
+        let emb = |binding_id: &str| computed_field("emb", binding_id, "name");
 
         let err = fails(
             prepared.clone(),
@@ -2873,59 +2655,44 @@ mod tests {
             std::slice::from_ref(&binding),
         );
         assert!(
-            err.contains("does not carry a declared Function binding"),
+            err.contains("does not carry a computed-column declaration"),
             "{err}"
         );
 
+        // The rest is the computed-column contract: a binding the field does
+        // not name, an output the binding does not map to this field, an
+        // input the view does not hold.
         let err = fails(
             prepared.clone(),
             vec![(2, emb("fb_other"))],
             std::slice::from_ref(&binding),
         );
-        assert!(err.contains("'fb_other', which was not supplied"), "{err}");
-
-        // The field must be the output the binding says it is.
+        assert!(err.contains("does not match binding 'fb_1'"), "{err}");
         let err = fails(
             prepared.clone(),
             vec![(2, emb("fb_1"))],
             &[test_binding("fb_1", "name", "different_output")],
         );
-        assert!(
-            err.contains("is not output 0 of Function binding 'fb_1'"),
-            "{err}"
-        );
-
+        assert!(err.contains("different_output"), "{err}");
         let err = fails(
             prepared.clone(),
             vec![(2, emb("fb_1"))],
             &[test_binding("fb_1", "bio", "emb")],
         );
-        assert!(
-            err.contains("reads 'bio', which is not a column the view holds"),
-            "{err}"
-        );
+        assert!(err.contains("'bio'"), "{err}");
 
         let err = fails(
             prepared.clone(),
-            vec![(2, function_field("name", "fb_1", "name"))],
+            vec![(2, computed_field("name", "fb_1", "name"))],
             &[test_binding("fb_1", "name", "name")],
         );
         assert!(err.contains("already exists"), "{err}");
-
         let err = fails(
             prepared.clone(),
-            vec![(2, function_field(SOURCE_ROW_ID_COLUMN, "fb_1", "name"))],
+            vec![(2, computed_field(SOURCE_ROW_ID_COLUMN, "fb_1", "name"))],
             &[test_binding("fb_1", "name", SOURCE_ROW_ID_COLUMN)],
         );
         assert!(err.contains("reserved"), "{err}");
-
-        let err = fails(
-            prepared.clone(),
-            vec![(2, emb("fb_1"))],
-            &[binding.clone(), test_binding("fb_2", "name", "emb2")],
-        );
-        assert!(err.contains("output 'emb2' has no view column"), "{err}");
-
         let err = fails(
             prepared.clone(),
             vec![(7, emb("fb_1"))],
@@ -2935,16 +2702,16 @@ mod tests {
             err.contains("placed at 7, past the view's 2 columns"),
             "{err}"
         );
-
         let err = fails(prepared, Vec::new(), std::slice::from_ref(&binding));
-        assert!(err.contains("at least one function column"), "{err}");
+        assert!(err.contains("at least one computed column"), "{err}");
     }
 
-    /// A Function's input the view does not project is held in an internal
-    /// column after the provenance column, with the source's nullability;
-    /// an input the view projects is read from that projection.
+    /// A source column a computed column reads without the view projecting
+    /// it becomes an internal projection before the provenance column, with
+    /// the source's nullability; a projected column is read from its
+    /// projection.
     #[tokio::test]
-    async fn a_function_input_not_projected_is_copied_internally() {
+    async fn an_unprojected_input_becomes_an_internal_projection() {
         let conn = connect("memory://").execute().await.unwrap();
         let source = strict_people(&conn).await;
         let mut prepared = prepare_declaration(
@@ -2962,8 +2729,8 @@ mod tests {
         assert!(err.contains("no column 'missing'"), "{err}");
 
         let view = prepared
-            .with_function_columns(
-                vec![(1, function_field("emb", "fb_1", "__input_name"))],
+            .with_computed_columns(
+                vec![(1, computed_field("emb", "fb_1", "__input_name"))],
                 &[test_binding("fb_1", "__input_name", "emb")],
             )
             .unwrap()
@@ -2972,7 +2739,7 @@ mod tests {
             .unwrap();
         let schema = view.table().schema().await.unwrap();
         let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert_eq!(names, ["key", "emb", SOURCE_ROW_ID_COLUMN, "__input_name"]);
+        assert_eq!(names, ["key", "emb", "__input_name", SOURCE_ROW_ID_COLUMN]);
         let input = schema.field_with_name("__input_name").unwrap();
         assert_eq!(input.data_type(), &DataType::Utf8);
         assert!(
@@ -2980,8 +2747,83 @@ mod tests {
             "the copy keeps the source's nullability"
         );
         assert!(!schema.field_with_name("key").unwrap().is_nullable());
-        assert_eq!(view.definition().function_inputs, ["name"]);
+        let projections: Vec<(&str, &str)> = view
+            .definition()
+            .projections
+            .iter()
+            .map(|p| (p.output.as_str(), p.expression.as_str()))
+            .collect();
+        assert_eq!(projections, [("key", "id"), ("__input_name", "`name`")]);
         assert_eq!(view.definition().inputs, ["id", "name"]);
+    }
+
+    /// Two outputs of one binding land at consecutive positions: each
+    /// insertion widens the range the next may take.
+    #[tokio::test]
+    async fn sibling_computed_columns_take_consecutive_positions() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = people(&conn).await;
+        let prepared = prepare_declaration(
+            &source,
+            Some(&[("id".to_string(), "id".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let metadata = |ordinal: u32| {
+            crate::table::computed_columns::function_computed_column_metadata(
+                "fb_pair",
+                ordinal,
+                &["id".to_string()],
+            )
+        };
+        let left = ArrowField::new("left", DataType::Int32, true).with_metadata(metadata(0));
+        let right = ArrowField::new("right", DataType::Int32, true).with_metadata(metadata(1));
+        let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            ArrowField::new("value", DataType::Int32, true),
+        ]))
+        .unwrap();
+        let output_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            ArrowField::new("left", DataType::Int32, true),
+            ArrowField::new("right", DataType::Int32, true),
+        ]))
+        .unwrap();
+        let int = input_schema.fields[0].r#type.r#type.clone();
+        let binding = FunctionBinding::from_json(
+            &serde_json::json!({
+                "binding_id": "fb_pair",
+                "function": {"name": "pair", "version": "fv_test"},
+                "inputs": [{"parameter": "value", "field_id": -1, "field_path": "id",
+                            "arrow_type": int, "nullable": true}],
+                "outputs": [
+                    {"result_field": "left", "output_name": "left", "output_field_id": -1,
+                     "output_ordinal": 0, "arrow_type": int, "nullable": false},
+                    {"result_field": "right", "output_name": "right", "output_field_id": -1,
+                     "output_ordinal": 1, "arrow_type": int, "nullable": false},
+                ],
+                "input_schema": serde_json::to_value(input_schema).unwrap(),
+                "output_schema": serde_json::to_value(output_schema).unwrap(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let view = prepared
+            .with_computed_columns(vec![(1, left), (2, right)], &[binding])
+            .unwrap()
+            .create("v")
+            .await
+            .unwrap();
+        let names: Vec<String> = view
+            .table()
+            .schema()
+            .await
+            .unwrap()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["id", "left", "right", SOURCE_ROW_ID_COLUMN]);
     }
 
     /// A projected column keeps its nullability; a computed value is
@@ -3009,58 +2851,5 @@ mod tests {
             .map(|f| f.is_nullable())
             .collect();
         assert_eq!(nullable, [false, false, true, false]);
-    }
-
-    /// A definition without function columns serializes as it always has, so
-    /// released readers keep refreshing it. One with function columns takes a
-    /// kind they route to the same refusal an unknown kind gets, instead of
-    /// reporting the view's schema as not matching its definition.
-    #[test]
-    fn a_function_definition_is_refused_by_the_pre_function_reader() {
-        let root: serde_json::Value =
-            serde_json::from_str(&definition_to_metadata(&definition(Vec::new())).unwrap())
-                .unwrap();
-        assert_eq!(root["kind"], SELECT_KIND);
-        assert!(
-            root.get("function_columns").is_none(),
-            "a definition without function columns must not grow new keys"
-        );
-
-        let mut with_functions = definition(Vec::new());
-        with_functions.function_columns = vec!["emb".to_string()];
-        let stored = definition_to_metadata(&with_functions).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&stored).unwrap();
-        assert_eq!(value["kind"], FUNCTION_SELECT_KIND);
-        // The pre-function reader's discriminator.
-        let kind = value["kind"].as_str().unwrap();
-        assert!(kind != SELECT_KIND && kind != NAMESPACED_SELECT_KIND);
-
-        let mut namespaced = definition(vec!["ns".to_string()]);
-        namespaced.function_columns = vec!["emb".to_string()];
-        let value: serde_json::Value =
-            serde_json::from_str(&definition_to_metadata(&namespaced).unwrap()).unwrap();
-        assert_eq!(value["kind"], NAMESPACED_FUNCTION_SELECT_KIND);
-
-        let metadata = HashMap::from([(DEFINITION_META_KEY.to_string(), stored)]);
-        match materialized_view_kind(&metadata).unwrap() {
-            Some(MaterializedViewKind::Select(read)) => assert_eq!(read, with_functions),
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_kind_function_mismatch_is_refused() {
-        for (kind, function_columns) in [
-            (SELECT_KIND, vec!["emb".to_string()]),
-            (FUNCTION_SELECT_KIND, Vec::new()),
-        ] {
-            let mut definition = definition(Vec::new());
-            definition.function_columns = function_columns;
-            let mut value = serde_json::to_value(&definition).unwrap();
-            value["kind"] = serde_json::Value::String(kind.to_string());
-            let metadata = HashMap::from([(DEFINITION_META_KEY.to_string(), value.to_string())]);
-            let err = materialized_view_kind(&metadata).unwrap_err().to_string();
-            assert!(err.contains("does not match its source namespace"), "{err}");
-        }
     }
 }

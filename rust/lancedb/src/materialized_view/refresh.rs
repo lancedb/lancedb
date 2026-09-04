@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
 use arrow_array::{RecordBatch, UInt64Array, new_null_array};
-use arrow_schema::{Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{FieldRef, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::ScalarValue;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::SendableRecordBatchStream;
@@ -51,7 +51,9 @@ use super::{
     definition_to_metadata,
 };
 use crate::database::OpenTableRequest;
-use crate::table::refresh::quote_identifier;
+use crate::table::computed_columns::{
+    computed_column_from_field, computed_columns, ensure_supported_function_metadata,
+};
 use crate::table::{NativeTable, NativeTableExt, Table};
 use crate::{Error, Result};
 
@@ -162,14 +164,13 @@ pub(crate) async fn execute_refresh(
     // require its planned output to be exactly the view's physical schema: a
     // definition the stored table cannot represent must not be certified.
     let source_schema = Arc::new(ArrowSchema::from(source_ds.schema()));
-    let source_schema_ref = source_schema.clone();
     let projections: Vec<(String, String)> = definition
         .projections
         .iter()
         .map(|p| (p.output.clone(), p.expression.clone()))
         .collect();
     validate_inputs(&source_ds, definition)?;
-    let (mut replanned, planned_fields, _renames) = super::plan(
+    let (replanned, planned_fields, _renames) = super::plan(
         source_schema,
         &definition.source_table,
         &definition.source_namespace,
@@ -177,18 +178,39 @@ pub(crate) async fn execute_refresh(
         definition.filter.as_deref(),
         definition.limit,
     )?;
-    // Function columns and inputs are not planned from the source: the
-    // view's own schema declares them, and the definition names them.
-    replanned.function_columns = definition.function_columns.clone();
-    replanned.function_inputs = definition.function_inputs.clone();
-    super::record_function_inputs(&mut replanned);
+    let mut planned_fields = planned_fields;
+    planned_fields.push(arrow_schema::Field::new(
+        SOURCE_ROW_ID_COLUMN,
+        arrow_schema::DataType::UInt64,
+        false,
+    ));
+    // A computed column is not planned from the source: refresh writes it
+    // NULL and its declaration's owner fills it. Its declaration must still
+    // be complete, and it must be able to hold NULL.
     let physical = ArrowSchema::from(view_ds.schema());
-    let expected =
-        super::expected_fields(&physical, planned_fields, &replanned, &source_schema_ref)?;
+    let mut computed = computed_columns(&physical).into_iter().map(|c| c.name);
+    if let Some(name) = computed.by_ref().find(|name| {
+        physical
+            .field_with_name(name)
+            .is_ok_and(|f| !f.is_nullable())
+    }) {
+        return Err(Error::Schema {
+            message: format!(
+                "computed column '{name}' of view '{}' cannot hold NULL; recreate the view",
+                view.name()
+            ),
+        });
+    }
+    ensure_supported_function_metadata(&physical)?;
+    let physical_planned: Vec<&FieldRef> = physical
+        .fields()
+        .iter()
+        .filter(|f| computed_column_from_field(f).is_none())
+        .collect();
     // A projected column that became nullable at the source still fits the
     // view's nullable field; the reverse would not.
-    let matches = expected.len() == physical.fields().len()
-        && expected.iter().zip(physical.fields()).all(|(e, p)| {
+    let matches = planned_fields.len() == physical_planned.len()
+        && planned_fields.iter().zip(&physical_planned).all(|(e, p)| {
             e.name() == p.name()
                 && e.data_type() == p.data_type()
                 && (p.is_nullable() || !e.is_nullable())
@@ -232,15 +254,15 @@ pub(crate) async fn execute_refresh(
         .get(SOURCE_VERSION_TS_META_KEY)
         .and_then(|raw| raw.parse().ok());
     // The watermark speaks only for the view state its refresh left behind;
-    // any other commit on the view since then is drift, except a fill of the
-    // function columns, which rewrites nothing refresh certifies.
+    // any other commit on the view since then is drift, except a fill of its
+    // computed columns, which rewrites nothing refresh certifies.
     let recorded_view_version = metadata
         .get(VIEW_VERSION_META_KEY)
         .and_then(|raw| raw.parse::<u64>().ok());
     let view_intact = match recorded_view_version {
         Some(recorded) if recorded == view_ds.version().version => true,
         Some(recorded) if recorded < view_ds.version().version => {
-            only_function_fills_since(&view_ds, recorded, definition).await?
+            only_computed_rewrites_since(&view_ds, recorded).await?
         }
         _ => false,
     };
@@ -1101,23 +1123,19 @@ struct RowScope {
 }
 
 /// Whether every commit on the view after `recorded` is a fill of its
-/// function columns: a column rewrite that touches only those fields and
-/// neither adds nor removes rows. A version whose transaction cannot be read
-/// is not proven, so it counts as drift.
-async fn only_function_fills_since(
-    view_ds: &Dataset,
-    recorded: u64,
-    definition: &MaterializedViewDefinition,
-) -> Result<bool> {
-    if definition.function_columns.is_empty() {
-        return Ok(false);
-    }
-    let function_fields: Vec<u32> = definition
-        .function_columns
+/// computed columns: a column rewrite touching only those fields and
+/// neither adding nor removing rows. A version whose transaction cannot be
+/// read is not proven, so it counts as drift.
+async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Result<bool> {
+    let physical = ArrowSchema::from(view_ds.schema());
+    let computed_fields: Vec<u32> = computed_columns(&physical)
         .iter()
-        .filter_map(|name| view_ds.schema().field(name))
+        .filter_map(|c| view_ds.schema().field(&c.name))
         .map(|field| field.id as u32)
         .collect();
+    if computed_fields.is_empty() {
+        return Ok(false);
+    }
     for version in recorded + 1..=view_ds.version().version {
         let Some(transaction) = view_ds.read_transaction_by_version(version).await? else {
             return Ok(false);
@@ -1133,7 +1151,7 @@ async fn only_function_fills_since(
             } if removed_fragment_ids.is_empty()
                 && new_fragments.is_empty()
                 && !fields_modified.is_empty()
-                && fields_modified.iter().all(|field| function_fields.contains(field))
+                && fields_modified.iter().all(|field| computed_fields.contains(field))
         );
         if !fill {
             return Ok(false);
@@ -1184,16 +1202,10 @@ async fn compute_stream(
     if !clauses.is_empty() {
         scanner.filter(&clauses.join(" AND "))?;
     }
-    let inputs: Vec<(String, String)> = definition
-        .function_inputs
-        .iter()
-        .map(|c| (super::input_column_name(c), quote_identifier(c)))
-        .collect();
     let transforms: Vec<(&str, &str)> = definition
         .projections
         .iter()
         .map(|p| (p.output.as_str(), p.expression.as_str()))
-        .chain(inputs.iter().map(|(o, e)| (o.as_str(), e.as_str())))
         .collect();
     scanner.project_with_transform(&transforms)?;
     // A scan reads a limit of zero as no limit at all, so a view capped at
@@ -1212,12 +1224,11 @@ async fn compute_stream(
     }
 
     let out_schema = schema.clone();
-    let function_columns = definition.function_columns.clone();
     let mapped = scanner.try_into_stream().await?.map(move |batch| {
         let batch = batch.map_err(|e| DataFusionError::External(Box::new(e)))?;
         let mut columns = Vec::with_capacity(out_schema.fields().len());
         for field in out_schema.fields() {
-            if function_columns.contains(field.name()) {
+            if computed_column_from_field(field).is_some() {
                 columns.push(new_null_array(field.data_type(), batch.num_rows()));
                 continue;
             }
@@ -2997,8 +3008,6 @@ mod tests {
             filter: None,
             limit: None,
             inputs: vec!["x".into()],
-            function_columns: Vec::new(),
-            function_inputs: Vec::new(),
         };
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -3033,8 +3042,6 @@ mod tests {
             filter: None,
             limit: None,
             inputs: vec!["x".into()],
-            function_columns: Vec::new(),
-            function_inputs: Vec::new(),
         };
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -3200,9 +3207,9 @@ mod tests {
         assert!(err.to_string().contains("source table 'src'"), "{err}");
     }
 
-    /// A view with a function column, declared over `people` and refreshed.
-    async fn refreshed_function_view(conn: &Connection) -> MaterializedView {
-        use crate::materialized_view::tests::{function_field, people, test_binding};
+    /// A view with a computed column, declared over `people` and refreshed.
+    async fn refreshed_computed_view(conn: &Connection) -> MaterializedView {
+        use crate::materialized_view::tests::{computed_field, people, test_binding};
         let source = people(conn).await;
         let view = crate::materialized_view::prepare_declaration(
             &source,
@@ -3215,8 +3222,8 @@ mod tests {
         )
         .await
         .unwrap()
-        .with_function_columns(
-            vec![(2, function_field("emb", "fb_1", "name"))],
+        .with_computed_columns(
+            vec![(2, computed_field("emb", "fb_1", "name"))],
             &[test_binding("fb_1", "name", "emb")],
         )
         .unwrap()
@@ -3281,13 +3288,13 @@ mod tests {
             .unwrap();
     }
 
-    /// Refresh never computes a function column: every row it writes, on a
-    /// rebuild, an append and a rewrite, carries NULL there, and the binding
-    /// metadata survives all three.
+    /// Refresh never computes a computed column: every row it writes, on a
+    /// rebuild, an append and a rewrite, carries NULL there, and the
+    /// declaration survives all three.
     #[tokio::test]
-    async fn test_function_columns_are_written_null_and_kept() {
+    async fn test_computed_columns_are_written_null_and_kept() {
         let conn = connect("memory://").execute().await.unwrap();
-        let view = refreshed_function_view(&conn).await;
+        let view = refreshed_computed_view(&conn).await;
         assert_eq!(unfilled(&view).await, 3);
 
         append_people(&conn, vec![4, 5], vec!["d", "e"]).await;
@@ -3318,11 +3325,8 @@ mod tests {
             "the binding envelope was lost"
         );
         assert!(
-            crate::table::computed_columns::computed_column_from_field(
-                schema.field_with_name("emb").unwrap()
-            )
-            .is_some(),
-            "the field declaration was lost"
+            computed_column_from_field(schema.field_with_name("emb").unwrap()).is_some(),
+            "the declaration was lost"
         );
         assert_eq!(
             view.refresh().execute().await.unwrap().mode,
@@ -3330,14 +3334,14 @@ mod tests {
         );
     }
 
-    /// The fill job's commit rewrites only the function columns. It is the
-    /// one commit on a view that is not drift: the next refresh carries on
-    /// from its watermark instead of rebuilding, which would null the
-    /// columns the fill just wrote.
+    /// The fill job's commit rewrites only computed columns. It is the one
+    /// commit on a view that is not drift: the next refresh carries on from
+    /// its watermark instead of rebuilding, which would null what the fill
+    /// just wrote.
     #[tokio::test]
-    async fn test_a_function_fill_is_not_drift() {
+    async fn test_a_computed_column_fill_is_not_drift() {
         let conn = connect("memory://").execute().await.unwrap();
-        let view = refreshed_function_view(&conn).await;
+        let view = refreshed_computed_view(&conn).await;
 
         commit_column_rewrite(&view, &["emb"]).await;
         assert_eq!(
@@ -3358,7 +3362,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_rewrite_of_a_projected_column_is_drift() {
         let conn = connect("memory://").execute().await.unwrap();
-        let view = refreshed_function_view(&conn).await;
+        let view = refreshed_computed_view(&conn).await;
 
         commit_column_rewrite(&view, &["emb", "name"]).await;
         assert_eq!(
@@ -3367,34 +3371,13 @@ mod tests {
         );
     }
 
-    /// A view whose function column lost its declaration cannot be refreshed
-    /// against a definition that still names it.
+    /// The declaration contract is checked before any refresh mutation: a
+    /// missing binding envelope and a column that lost its declaration both
+    /// fail closed.
     #[tokio::test]
-    async fn test_a_function_column_without_its_binding_is_refused() {
+    async fn test_a_broken_declaration_is_refused_before_refresh() {
         let conn = connect("memory://").execute().await.unwrap();
-        let view = refreshed_function_view(&conn).await;
-        let native = view.table().as_native().unwrap();
-        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
-        dataset
-            .replace_field_metadata(vec![(
-                dataset.schema().field("emb").unwrap().id as u32,
-                HashMap::new(),
-            )])
-            .await
-            .unwrap();
-        let err = view.refresh().execute().await.unwrap_err().to_string();
-        assert!(
-            err.contains("declaration metadata does not match binding 'fb_1'"),
-            "{err}"
-        );
-    }
-
-    /// The schema-level binding envelope is validated before any refresh
-    /// mutation: without it there is no complete binding for the fill.
-    #[tokio::test]
-    async fn test_a_view_without_its_binding_envelope_is_refused() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let view = refreshed_function_view(&conn).await;
+        let view = refreshed_computed_view(&conn).await;
         let native = view.table().as_native().unwrap();
         let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
         dataset
@@ -3406,13 +3389,27 @@ mod tests {
             .unwrap();
         let err = view.refresh().execute().await.unwrap_err().to_string();
         assert!(err.contains("references missing binding 'fb_1'"), "{err}");
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_computed_view(&conn).await;
+        let native = view.table().as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .replace_field_metadata(vec![(
+                dataset.schema().field("emb").unwrap().id as u32,
+                HashMap::new(),
+            )])
+            .await
+            .unwrap();
+        let err = view.refresh().execute().await.unwrap_err().to_string();
+        assert!(err.contains("does not match binding 'fb_1'"), "{err}");
     }
 
     /// An input the view does not project is materialized on every refresh
-    /// path, in declaration order, with the source's values.
+    /// path, before the provenance column, with the source's values.
     #[tokio::test]
-    async fn test_function_inputs_are_materialized_and_refreshed() {
-        use crate::materialized_view::tests::{function_field, strict_people, test_binding};
+    async fn test_internal_inputs_are_materialized_and_refreshed() {
+        use crate::materialized_view::tests::{computed_field, strict_people, test_binding};
         let conn = connect("memory://").execute().await.unwrap();
         let source = strict_people(&conn).await;
         let mut prepared = crate::materialized_view::prepare_declaration(
@@ -3425,21 +3422,24 @@ mod tests {
         .unwrap();
         let input = prepared.input_column("name").unwrap();
         let view = prepared
-            .with_function_columns(
-                vec![(1, function_field("emb", "fb_1", &input))],
+            .with_computed_columns(
+                vec![(1, computed_field("emb", "fb_1", &input))],
                 &[test_binding("fb_1", &input, "emb")],
             )
             .unwrap()
             .create("v")
             .await
             .unwrap();
-        let names = |schema: &ArrowSchema| -> Vec<String> {
-            schema.fields().iter().map(|f| f.name().clone()).collect()
-        };
-        assert_eq!(
-            names(&view.table().schema().await.unwrap()),
-            ["id", "emb", SOURCE_ROW_ID_COLUMN, "__input_name"]
-        );
+        let names: Vec<String> = view
+            .table()
+            .schema()
+            .await
+            .unwrap()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["id", "emb", "__input_name", SOURCE_ROW_ID_COLUMN]);
 
         let unfilled_inputs = || async {
             view.table()

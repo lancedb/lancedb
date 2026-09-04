@@ -20,26 +20,6 @@ SQL predicate selecting the source rows the view holds.
 
 ***
 
-### functionColumns
-
-```ts
-functionColumns: string[];
-```
-
-View columns a registered Function fills after each refresh.
-
-***
-
-### functionInputs
-
-```ts
-functionInputs: string[];
-```
-
-Source columns a Function reads that the view holds as internal columns.
-
-***
-
 ### inputs
 
 ```ts
