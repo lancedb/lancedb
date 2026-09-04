@@ -216,6 +216,7 @@ impl DataFrame {
         })
     }
 
+    #[cfg(test)]
     fn from_table_with_execution(
         name: impl Into<String>,
         schema: Arc<Schema>,
