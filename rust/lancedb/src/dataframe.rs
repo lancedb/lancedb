@@ -824,6 +824,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolves_latest_data_and_rejects_later_checkout() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = connect(directory.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let first = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![1_i64]))],
+        )
+        .unwrap();
+        let table = database
+            .create_table("events", first)
+            .execute()
+            .await
+            .unwrap();
+        let version = table.version().await.unwrap();
+        let frame = table.to_df().await.unwrap();
+        let second =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![2_i64]))]).unwrap();
+
+        table.add(second).execute().await.unwrap();
+
+        let batches: Vec<RecordBatch> = frame
+            .execute()
+            .await
+            .unwrap()
+            .reader()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+
+        table.checkout(version).await.unwrap();
+        assert!(matches!(
+            frame.execute().await,
+            Err(Error::NotSupported { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn local_stream_error_is_terminal() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let stream = futures::stream::iter([Err(datafusion_common::DataFusionError::Execution(
