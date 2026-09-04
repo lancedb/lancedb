@@ -2416,34 +2416,6 @@ impl NativeTableExt for Arc<dyn BaseTable> {
     }
 }
 
-/// A write source whose computed columns must arrive unfilled: values for a
-/// computed column come from refresh, never from the caller.
-struct UnfilledDeclarations<S> {
-    inner: S,
-    declared: Vec<String>,
-}
-
-impl<S: StreamingWriteSource> StreamingWriteSource for UnfilledDeclarations<S> {
-    fn arrow_schema(&self) -> SchemaRef {
-        self.inner.arrow_schema()
-    }
-
-    fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
-        if self.declared.is_empty() {
-            return self.inner.into_stream();
-        }
-        let schema = self.inner.arrow_schema();
-        let declared = self.declared;
-        let stream = self.inner.into_stream().map(move |batch| {
-            let batch = batch?;
-            computed_columns::ensure_batch_writes_no_computed_values(&declared, &batch)
-                .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
-            Ok(batch)
-        });
-        Box::pin(datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream))
-    }
-}
-
 /// A table in a LanceDB database.
 #[derive(Clone)]
 pub struct NativeTable {
@@ -2823,19 +2795,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        // A declaration may come along only if it re-plans to what it
-        // declares and the data carries no values for it: what a create can
-        // persist is exactly what `add_columns().computed()` would have.
-        let schema = batches.arrow_schema();
-        computed_columns::ensure_declarations_are_planned(&schema)?;
-        let declared: Vec<String> = computed_columns::computed_columns(&schema)
-            .into_iter()
-            .map(|c| c.name)
-            .collect();
-        let batches = UnfilledDeclarations {
-            inner: batches,
-            declared,
-        };
+        let batches = computed_columns::admit_create_source(batches)?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2935,6 +2895,7 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
+        let batches = computed_columns::admit_create_source(batches)?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());

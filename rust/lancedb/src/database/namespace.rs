@@ -3,6 +3,7 @@
 
 //! Namespace-based database implementation that delegates table management to lance-namespace
 
+use lance_datafusion::utils::StreamingWriteSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -305,6 +306,10 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Refuse a bad declaration before the namespace records a table.
+        crate::table::computed_columns::ensure_declarations_are_planned(
+            &request.data.arrow_schema(),
+        )?;
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
         let mut existing_table = None;

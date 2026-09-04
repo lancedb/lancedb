@@ -21,6 +21,7 @@
 //! [`computed_columns`] and [`computed_column_from_field`] read declarations
 //! back off a schema.
 
+use futures::StreamExt;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -1339,10 +1340,13 @@ pub(crate) fn ensure_declarations_are_planned(schema: &ArrowSchema) -> Result<()
                 let Some(binding) = bindings.iter().find(|b| b.binding_id() == binding_id) else {
                     continue; // reported by the binding validator below
                 };
+                // Roots come from the canonical path parser: a quoted
+                // top-level name may itself contain a dot.
                 if let Some(input) = binding
                     .inputs()
                     .iter()
-                    .map(|input| root(&input.field_path))
+                    .filter_map(|input| resolve_field_path(schema, &input.field_path).ok())
+                    .map(|resolved| resolved.root.name().as_str())
                     .find(|r| declared.contains(*r))
                 {
                     return Err(invalid(format!(
@@ -1821,6 +1825,54 @@ pub(super) async fn add_foreign_kind(table: &crate::Table, name: &str, kind: &st
     )
     .await
     .unwrap();
+}
+
+/// Admit a table's initial data: every declaration it carries is validated,
+/// and the stream refuses any batch with values in a computed column, whose
+/// values come from refresh alone. One boundary for every way a table is
+/// created.
+pub(crate) fn admit_create_source<S: lance_datafusion::utils::StreamingWriteSource>(
+    batches: S,
+) -> Result<UnfilledDeclarations<S>> {
+    let schema = batches.arrow_schema();
+    ensure_declarations_are_planned(&schema)?;
+    let declared = computed_columns(&schema)
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    Ok(UnfilledDeclarations {
+        inner: batches,
+        declared,
+    })
+}
+
+/// A write source whose computed columns must arrive unfilled.
+pub(crate) struct UnfilledDeclarations<S> {
+    inner: S,
+    declared: Vec<String>,
+}
+
+impl<S: lance_datafusion::utils::StreamingWriteSource> lance_datafusion::utils::StreamingWriteSource
+    for UnfilledDeclarations<S>
+{
+    fn arrow_schema(&self) -> SchemaRef {
+        self.inner.arrow_schema()
+    }
+
+    fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
+        if self.declared.is_empty() {
+            return self.inner.into_stream();
+        }
+        let schema = self.inner.arrow_schema();
+        let declared = self.declared;
+        let stream = self.inner.into_stream().map(move |batch| {
+            let batch = batch?;
+            ensure_batch_writes_no_computed_values(&declared, &batch)
+                .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
+            Ok(batch)
+        });
+        Box::pin(datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream))
+    }
 }
 
 #[cfg(test)]

@@ -3074,6 +3074,107 @@ mod tests {
         assert!(err.contains("reads computed column 'payload'"), "{err}");
     }
 
+    /// The root check uses the canonical path parser: a quoted top-level
+    /// name containing a dot is one root, not two segments.
+    #[tokio::test]
+    async fn a_quoted_computed_root_is_still_refused() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let prepared = prepared_people(&conn).await;
+        let payload = sql_field(
+            "payload.dot",
+            DataType::Struct(vec![ArrowField::new("value", DataType::Utf8, true)].into()),
+            "named_struct('value', name)",
+            r#"["name"]"#,
+        );
+        let input = "`payload.dot`.value";
+        let err = prepared
+            .with_computed_columns(
+                vec![
+                    (2, payload),
+                    (3, computed_field("emb", "fb_dependent", input)),
+                ],
+                &[test_binding("fb_dependent", input, "emb")],
+            )
+            .err()
+            .map(|e| e.to_string())
+            .expect("a quoted computed root should be refused");
+        assert!(err.contains("reads computed column 'payload.dot'"), "{err}");
+    }
+
+    /// Namespace-backed creation admits declarations by the same rule, and
+    /// refuses before the namespace records the table.
+    #[tokio::test]
+    async fn a_namespace_created_table_cannot_carry_computed_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut properties = std::collections::HashMap::new();
+        properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
+        let conn = crate::connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+        let half = ArrowField::new("half", DataType::Int32, true).with_metadata(HashMap::from([(
+            crate::table::computed_columns::COMPUTED_COLUMN_META_KEY.to_string(),
+            "true".to_string(),
+        )]));
+        let batch = arrow_array::RecordBatch::try_new(
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("id", DataType::Int32, false),
+                half,
+            ])),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::from(vec![999])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("malformed", batch)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("incomplete computed-column declaration"),
+            "{err}"
+        );
+        assert!(conn.table_names().execute().await.unwrap().is_empty());
+
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            sql_field("next", DataType::Int32, "id + 1", r#"["id"]"#),
+        ]));
+        let filled = arrow_array::RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::from(vec![999])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("forged", filled)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be written directly"), "{err}");
+
+        let unfilled = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::new_null(1)),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("declared", unfilled)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.refresh_column("next").await.unwrap().rows_filled, 1);
+    }
+
     /// A projected column keeps its nullability; a computed value is
     /// nullable.
     #[tokio::test]
