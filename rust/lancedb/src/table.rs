@@ -878,6 +878,11 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
     /// The branch this handle is scoped to, or `None` for `main`.
     fn current_branch(&self) -> Option<String>;
+    /// Whether this handle is pinned to an exact table version.
+    #[doc(hidden)]
+    fn is_time_travel(&self) -> bool {
+        false
+    }
     /// Get the table definition.
     async fn table_definition(&self) -> Result<TableDefinition>;
     /// Get the table URI (storage location)
@@ -1162,6 +1167,12 @@ impl Table {
     /// [`crate::dataframe::DataFrame::execute`] needs no additional connection
     /// or transport arguments.
     pub async fn to_df(&self) -> Result<crate::dataframe::DataFrame> {
+        if self.current_branch().is_some() || self.inner.is_time_travel() {
+            return Err(Error::NotSupported {
+                message: "DataFrames do not yet support checked-out versions or branches"
+                    .to_string(),
+            });
+        }
         let database = self.database.clone().ok_or_else(|| Error::InvalidInput {
             message: "this table is not bound to a database".to_string(),
         })?;
@@ -3247,6 +3258,10 @@ impl BaseTable for NativeTable {
         self.dataset.current_branch()
     }
 
+    fn is_time_travel(&self) -> bool {
+        self.dataset.time_travel_version().is_some()
+    }
+
     async fn list_versions(&self) -> Result<Vec<Version>> {
         Ok(self.dataset.get().await?.versions().await?)
     }
@@ -4453,10 +4468,22 @@ mod tests {
         assert_eq!(table.current_branch(), None);
         let main_version = table.version().await.unwrap();
 
+        table.checkout(main_version).await.unwrap();
+        assert!(matches!(
+            table.to_df().await,
+            Err(Error::NotSupported { .. })
+        ));
+        table.checkout_latest().await.unwrap();
+        assert!(table.to_df().await.is_ok());
+
         // branch off main's current version; it starts with main's data
         let branch = table.create_branch("exp", main_version).await.unwrap();
         assert_eq!(branch.current_branch().as_deref(), Some("exp"));
         assert_eq!(branch.count_rows(None).await.unwrap(), 1);
+        assert!(matches!(
+            branch.to_df().await,
+            Err(Error::NotSupported { .. })
+        ));
 
         // writes on the branch are isolated from main
         branch.add(some_sample_data()).execute().await.unwrap();
