@@ -147,6 +147,8 @@ listing a storage directory.
 
 ::: lancedb.functions.OutputMapping
 
+::: lancedb.functions.AssignmentMapping
+
 ::: lancedb.functions.FunctionBinding
 
 ::: lancedb.functions.RefreshColumnResult

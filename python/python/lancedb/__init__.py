@@ -26,6 +26,7 @@ from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription
 from .functions import (
+    AssignmentMapping as AssignmentMapping,
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
