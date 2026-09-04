@@ -72,6 +72,8 @@ listing a storage directory.
 
 ::: lancedb.functions.UdfDefinition
 
+::: lancedb.secrets.SecretRef
+
 ::: lancedb.functions.FunctionRegistrationRequest
 
 ::: lancedb.functions.FunctionArtifactRequest

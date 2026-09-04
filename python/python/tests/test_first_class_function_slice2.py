@@ -28,6 +28,7 @@ from lancedb.functions import (
     _GRAMMAR_PRIMITIVES,
     udf,
 )
+from lancedb.secrets import SecretRef
 
 THRESHOLD = 20
 _CACHE = None
@@ -53,6 +54,16 @@ def normalize_score(value: float) -> float:
     return value / 100.0
 
 
+@udf(
+    pip=["openai==3.7.0"],
+    env={"MODE": "test"},
+    secrets=["OPENAI_API_KEY"],
+    python_version="3.12",
+)
+def analyze_caption(caption: str) -> str:
+    return caption.strip()
+
+
 def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
     assert isinstance(normalize_score, UdfDefinition)
     assert normalize_score(25.0) == 0.25
@@ -67,6 +78,88 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+def test_secret_bound_udf_matches_its_shared_registration_golden():
+    assert analyze_caption("  hello  ") == "hello"
+    bound = analyze_caption.bind_secrets({"OPENAI_API_KEY": SecretRef("openai-prod")})
+    assert (
+        bound.to_canonical_json()
+        == (FIXTURES / "remote_function_secret_registration_request.canonical.json")
+        .read_text()
+        .strip()
+    )
+
+
+def test_declared_secrets_are_not_part_of_the_unbound_request():
+    """The decorator states the requirement; only `create_function` satisfies it.
+
+    Declared names are never sent: after registration the binding's keys are
+    exactly those names, so persisting them separately would only let the two
+    drift.
+    """
+    assert analyze_caption.declared_secrets == ("OPENAI_API_KEY",)
+    assert normalize_score.declared_secrets == ()
+    unbound = json.loads(analyze_caption.registration_request.to_canonical_json())
+    assert "secret_bindings" not in unbound
+    assert "OPENAI_API_KEY" not in json.dumps(unbound)
+
+
+def test_binding_a_secret_leaves_the_packaged_artifact_untouched():
+    """The artifact is source bytes and nothing else, with or without secrets."""
+    bound = analyze_caption.bind_secrets({"OPENAI_API_KEY": SecretRef("openai-prod")})
+    assert bound.artifact == analyze_caption.registration_request.artifact
+    assert bound.artifact.digest == analyze_caption.registration_request.artifact.digest
+
+
+def test_a_function_declaring_no_secret_is_registered_exactly_as_before():
+    """The compatibility claim: nothing about the no-secret path moves."""
+    assert (
+        normalize_score.bind_secrets(None).to_canonical_json()
+        == normalize_score.registration_request.to_canonical_json()
+    )
+    assert (
+        "secret_bindings"
+        not in normalize_score.registration_request.to_canonical_json()
+    )
+
+
+def test_bindings_must_match_the_declared_names_exactly():
+    with pytest.raises(ValueError, match="declared but not bound"):
+        analyze_caption.bind_secrets(None)
+    with pytest.raises(ValueError, match="bound but not declared"):
+        analyze_caption.bind_secrets(
+            {
+                "OPENAI_API_KEY": SecretRef("openai-prod"),
+                "OTHER_TOKEN": SecretRef("other-prod"),
+            }
+        )
+    with pytest.raises(ValueError, match="bound but not declared"):
+        normalize_score.bind_secrets({"API_TOKEN": SecretRef("api-prod")})
+
+
+def test_a_credential_value_is_rejected_in_the_binding_position():
+    """The one mistake the typed reference exists to stop."""
+    with pytest.raises(TypeError, match="SecretRef"):
+        analyze_caption.bind_secrets({"OPENAI_API_KEY": "sk-live-0001"})
+
+
+@pytest.mark.parametrize(
+    ("secrets", "env", "message"),
+    [
+        (["not-a-var"], {}, "invalid Function secret names"),
+        (["API-TOKEN"], {}, "invalid Function secret names"),
+        (["API_TOKEN", "API_TOKEN"], {}, "duplicate Function secret names"),
+        (["MODE"], {"MODE": "test"}, "must be disjoint"),
+        ([f"TOKEN_{index}" for index in range(17)], {}, "at most 16 secrets"),
+    ],
+)
+def test_declared_secret_names_are_rejected_at_decoration(secrets, env, message):
+    def scale(value: float) -> float:
+        return value * 2.0
+
+    with pytest.raises(ValueError, match=message):
+        udf(secrets=secrets, env=env)(scale)
 
 
 def _main_udf_source(
@@ -1193,6 +1286,7 @@ def _mock_remote_function_catalog():
                     "runtime": body["runtime"],
                     "runtime_digest": "sha256:runtime",
                     "environment_digest": "sha256:environment",
+                    "secret_bindings": body.get("secret_bindings", {}),
                     "created_at": "2026-08-21T00:00:00Z",
                 }
                 response = {"job_id": "job-register"}
@@ -1233,6 +1327,21 @@ def _mock_remote_function_catalog():
                     "version": "fv_exact",
                 }
                 response = {"dropped": True}
+            elif self.path in ("/v1/secrets/create", "/v1/secrets/alter"):
+                assert set(body) == {"name", "value"}
+                response = {}
+            elif self.path == "/v1/secrets/list":
+                if "page_token" not in body:
+                    response = {
+                        "secrets": [{"name": "openai-prod"}],
+                        "page_token": "next",
+                    }
+                else:
+                    assert body["page_token"] == "next"
+                    response = {"secrets": [{"name": "hf-prod"}]}
+            elif self.path == "/v1/secrets/drop":
+                assert body == {"name": "openai-prod"}
+                response = {}
             else:
                 status = 404
                 response = {"error": "not found"}
@@ -1273,6 +1382,89 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
     assert create_request == json.loads(
         normalize_score.registration_request.to_canonical_json()
     )
+
+
+def test_remote_registration_sends_bindings_and_never_a_credential():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        created = db.create_function(
+            analyze_caption,
+            secrets={"OPENAI_API_KEY": db.ref_secret("openai-prod")},
+        )
+
+    assert dict(created.secret_bindings) == {"OPENAI_API_KEY": "openai-prod"}
+    path, create_request = state["requests"][0]
+    assert path == "/v1/functions/create"
+    assert create_request["secret_bindings"] == {"OPENAI_API_KEY": "openai-prod"}
+    # The request names a Secret and carries nothing that could be one.
+    assert create_request == json.loads(
+        analyze_caption.bind_secrets(
+            {"OPENAI_API_KEY": SecretRef("openai-prod")}
+        ).to_canonical_json()
+    )
+
+
+def test_remote_registration_rejects_a_missing_binding_before_any_request():
+    """A declaration the caller did not satisfy never reaches the server."""
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        with pytest.raises(ValueError, match="declared but not bound"):
+            db.create_function(analyze_caption)
+
+    assert state["requests"] == []
+
+
+def test_remote_secret_verbs_round_trip():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        assert db.create_secret("openai-prod", "sk-live-0001") is None
+        assert db.alter_secret("openai-prod", "sk-live-0002") is None
+        assert db.list_secrets() == ["openai-prod", "hf-prod"]
+        assert db.drop_secret("openai-prod") is None
+
+    routes = [path for path, _ in state["requests"]]
+    assert routes == [
+        "/v1/secrets/create",
+        "/v1/secrets/alter",
+        "/v1/secrets/list",
+        "/v1/secrets/list",
+        "/v1/secrets/drop",
+    ]
+    assert state["requests"][0][1] == {"name": "openai-prod", "value": "sk-live-0001"}
+    # The listing returns names, and the client has no way to ask for more.
+    assert state["requests"][2][1] == {}
+
+
+def test_ref_secret_contacts_no_server_and_validates_locally():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        reference = db.ref_secret("openai-prod")
+        assert isinstance(reference, SecretRef)
+        assert reference.name == "openai-prod"
+        with pytest.raises(ValueError, match="invalid Secret name"):
+            db.ref_secret("not a name")
+
+    assert state["requests"] == []
 
 
 def test_blocking_remote_registration_returns_function_version():

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -20,6 +21,26 @@ fn job_result(name: &str) -> Value {
     serde_json::from_str::<Value>(&fixture(name)).expect("remote Job fixture")["result"].clone()
 }
 
+/// No client value models a resolved credential, at any nesting depth.
+fn assert_no_secret_values(value: &Value) {
+    match value {
+        Value::Object(values) => {
+            for (key, value) in values {
+                assert!(
+                    !matches!(
+                        key.as_str(),
+                        "secret_value" | "secret_values" | "resolved_secret" | "resolved_secrets"
+                    ),
+                    "client canonical value must not model resolved secret material"
+                );
+                assert_no_secret_values(value);
+            }
+        }
+        Value::Array(values) => values.iter().for_each(assert_no_secret_values),
+        _ => {}
+    }
+}
+
 #[test]
 fn function_version_job_result_matches_shared_canonical_golden() {
     let result = job_result("remote_function_job.json");
@@ -28,6 +49,10 @@ fn function_version_job_result_matches_shared_canonical_golden() {
     assert_eq!(version.name(), "embed");
     assert_eq!(version.version(), "fv_01K3EXACT");
     assert_eq!(version.runtime_digest(), "sha256:runtime");
+    assert_eq!(
+        version.secret_bindings(),
+        &BTreeMap::from([("HF_TOKEN".to_string(), "hf-prod".to_string())])
+    );
     assert_eq!(
         version.to_canonical_json().expect("canonical JSON"),
         fixture("remote_function_version.canonical.json").trim()
@@ -140,5 +165,42 @@ fn floating_point_application_literals_are_rejected_consistently() {
         error
             .to_string()
             .contains("floating-point Function literals")
+    );
+}
+
+#[test]
+fn canonical_client_values_carry_bindings_and_no_credentials() {
+    let result = job_result("remote_function_job.json");
+    let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
+    let canonical: Value = serde_json::from_str(
+        &version
+            .to_canonical_json()
+            .expect("canonical FunctionVersion"),
+    )
+    .expect("canonical JSON");
+
+    assert_eq!(
+        canonical["secret_bindings"],
+        serde_json::json!({"HF_TOKEN": "hf-prod"})
+    );
+    assert_no_secret_values(&canonical);
+}
+
+/// Every Function registered before Secrets existed serializes unchanged.
+#[test]
+fn a_version_without_bindings_keeps_the_original_wire_shape() {
+    let mut result = job_result("remote_function_job.json");
+    result
+        .as_object_mut()
+        .expect("Function version object")
+        .remove("secret_bindings");
+    let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
+
+    assert!(version.secret_bindings().is_empty());
+    assert!(
+        !version
+            .to_canonical_json()
+            .expect("canonical FunctionVersion")
+            .contains("secret_bindings")
     );
 }

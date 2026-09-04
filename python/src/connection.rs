@@ -653,6 +653,43 @@ impl Connection {
         })
     }
 
+    pub fn create_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        value: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.create_secret(name, value).await.infer_error()
+        })
+    }
+
+    pub fn alter_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        value: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.alter_secret(name, value).await.infer_error()
+        })
+    }
+
+    pub fn list_secrets(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.list_secrets().await.infer_error() },
+        )
+    }
+
+    pub fn drop_secret(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.drop_secret(name).await.infer_error()
+        })
+    }
+
     pub fn list_jobs(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {

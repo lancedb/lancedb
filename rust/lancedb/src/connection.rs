@@ -560,6 +560,50 @@ impl Connection {
             .await
     }
 
+    /// Create a named Secret in this database.
+    ///
+    /// Fails if the name is taken, so a create can never silently become a
+    /// rotation. There is no API that reads a stored credential back; the only
+    /// consumer is a Function that binds the Secret by name. Local databases
+    /// return [`Error::NotSupported`].
+    pub async fn create_secret(&self, name: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
+        self.internal
+            .create_secret(name.as_ref(), value.as_ref())
+            .await
+    }
+
+    /// Replace the credential behind an existing Secret.
+    ///
+    /// Fails if it does not exist. Every Function bound to the Secret resolves
+    /// the new value from its next execution, and no new Function version is
+    /// minted -- which is what lets a rotation reach columns pinned to a
+    /// version registered before it. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn alter_secret(&self, name: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
+        self.internal
+            .alter_secret(name.as_ref(), value.as_ref())
+            .await
+    }
+
+    /// The names of every Secret in this database.
+    ///
+    /// Names only. No path in this API returns a stored credential, by
+    /// construction rather than by policy. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn list_secrets(&self) -> Result<Vec<String>> {
+        self.internal.list_secrets().await
+    }
+
+    /// Drop a Secret.
+    ///
+    /// Functions bound to it fail at their next job, naming the Secret; that
+    /// is the revocation path. The name becomes free to reuse, and a new
+    /// Secret under it is picked up by everything still bound to that name.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn drop_secret(&self, name: impl AsRef<str>) -> Result<()> {
+        self.internal.drop_secret(name.as_ref()).await
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.

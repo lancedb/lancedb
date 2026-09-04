@@ -16,6 +16,7 @@ from typing import (
     Iterable,
     List,
     Literal,
+    Mapping,
     Optional,
     Union,
 )
@@ -53,6 +54,7 @@ from .materialized_view import (
     SelectArg,
     normalize_select,
 )
+from .secrets import SecretRef, validate_secret_name
 from .table import (
     AsyncTable,
     LanceTable,
@@ -687,15 +689,44 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("serialize is not supported for this connection type")
 
-    def create_function(self, definition: UdfDefinition) -> FunctionVersion:
+    def create_function(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, SecretRef]] = None,
+    ) -> FunctionVersion:
         """Register a scalar Python UDF and wait for its immutable version.
 
         This is the blocking counterpart of :meth:`create_function_async`.
         Local connections raise ``NotImplementedError``.
-        """
-        return self.create_function_async(definition).wait()
 
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
+        Parameters
+        ----------
+        definition : UdfDefinition
+            A callable decorated with [udf][lancedb.udf].
+        secrets : mapping of str to SecretRef, optional
+            One [SecretRef][lancedb.secrets.SecretRef] per environment variable
+            the definition declared, from :meth:`ref_secret`. The keys must be
+            exactly the declared names.
+
+        Examples
+        --------
+        ```python
+        db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
+        db.create_function(
+            analyze_caption,
+            secrets={"OPENAI_API_KEY": db.ref_secret("openai-prod")},
+        )
+        ```
+        """
+        return self.create_function_async(definition, secrets=secrets).wait()
+
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, SecretRef]] = None,
+    ) -> Job[FunctionVersion]:
         """Register a scalar Python UDF through the remote Function catalog.
 
         Submission returns a typed job. The immutable Function version becomes
@@ -739,6 +770,63 @@ class DBConnection(EnforceOverrides):
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
         )
+
+    def create_secret(self, name: str, value: str) -> None:
+        """Create a named Secret in this database.
+
+        Fails if the name is taken, so a create never silently becomes a
+        rotation. Nothing reads the value back: it is bound to a Function by
+        name and resolved by the service when that Function runs. Local
+        connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def alter_secret(self, name: str, value: str) -> None:
+        """Replace the credential behind an existing Secret.
+
+        Fails if it does not exist. Every Function bound to the Secret uses the
+        new value from its next job, and no new Function version is created --
+        which is how a rotation reaches columns pinned to a version registered
+        before it. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def list_secrets(self) -> List[str]:
+        """The names of every Secret in this database.
+
+        Names only. No method returns a stored credential, by construction
+        rather than by policy. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def drop_secret(self, name: str) -> None:
+        """Drop a Secret.
+
+        Functions bound to it fail at their next job, naming the Secret; that
+        is the revocation path. The name becomes free to reuse, and a new
+        Secret under it is picked up by everything still bound to that name.
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def ref_secret(self, name: str) -> SecretRef:
+        """A reference to a named Secret, for binding in :meth:`create_function`.
+
+        A pure constructor: it validates the name's shape and never contacts
+        the server, so it always returns a reference and says nothing about
+        whether the Secret exists. Existence is checked at registration, where
+        a mistyped name is a clear error instead of a client-side check that
+        was already stale.
+        """
+        return SecretRef(name)
 
     def job(self, job_id: str) -> Job:
         """A [Job][lancedb.job.Job] handle for a server-side job by id.
@@ -1433,8 +1521,13 @@ class LanceDBConnection(DBConnection):
         return Job(self._conn.job(job_id))
 
     @override
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        job = LOOP.run(self._conn.create_function_async(definition))
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, SecretRef]] = None,
+    ) -> Job[FunctionVersion]:
+        job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
         return Job(job)
 
     @override
@@ -1448,6 +1541,22 @@ class LanceDBConnection(DBConnection):
     @override
     def drop_function(self, name: str, *, version: str) -> bool:
         return LOOP.run(self._conn.drop_function(name, version=version))
+
+    @override
+    def create_secret(self, name: str, value: str) -> None:
+        LOOP.run(self._conn.create_secret(name, value))
+
+    @override
+    def alter_secret(self, name: str, value: str) -> None:
+        LOOP.run(self._conn.alter_secret(name, value))
+
+    @override
+    def list_secrets(self) -> List[str]:
+        return LOOP.run(self._conn.list_secrets())
+
+    @override
+    def drop_secret(self, name: str) -> None:
+        LOOP.run(self._conn.drop_secret(name))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -2261,18 +2370,22 @@ class AsyncConnection(object):
         return AsyncJob(self._inner.job(job_id))
 
     async def create_function_async(
-        self, definition: UdfDefinition
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Mapping[str, SecretRef]] = None,
     ) -> AsyncJob[FunctionVersion]:
         """Register a scalar Python UDF through the remote Function catalog.
 
         The returned typed job resolves to the immutable Function version.
-        Local connections raise ``NotImplementedError``.
+        ``secrets`` binds one [SecretRef][lancedb.secrets.SecretRef] per
+        environment variable the definition declared. Local connections raise
+        ``NotImplementedError``.
         """
         if not isinstance(definition, UdfDefinition):
             raise TypeError("create_function_async requires a @udf definition")
-        inner = await self._inner.create_function_async(
-            definition.registration_request.to_canonical_json()
-        )
+        request = definition.bind_secrets(secrets)
+        inner = await self._inner.create_function_async(request.to_canonical_json())
         return _typed_job(inner, FunctionVersion.from_json)
 
     async def get_function(self, name: str, *, version: str) -> FunctionVersion:
@@ -2293,6 +2406,37 @@ class AsyncConnection(object):
     async def drop_function(self, name: str, *, version: str) -> bool:
         """Drop one exact immutable Function version from the remote catalog."""
         return await self._inner.drop_function(name, version)
+
+    async def create_secret(self, name: str, value: str) -> None:
+        """Create a named Secret in this database.
+
+        Fails if the name is taken, so a create never silently becomes a
+        rotation. Nothing reads the value back.
+        """
+        await self._inner.create_secret(validate_secret_name(name), value)
+
+    async def alter_secret(self, name: str, value: str) -> None:
+        """Replace the credential behind an existing Secret.
+
+        Fails if it does not exist. Bound Functions use the new value from
+        their next job, with no new Function version.
+        """
+        await self._inner.alter_secret(validate_secret_name(name), value)
+
+    async def list_secrets(self) -> List[str]:
+        """The names of every Secret in this database. Names only."""
+        return await self._inner.list_secrets()
+
+    async def drop_secret(self, name: str) -> None:
+        """Drop a Secret. Bound Functions fail at their next job."""
+        await self._inner.drop_secret(validate_secret_name(name))
+
+    def ref_secret(self, name: str) -> SecretRef:
+        """A reference to a named Secret, for binding in ``create_function``.
+
+        Not a coroutine: this contacts no server, so there is nothing to await.
+        """
+        return SecretRef(name)
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
