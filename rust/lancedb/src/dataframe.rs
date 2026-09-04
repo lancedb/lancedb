@@ -771,9 +771,9 @@ mod tests {
     #[tokio::test]
     async fn local_stream_error_is_terminal() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let stream = futures::stream::iter([Err(Error::Runtime {
-            message: "broken stream".to_string(),
-        })]);
+        let stream = futures::stream::iter([Err(datafusion_common::DataFusionError::Execution(
+            "broken stream".to_string(),
+        ))]);
         let stream = Box::pin(
             datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream),
         );
