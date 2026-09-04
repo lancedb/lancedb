@@ -6,7 +6,7 @@
   "theme": "mint",
   "name": "LanceDB",
   "banner": {
-    "content": "[Why Multimodal Data Needs a Better Lakehouse? — Download the Research Study](https://lancedb.com/download/)",
+    "content": "[Why Multimodal Data Needs a Better Lakehouse? \u2014 Download the Research Study](https://lancedb.com/download/)",
     "dismissible": true
   },
   "colors": {
@@ -138,6 +138,15 @@
                   "agent-branch-experiments"
                 ]
               }
+            ]
+          },
+          {
+            "group": "Feature engineering",
+            "pages": [
+              "feature-engineering/index",
+              "feature-engineering/computed-columns",
+              "feature-engineering/materialized-views",
+              "feature-engineering/functions"
             ]
           },
           {

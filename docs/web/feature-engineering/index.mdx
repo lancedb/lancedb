@@ -1,0 +1,71 @@
+---
+title: "Feature engineering"
+sidebarTitle: "Overview"
+description: "Derive columns and tables from data already in LanceDB, without moving it somewhere else to compute."
+icon: layer-group
+keywords: ["feature engineering", "computed columns", "materialized views", "functions", "udf"]
+---
+
+Feature engineering in LanceDB happens where the data already is. Rather than
+exporting a table, computing somewhere else and writing the result back, you
+declare what a column or a table should contain and let LanceDB fill it.
+
+Three mechanisms cover different shapes of that problem. They compose — a
+materialized view can select computed columns, and a computed column can be
+filled by a registered function — but each is worth understanding on its own.
+
+## Which one to reach for {#which-one}
+
+| | What it produces | Filled by | Available |
+| --- | --- | --- | --- |
+| [Computed columns](/feature-engineering/computed-columns) | a new column on an existing table | `refresh_column()` | everywhere |
+| [Materialized views](/feature-engineering/materialized-views) | a new table derived by a query | `refresh()` | local databases |
+| [Functions](/feature-engineering/functions) | a computed column filled by Python | a registered function | Cloud and Enterprise |
+
+**Computed columns** are the common case. A column is declared with a SQL
+expression and starts empty; a refresh gives values to the rows that lack them.
+Declaring one costs the same on a billion-row table as on an empty one, because
+nothing is evaluated until you ask.
+
+**Materialized views** derive a whole table — a filtered, projected, or
+aggregated view of a source — and keep it up to date incrementally as the source
+changes. The result is an ordinary table: queryable, indexable, searchable.
+
+**Functions** run Python where the data is, for work SQL cannot express:
+embedding a column, calling a model, decoding an image. The function is
+registered once, versioned, and then applied as a column.
+
+## The shape they share {#the-shape}
+
+All three separate **declaring** from **filling**, and that separation is the
+point:
+
+- Declaring is cheap and immediate. It records intent in the schema and commits
+  a new table version, with no data written.
+- Filling is a separate call you control, can retry, and — on Cloud and
+  Enterprise — can hand to the server as a job rather than waiting on.
+
+Filling never revisits work it has already done. A refresh gives values to rows
+that lack them and leaves the rest alone, so calling it twice is not twice the
+work, and appending rows means the next refresh handles only the new ones.
+
+The corollary is worth stating plainly: **a filled value is not recomputed when
+its inputs change.** If a column derives from `price` and a row's `price` is
+later updated, the derived value stays as it was computed. Recomputing means
+dropping the column and declaring it again. That is a deliberate trade — it is
+what makes refreshes idempotent and cheap — but it will surprise you if you
+expect a spreadsheet.
+
+## Where to go next {#next}
+
+<CardGroup cols={3}>
+  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/computed-columns">
+    Declare a column from a SQL expression and fill it.
+  </Card>
+  <Card title="Materialized views" icon="table" href="/feature-engineering/materialized-views">
+    Derive a table from a query and refresh it incrementally.
+  </Card>
+  <Card title="Functions" icon="code" href="/feature-engineering/functions">
+    Run Python over your data to produce a column.
+  </Card>
+</CardGroup>

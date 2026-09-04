@@ -1,0 +1,111 @@
+---
+title: "Functions"
+sidebarTitle: "Functions"
+description: "Register a Python function once and apply it as a column, for work SQL cannot express."
+icon: code
+keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
+---
+
+<Badge color="red">Cloud and Enterprise</Badge>
+
+Some columns cannot be written as a SQL expression: an embedding, a model call,
+an image decode. A function is a Python callable registered with the database,
+versioned, and then applied as a column — the code runs where the data is
+rather than pulling rows to your process.
+
+Registration is a remote operation. On a local connection `create_function`
+raises `NotImplementedError`; use a
+[computed column](/feature-engineering/computed-columns) instead.
+
+## Define a function {#define}
+
+`@udf` packages a scalar Python callable. Input and output types are inferred
+from annotations:
+
+```python
+from lancedb import udf
+
+@udf(pip=["numpy==2.2.0"])
+def score(value: float) -> float:
+    return value * 2
+```
+
+The decorated object stays callable, so `score(1.5)` runs the original function
+locally and unit tests stay ordinary tests.
+
+Where annotations cannot express the Arrow type precisely, pass `input_schema`
+and `output_schema` together — one without the other is rejected. Outputs must
+be non-nullable, because a physical NULL is what marks a computed-column row as
+unfilled.
+
+## Declare the environment {#environment}
+
+The function runs remotely, so its dependencies are part of its definition:
+
+| | |
+| --- | --- |
+| `pip` | requirements for the remote environment |
+| `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
+| `env` | environment variables |
+| `python_version` | remote Python major/minor, defaulting to yours |
+| `gpu` | whether every execution requires a GPU |
+
+These are part of the **immutable function version**. Changing a dependency
+produces a new version rather than altering the one already registered, so a
+column filled by version 1 is unaffected by version 2.
+
+## What gets packaged {#packaging}
+
+<Warning>
+The artifact is a **snapshot**: the function source, plus exactly the
+module-level names it references — modules as imports, importable classes and
+functions as imports, literals inlined.
+
+Code that reaches the module namespace another way is rejected where it can be
+seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,
+`builtins`. Closures and a non-standard `__builtins__` are rejected outright.
+</Warning>
+
+In practice this means a function should be self-contained: take its inputs as
+arguments, import what it needs at module level, and avoid capturing state from
+the surrounding scope.
+
+## Register it {#register}
+
+Registration returns a job; the immutable version exists once the job succeeds.
+
+```python
+job = db.create_function_async(score)
+version = job.wait()
+```
+
+`create_function` is the blocking equivalent. A registered version is fetched
+with `db.get_function(name, version=...)`.
+
+## Apply it as a column {#apply}
+
+A registered function is applied through `add_columns`, in the `transforms`
+mapping:
+
+```python
+table.add_columns(transforms={"doubled": score(table["value"])})
+```
+
+A mapping with one function application keeps its scalar or named-struct result
+in the named column. A bare named-struct application expands its result fields
+as one atomic binding, with aliases from `rename(columns=...)`.
+
+Filling then works exactly as it does for any computed column — see
+[Computed columns](/feature-engineering/computed-columns) for refresh
+semantics, including the rule that filled rows are never revisited.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/computed-columns">
+    Refresh semantics, and the SQL alternative.
+  </Card>
+  <Card title="Embedding functions" icon="vector-square" href="/embedding">
+    Built-in embedding providers, which need no registration.
+  </Card>
+</CardGroup>

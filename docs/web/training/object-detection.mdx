@@ -42,7 +42,7 @@ A perception model fine-tuned on a generic dataset typically misses the long-tai
 | **Nighttime pedestrians** | `timeofday = 'night' AND has_person = true` |
 | **Distant pedestrians** | `has_person = true AND person_bbox_area_pct < 30.0` |
 
-Each curated slice becomes a [materialized view](/geneva/jobs/materialized-views) — a named, refreshable SQL filter over the source table — and the training script loads it by name. New footage flows in through `add()` → `backfill()` → `refresh()`; no manifests, no exports, no reshuffling on disk.
+Each curated slice becomes a [materialized view](/feature-engineering/materialized-views) — a named, refreshable SQL filter over the source table — and the training script loads it by name. New footage flows in through `add()` → `backfill()` → `refresh()`; no manifests, no exports, no reshuffling on disk.
 
 ## 1\. Schema {#1-schema}
 
@@ -74,7 +74,7 @@ Ingestion streams `pa.RecordBatch`es of raw frames + annotations directly into a
 
 ## 2\. Backfill curation features with Geneva {#2-backfill-curation-features-with-geneva}
 
-Curation signals are added as columns on the same table using [Geneva UDFs](/geneva/). Backfills are incremental and checkpointed: re-running the command after new footage arrives only computes the new rows.
+Curation signals are added as columns on the same table using [computed columns](/feature-engineering/computed-columns). Backfills are incremental and checkpointed: re-running the command after new footage arrives only computes the new rows.
 
 ```py Python icon=Python
 import pyarrow as pa
@@ -117,7 +117,7 @@ with gconn.local_ray_context():
 ```
 
 <Note>
-Because the curation features are flat scalar columns on the same table, all four retrieval modes — SQL, full-text search, vector search, and SQL-filtered vector search — work directly without joins or exports. See the [Geneva end-to-end example](/geneva/end-to-end) for more on the backfill pattern.
+Because the curation features are flat scalar columns on the same table, all four retrieval modes — SQL, full-text search, vector search, and SQL-filtered vector search — work directly without joins or exports. See [computed columns](/feature-engineering/computed-columns) for how a backfill fills only the rows that lack values.
 </Note>
 
 ## 3\. Define training splits as materialized views {#3-define-training-splits-as-materialized-views}
