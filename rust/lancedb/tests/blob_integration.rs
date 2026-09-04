@@ -447,6 +447,35 @@ async fn collect_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
         .collect())
 }
 
+fn assert_missing_blob_row_ids(err: &Error) {
+    assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    let message = err.to_string();
+    assert!(message.contains("row ids"), "{message}");
+    assert!(!message.contains("rowaddr"), "{message}");
+    assert!(!message.contains("fragment"), "{message}");
+}
+
+async fn assert_fetch_apis_reject_missing_row_ids(table: &Table, row_ids: &[u64]) -> Result<()> {
+    let err = table.fetch_blobs("image", row_ids).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+
+    let err = table.fetch_blob_files("image", row_ids).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+
+    let err = table
+        .fetch_blob_ranges(
+            "image",
+            row_ids
+                .iter()
+                .copied()
+                .map(|row_id| BlobRangeRequest::new(row_id, 0, 1)),
+        )
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
 #[tokio::test]
 async fn fetch_blobs_round_trips_bytes() -> Result<()> {
     let tmp = tempdir().unwrap();
@@ -673,7 +702,7 @@ async fn fetch_blob_ranges_validates_requests() -> Result<()> {
         .fetch_blob_ranges("image", [BlobRangeRequest::new(u64::MAX, 0, 1)])
         .await
         .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+    assert_missing_blob_row_ids(&err);
     Ok(())
 }
 
@@ -706,7 +735,21 @@ async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
 
     let err = table.fetch_blobs("image", &[u64::MAX]).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_files_rejects_missing_fragment_row_addr() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let err = table
+        .fetch_blob_files("image", &[1u64 << 32])
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
     Ok(())
 }
 
@@ -718,22 +761,23 @@ async fn fetch_blob_apis_reject_mixed_valid_and_missing_row_ids() -> Result<()> 
     let row_id = collect_row_ids(&table).await?[0];
     let missing_row_addr = 1u64 << 32;
     let row_ids = [missing_row_addr, row_id];
+    assert_fetch_apis_reject_missing_row_ids(&table, &row_ids).await
+}
 
-    let err = table.fetch_blobs("image", &row_ids).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+#[tokio::test]
+async fn fetch_blob_apis_reject_deleted_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"one".as_slice()), Some(b"two")])
+            .await?;
+    let pairs = collect_id_rowid(&table).await?;
+    let deleted_row_addr = pairs.iter().find(|(id, _)| *id == 2).unwrap().1;
+    let live_row_addr = pairs.iter().find(|(id, _)| *id == 1).unwrap().1;
 
-    let err = table.fetch_blob_files("image", &row_ids).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+    table.delete("id = 2").await?;
 
-    let err = table
-        .fetch_blob_ranges(
-            "image",
-            row_ids.map(|row_id| BlobRangeRequest::new(row_id, 0, 1)),
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    Ok(())
+    assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_addr, live_row_addr]).await
 }
 
 #[tokio::test]

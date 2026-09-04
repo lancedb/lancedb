@@ -66,6 +66,25 @@ def _row_ids_by_id(table):
     return dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
 
 
+def _assert_missing_blob_row_ids(exc_info):
+    message = str(exc_info.value)
+    assert "row ids" in message
+    assert "rowaddr" not in message
+    assert "fragment" not in message
+
+
+def _assert_fetch_apis_reject_missing_row_ids(table, row_ids):
+    with pytest.raises(ValueError) as exc_info:
+        table.fetch_blobs("image", row_ids)
+    _assert_missing_blob_row_ids(exc_info)
+    with pytest.raises(ValueError) as exc_info:
+        table.fetch_blob_files("image", row_ids)
+    _assert_missing_blob_row_ids(exc_info)
+    with pytest.raises(ValueError) as exc_info:
+        table.fetch_blob_ranges("image", [(row_id, 0, 1) for row_id in row_ids])
+    _assert_missing_blob_row_ids(exc_info)
+
+
 def test_blob_factory_declares_v2_field():
     field = lancedb.blob("image")
     assert isinstance(field.type, pa.ExtensionType)
@@ -758,8 +777,25 @@ def test_fetch_blob_ranges_validates_requests():
     with pytest.raises(ValueError, match="offset \\+ length overflowed"):
         table.fetch_blob_ranges("image", [(row_id, 2**64 - 1, 1)])
 
-    with pytest.raises(ValueError, match="row IDs"):
+    with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_ranges("image", [(2**64 - 1, 0, 1)])
+    _assert_missing_blob_row_ids(exc_info)
+
+
+def test_fetch_blob_apis_reject_missing_fragment_row_addr():
+    table = _blob_table("missing_frag", [{"id": 1, "image": b"x"}])
+    live = _row_ids_by_id(table)[1]
+    _assert_fetch_apis_reject_missing_row_ids(table, [1 << 32, live])
+
+
+def test_fetch_blob_apis_reject_deleted_row_ids():
+    table = _blob_table(
+        "deleted_rows",
+        [{"id": 1, "image": b"one"}, {"id": 2, "image": b"two"}],
+    )
+    by_id = _row_ids_by_id(table)
+    table.delete("id = 2")
+    _assert_fetch_apis_reject_missing_row_ids(table, [by_id[2], by_id[1]])
 
 
 def test_fetch_blob_ranges_empty_requests_returns_empty_array():

@@ -8,7 +8,8 @@
 //! small descriptors, not bytes.
 //!
 //! Blob tables require Lance file format >= 2.2. `_rowid` values stay valid
-//! after compaction when the table has stable row ids.
+//! after compaction when the table has stable row ids. Overwrite is a new
+//! create and does not keep the previous table's stable row id setting.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -387,20 +388,27 @@ fn ensure_all_row_ids_resolved(column: &str, requested: usize, resolved: usize) 
     }
 }
 
-/// Lance take reports missing row addresses as NotSupported.
+/// Lance take reports a missing physical row address as NotSupported or InvalidInput.
 fn map_blob_take_error(column: &str, requested: usize, err: lance::Error) -> Error {
-    match &err {
-        lance::Error::NotSupported { source, .. }
-            if source.to_string().contains("must not target deleted rows") =>
-        {
-            Error::InvalidInput {
-                message: format!(
-                    "blob read for column '{column}' requested {requested} row ids but some \
-                     do not exist in the table; pass row ids collected from this table"
-                ),
-            }
+    let missing_row_addr = match &err {
+        lance::Error::NotSupported { source, .. } => {
+            source.to_string().contains("must not target deleted rows")
         }
-        _ => err.into(),
+        lance::Error::InvalidInput { source, .. } => source
+            .to_string()
+            .contains("belongs to non-existent fragment"),
+        _ => false,
+    };
+
+    if missing_row_addr {
+        Error::InvalidInput {
+            message: format!(
+                "blob read for column '{column}' requested {requested} row ids but some \
+                 do not exist in the table; pass row ids collected from this table"
+            ),
+        }
+    } else {
+        err.into()
     }
 }
 
