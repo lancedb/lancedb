@@ -596,6 +596,51 @@ def test_openai_no_retry_on_401(mock_sleep):
     assert mock_sleep.call_count == 0
 
 
+def test_openai_bad_request_partial_batch_recovery():
+    # Regression test for issue #1677
+
+    # Fake exception types, avoids requiring the optional openai/httpx deps
+    class FakeBadRequestError(Exception):
+        pass
+
+    class FakeAuthenticationError(Exception):
+        pass
+
+    fake_openai_module = MagicMock()
+    fake_openai_module.BadRequestError = FakeBadRequestError
+    fake_openai_module.AuthenticationError = FakeAuthenticationError
+
+    registry = get_registry()
+    model = registry.get("openai").create(name="text-embedding-ada-002")
+
+    def fake_create(input, model=None, **kwargs):
+        # Full batch always rejected
+        if len(input) > 1:
+            raise FakeBadRequestError("bad request")
+        if input[0] == "bad text":
+            raise FakeBadRequestError("bad request")
+        embedding = MagicMock()
+        embedding.embedding = [0.1, 0.2, 0.3]
+        result = MagicMock()
+        result.data = [embedding]
+        return result
+
+    mock_client = MagicMock()
+    mock_client.embeddings.create.side_effect = fake_create
+
+    with (
+        patch(
+            "lancedb.embeddings.openai.attempt_import_or_raise",
+            return_value=fake_openai_module,
+        ),
+        patch.object(type(model), "_openai_client", new_callable=lambda: mock_client),
+    ):
+        embeddings = model.generate_embeddings(["good text", "bad text"])
+
+    assert embeddings[0] == [0.1, 0.2, 0.3]
+    assert embeddings[1] is None
+
+
 def test_ollama_embeddings_pickle():
     """OllamaEmbeddings must pickle even after the cached client is created."""
     registry = get_registry()
