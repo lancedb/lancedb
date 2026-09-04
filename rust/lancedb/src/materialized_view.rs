@@ -1147,15 +1147,15 @@ pub(crate) fn expected_fields(
     Ok(expected)
 }
 
-/// `projections` of `None` selects every source column, as `SELECT *`;
-/// `Some(&[])` declares no projected column, for a view of function
-/// columns alone.
-///
 /// Validate a view declaration against its live source and hold what its
 /// creation needs. The declaration is canonicalized through the coordinate a
 /// refresh will resolve -- name and namespace both -- so a handle that does
 /// not resolve back to itself is rejected. Same creation-time checks as
 /// [`Connection::create_materialized_view`].
+///
+/// `projections` of `None` selects every source column, as `SELECT *`;
+/// `Some(&[])` declares no projected column, for a view of function
+/// columns alone.
 ///
 /// ```no_run
 /// # #![recursion_limit = "256"]
@@ -1163,7 +1163,7 @@ pub(crate) fn expected_fields(
 /// # async fn declare(source: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
 /// let prepared = prepare_declaration(
 ///     source,
-///     &[("id".into(), "id".into()), ("double".into(), "value * 2".into())],
+///     Some(&[("id".into(), "id".into()), ("double".into(), "value * 2".into())]),
 ///     Some("value > 0"),
 ///     None,
 /// )
