@@ -310,7 +310,7 @@ impl DataFrame {
         } else {
             namespace.to_vec()
         };
-        let source = provider_as_source(Arc::new(BaseTableAdapter::try_new(table).await?));
+        let source = provider_as_source(Arc::new(BaseTableAdapter::try_new(table.clone()).await?));
         let execute_remotely = database.executes_dataframe_remotely();
         let plan = LogicalPlanBuilder::scan(TableReference::bare(name.into()), source, None)
             .and_then(LogicalPlanBuilder::build)
