@@ -1217,7 +1217,7 @@ class UdfDefinition:
         output_schema: Optional[pa.DataType | pa.Field | pa.Schema],
         pip: tuple[str, ...],
         env: Mapping[str, str],
-        secrets: tuple[str, ...],
+        secrets: tuple[str, ...] = (),
         python_version: Optional[str],
         gpu: bool = False,
         conda: tuple[str, ...] = (),
