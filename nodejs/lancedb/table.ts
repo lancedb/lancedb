@@ -55,8 +55,8 @@ import { sanitizeType } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 export {
-  BucketStats,
-  GenerationStats,
+  TableShardStats,
+  SsTableStats,
   LsmStats,
   MemtableStats,
 } from "./native";
@@ -741,7 +741,7 @@ export abstract class Table {
    */
   abstract closeLsmWriters(): Promise<void>;
   /**
-   * Seal every bucket's active memtable into a new L0 generation.
+   * Freeze every table shard's active memtable into a new SSTable.
    *
    * Returns once the seal is committed. Sealing an empty memtable is a no-op,
    * so this is safe to call repeatedly.
@@ -749,7 +749,7 @@ export abstract class Table {
    */
   abstract flushLsm(): Promise<void>;
   /**
-   * Trigger a background L0 → base compaction pass per bucket.
+   * Trigger a background SSTable compaction pass per table shard.
    *
    * Returns once the passes are *dispatched*, not once they finish — watch
    * {@link Table#getLsmStats} for progress, or use
@@ -760,9 +760,9 @@ export abstract class Table {
   /**
    * Converge this table's LSM write path into its base table.
    *
-   * Seals once, then triggers compaction and polls until the L0 that existed
+   * Freezes once, then triggers compaction and polls until the SSTables that existed
    * at the start is gone. The target set is fixed at the start, so
-   * generations created *during* the checkpoint are ignored — that is what
+   * SSTables created *during* the checkpoint are ignored — that is what
    * lets it terminate under write load, and what makes it best-effort: it
    * converges the fresh tier as of some instant. Idempotent, abandonable at
    * any point, and safe to run on a cadence.
@@ -786,12 +786,12 @@ export abstract class Table {
    * "why is my fresh-tier vector search brute-force". Mutates no table state.
    *
    * Resolves to `undefined` only when the LSM write path is not enabled.
-   * @param {boolean} includeGenerationRows Also count rows per L0 generation.
+   * @param {boolean} includeSstableRows Also count rows per SSTable.
    *   Off by default because each count opens an uncached Lance dataset.
    * @returns {Promise<LsmStats | undefined>}
    */
   abstract getLsmStats(
-    includeGenerationRows?: boolean,
+    includeSstableRows?: boolean,
   ): Promise<LsmStats | undefined>;
   /** Retrieve the version of the table */
 
@@ -1398,9 +1398,9 @@ export class LocalTable extends Table {
   }
 
   async getLsmStats(
-    includeGenerationRows: boolean = false,
+    includeSstableRows: boolean = false,
   ): Promise<LsmStats | undefined> {
-    return (await this.inner.getLsmStats(includeGenerationRows)) ?? undefined;
+    return (await this.inner.getLsmStats(includeSstableRows)) ?? undefined;
   }
 
   async version(): Promise<number> {

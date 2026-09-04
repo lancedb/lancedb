@@ -221,7 +221,7 @@ abstract checkpointLsm(): Promise<void>
 
 Converge this table's LSM write path into its base table.
 
-Seals once, then triggers compaction and polls until the L0 that existed
+Freezes once, then triggers compaction and polls until the SSTables that existed
 at the start is gone. The target set is fixed at the start, so
 generations created *during* the checkpoint are ignored — that is what
 lets it terminate under write load, and what makes it best-effort: it
@@ -289,7 +289,7 @@ It is a no-op when no writers are cached.
 abstract compactLsm(): Promise<void>
 ```
 
-Trigger a background L0 → base compaction pass per bucket.
+Trigger a background SSTable compaction pass per table shard.
 
 Returns once the passes are *dispatched*, not once they finish — watch
 [Table#getLsmStats](Table.md#getlsmstats) for progress, or use
@@ -505,7 +505,7 @@ Drop an index from the table.
 abstract flushLsm(): Promise<void>
 ```
 
-Seal every bucket's active memtable into a new L0 generation.
+Freeze every table shard's active memtable into a new SSTable.
 
 Returns once the seal is committed. Sealing an empty memtable is a no-op,
 so this is safe to call repeatedly.
@@ -519,10 +519,10 @@ so this is safe to call repeatedly.
 ### getLsmStats()
 
 ```ts
-abstract getLsmStats(includeGenerationRows?): Promise<undefined | LsmStats>
+abstract getLsmStats(includeSstableRows?): Promise<undefined | LsmStats>
 ```
 
-Read live per-bucket LSM state.
+Read live per-table-shard LSM state.
 
 Answers "how far behind is my fresh tier", "which bucket is hot", and
 "why is my fresh-tier vector search brute-force". Mutates no table state.
@@ -531,8 +531,8 @@ Resolves to `undefined` only when the LSM write path is not enabled.
 
 #### Parameters
 
-* **includeGenerationRows?**: `boolean`
-    Also count rows per L0 generation.
+* **includeSstableRows?**: `boolean`
+    Also count rows per SSTable.
     Off by default because each count opens an uncached Lance dataset.
 
 #### Returns

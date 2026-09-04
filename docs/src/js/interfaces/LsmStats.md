@@ -6,17 +6,17 @@
 
 # Interface: LsmStats
 
-Live per-bucket LSM state, as returned by `Table#getLsmStats`.
+Live per-table-shard LSM state, as returned by `Table#getLsmStats`.
 
-Nothing here is derived: sums and differences (total L0 bytes, WAL lag) are
+Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
 the caller's to compute.
 
 ## Properties
 
-### buckets
+### tableShards
 
 ```ts
-buckets: BucketStats[];
+tableShards: TableShardStats[];
 ```
 
-One entry per bucket backing this table.
+One entry per table shard backing this table.

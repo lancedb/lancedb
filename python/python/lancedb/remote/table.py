@@ -1038,11 +1038,11 @@ class RemoteTable(Table):
         [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
         return LOOP.run(self._table.compact_lsm())
 
-    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+    def get_lsm_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
         [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
         return LOOP.run(
-            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+            self._table.get_lsm_stats(include_sstable_rows=include_sstable_rows)
         )
 
     def close_lsm_writers(self) -> None:

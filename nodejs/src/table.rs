@@ -542,11 +542,11 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn get_lsm_stats(
         &self,
-        include_generation_rows: bool,
+        include_sstable_rows: bool,
     ) -> napi::Result<Option<LsmStats>> {
         let stats = self
             .inner_ref()?
-            .get_lsm_stats(include_generation_rows)
+            .get_lsm_stats(include_sstable_rows)
             .await
             .default_error()?;
         Ok(stats.map(LsmStats::from))
@@ -950,21 +950,21 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
     }
 }
 
-/// One flushed L0 generation.
+/// One SSTable.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct GenerationStats {
-    /// The generation number. Increases as memtables are sealed into L0.
+pub struct SsTableStats {
+    /// The generation number. Increases as memtables are frozen into SSTables.
     pub generation: i64,
-    /// On-disk size of the generation.
+    /// On-disk size of the SSTable.
     pub bytes: i64,
-    /// Present only when `includeGenerationRows` was requested. Off by default
+    /// Present only when `includeSstableRows` was requested. Off by default
     /// because each count opens an uncached Lance dataset.
     pub rows: Option<i64>,
 }
 
-impl From<lancedb::table::GenerationStats> for GenerationStats {
-    fn from(g: lancedb::table::GenerationStats) -> Self {
+impl From<lancedb::table::SsTableStats> for SsTableStats {
+    fn from(g: lancedb::table::SsTableStats) -> Self {
         Self {
             generation: g.generation as i64,
             bytes: g.bytes as i64,
@@ -977,7 +977,7 @@ impl From<lancedb::table::GenerationStats> for GenerationStats {
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct MemtableStats {
-    /// The generation this memtable will become once sealed.
+    /// The generation this memtable will become once frozen.
     pub generation: i64,
     /// Rows currently buffered.
     pub rows: i64,
@@ -1002,13 +1002,13 @@ impl From<lancedb::table::MemtableStats> for MemtableStats {
     }
 }
 
-/// Live state of one bucket. A table is N buckets on one node; flattening to a
-/// single number hides the one hot bucket that is usually why someone opened
+/// Live state of one table shard. A table is N table shards on one node; flattening to a
+/// single number hides the one hot table shard that is usually why someone opened
 /// this endpoint.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct BucketStats {
-    /// The shard this bucket writes.
+pub struct TableShardStats {
+    /// The shard this table shard writes.
     pub shard_id: String,
     /// `"Active"` or `"Sealed"` (drop-table 2PC in flight).
     pub status: String,
@@ -1023,20 +1023,20 @@ pub struct BucketStats {
     /// Highest WAL position the writer has seen. The difference against
     /// `replayAfterWalEntryPosition` is the WAL lag.
     pub wal_entry_position_last_seen: i64,
-    /// Flushed L0 generations not yet merged into the base table.
-    pub generations: Vec<GenerationStats>,
-    /// Whether a pass owns this bucket's compaction latch right now. Says *a*
+    /// SSTables not yet merged into the base table.
+    pub sstables: Vec<SsTableStats>,
+    /// Whether a pass owns this table shard's compaction latch right now. Says *a*
     /// driver is running, not *whose*, and the latch is held from dispatch —
     /// including while the pass queues for a pod-wide compactor permit. Read it
     /// as "do not pile on", never as "mine is progressing".
     pub compacting: bool,
-    /// Oldest first, active last. Absent for a `"Sealed"` bucket, whose
+    /// Oldest first, active last. Absent for a `"Sealed"` table shard, whose
     /// in-memory state is torn down.
     pub memtables: Option<Vec<MemtableStats>>,
 }
 
-impl From<lancedb::table::BucketStats> for BucketStats {
-    fn from(b: lancedb::table::BucketStats) -> Self {
+impl From<lancedb::table::TableShardStats> for TableShardStats {
+    fn from(b: lancedb::table::TableShardStats) -> Self {
         Self {
             shard_id: b.shard_id,
             status: b.status,
@@ -1045,7 +1045,7 @@ impl From<lancedb::table::BucketStats> for BucketStats {
             current_generation: b.current_generation as i64,
             replay_after_wal_entry_position: b.replay_after_wal_entry_position as i64,
             wal_entry_position_last_seen: b.wal_entry_position_last_seen as i64,
-            generations: b.generations.into_iter().map(Into::into).collect(),
+            sstables: b.sstables.into_iter().map(Into::into).collect(),
             compacting: b.compacting,
             memtables: b
                 .memtables
@@ -1054,21 +1054,21 @@ impl From<lancedb::table::BucketStats> for BucketStats {
     }
 }
 
-/// Live per-bucket LSM state, as returned by `Table#getLsmStats`.
+/// Live per-table-shard LSM state, as returned by `Table#getLsmStats`.
 ///
-/// Nothing here is derived: sums and differences (total L0 bytes, WAL lag) are
+/// Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
 /// the caller's to compute.
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct LsmStats {
-    /// One entry per bucket backing this table.
-    pub buckets: Vec<BucketStats>,
+    /// One entry per table shard backing this table.
+    pub table_shards: Vec<TableShardStats>,
 }
 
 impl From<lancedb::table::LsmStats> for LsmStats {
     fn from(stats: lancedb::table::LsmStats) -> Self {
         Self {
-            buckets: stats.buckets.into_iter().map(Into::into).collect(),
+            table_shards: stats.table_shards.into_iter().map(Into::into).collect(),
         }
     }
 }

@@ -132,10 +132,10 @@ public class LanceDbTableLsmTest {
     enqueue("set_lsm_write_spec", 200, "");
 
     lsm.setLsmWriteSpec(
-        LsmWriteSpec.bucket("id", 16).withMaintainedIndexes(Arrays.asList("id_idx")));
+        LsmWriteSpec.tableShard("id", 16).withMaintainedIndexes(Arrays.asList("id_idx")));
 
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
-    assertEquals("bucket", body.get("sharding").get("mode").asText());
+    assertEquals("tableShard", body.get("sharding").get("mode").asText());
     assertEquals("id", body.get("sharding").get("column").asText());
     assertEquals(16, body.get("sharding").get("num_buckets").asInt());
     assertEquals(1, body.get("maintained_indexes").size());
@@ -201,7 +201,7 @@ public class LanceDbTableLsmTest {
     enqueue(
         "get_lsm_write_spec",
         200,
-        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"bucket\",\"column\":\"id\","
+        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"tableShard\",\"column\":\"id\","
             + "\"num_buckets\":16},\"maintained_indexes\":[\"id_idx\"],"
             + "\"writer_config_defaults\":{\"durable_write\":\"true\"}}}");
 
@@ -228,14 +228,14 @@ public class LanceDbTableLsmTest {
 
   @Test
   public void testGetLsmStats() throws Exception {
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 7L, 8L)));
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
 
     Optional<LsmStats> got = lsm.getLsmStats(true);
 
     assertEquals("/v1/table/my_table/get_lsm_stats/", requestPaths.get(0));
-    assertTrue(MAPPER.readTree(requestBodies.get(0)).get("include_generation_rows").asBoolean());
+    assertTrue(MAPPER.readTree(requestBodies.get(0)).get("include_sstable_rows").asBoolean());
     assertTrue(got.isPresent());
-    BucketStats decoded = got.get().buckets().get(0);
+    TableShardStats decoded = got.get().tableShards().get(0);
     assertEquals("shard-0", decoded.shardId());
     assertEquals("Active", decoded.status());
     assertEquals(1, decoded.writerEpoch());
@@ -243,8 +243,8 @@ public class LanceDbTableLsmTest {
     assertEquals(9, decoded.currentGeneration());
     assertFalse(decoded.compacting());
     assertEquals(Arrays.asList(7L, 8L), generationNumbers(decoded));
-    assertEquals(1024, decoded.generations().get(0).bytes());
-    assertFalse(decoded.generations().get(0).rows().isPresent(), "rows absent unless requested");
+    assertEquals(1024, decoded.sstables().get(0).bytes());
+    assertFalse(decoded.sstables().get(0).rows().isPresent(), "rows absent unless requested");
     assertFalse(decoded.memtables().isPresent(), "absent memtables stay absent");
   }
 
@@ -254,19 +254,19 @@ public class LanceDbTableLsmTest {
     enqueue(
         "get_lsm_stats",
         200,
-        "{\"lsm_stats\":{\"buckets\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "{\"lsm_stats\":{\"tableShards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":3,\"wal_entry_position_last_seen\":11,"
-            + "\"generations\":[{\"generation\":7,\"bytes\":1024,\"rows\":42}],"
+            + "\"sstables\":[{\"generation\":7,\"bytes\":1024,\"rows\":42}],"
             + "\"compacting\":true,\"memtables\":[{\"generation\":8,\"rows\":5,"
             + "\"bytes\":64,\"batches\":2,\"indexes\":[\"id_idx\"]}]}]}}");
 
-    BucketStats decoded = lsm.getLsmStats(true).get().buckets().get(0);
+    TableShardStats decoded = lsm.getLsmStats(true).get().tableShards().get(0);
 
     assertEquals(3, decoded.replayAfterWalEntryPosition());
     assertEquals(11, decoded.walEntryPositionLastSeen());
     assertTrue(decoded.compacting());
-    assertEquals(42, decoded.generations().get(0).rows().getAsLong());
+    assertEquals(42, decoded.sstables().get(0).rows().getAsLong());
     assertTrue(decoded.memtables().isPresent());
     MemtableStats memtable = decoded.memtables().get().get(0);
     assertEquals(8, memtable.generation());
@@ -289,7 +289,7 @@ public class LanceDbTableLsmTest {
 
     lsm.getLsmStats();
 
-    assertFalse(MAPPER.readTree(requestBodies.get(0)).get("include_generation_rows").asBoolean());
+    assertFalse(MAPPER.readTree(requestBodies.get(0)).get("include_sstable_rows").asBoolean());
   }
 
   // ===========================================================================
@@ -334,8 +334,8 @@ public class LanceDbTableLsmTest {
   @Test
   public void testCheckpointReturnsWhenNoGenerationsOutstanding() {
     enqueue("flush_lsm", 200, "");
-    // A bucket with no L0 generations yields no target, so the drain never starts.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false)));
+    // A table shard with no SSTables yields no target, so the drain never starts.
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", false)));
 
     lsm.checkpointLsm();
 
@@ -345,12 +345,12 @@ public class LanceDbTableLsmTest {
   @Test
   public void testCheckpointConvergesOnceTargetGenerationsAreGone() {
     enqueue("flush_lsm", 200, "");
-    // Watermark read: shard-0 holds generations 7 and 8, so target = 8.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 7L, 8L)));
+    // Watermark read: shard-0 holds sstables 7 and 8, so target = 8.
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
     // First drain poll: both still outstanding, nothing compacting -> dispatch a pass.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 7L, 8L)));
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
     // Second drain poll: drained past the target -> done.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 9L)));
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", false, 9L)));
     enqueue("compact_lsm", 200, "");
 
     lsm.checkpointLsm();
@@ -362,14 +362,14 @@ public class LanceDbTableLsmTest {
   @Test
   public void testCheckpointDoesNotPileOnWhileEveryTargetBucketIsCompacting() {
     enqueue("flush_lsm", 200, "");
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", true, 4L)));
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", true, 4L)));
     // Still compacting on the first poll, so no pass is dispatched; then it drains.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", true, 4L)));
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 5L)));
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", true, 4L)));
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", false, 5L)));
 
     lsm.checkpointLsm();
 
-    assertEquals(0, countCalls("compact_lsm"), "a latched bucket is left alone");
+    assertEquals(0, countCalls("compact_lsm"), "a latched tableShard is left alone");
   }
 
   @Test
@@ -378,7 +378,7 @@ public class LanceDbTableLsmTest {
     // from flush rather than retrying the read in place.
     enqueue("flush_lsm", 200, "");
     enqueue("get_lsm_stats", 421, "no claim");
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false)));
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", false)));
 
     lsm.checkpointLsm();
 
@@ -389,7 +389,7 @@ public class LanceDbTableLsmTest {
   public void testCheckpointRetriesRetryableStatusInPlace() {
     enqueue("flush_lsm", 429, "latch held");
     enqueue("flush_lsm", 200, "");
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false)));
+    enqueue("get_lsm_stats", 200, stats(tableShard("shard-0", false)));
 
     lsm.checkpointLsm();
 
@@ -421,27 +421,27 @@ public class LanceDbTableLsmTest {
 
   /**
    * A stats payload that does not decode must fail closed. Every one of these bodies used to be
-   * read as "no buckets", which is indistinguishable from a drained table, so {@code checkpointLsm}
+   * read as "no tableShards", which is indistinguishable from a drained table, so {@code checkpointLsm}
    * reported convergence for a checkpoint that never ran.
    */
   @Test
   public void testCheckpointRejectsMalformedStats() {
     Map<String, String> malformed = new LinkedHashMap<String, String>();
     malformed.put("no response body at all", "");
-    malformed.put("stats object with no buckets", "{\"lsm_stats\":{}}");
-    malformed.put("bucket missing its required fields", "{\"lsm_stats\":{\"buckets\":[{}]}}");
+    malformed.put("stats object with no tableShards", "{\"lsm_stats\":{}}");
+    malformed.put("tableShard missing its required fields", "{\"lsm_stats\":{\"tableShards\":[{}]}}");
     malformed.put(
-        "bucket missing generations",
-        "{\"lsm_stats\":{\"buckets\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "tableShard missing sstables",
+        "{\"lsm_stats\":{\"tableShards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":0,\"wal_entry_position_last_seen\":0,"
             + "\"compacting\":false}]}}");
     malformed.put(
         "generation with a non-numeric generation number",
-        "{\"lsm_stats\":{\"buckets\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "{\"lsm_stats\":{\"tableShards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":0,\"wal_entry_position_last_seen\":0,"
-            + "\"generations\":[{\"generation\":\"7\",\"bytes\":1024}],"
+            + "\"sstables\":[{\"generation\":\"7\",\"bytes\":1024}],"
             + "\"compacting\":false}]}}");
 
     for (Map.Entry<String, String> each : malformed.entrySet()) {
@@ -492,22 +492,22 @@ public class LanceDbTableLsmTest {
   // harness
   // ===========================================================================
 
-  private static List<Long> generationNumbers(BucketStats bucket) {
+  private static List<Long> generationNumbers(TableShardStats tableShard) {
     List<Long> numbers = new ArrayList<Long>();
-    for (GenerationStats generation : bucket.generations()) {
+    for (SsTableStats generation : tableShard.sstables()) {
       numbers.add(generation.generation());
     }
     return numbers;
   }
 
-  /** Build an {@code lsm_stats} response body from bucket fragments. */
-  private static String stats(String... buckets) {
-    return "{\"lsm_stats\":{\"buckets\":[" + String.join(",", buckets) + "]}}";
+  /** Build an {@code lsm_stats} response body from tableShard fragments. */
+  private static String stats(String... tableShards) {
+    return "{\"lsm_stats\":{\"tableShards\":[" + String.join(",", tableShards) + "]}}";
   }
 
-  private static String bucket(String shardId, boolean compacting, Long... generations) {
+  private static String tableShard(String shardId, boolean compacting, Long... sstables) {
     StringBuilder gens = new StringBuilder();
-    for (Long generation : generations) {
+    for (Long generation : sstables) {
       if (gens.length() > 0) {
         gens.append(",");
       }
@@ -517,7 +517,7 @@ public class LanceDbTableLsmTest {
         + shardId
         + "\",\"status\":\"Active\",\"writer_epoch\":1,\"manifest_version\":2,"
         + "\"current_generation\":9,\"replay_after_wal_entry_position\":0,"
-        + "\"wal_entry_position_last_seen\":0,\"generations\":["
+        + "\"wal_entry_position_last_seen\":0,\"sstables\":["
         + gens
         + "],\"compacting\":"
         + compacting

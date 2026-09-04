@@ -3003,13 +3003,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
 
-    async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
+    async fn get_lsm_stats(&self, include_sstable_rows: bool) -> Result<Option<LsmStats>> {
         // Read-semantics POST, like `get_lsm_write_spec`.
         let request = self
             .client
             .post(&format!("/v1/table/{}/get_lsm_stats/", self.identifier))
             .json(&serde_json::json!({
-                "include_generation_rows": include_generation_rows,
+                "include_sstable_rows": include_sstable_rows,
             }));
         let (request_id, response) = self.send_lsm_route(request).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -8629,7 +8629,7 @@ mod tests {
         http::Response::builder().status(200).body(body).unwrap()
     }
 
-    /// A flush landing in an empty L0 finishes on the opening stats read
+    /// A flush landing in an empty SSTable tier finishes on the opening stats read
     /// alone. Asserting zero compacts is the point: "it returned Ok" is also
     /// true of a loop that ran a pointless pass.
     #[tokio::test(start_paused = true)]
@@ -8683,7 +8683,7 @@ mod tests {
     }
 
     /// Generations created *during* the checkpoint are not waited on, which
-    /// is what lets the loop terminate on a table taking writes where "L0 is
+    /// is what lets the loop terminate on a table taking writes where "the SSTable tier is
     /// empty" never becomes true.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_ignores_generations_created_while_it_runs() {
@@ -8962,7 +8962,7 @@ mod tests {
     }
 
     /// WAL off ⇒ `None`; WAL on ⇒ a fully populated `Some` with no field
-    /// defaulting to a zero it did not measure. `include_generation_rows`
+    /// defaulting to a zero it did not measure. `include_sstable_rows`
     /// rides in the body and is off unless asked for.
     #[tokio::test]
     async fn test_get_lsm_stats_round_trip() {
@@ -8971,7 +8971,7 @@ mod tests {
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
-                body["include_generation_rows"], true,
+                body["include_sstable_rows"], true,
                 "the flag must reach the server, not be silently dropped"
             );
             let response = serde_json::json!({
