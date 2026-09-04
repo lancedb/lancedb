@@ -1,0 +1,108 @@
+---
+title: "SQL and DataFrame manual"
+sidebarTitle: "Overview"
+description: "Two ways to express an analytical query over the lakehouse, one execution engine underneath."
+icon: table-list
+keywords: ["sql", "dataframe", "substrait", "flight sql", "query", "analytics"]
+---
+
+LanceDB answers analytical queries two ways. **SQL** goes over an Arrow Flight
+SQL endpoint, so any Flight SQL client can reach it. The **DataFrame API**
+builds the same kind of plan in Python, method by method, and submits it as
+[Substrait](https://substrait.io).
+
+They are not layered on each other — neither is sugar for the other. Both
+produce a logical plan that the server executes, which is why they cost the same
+and return the same Arrow data.
+
+<Note>
+The DataFrame API is new. Until it ships, the reference below describes the
+merged surface rather than a released one; check the version you are running.
+</Note>
+
+## Choosing between them {#choosing}
+
+| | SQL | DataFrame |
+| --- | --- | --- |
+| Written as | a query string | Python method calls |
+| Reaches the server via | Arrow Flight SQL | Substrait |
+| Composable in host code | by string building | by value |
+| Available from | any Flight SQL client | the Python client |
+| Checked | at the server | partly at build time |
+
+Reach for **SQL** when the query is written by a person, pasted from a notebook,
+or produced by a tool that already speaks Flight SQL. Reach for the **DataFrame
+API** when the query is assembled by code — a filter that depends on user input,
+a projection that varies by caller — because building a plan out of values
+avoids the quoting and injection problems of building one out of strings.
+
+## Where a query runs {#execution}
+
+Both forms execute on the server.
+
+A DataFrame is **lazy**: every method returns a new plan and nothing runs until
+`execute()`. A local connection can build and serialize a plan — useful for
+tests, and for inspecting what a query will do — but cannot execute one.
+`db.table(...)` on a local connection gives you a plan you can print or convert
+to Substrait; submitting it needs a remote connection.
+
+```python
+df = db.table("documents").filter(col("score") > 0.5).limit(10)
+df.to_substrait()      # works anywhere
+df.execute()           # needs a remote connection
+```
+
+That split is worth knowing before you write tests: plan construction is
+testable locally, execution is not.
+
+## Query lifecycle {#lifecycle}
+
+`execute()` returns an Arrow `RecordBatchReader` and blocks. `execute_async()`
+returns a server-side query handle instead, for queries long enough that holding
+a reader open is the wrong shape.
+
+Results are Arrow in both cases. Nothing converts to pandas or Python objects
+unless you ask.
+
+## LanceDB's SQL extensions {#extensions}
+
+The dialect is [DataFusion's](/sql/functions) — `SELECT`, `WHERE`, `GROUP BY`,
+`ORDER BY`, `LIMIT`, joins, CTEs and window functions — plus what a lakehouse
+over multimodal data needs.
+
+**Full-text search** is a table function rather than a predicate, because it
+produces a relevance score alongside the matching rows:
+
+```sql
+SELECT id, text, _score
+FROM fts('my_docs', 'puppy')
+ORDER BY _score DESC
+LIMIT 5
+```
+
+`fts()` takes a table name and a query — either a bare string or a JSON query
+object for fuzzy, phrase, boolean, boost and multi-match forms. `_score` is a
+pseudo-column carrying relevance, available for ordering and filtering like any
+other column.
+
+Because it is a table function, full-text search composes with the rest of a
+query: join its results, filter them, aggregate over them.
+
+## Reference {#reference}
+
+<CardGroup cols={3}>
+  <Card title="DataFrame operations" icon="table-list" href="/sql/dataframe">
+    Every relational operation, with signatures and semantics.
+  </Card>
+  <Card title="Expressions" icon="function" href="/sql/expressions">
+    Columns, literals, operators, and the aggregate functions.
+  </Card>
+  <Card title="Functions and types" icon="calculator" href="/sql/functions">
+    The DataFusion dialect, and what LanceDB adds to it.
+  </Card>
+</CardGroup>
+
+## What this manual does not cover {#scope}
+
+Connecting a Flight SQL client — drivers, authentication, the endpoint address —
+is deployment-specific and documented with the deployment.

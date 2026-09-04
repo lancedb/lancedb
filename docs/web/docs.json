@@ -150,6 +150,15 @@
             ]
           },
           {
+            "group": "SQL and DataFrame",
+            "pages": [
+              "sql/index",
+              "sql/dataframe",
+              "sql/expressions",
+              "sql/functions"
+            ]
+          },
+          {
             "group": "Support",
             "pages": [
               "troubleshooting",

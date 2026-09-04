@@ -1,0 +1,157 @@
+---
+title: "DataFrame operations"
+sidebarTitle: "DataFrame operations"
+description: "Every relational operation on a LanceDB DataFrame, with signatures and semantics."
+icon: table-list
+keywords: ["dataframe", "select", "filter", "join", "aggregate", "substrait"]
+---
+
+A DataFrame is a lazy logical plan. Every operation returns a new plan; nothing
+executes until [`execute()`](#execution).
+
+Obtain one from a connection:
+
+```python
+import lancedb
+from lancedb import col, lit
+from lancedb import sql_functions as F
+
+db = lancedb.connect("db://your-database", api_key="...")
+df = db.table("documents")
+```
+
+`db.table(name, *, namespace_path=None)` scans a table. It opens the table to
+read its schema, so the plan knows its columns before anything runs.
+
+## Projection {#projection}
+
+| Operation | Effect |
+| --- | --- |
+| `select(*expressions)` | Project columns or expressions. At least one required. |
+| `with_column(name, expression)` | Add one derived column. |
+| `with_columns(**expressions)` | Add several, named by keyword. |
+| `drop(*columns)` | Remove columns by name. |
+| `with_column_renamed(old, new)` | Rename one column. |
+
+```python
+df.select("id", col("score") * 2)
+df.with_columns(doubled=col("score") * 2, flag=col("score") > 0.5)
+```
+
+A bare string is a column reference, so `select("id")` and `select(col("id"))`
+mean the same thing. Use `col()` when you need methods or operators on it.
+
+## Filtering {#filtering}
+
+`filter(*predicates)` keeps rows matching **every** predicate — multiple
+arguments are combined with `AND`:
+
+```python
+df.filter(col("score") > 0.5, col("lang") == "en")
+df.filter((col("score") > 0.5) & (col("lang") == "en"))   # equivalent
+```
+
+At least one predicate is required. For `OR`, combine with `|` inside a single
+argument.
+
+<Warning>
+Python's `and` and `or` cannot be overloaded and will **not** do what you want on
+expressions. Use `&`, `|` and `~`, and parenthesise them — they bind more
+tightly than comparison operators, so `col("a") > 1 & col("b") < 2` parses as
+`col("a") > (1 & col("b")) < 2`.
+</Warning>
+
+## Aggregation {#aggregation}
+
+`aggregate(group_by, aggregates)` groups rows and computes aggregates over each
+group.
+
+```python
+df.aggregate("lang", F.count(col("id")))
+df.aggregate(["lang", "source"], [F.avg(col("score")), F.max(col("score"))])
+df.aggregate(None, F.count(col("id")))        # whole relation, no grouping
+```
+
+Both arguments accept a single value or an iterable. `group_by=None` aggregates
+over the whole relation. The available aggregates are in
+[Expressions](/sql/expressions#aggregates).
+
+## Ordering and slicing {#ordering}
+
+| Operation | Effect |
+| --- | --- |
+| `sort(*expressions)` | Order rows. |
+| `limit(count, offset=0)` | Take `count` rows after skipping `offset`. |
+| `distinct()` | Remove duplicate rows. |
+
+A bare expression sorts **ascending, nulls last**. For other orders use a
+`SortExpr`, which follows DataFusion's convention: when `nulls_first` is not
+given it defaults to the opposite of `ascending`, so descending sorts put nulls
+first.
+
+```python
+df.sort(col("score"))                    # ascending, nulls last
+df.sort(col("score").sort(ascending=False))
+```
+
+## Joins {#joins}
+
+```python
+df.join(other, on="id")
+df.join(other, left_on="doc_id", right_on="id", how="left")
+df.join(other, on=["tenant", "id"], how="inner")
+```
+
+Pass either `on` (same key names on both sides) or **both** `left_on` and
+`right_on`. Passing `on` together with either raises, as does passing neither.
+Keys may be a single name or a sequence.
+
+`how` defaults to `"inner"`.
+
+<Note>
+Both plans must come from the **same connection** and the **same default
+namespace**; otherwise the join raises before anything is submitted. The same
+applies to set operations.
+
+Use `alias(name)` to give a relation a name before joining it to itself.
+</Note>
+
+## Set operations {#set-operations}
+
+| Operation | Effect |
+| --- | --- |
+| `union(other, distinct=False)` | Rows from both. |
+| `intersect(other, distinct=False)` | Rows present in both. |
+| `except_all(other, distinct=False)` | Rows in this plan and not the other. |
+
+All three default to **keeping duplicates**. Pass `distinct=True` for set
+semantics. Note this is the opposite default to SQL's bare `UNION`, which
+deduplicates — `union()` here corresponds to `UNION ALL`.
+
+## Inspecting a plan {#inspecting}
+
+| | |
+| --- | --- |
+| `schema` | the plan's output schema, as a `pyarrow.Schema` |
+| `to_substrait()` | the logical plan as a Substrait protobuf |
+| `repr(df)` | a readable rendering of the plan |
+
+`schema` and `to_substrait()` work on a local connection, so a plan can be
+asserted against in tests without a server.
+
+## Execution {#execution}
+
+| | Returns |
+| --- | --- |
+| `execute()` | a blocking Arrow `RecordBatchReader` |
+| `execute_async()` | a server-side query handle |
+
+On `AsyncConnection` both are coroutines and `execute()` yields an async reader.
+
+Execution requires a remote connection. A local one can build and serialize a
+plan but not run it.
+
+```python
+reader = df.execute()
+table = reader.read_all()
+```
