@@ -952,6 +952,43 @@ def test_named_struct_function_can_include_a_blob_result_field():
     ]
 
 
+def test_named_struct_function_preserves_nullable_result_fields():
+    @udf(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.schema(
+            [
+                pa.field("result", pa.int64(), nullable=True),
+                pa.field("failure_code", pa.int32(), nullable=False),
+            ]
+        ),
+    )
+    def nullable_result(value):
+        return {"result": value, "failure_code": 0}
+
+    output = nullable_result.registration_request.signature.output
+    assert [(field.name, field.nullable) for field in output.fields] == [
+        ("result", True),
+        ("failure_code", False),
+    ]
+
+    @udf(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.schema(
+            [
+                pa.field("result", pa.int64(), nullable=True),
+                pa.field("failure_code", pa.int32(), nullable=True),
+            ]
+        ),
+    )
+    def all_nullable(value):
+        return {"result": value, "failure_code": None}
+
+    assert all(
+        field.nullable
+        for field in all_nullable.registration_request.signature.output.fields
+    )
+
+
 def test_metadata_marked_blob_field_uses_the_semantic_type():
     extension = lancedb.blob("image", nullable=False).type
     storage = (
