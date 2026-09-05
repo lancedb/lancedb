@@ -13,17 +13,57 @@ use datafusion_expr::{Expr, LogicalPlan, LogicalPlanBuilder, Operator, expr_fn::
 use datafusion_sql::unparser::Unparser;
 
 pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<String> {
-    let plan = preserve_join_semantics(plan)?;
+    let plan = collapse_join_output_projections(plan)?;
+    let plan = preserve_join_semantics(&plan)?;
     Unparser::default()
         .plan_to_sql(&plan)
         .map(|statement| statement.to_string())
+}
+
+fn collapse_join_output_projections(plan: &LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
+    plan.clone()
+        .transform_up(|plan| {
+            let LogicalPlan::Projection(projection) = plan else {
+                return Ok(Transformed::no(plan));
+            };
+            let LogicalPlan::Projection(input) = projection.input.as_ref() else {
+                return Ok(Transformed::no(LogicalPlan::Projection(projection)));
+            };
+            if !matches!(input.input.as_ref(), LogicalPlan::Join(_)) {
+                return Ok(Transformed::no(LogicalPlan::Projection(projection)));
+            }
+
+            let expr = projection
+                .expr
+                .into_iter()
+                .map(|expr| {
+                    expr.transform_up(|expr| match expr {
+                        Expr::Column(column) => {
+                            let index = input.schema.index_of_column(&column)?;
+                            Ok(Transformed::yes(
+                                input.expr[index].clone().unalias_nested().data,
+                            ))
+                        }
+                        expr => Ok(Transformed::no(expr)),
+                    })
+                    .map(|result| result.data)
+                })
+                .collect::<datafusion_common::Result<Vec<_>>>()?;
+            let projection = datafusion_expr::logical_plan::Projection::try_new_with_schema(
+                expr,
+                Arc::clone(&input.input),
+                projection.schema,
+            )?;
+            Ok(Transformed::yes(LogicalPlan::Projection(projection)))
+        })
+        .data()
 }
 
 fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
     plan.clone()
         .transform_up(|plan| match plan {
             LogicalPlan::Projection(mut projection)
-                if matches!(projection.input.as_ref(), LogicalPlan::Limit(_)) =>
+                if projection_input_needs_isolation(&projection.input) =>
             {
                 projection.input = isolate_plan(projection.input, "__lancedb_projection_input")?;
                 Ok(Transformed::yes(LogicalPlan::Projection(projection)))
@@ -31,6 +71,12 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
             LogicalPlan::Filter(mut filter) if filter_input_needs_isolation(&filter.input) => {
                 filter.input = isolate_plan(filter.input, "__lancedb_filter_input")?;
                 Ok(Transformed::yes(LogicalPlan::Filter(filter)))
+            }
+            LogicalPlan::Aggregate(mut aggregate)
+                if aggregate_input_needs_isolation(&aggregate.input) =>
+            {
+                aggregate.input = isolate_plan(aggregate.input, "__lancedb_aggregate_input")?;
+                Ok(Transformed::yes(LogicalPlan::Aggregate(aggregate)))
             }
             LogicalPlan::Sort(mut sort)
                 if matches!(
@@ -152,12 +198,39 @@ fn contains_join_modifier(plan: &LogicalPlan) -> bool {
             | LogicalPlan::Distinct(_)
             | LogicalPlan::Union(_)
             | LogicalPlan::Window(_)
+            | LogicalPlan::Projection(_)
     ) || plan.inputs().into_iter().any(contains_join_modifier)
+}
+
+fn projection_input_needs_isolation(plan: &LogicalPlan) -> bool {
+    matches!(
+        plan,
+        LogicalPlan::Projection(_)
+            | LogicalPlan::Aggregate(_)
+            | LogicalPlan::Limit(_)
+            | LogicalPlan::Sort(_)
+            | LogicalPlan::Distinct(_)
+            | LogicalPlan::Union(_)
+            | LogicalPlan::Window(_)
+    )
+}
+
+fn aggregate_input_needs_isolation(plan: &LogicalPlan) -> bool {
+    matches!(
+        plan,
+        LogicalPlan::Projection(_)
+            | LogicalPlan::Aggregate(_)
+            | LogicalPlan::Limit(_)
+            | LogicalPlan::Sort(_)
+            | LogicalPlan::Distinct(_)
+            | LogicalPlan::Union(_)
+            | LogicalPlan::Window(_)
+    )
 }
 
 fn filter_input_needs_isolation(plan: &LogicalPlan) -> bool {
     match plan {
-        LogicalPlan::Limit(_) | LogicalPlan::Union(_) => true,
+        LogicalPlan::Projection(_) | LogicalPlan::Limit(_) | LogicalPlan::Union(_) => true,
         LogicalPlan::Distinct(distinct) => filter_input_needs_isolation(distinct.input()),
         _ => false,
     }

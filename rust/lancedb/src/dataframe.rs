@@ -439,9 +439,9 @@ impl DataFrame {
 
     /// Join two plans using corresponding equality keys.
     ///
-    /// Remote SQL execution currently rejects an order- or cardinality-changing
-    /// plan containing a join when it is used as another join input. Assigning
-    /// an alias does not remove this limitation.
+    /// Remote SQL execution currently rejects a transformed plan containing a
+    /// join when it is used as another join input. Assigning an alias does not
+    /// remove this limitation.
     pub fn join(
         &self,
         other: &Self,
@@ -973,6 +973,20 @@ mod tests {
             "a projected limited input must have a usable relation alias: {projected_sql}"
         );
 
+        for input in [
+            events().sort(vec![(col("value"), true, false)]).unwrap(),
+            events().distinct().unwrap(),
+            events()
+                .with_column("next_value", col("value") + lit(1_i64))
+                .unwrap(),
+        ] {
+            let sql = input.select(vec![col("id")]).unwrap().to_sql().unwrap();
+            assert!(
+                sql.contains("FROM (SELECT") && sql.contains(") AS events"),
+                "projected compound input must retain a relation alias: {sql}"
+            );
+        }
+
         let unqualified_sql = events()
             .select(vec![col("id").alias("renamed")])
             .unwrap()
@@ -985,6 +999,42 @@ mod tests {
         assert!(
             unqualified_sql.find("LIMIT 2").unwrap() < unqualified_sql.find("WHERE").unwrap(),
             "unqualified derived inputs must retain their scope: {unqualified_sql}"
+        );
+
+        let renamed_filter_sql = events()
+            .select(vec![col("id").alias("renamed")])
+            .unwrap()
+            .filter(col("renamed").gt(lit(0_i64)))
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            renamed_filter_sql.contains("FROM (SELECT")
+                && renamed_filter_sql.contains(") AS __lancedb_filter_input WHERE"),
+            "filter must not reference an alias in the same select block: {renamed_filter_sql}"
+        );
+
+        let nested_aggregate_sql = events()
+            .aggregate(
+                vec![col("id")],
+                vec![aggregate_sum(col("value")).alias("total")],
+            )
+            .unwrap()
+            .aggregate(
+                vec![],
+                vec![aggregate_sum(col("total")).alias("grand_total")],
+            )
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            nested_aggregate_sql
+                .to_ascii_uppercase()
+                .matches("SUM(")
+                .count()
+                == 2
+                && nested_aggregate_sql.contains("GROUP BY"),
+            "nested aggregate must retain both aggregation scopes: {nested_aggregate_sql}"
         );
 
         let chained_limit_sql = events()
@@ -1231,6 +1281,24 @@ mod tests {
         .unwrap()
         .alias("right")
         .unwrap();
+
+        let renamed_left = left.with_column_renamed("value", "left_value").unwrap();
+        let renamed_right = right.with_column_renamed("value", "right_value").unwrap();
+        let renamed_join_sql = renamed_left
+            .join(
+                &renamed_right,
+                &["id".to_string()],
+                &["id".to_string()],
+                JoinType::Inner,
+            )
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            renamed_join_sql.contains(") AS \"left\"")
+                && renamed_join_sql.contains(") AS \"right\""),
+            "projected join inputs must retain their aliases: {renamed_join_sql}"
+        );
 
         let aggregate = left
             .aggregate(
