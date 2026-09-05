@@ -148,8 +148,8 @@ Ask the backend for this job's current state, and for a server-side job
 its full record, then cache it for the getters below.
 
 They are all null until this runs, because submitting an operation
-returns only a job id. [Job.status](Job.md#status) and [Job.wait](Job.md#wait) refresh
-too.
+returns only a job id. [Job.status](Job.md#status) fetches the whole record too;
+[Job.wait](Job.md#wait) records only the terminal state it establishes.
 
 #### Returns
 

@@ -62,8 +62,8 @@ impl Job {
     /// its full record, then cache it for the getters below.
     ///
     /// They are all null until this runs, because submitting an operation
-    /// returns only a job id. {@link Job.status} and {@link Job.wait} refresh
-    /// too.
+    /// returns only a job id. {@link Job.status} fetches the whole record too;
+    /// {@link Job.wait} records only the terminal state it establishes.
     #[napi(catch_unwind)]
     pub async fn refresh(&self) -> napi::Result<()> {
         self.inner.refresh().await.default_error()

@@ -213,23 +213,24 @@ impl JobDescription {
         parse_json_payload(py, self._result_json.as_deref())
     }
 
-    fn __repr__(&self) -> String {
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         let mut fields = vec![
             format!("job_id={:?}", self.job_id),
             format!("job_type={:?}", self.job_type),
             format!("state={:?}", self.state),
             format!("creation_ms={}", self.creation_ms),
         ];
-        if let Some(spec) = &self._spec_json {
-            fields.push(format!("spec={spec}"));
-        }
-        if let Some(result) = &self._result_json {
-            fields.push(format!("result={result}"));
+        // Render the payloads the way the parsed properties return them, so
+        // this repr and the one on `Job` agree.
+        for (name, payload) in [("spec", &self._spec_json), ("result", &self._result_json)] {
+            if let Some(parsed) = parse_json_payload(py, payload.as_deref())? {
+                fields.push(format!("{name}={}", parsed.repr()?));
+            }
         }
         if let Some(failure) = &self.failure {
             fields.push(format!("failure={}", failure.__repr__()));
         }
-        format!("JobDescription({})", fields.join(", "))
+        Ok(format!("JobDescription({})", fields.join(", ")))
     }
 }
 

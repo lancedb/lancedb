@@ -94,7 +94,8 @@ class AsyncJob(Generic[T]):
         job its full record, then cache it for the properties below.
 
         The properties are all `None` until this runs, because submitting an
-        operation returns only a job id. `status` and `wait` refresh too.
+        operation returns only a job id. `status` fetches the whole record too;
+        `wait` records only the terminal state it establishes.
         """
         if self._inner is None:
             return

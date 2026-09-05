@@ -146,10 +146,13 @@ struct JobCache {
 /// default `Job<()>`.
 ///
 /// The detail accessors ([`Job::state`], [`Job::job_type`], ...) read what the
-/// handle last observed and are all `None` until [`Job::refresh`] — or
-/// [`Job::status`] or [`Job::wait`] — has talked to the backend. Submitting an
-/// operation returns only a job id, so populating them eagerly would cost an
-/// extra round trip on every call.
+/// handle last observed. Submitting an operation returns only a job id, so
+/// populating them eagerly would cost an extra round trip on every call:
+///
+/// - [`Job::refresh`] and [`Job::status`] fetch the whole record.
+/// - [`Job::wait`] records the terminal state it establishes, but not the rest
+///   of the record; call [`Job::refresh`] for that.
+/// - Everything is `None` until one of those runs.
 pub struct Job<T = ()>
 where
     T: Clone + Send + Sync + 'static,
@@ -361,7 +364,13 @@ where
     pub async fn events(&self, request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.events(request).await,
-            JobInner::Completed(_) => job_detail_not_supported("job event history"),
+            // The operation finished before the handle existed, so there is no
+            // id to query with even when a server ran it.
+            JobInner::Completed(_) => Err(Error::NotSupported {
+                message: "this operation completed before its handle was created, so it \
+                          carries no job id to query events with"
+                    .to_string(),
+            }),
         }
     }
 
@@ -382,7 +391,10 @@ where
                 }
                 (decode)(settled?)
             }
-            JobInner::Completed(result) => Ok(result.clone()),
+            JobInner::Completed(result) => {
+                self.cache_write().state = Some("finished".to_string());
+                Ok(result.clone())
+            }
         }
     }
 
