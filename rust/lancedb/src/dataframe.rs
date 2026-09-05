@@ -273,6 +273,11 @@ impl QueryHandle for LocalQueryHandle {
 }
 
 /// An immutable, DataFusion-style logical query plan.
+///
+/// Remote execution resolves source tables by name through the SQL query
+/// service. It does not inherit per-table read-consistency intervals or
+/// read-your-write freshness fences from the table handles used to build the
+/// plan.
 #[derive(Clone)]
 pub struct DataFrame {
     inner: DfDataFrame,
@@ -526,7 +531,10 @@ impl DataFrame {
     /// Submit this plan and return its query lifecycle handle.
     ///
     /// Local tables execute in-process. Remote tables convert the logical plan
-    /// to SQL and submit it through the remote query service.
+    /// to SQL and submit it through the remote query service. Remote execution
+    /// uses the latest revisions visible to that service at submission time;
+    /// per-table read-consistency intervals and freshness fences do not carry
+    /// over to the SQL request.
     pub async fn execute(&self) -> Result<crate::sql::Query> {
         let execution = self.execution.as_ref().ok_or_else(|| Error::InvalidInput {
             message: "this DataFrame is not bound to an opened table".to_string(),
@@ -959,6 +967,47 @@ mod tests {
             );
         }
 
+        let filtered_left = left
+            .filter(left.column("value").unwrap().gt(lit(1_i64)))
+            .unwrap();
+        let filtered_right = right
+            .filter(right.column("value").unwrap().lt(lit(100_i64)))
+            .unwrap();
+        for (join_type, expected_join) in [
+            (JoinType::Left, " LEFT OUTER JOIN "),
+            (JoinType::Right, " RIGHT OUTER JOIN "),
+            (JoinType::Full, " FULL JOIN "),
+            (JoinType::LeftSemi, " WHERE EXISTS "),
+            (JoinType::RightSemi, " WHERE EXISTS "),
+            (JoinType::LeftAnti, " WHERE NOT EXISTS "),
+            (JoinType::RightAnti, " WHERE NOT EXISTS "),
+        ] {
+            let sql = filtered_left
+                .join(
+                    &filtered_right,
+                    &["id".to_string()],
+                    &["id".to_string()],
+                    join_type,
+                )
+                .unwrap()
+                .to_sql()
+                .unwrap();
+            let uppercase = sql.to_ascii_uppercase();
+            let join_position = uppercase
+                .find(expected_join)
+                .unwrap_or_else(|| panic!("expected {expected_join} in filtered join SQL: {sql}"));
+            let left_filter_position = sql
+                .find("> 1")
+                .unwrap_or_else(|| panic!("left input filter was lost: {sql}"));
+            assert!(sql.contains("< 100"), "right input filter was lost: {sql}");
+            if matches!(join_type, JoinType::Left | JoinType::Right | JoinType::Full) {
+                assert!(
+                    left_filter_position < join_position,
+                    "left input filter must remain inside its join input: {sql}"
+                );
+            }
+        }
+
         let union_all = left.union(&right, true).unwrap().to_sql().unwrap();
         assert!(
             union_all.contains("UNION ALL"),
@@ -1006,6 +1055,23 @@ mod tests {
             assert!(
                 uppercase.contains(" IS NOT DISTINCT FROM "),
                 "set operations must compare nulls safely: {sql}"
+            );
+        }
+
+        for frame in [
+            filtered_left.intersect(&filtered_right, true).unwrap(),
+            filtered_left.intersect(&filtered_right, false).unwrap(),
+            filtered_left.except(&filtered_right, true).unwrap(),
+            filtered_left.except(&filtered_right, false).unwrap(),
+        ] {
+            let sql = frame.to_sql().unwrap();
+            assert!(
+                sql.contains("> 1"),
+                "left set-operation input filter was lost: {sql}"
+            );
+            assert!(
+                sql.contains("< 100"),
+                "right set-operation input filter was lost: {sql}"
             );
         }
     }

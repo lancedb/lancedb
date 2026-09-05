@@ -1165,7 +1165,9 @@ impl Table {
     ///
     /// The returned DataFrame retains this table's database and namespace, so
     /// [`crate::dataframe::DataFrame::execute`] needs no additional connection
-    /// or transport arguments.
+    /// or transport arguments. On remote connections, execution resolves the
+    /// table by name through the SQL service and does not inherit this handle's
+    /// read-consistency interval or freshness fences.
     pub async fn to_df(&self) -> Result<crate::dataframe::DataFrame> {
         if self.current_branch().is_some() || self.inner.is_time_travel() {
             return Err(Error::NotSupported {

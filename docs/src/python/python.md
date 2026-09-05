@@ -117,7 +117,10 @@ await query.cancel()
 ```
 
 Local tables execute the plans in-process. Remote tables convert plans to SQL
-and submit them through the remote query service.
+and submit them through the remote query service. Remote execution resolves the
+latest revisions visible to that service at submission time; it does not inherit
+per-table read-consistency intervals or read-your-write freshness fences from the
+table handles used to create the plan.
 
 ::: lancedb.dataframe.DataFrame
     options:

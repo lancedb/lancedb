@@ -203,7 +203,12 @@ class _DataFrameBase:
 
 
 class DataFrame(_DataFrameBase):
-    """A lazy DataFusion-style plan submitted to a synchronous connection."""
+    """A lazy DataFusion-style plan submitted to a synchronous connection.
+
+    Remote execution resolves source tables through the SQL service and does not
+    inherit per-table read-consistency intervals or read-your-write freshness
+    fences from the table handles used to create the plan.
+    """
 
     async def _submit(self):
         return await self._inner.execute_async()
@@ -218,7 +223,12 @@ class DataFrame(_DataFrameBase):
 
 
 class AsyncDataFrame(_DataFrameBase):
-    """A lazy DataFusion-style plan submitted to an asynchronous connection."""
+    """A lazy DataFusion-style plan submitted to an asynchronous connection.
+
+    Remote execution resolves source tables through the SQL service and does not
+    inherit per-table read-consistency intervals or read-your-write freshness
+    fences from the table handles used to create the plan.
+    """
 
     async def execute(self) -> "AsyncRecordBatchReader":
         """Submit this plan and return an asynchronous Arrow reader."""
