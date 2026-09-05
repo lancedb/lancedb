@@ -782,8 +782,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         client.submit(query, default_namespace_path).await
     }
 
-    fn supports_sql(&self) -> bool {
-        self.sql_client.is_some()
+    fn execute_dataframe_as_sql(&self) -> bool {
+        true
     }
 
     async fn describe_query(&self, query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {

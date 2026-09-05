@@ -350,9 +350,9 @@ pub trait Database:
             message: "SQL is not supported by this database".to_string(),
         })
     }
-    /// Whether this database can execute SQL through [`Self::execute_query_async`].
+    /// Whether DataFrames should execute through [`Self::execute_query_async`].
     #[doc(hidden)]
-    fn supports_sql(&self) -> bool {
+    fn execute_dataframe_as_sql(&self) -> bool {
         false
     }
     /// Describe a submitted SQL query by its connection-scoped id.

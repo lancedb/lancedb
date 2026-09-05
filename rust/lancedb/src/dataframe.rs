@@ -306,7 +306,7 @@ impl DataFrame {
             namespace.to_vec()
         };
         let source = provider_as_source(Arc::new(BaseTableAdapter::try_new(table.clone()).await?));
-        let execute_as_sql = database.supports_sql();
+        let execute_as_sql = database.execute_dataframe_as_sql();
         let plan = LogicalPlanBuilder::scan(TableReference::bare(name.into()), source, None)
             .and_then(LogicalPlanBuilder::build)
             .map_err(planning_error)?;
@@ -456,12 +456,17 @@ impl DataFrame {
             .zip(right_on)
             .map(|(left, right)| Ok(self.column(left)?.eq(other.column(right)?)))
             .collect::<Result<Vec<_>>>()?;
-        self.wrap_binary(
-            other,
-            self.inner
-                .clone()
-                .join_on(other.inner.clone(), how.into(), predicates),
-        )
+        let joined = self
+            .inner
+            .clone()
+            .join_on(other.inner.clone(), how.into(), predicates)
+            .map_err(planning_error)?;
+        let projection: Vec<_> = joined
+            .schema()
+            .iter()
+            .map(|(qualifier, field)| Expr::Column(Column::new(qualifier.cloned(), field.name())))
+            .collect();
+        self.wrap_binary(other, joined.select(projection))
     }
 
     /// Union two compatible plans, preserving duplicates when `all` is true.
@@ -659,6 +664,7 @@ mod tests {
     struct RecordingSqlDatabase {
         inner: Arc<dyn Database>,
         submitted: Mutex<Option<(String, Vec<String>)>>,
+        sql_available: bool,
     }
 
     impl std::fmt::Display for RecordingSqlDatabase {
@@ -729,12 +735,18 @@ mod tests {
         ) -> Result<Query> {
             *self.submitted.lock().unwrap() =
                 Some((query.to_string(), default_namespace_path.to_vec()));
-            Err(Error::Runtime {
-                message: "query recorded".to_string(),
-            })
+            if self.sql_available {
+                Err(Error::Runtime {
+                    message: "query recorded".to_string(),
+                })
+            } else {
+                Err(Error::NotSupported {
+                    message: "SQL is unavailable".to_string(),
+                })
+            }
         }
 
-        fn supports_sql(&self) -> bool {
+        fn execute_dataframe_as_sql(&self) -> bool {
             true
         }
 
@@ -893,6 +905,10 @@ mod tests {
                 sql.to_ascii_uppercase().contains(expected),
                 "expected {expected} in SQL: {sql}"
             );
+            assert!(
+                !sql.starts_with("SELECT *, *"),
+                "join columns must be projected explicitly: {sql}"
+            );
         }
 
         let union_all = left.union(&right, true).unwrap().to_sql().unwrap();
@@ -970,6 +986,7 @@ mod tests {
         let recording_database = Arc::new(RecordingSqlDatabase {
             inner: database.database().clone(),
             submitted: Mutex::new(None),
+            sql_available: true,
         });
         let table = crate::Table::new(table.base_table().clone(), recording_database.clone());
 
@@ -993,6 +1010,15 @@ mod tests {
                 vec!["public".to_string()],
             ))
         );
+
+        let unavailable_database = Arc::new(RecordingSqlDatabase {
+            inner: database.database().clone(),
+            submitted: Mutex::new(None),
+            sql_available: false,
+        });
+        let table = crate::Table::new(table.base_table().clone(), unavailable_database);
+        let error = table.to_df().await.unwrap().execute().await.unwrap_err();
+        assert!(matches!(error, Error::NotSupported { .. }));
     }
 
     #[test]
