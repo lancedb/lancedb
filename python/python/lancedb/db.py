@@ -1556,7 +1556,7 @@ class LanceDBConnection(DBConnection):
 
         See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
         """
-        return LOOP.run(self._conn.query_job_events(job_id, limit, filter))
+        return LOOP.run(self._conn.query_job_events(job_id, limit=limit, filter=filter))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -2405,7 +2405,7 @@ class AsyncConnection(object):
 
         See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
         """
-        return await self._inner.query_job_events(job_id, limit, filter)
+        return await self._inner.query_job_events(job_id, limit=limit, filter=filter)
 
     async def execute_query(
         self,

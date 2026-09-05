@@ -159,6 +159,7 @@ class Connection(object):
     async def query_job_events(
         self,
         job_id: Optional[str] = None,
+        *,
         limit: Optional[int] = None,
         filter: Optional[str] = None,
     ) -> pa.Table: ...

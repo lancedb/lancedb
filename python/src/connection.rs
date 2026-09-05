@@ -731,7 +731,7 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (job_id=None, limit=None, filter=None))]
+    #[pyo3(signature = (job_id=None, *, limit=None, filter=None))]
     pub fn query_job_events(
         self_: PyRef<'_, Self>,
         job_id: Option<String>,

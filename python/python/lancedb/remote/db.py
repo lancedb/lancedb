@@ -801,7 +801,7 @@ class RemoteDBConnection(DBConnection):
 
         See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
         """
-        return LOOP.run(self._conn.query_job_events(job_id, limit, filter))
+        return LOOP.run(self._conn.query_job_events(job_id, limit=limit, filter=filter))
 
     @override
     def execute_query_async(
