@@ -1003,6 +1003,10 @@ mod tests {
                 uppercase.contains(expected_predicate),
                 "expected {expected_predicate} in SQL: {sql}"
             );
+            assert!(
+                uppercase.contains(" IS NOT DISTINCT FROM "),
+                "set operations must compare nulls safely: {sql}"
+            );
         }
     }
 
