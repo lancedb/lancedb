@@ -30,6 +30,7 @@ pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<Strin
 }
 
 fn validate_output_sort(plan: &LogicalPlan) -> datafusion_common::Result<()> {
+    validate_ordered_limits(plan)?;
     let output = if let LogicalPlan::Limit(limit) = plan {
         limit.input.as_ref()
     } else {
@@ -43,6 +44,34 @@ fn validate_output_sort(plan: &LogicalPlan) -> datafusion_common::Result<()> {
         "remote SQL lowering cannot preserve a sort through nested limits, multiple projections, filters, or aliases; apply sort after those transformations"
             .to_string(),
     ))
+}
+
+fn validate_ordered_limits(plan: &LogicalPlan) -> datafusion_common::Result<()> {
+    if let LogicalPlan::Limit(limit) = plan
+        && has_observable_sort(&limit.input)
+        && !matches!(limit.input.as_ref(), LogicalPlan::Sort(_))
+    {
+        return Err(datafusion_common::DataFusionError::NotImplemented(
+            "remote SQL lowering cannot preserve a sort through nested limits, multiple projections, filters, or aliases; apply sort after those transformations"
+                .to_string(),
+        ));
+    }
+    for input in plan.inputs() {
+        validate_ordered_limits(input)?;
+    }
+    Ok(())
+}
+
+fn contains_unscoped_sort(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Sort(_) => true,
+        LogicalPlan::Limit(limit) => contains_unscoped_sort(&limit.input),
+        LogicalPlan::Projection(projection) => contains_unscoped_sort(&projection.input),
+        LogicalPlan::Filter(filter) => contains_unscoped_sort(&filter.input),
+        LogicalPlan::Distinct(distinct) => contains_unscoped_sort(distinct.input()),
+        LogicalPlan::SubqueryAlias(_) => false,
+        _ => false,
+    }
 }
 
 fn has_observable_sort(plan: &LogicalPlan) -> bool {
@@ -169,10 +198,8 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
                 Ok(Transformed::yes(LogicalPlan::Aggregate(aggregate)))
             }
             LogicalPlan::Sort(mut sort)
-                if matches!(
-                    sort.input.as_ref(),
-                    LogicalPlan::Limit(_) | LogicalPlan::Sort(_)
-                ) =>
+                if matches!(sort.input.as_ref(), LogicalPlan::Limit(_))
+                    || contains_unscoped_sort(&sort.input) =>
             {
                 sort.input = isolate_plan(sort.input, "__lancedb_sort_input")?;
                 Ok(Transformed::yes(LogicalPlan::Sort(sort)))

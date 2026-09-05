@@ -444,10 +444,10 @@ impl DataFrame {
 
     /// Join two plans using corresponding equality keys.
     ///
-    /// Remote SQL execution currently rejects a transformed plan containing a
-    /// join when it is used as another join input. It also rejects operations
-    /// that must isolate a join result whose columns retain multiple relation
-    /// qualifiers; select uniquely aliased output columns first.
+    /// Remote SQL execution currently rejects joins of more than two relations.
+    /// It also rejects operations that must isolate a join result whose columns
+    /// retain multiple relation qualifiers; select uniquely aliased output
+    /// columns first.
     pub fn join(
         &self,
         other: &Self,
@@ -1028,6 +1028,15 @@ mod tests {
                 .unwrap()
                 .select(vec![col("id")])
                 .unwrap(),
+            events()
+                .sort(vec![(col("value"), true, false)])
+                .unwrap()
+                .limit(3, 0)
+                .unwrap()
+                .limit(2, 0)
+                .unwrap()
+                .aggregate(vec![], vec![aggregate_sum(col("id")).alias("total")])
+                .unwrap(),
         ];
         for frame in unsupported_orderings {
             assert!(matches!(
@@ -1054,6 +1063,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(distinct.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+
+        for frame in [
+            events()
+                .sort(vec![(col("value"), true, false)])
+                .unwrap()
+                .filter(col("value").gt(lit(0_i64)))
+                .unwrap()
+                .sort(vec![(col("id"), false, true)])
+                .unwrap()
+                .limit(2, 0)
+                .unwrap(),
+            events()
+                .sort(vec![(col("value"), true, false)])
+                .unwrap()
+                .select(vec![col("id")])
+                .unwrap()
+                .distinct()
+                .unwrap()
+                .sort(vec![(col("id"), false, true)])
+                .unwrap()
+                .limit(2, 0)
+                .unwrap(),
+        ] {
+            let sql = frame.to_sql().unwrap();
+            let sorted = ctx
+                .sql(&sql)
+                .await
+                .unwrap_or_else(|error| panic!("invalid outer sort SQL {sql}: {error}"))
+                .collect()
+                .await
+                .unwrap();
+            let ids = sorted[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            assert_eq!(ids.values(), &[4, 3]);
+        }
 
         let aggregate_sql = events()
             .aggregate(
@@ -1590,6 +1637,55 @@ mod tests {
         .unwrap()
         .alias("third")
         .unwrap();
+        let first_relation = DataFrame::from_table(
+            "first_relation",
+            Arc::new(Schema::new(vec![Field::new(
+                "first_id",
+                DataType::Int64,
+                false,
+            )])),
+        )
+        .unwrap();
+        let second_relation = DataFrame::from_table(
+            "second_relation",
+            Arc::new(Schema::new(vec![Field::new(
+                "second_id",
+                DataType::Int64,
+                false,
+            )])),
+        )
+        .unwrap();
+        let third_relation = DataFrame::from_table(
+            "third_relation",
+            Arc::new(Schema::new(vec![Field::new(
+                "third_id",
+                DataType::Int64,
+                false,
+            )])),
+        )
+        .unwrap();
+        let plain_nested_error = first_relation
+            .join(
+                &second_relation,
+                &["first_id".to_string()],
+                &["second_id".to_string()],
+                JoinType::Inner,
+            )
+            .unwrap()
+            .join(
+                &third_relation,
+                &["first_id".to_string()],
+                &["third_id".to_string()],
+                JoinType::Inner,
+            )
+            .unwrap()
+            .to_sql()
+            .unwrap_err();
+        assert!(
+            plain_nested_error
+                .to_string()
+                .contains("compound left join input")
+        );
         for join_type in [JoinType::Right, JoinType::Full] {
             let error = nested
                 .join(

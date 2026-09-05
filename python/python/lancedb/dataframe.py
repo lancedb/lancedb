@@ -161,10 +161,9 @@ class _DataFrameBase:
     ):
         """Join two plans from the same connection and namespace.
 
-        Remote SQL execution currently rejects a transformed plan containing a
-        join when it is used as another join input. It also rejects operations
-        that must isolate a join result with columns from multiple relations;
-        select uniquely aliased output columns first.
+        Remote SQL execution currently rejects joins of more than two relations.
+        It also rejects operations that must isolate a join result with columns
+        from multiple relations; select uniquely aliased output columns first.
         """
         if not isinstance(other, _DataFrameBase):
             raise TypeError("join requires another DataFrame")

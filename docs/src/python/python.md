@@ -122,12 +122,11 @@ latest revisions visible to that service at submission time; it does not inherit
 per-table read-consistency intervals or read-your-write freshness fences from the
 table handles used to create the plan.
 
-Remote SQL execution currently rejects a transformed plan containing a join when
-it is used as another join input. This avoids changing join semantics while the
-SQL lowering layer does not yet support that compound shape. Operations such as
-`limit` or `distinct` can also require isolating a join result; select uniquely
-aliased output columns before those operations when the join retains columns from
-both input relations.
+Remote SQL execution currently rejects joins of more than two relations. This
+avoids changing join semantics while the SQL lowering layer does not yet support
+that compound shape. Operations such as `limit` or `distinct` can also require
+isolating a join result; select uniquely aliased output columns before those
+operations when the join retains columns from both input relations.
 
 For deterministic remote ordering, apply `sort` after filters and aliases. One
 final projection directly after sorting is supported, including a projection
