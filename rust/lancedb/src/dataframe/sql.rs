@@ -22,29 +22,70 @@ pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<Strin
 fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
     plan.clone()
         .transform_up(|plan| match plan {
+            LogicalPlan::Filter(mut filter)
+                if matches!(filter.input.as_ref(), LogicalPlan::Limit(_)) =>
+            {
+                filter.input = isolate_join_input(filter.input)?;
+                Ok(Transformed::yes(LogicalPlan::Filter(filter)))
+            }
+            LogicalPlan::Sort(mut sort) if matches!(sort.input.as_ref(), LogicalPlan::Limit(_)) => {
+                sort.input = isolate_join_input(sort.input)?;
+                Ok(Transformed::yes(LogicalPlan::Sort(sort)))
+            }
+            LogicalPlan::Distinct(mut distinct)
+                if matches!(distinct.input().as_ref(), LogicalPlan::Limit(_)) =>
+            {
+                match &mut distinct {
+                    datafusion_expr::logical_plan::Distinct::All(input) => {
+                        *input = isolate_join_input(input.clone())?;
+                    }
+                    datafusion_expr::logical_plan::Distinct::On(on) => {
+                        on.input = isolate_join_input(on.input.clone())?;
+                    }
+                }
+                Ok(Transformed::yes(LogicalPlan::Distinct(distinct)))
+            }
+            LogicalPlan::Union(mut union) => {
+                let mut transformed = false;
+                for input in &mut union.inputs {
+                    if set_input_needs_isolation(input) {
+                        *input = isolate_join_input(input.clone())?;
+                        transformed = true;
+                    }
+                }
+                Ok(if transformed {
+                    Transformed::yes(LogicalPlan::Union(union))
+                } else {
+                    Transformed::no(LogicalPlan::Union(union))
+                })
+            }
             LogicalPlan::Join(mut join) => {
                 let mut transformed = false;
                 let left_has_filter = contains_filter(&join.left);
                 let left_has_aggregate = contains_aggregate(&join.left);
-                if contains_join(&join.left) && (left_has_filter || left_has_aggregate) {
+                let left_needs_isolation =
+                    left_has_filter || left_has_aggregate || contains_join_modifier(&join.left);
+                if contains_join(&join.left) && left_needs_isolation {
                     return Err(datafusion_common::DataFusionError::NotImplemented(
-                        "SQL lowering does not yet support a filtered or aggregated compound left join input"
+                        "SQL lowering does not yet support this compound left join input"
                             .to_string(),
                     ));
                 }
-                if left_has_filter || left_has_aggregate {
+                if left_needs_isolation {
                     join.left = isolate_join_input(join.left)?;
                     transformed = true;
                 }
                 let right_has_filter = contains_filter(&join.right);
                 let right_has_aggregate = contains_aggregate(&join.right);
-                if contains_join(&join.right) && (right_has_filter || right_has_aggregate) {
+                let right_needs_isolation =
+                    right_has_filter || right_has_aggregate || contains_join_modifier(&join.right);
+                if contains_join(&join.right) && right_needs_isolation {
                     return Err(datafusion_common::DataFusionError::NotImplemented(
-                        "SQL lowering does not yet support a filtered or aggregated compound right join input"
+                        "SQL lowering does not yet support this compound right join input"
                             .to_string(),
                     ));
                 }
-                if right_has_filter || right_has_aggregate {
+                if right_needs_isolation {
                     join.right = isolate_join_input(join.right)?;
                     transformed = true;
                 }
@@ -85,6 +126,26 @@ fn contains_filter(plan: &LogicalPlan) -> bool {
 
 fn contains_join(plan: &LogicalPlan) -> bool {
     matches!(plan, LogicalPlan::Join(_)) || plan.inputs().into_iter().any(contains_join)
+}
+
+fn contains_join_modifier(plan: &LogicalPlan) -> bool {
+    matches!(
+        plan,
+        LogicalPlan::Limit(_)
+            | LogicalPlan::Sort(_)
+            | LogicalPlan::Distinct(_)
+            | LogicalPlan::Union(_)
+            | LogicalPlan::Window(_)
+    ) || plan.inputs().into_iter().any(contains_join_modifier)
+}
+
+fn set_input_needs_isolation(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Limit(_) | LogicalPlan::Sort(_) => true,
+        LogicalPlan::Filter(filter) => set_input_needs_isolation(&filter.input),
+        LogicalPlan::Distinct(distinct) => set_input_needs_isolation(distinct.input()),
+        _ => false,
+    }
 }
 
 fn isolate_join_input(input: Arc<LogicalPlan>) -> datafusion_common::Result<Arc<LogicalPlan>> {

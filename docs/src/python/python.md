@@ -122,9 +122,10 @@ latest revisions visible to that service at submission time; it does not inherit
 per-table read-consistency intervals or read-your-write freshness fences from the
 table handles used to create the plan.
 
-Remote SQL execution currently rejects a filtered or aggregated plan containing
-a join when it is used as another join input. This avoids changing join
-semantics while the SQL lowering layer does not yet support that compound shape.
+Remote SQL execution currently rejects an order- or cardinality-changing plan
+containing a join when it is used as another join input. This avoids changing
+join semantics while the SQL lowering layer does not yet support that compound
+shape.
 
 ::: lancedb.dataframe.DataFrame
     options:

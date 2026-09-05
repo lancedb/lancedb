@@ -156,9 +156,9 @@ class _DataFrameBase:
     ):
         """Join two plans from the same connection and namespace.
 
-        Remote SQL execution currently rejects a filtered or aggregated plan
-        containing a join when it is used as another join input. Assigning an
-        alias does not remove this limitation.
+        Remote SQL execution currently rejects an order- or cardinality-changing
+        plan containing a join when it is used as another join input. Assigning
+        an alias does not remove this limitation.
         """
         if not isinstance(other, _DataFrameBase):
             raise TypeError("join requires another DataFrame")

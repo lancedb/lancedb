@@ -439,9 +439,9 @@ impl DataFrame {
 
     /// Join two plans using corresponding equality keys.
     ///
-    /// Remote SQL execution currently rejects a filtered or aggregated plan
-    /// containing a join when it is used as another join input. Assigning an
-    /// alias does not remove this limitation.
+    /// Remote SQL execution currently rejects an order- or cardinality-changing
+    /// plan containing a join when it is used as another join input. Assigning
+    /// an alias does not remove this limitation.
     pub fn join(
         &self,
         other: &Self,
@@ -529,7 +529,12 @@ impl DataFrame {
     }
 
     fn to_sql(&self) -> Result<String> {
-        sql::plan_to_sql(self.inner.logical_plan()).map_err(planning_error)
+        sql::plan_to_sql(self.inner.logical_plan()).map_err(|error| match error {
+            datafusion_common::DataFusionError::NotImplemented(message) => {
+                Error::NotSupported { message }
+            }
+            error => planning_error(error),
+        })
     }
 
     /// Submit this plan and return its query lifecycle handle.
@@ -933,6 +938,69 @@ mod tests {
     }
 
     #[test]
+    fn preserves_limit_and_set_operation_scopes_in_sql() {
+        let limited = events().limit(2, 0).unwrap();
+
+        let filtered_sql = limited
+            .filter(col("value").gt(lit(1_i64)))
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            filtered_sql.find("LIMIT 2").unwrap() < filtered_sql.find("WHERE").unwrap(),
+            "limit must remain inside the filtered input: {filtered_sql}"
+        );
+
+        let sorted_sql = limited
+            .sort(vec![(col("value"), true, false)])
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            sorted_sql.find("LIMIT 2").unwrap() < sorted_sql.find("ORDER BY").unwrap(),
+            "limit must remain inside the sorted input: {sorted_sql}"
+        );
+
+        let distinct_sql = limited.distinct().unwrap().to_sql().unwrap();
+        assert!(
+            distinct_sql.contains("FROM (SELECT") && distinct_sql.contains("LIMIT 2"),
+            "limit must remain inside the distinct input: {distinct_sql}"
+        );
+
+        let right = DataFrame::from_table(
+            "other_events",
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("value", DataType::Int64, false),
+            ])),
+        )
+        .unwrap();
+        let union_sql = limited.union(&right, true).unwrap().to_sql().unwrap();
+        assert!(
+            union_sql.find("LIMIT 2").unwrap() < union_sql.find("UNION ALL").unwrap(),
+            "limit must apply only to the left union input: {union_sql}"
+        );
+
+        let intersect_sql = limited.intersect(&right, true).unwrap().to_sql().unwrap();
+        assert!(
+            intersect_sql.find("LIMIT 2").unwrap() < intersect_sql.find("EXISTS").unwrap(),
+            "limit must apply before the intersection: {intersect_sql}"
+        );
+
+        let nested_set_sql = events()
+            .union(&right, true)
+            .unwrap()
+            .intersect(&right, true)
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            nested_set_sql.find("UNION ALL").unwrap() < nested_set_sql.find("EXISTS").unwrap(),
+            "nested union must remain inside the intersection input: {nested_set_sql}"
+        );
+    }
+
+    #[test]
     fn renders_joins_and_set_operations_as_sql() {
         let left = events().alias("left").unwrap();
         let right = DataFrame::from_table(
@@ -1147,10 +1215,9 @@ mod tests {
                 .unwrap()
                 .to_sql()
                 .unwrap_err();
+            assert!(matches!(error, Error::NotSupported { .. }));
             assert!(
-                error
-                    .to_string()
-                    .contains("filtered or aggregated compound left join input"),
+                error.to_string().contains("compound left join input"),
                 "unexpected error: {error}"
             );
         }
