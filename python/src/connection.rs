@@ -16,19 +16,19 @@ use crate::{
 use arrow::{
     datatypes::Schema,
     ffi_stream::ArrowArrayStreamReader,
-    pyarrow::{FromPyArrow, ToPyArrow},
+    pyarrow::{FromPyArrow, IntoPyArrow, Table as PyArrowTable},
 };
 use lancedb::{
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
-    database::{CreateTableMode, Database, ReadConsistency},
+    database::{CreateTableMode, Database, QueryJobEventsRequest, ReadConsistency},
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods},
+    types::{PyAnyMethods, PyDict, PyDictMethods, PyList},
 };
 
 #[pyclass]
@@ -716,10 +716,10 @@ impl Connection {
         })
     }
 
-    pub fn get_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+    pub fn describe_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
-            let description = inner.get_job(&job_id).await.infer_error()?;
+            let description = inner.describe_job(&job_id).await.infer_error()?;
             Ok(description.map(crate::job::JobDescription::from))
         })
     }
@@ -731,20 +731,29 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (job_id=None))]
-    pub fn job_history(
+    #[pyo3(signature = (job_id=None, *, limit=None, filter=None))]
+    pub fn query_job_events(
         self_: PyRef<'_, Self>,
         job_id: Option<String>,
+        limit: Option<u32>,
+        filter: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let request = QueryJobEventsRequest {
+            job_id,
+            limit,
+            filter,
+        };
         future_into_py(self_.py(), async move {
-            let batches = inner.job_history(job_id.as_deref()).await.infer_error()?;
+            let batches = inner.query_job_events(request).await.infer_error()?;
             Python::attach(|py| {
-                let list = PyList::empty(py);
-                for batch in batches {
-                    list.append(batch.to_pyarrow(py)?)?;
-                }
-                Ok(list.unbind())
+                let schema = batches
+                    .first()
+                    .map(|batch| batch.schema())
+                    .unwrap_or_else(|| Arc::new(Schema::empty()));
+                let table = PyArrowTable::try_new(batches, schema)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                table.into_pyarrow(py).map(|table| table.unbind())
             })
         })
     }

@@ -939,6 +939,7 @@ describe("remote connection jobs surface", () => {
     const { tableFromArrays, tableToIPC } = await import("apache-arrow");
     const eventsTable = tableFromArrays({ state: ["created", "succeeded"] });
     const eventsBody = Buffer.from(tableToIPC(eventsTable, "stream"));
+    const queryEventsPayloads: Record<string, unknown>[] = [];
 
     await withMockDatabase(
       (req, res) => {
@@ -967,6 +968,16 @@ describe("remote connection jobs surface", () => {
                 );
             }
           } else if (req.url === "/v1/jobs/describe") {
+            if (payload["job_id"] === "job-2") {
+              res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                  '{"job_id": "job-2", "job_type": "refresh_column", ' +
+                    '"job_state": "DONE", "creation_ms": 2000, ' +
+                    '"result": {"rows_assigned": 1000000}}',
+                );
+              return;
+            }
             if (payload["job_id"] !== "job-1") {
               res.writeHead(404).end("no such job");
               return;
@@ -988,6 +999,7 @@ describe("remote connection jobs surface", () => {
               .writeHead(200, { "Content-Type": "application/json" })
               .end('{"job_id": "job-1"}');
           } else if (req.url === "/v1/jobs/query_events") {
+            queryEventsPayloads.push(payload);
             res
               .writeHead(200, {
                 "Content-Type": "application/vnd.apache.arrow.stream",
@@ -1004,22 +1016,72 @@ describe("remote connection jobs surface", () => {
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
 
-        const description = await db.getJob("job-1");
+        const description = await db.describeJob("job-1");
         expect(description?.state).toEqual("failed");
         expect(JSON.parse(description?.specJson ?? "")).toEqual({
           column: "vec",
         });
+        expect(description?.resultJson ?? null).toBeNull();
         expect(description?.failure?.message).toEqual("worker died");
-        expect(await db.getJob("missing")).toBeNull();
+        expect(await db.describeJob("missing")).toBeNull();
+
+        const finished = await db.describeJob("job-2");
+        expect(finished?.state).toEqual("finished");
+        expect(JSON.parse(finished?.resultJson ?? "")).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          rows_assigned: 1000000,
+        });
 
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
 
-        const history = await db.jobHistory("job-1");
+        const history = await db.queryJobEvents({ jobId: "job-1" });
         expect(history.numRows).toEqual(2);
+        expect(queryEventsPayloads.pop()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          job_id: "job-1",
+        });
+
+        await db.queryJobEvents({
+          jobId: "job-1",
+          limit: 10000,
+          filter: "state = 'claim_complete'",
+        });
+        expect(queryEventsPayloads.pop()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          job_id: "job-1",
+          limit: 10000,
+          filter: "state = 'claim_complete'",
+        });
 
         const job = db.job("job-1");
         expect(job.id).toEqual("job-1");
+
+        // A handle knows nothing until it has talked to the server.
+        expect(job.state ?? null).toBeNull();
+        expect(job.jobType ?? null).toBeNull();
+
+        await job.refresh();
+        expect(job.state).toEqual("failed");
+        expect(job.jobType).toEqual("create_index");
+        expect(job.creationMs).toEqual(1000);
+        expect(job.spec).toEqual({ column: "vec" });
+        expect(job.result).toBeNull();
+        expect(job.failure?.message).toEqual("worker died");
+
+        // The handle reaches its own events, supplying its job id.
+        const jobEvents = await job.events({
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+        expect(jobEvents.numRows).toEqual(2);
+        expect(queryEventsPayloads.pop()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          job_id: "job-1",
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+
         expect(await job.status()).toEqual("failed");
         await expect(job.wait()).rejects.toThrow("worker died");
       },

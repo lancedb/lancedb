@@ -21,7 +21,8 @@ use lance_namespace::models::{
 use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
+    JobDescription, JobInfo, OpenTableRequest, QueryJobEventsRequest, ReadConsistency,
+    TableNamesRequest,
 };
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
@@ -712,7 +713,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(out)
     }
 
-    async fn get_job(&self, job_id: &str) -> Result<Option<JobDescription>> {
+    async fn describe_job(&self, job_id: &str) -> Result<Option<JobDescription>> {
         let req = self
             .client
             .post("/v1/jobs/describe")
@@ -727,14 +728,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             Err(err) => return Err(err),
         };
         let body: DescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
-        Ok(Some(JobDescription {
-            job_id: body.job_id,
-            job_type: body.job_type,
-            state: job_state_to_client(&body.job_state),
-            creation_ms: body.creation_ms,
-            spec: body.spec,
-            failure: body.failure.map(|reported| reported.into_job_failure()),
-        }))
+        Ok(Some(body.into_description()))
     }
 
     async fn cancel_job(&self, job_id: &str) -> Result<bool> {
@@ -753,19 +747,21 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
     }
 
-    async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<arrow_array::RecordBatch>> {
+    async fn query_job_events(
+        &self,
+        request: QueryJobEventsRequest,
+    ) -> Result<Vec<arrow_array::RecordBatch>> {
         let mut body = serde_json::json!({});
-        if let Some(job_id) = job_id {
-            body["job_id"] = serde_json::Value::String(job_id.to_string());
+        if let Some(job_id) = request.job_id {
+            body["job_id"] = serde_json::Value::String(job_id);
         }
-        let req = self.client.post("/v1/jobs/query_events").json(&body);
-        let (request_id, rsp) = self.client.send(req).await?;
-        let rsp = self.client.check_response(&request_id, rsp).await?;
-        let bytes = rsp.bytes().await.err_to_http(request_id)?;
-        let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)?;
-        reader
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        if let Some(limit) = request.limit {
+            body["limit"] = serde_json::Value::from(limit);
+        }
+        if let Some(filter) = request.filter {
+            body["filter"] = serde_json::Value::String(filter);
+        }
+        super::job::fetch_job_events(&self.client, body).await
     }
 
     async fn execute_query_async(
@@ -1306,7 +1302,8 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::{
         Connection, Error,
-        database::CreateTableMode,
+        database::{CreateTableMode, QueryJobEventsRequest},
+        job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
 
@@ -2655,7 +2652,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_job() {
+    async fn test_describe_job() {
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
             assert_eq!(request.url().path(), "/v1/jobs/describe");
@@ -2669,12 +2666,13 @@ mod tests {
                 )
                 .unwrap()
         });
-        let job = conn.get_job("job-1").await.unwrap().unwrap();
+        let job = conn.describe_job("job-1").await.unwrap().unwrap();
         assert_eq!(job.job_id, "job-1");
         assert_eq!(job.job_type, "create_index");
         assert_eq!(job.state, "failed");
         assert_eq!(job.creation_ms, 1000);
         assert_eq!(job.spec["column"], "vec");
+        assert!(job.result.is_none());
         let failure = job.failure.unwrap();
         assert_eq!(failure.phase.as_deref(), Some("execute"));
         assert_eq!(failure.message.as_deref(), Some("worker died"));
@@ -2682,14 +2680,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_job_missing_is_none() {
+    async fn test_describe_job_reports_the_terminal_result() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "DONE", "creation_ms": 1000, "result": {"rows_assigned": 1000000, "rows_failed": 0}}"#,
+                )
+                .unwrap()
+        });
+        let job = conn.describe_job("job-1").await.unwrap().unwrap();
+        assert_eq!(job.state, "finished");
+        let result = job.result.unwrap();
+        assert_eq!(result["rows_assigned"], 1_000_000);
+        assert_eq!(result["rows_failed"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_describe_job_missing_is_none() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder()
                 .status(404)
                 .body("no such job")
                 .unwrap()
         });
-        assert!(conn.get_job("nope").await.unwrap().is_none());
+        assert!(conn.describe_job("nope").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2713,7 +2728,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_job_history_parses_arrow_stream() {
+    async fn test_query_job_events_parses_arrow_stream() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "state",
             DataType::Utf8,
@@ -2742,9 +2757,134 @@ mod tests {
                 .body(body.clone())
                 .unwrap()
         });
-        let batches = conn.job_history(Some("job-1")).await.unwrap();
+        let batches = conn.query_job_events("job-1").await.unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_query_job_events_sends_the_limit_and_filter() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "state",
+            DataType::Utf8,
+            false,
+        )]));
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            writer.finish().unwrap();
+        }
+        let conn = Connection::new_with_handler(move |request| {
+            let req_body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(req_body["job_id"], "job-1");
+            assert_eq!(req_body["limit"], 10_000);
+            assert_eq!(req_body["filter"], "state = 'claim_complete'");
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+        conn.query_job_events(
+            QueryJobEventsRequest::new("job-1")
+                .filter("state = 'claim_complete'")
+                .limit(10_000),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_job_handle_refreshes_its_own_detail() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "DONE", "creation_ms": 1000, "spec": {"column": "vec"}, "result": {"rows_assigned": 1000000}}"#,
+                )
+                .unwrap()
+        });
+        let job = conn.job("job-1").unwrap();
+
+        // Nothing is known until the handle has talked to the server.
+        assert!(job.state().is_none());
+        assert!(job.description().is_none());
+        assert!(job.job_type().is_none());
+
+        job.refresh().await.unwrap();
+        assert_eq!(job.state().as_deref(), Some("finished"));
+        assert_eq!(job.job_type().as_deref(), Some("refresh_column"));
+        assert_eq!(job.creation_ms(), Some(1000));
+        assert_eq!(job.spec().unwrap()["column"], "vec");
+        assert_eq!(job.result().unwrap()["rows_assigned"], 1_000_000);
+        assert!(job.failure().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_job_handle_events_scope_to_that_job() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "state",
+            DataType::Utf8,
+            false,
+        )]));
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            writer.finish().unwrap();
+        }
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/query_events");
+            let req_body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            // The handle supplies job_id; the caller only narrows it.
+            assert_eq!(req_body["job_id"], "job-1");
+            assert_eq!(req_body["limit"], 500);
+            assert_eq!(req_body["filter"], "state = 'claim_complete'");
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+        conn.job("job-1")
+            .unwrap()
+            .events(
+                JobEventsRequest::default()
+                    .limit(500)
+                    .filter("state = 'claim_complete'"),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_job_events_defaults_to_every_job() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "state",
+            DataType::Utf8,
+            false,
+        )]));
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            writer.finish().unwrap();
+        }
+        let conn = Connection::new_with_handler(move |request| {
+            let req_body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(req_body, serde_json::json!({}));
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+        let batches = conn
+            .query_job_events(QueryJobEventsRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 0);
+        assert_eq!(batches[0].schema(), schema);
     }
 
     #[tokio::test]

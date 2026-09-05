@@ -3,15 +3,52 @@
 
 //! Handles to operations a server may run asynchronously.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
 
+use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
+
+/// Which of a job's events [`Job::events`] returns.
+///
+/// This is [`crate::database::QueryJobEventsRequest`] without `job_id`, which
+/// the handle already knows.
+#[derive(Debug, Clone, Default)]
+pub struct JobEventsRequest {
+    /// Maximum event rows to return. The server applies its own default
+    /// (1000 rows) and maximum (10,000 rows) when this is `None`, and
+    /// truncates without saying so, which matters for a job with one event
+    /// per fragment.
+    pub limit: Option<u32>,
+    /// SQL-like filter over the event columns `state`, `updated_by`,
+    /// `emitted_from`, `emitted_by`, and `claim_entity`. For example
+    /// `state = 'claim_complete'` selects only per-claim completions.
+    pub filter: Option<String>,
+}
+
+impl JobEventsRequest {
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    pub fn filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+}
+
+fn job_detail_not_supported<T>(what: &str) -> Result<T> {
+    Err(Error::NotSupported {
+        message: format!("{what} is only available for server-side jobs"),
+    })
+}
 
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]
@@ -23,6 +60,15 @@ pub(crate) trait JobHandle: Send + Sync {
     async fn status(&self) -> Result<String>;
     async fn wait(&self) -> Result<TerminalResult>;
     async fn cancel(&self) -> Result<()>;
+    /// The job's full server-side record. Backends that run the operation in
+    /// this process have none and keep the default.
+    async fn describe(&self) -> Result<JobDescription> {
+        job_detail_not_supported("describing a job")
+    }
+    /// The job's recorded lifecycle events.
+    async fn events(&self, _request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
+        job_detail_not_supported("job event history")
+    }
 }
 
 /// A backend-neutral successful terminal result.
@@ -85,16 +131,34 @@ enum JobInner<T> {
     Completed(T),
 }
 
+/// What a handle last learned about its job. `state` is separate because an
+/// in-process job can report one but has no server-side record behind it.
+#[derive(Default)]
+struct JobCache {
+    state: Option<String>,
+    description: Option<JobDescription>,
+}
+
 /// A handle to an operation that may still be running.
 ///
 /// The operation may already be complete when the handle is created. `T` is
 /// the endpoint's successful terminal result; unit-result operations use the
 /// default `Job<()>`.
+///
+/// The detail accessors ([`Job::state`], [`Job::job_type`], ...) read what the
+/// handle last observed. Submitting an operation returns only a job id, so
+/// populating them eagerly would cost an extra round trip on every call:
+///
+/// - [`Job::refresh`] and [`Job::status`] fetch the whole record.
+/// - [`Job::wait`] records the terminal state it establishes, but not the rest
+///   of the record; call [`Job::refresh`] for that.
+/// - Everything is `None` until one of those runs.
 pub struct Job<T = ()>
 where
     T: Clone + Send + Sync + 'static,
 {
     inner: JobInner<T>,
+    cache: RwLock<JobCache>,
 }
 
 impl<T> std::fmt::Debug for Job<T>
@@ -102,10 +166,27 @@ where
     T: Clone + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Job")
-            .field("id", &self.id())
-            .field("done", &matches!(self.inner, JobInner::Completed(_)))
-            .finish()
+        let cache = self.cache_read();
+        let mut out = f.debug_struct("Job");
+        out.field("id", &self.id())
+            .field("done", &matches!(self.inner, JobInner::Completed(_)));
+        if let Some(state) = &cache.state {
+            out.field("state", state);
+        }
+        if let Some(description) = &cache.description {
+            out.field("job_type", &description.job_type)
+                .field("creation_ms", &description.creation_ms);
+            if !description.spec.is_null() {
+                out.field("spec", &description.spec);
+            }
+            if let Some(result) = &description.result {
+                out.field("result", result);
+            }
+            if let Some(failure) = &description.failure {
+                out.field("failure", failure);
+            }
+        }
+        out.finish()
     }
 }
 
@@ -114,6 +195,7 @@ impl Job<()> {
     pub(crate) fn new_done() -> Self {
         Self {
             inner: JobInner::Completed(()),
+            cache: RwLock::default(),
         }
     }
 
@@ -123,6 +205,7 @@ impl Job<()> {
                 handle,
                 decode: Arc::new(|_| Ok(())),
             },
+            cache: RwLock::default(),
         }
     }
 }
@@ -138,6 +221,7 @@ where
                 handle,
                 decode: Arc::new(TerminalResult::decode::<T>),
             },
+            cache: RwLock::default(),
         }
     }
 }
@@ -169,16 +253,124 @@ where
         }
     }
 
+    fn cache_read(&self) -> RwLockReadGuard<'_, JobCache> {
+        self.cache.read().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn cache_write(&self) -> RwLockWriteGuard<'_, JobCache> {
+        self.cache.write().unwrap_or_else(|err| err.into_inner())
+    }
+
+    /// Asks the backend for this job's current state, and for a server-side
+    /// job its full record, then caches the answer for the detail accessors.
+    ///
+    /// In-process operations have no server-side record, so only
+    /// [`Job::state`] is populated for them.
+    pub async fn refresh(&self) -> Result<()> {
+        self.refresh_state().await.map(|_| ())
+    }
+
+    /// Refreshes and reports the state, which every backend can answer.
+    async fn refresh_state(&self) -> Result<String> {
+        let JobInner::Handle { handle, .. } = &self.inner else {
+            let state = "finished".to_string();
+            self.cache_write().state = Some(state.clone());
+            return Ok(state);
+        };
+        match handle.describe().await {
+            Ok(description) => {
+                let state = description.state.clone();
+                let mut cache = self.cache_write();
+                cache.state = Some(state.clone());
+                cache.description = Some(description);
+                Ok(state)
+            }
+            // An in-process job knows its own state and nothing more.
+            Err(Error::NotSupported { .. }) => {
+                let state = handle.status().await?;
+                self.cache_write().state = Some(state.clone());
+                Ok(state)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     /// The operation's current lifecycle state: "running", "finished",
     /// "failed", or "cancelled".
     ///
     /// A point snapshot; unlike [`Job::wait`] it does not block, raise on a
     /// terminal failure state, or retry. States a newer server reports that
-    /// this client version does not know pass through as-is.
+    /// this client version does not know pass through as-is. Also refreshes
+    /// the detail accessors.
     pub async fn status(&self) -> Result<String> {
+        self.refresh_state().await
+    }
+
+    /// The last lifecycle state this handle observed, without contacting the
+    /// backend. `None` until the handle has.
+    pub fn state(&self) -> Option<String> {
+        self.cache_read().state.clone()
+    }
+
+    /// The whole server-side record this handle last observed. The accessors
+    /// below read individual fields out of it. `None` for an in-process job,
+    /// which has no such record.
+    pub fn description(&self) -> Option<JobDescription> {
+        self.cache_read().description.clone()
+    }
+
+    /// The job's type, as the server names it. `None` for an in-process job.
+    pub fn job_type(&self) -> Option<String> {
+        self.with_description(|description| description.job_type.clone())
+    }
+
+    /// When the job was created, in milliseconds since the epoch. `None` for
+    /// an in-process job.
+    pub fn creation_ms(&self) -> Option<i64> {
+        self.with_description(|description| description.creation_ms)
+    }
+
+    /// The job-type-specific specification it was submitted with.
+    pub fn spec(&self) -> Option<Value> {
+        self.with_description(|description| description.spec.clone())
+            .filter(|spec| !spec.is_null())
+    }
+
+    /// The job-type-specific terminal result, as reported data rather than the
+    /// typed model [`Job::wait`] returns. `None` until the job succeeds.
+    pub fn result(&self) -> Option<Value> {
+        self.with_description(|description| description.result.clone())
+            .flatten()
+    }
+
+    /// Why the job failed, when it failed and the server reports a reason.
+    pub fn failure(&self) -> Option<JobFailure> {
+        self.with_description(|description| description.failure.clone())
+            .flatten()
+    }
+
+    fn with_description<R>(&self, read: impl FnOnce(&JobDescription) -> R) -> Option<R> {
+        self.cache_read().description.as_ref().map(read)
+    }
+
+    /// This job's recorded lifecycle events.
+    ///
+    /// Unlike the detail accessors, which report a terminal result only once
+    /// the job reaches one, events are written as the job runs and outlive the
+    /// workers that produced them. A distributed job records a
+    /// `claim`/`claim_complete` pair per unit of work, each carrying
+    /// `rows_processed`, so a job that never finishes still accounts for what
+    /// it did. In-process operations keep no event history.
+    pub async fn events(&self, request: JobEventsRequest) -> Result<Vec<RecordBatch>> {
         match &self.inner {
-            JobInner::Handle { handle, .. } => handle.status().await,
-            JobInner::Completed(_) => Ok("finished".to_string()),
+            JobInner::Handle { handle, .. } => handle.events(request).await,
+            // The operation finished before the handle existed, so there is no
+            // id to query with even when a server ran it.
+            JobInner::Completed(_) => Err(Error::NotSupported {
+                message: "this operation completed before its handle was created, so it \
+                          carries no job id to query events with"
+                    .to_string(),
+            }),
         }
     }
 
@@ -190,8 +382,19 @@ where
     /// [`crate::Error::JobCancelled`] if it was cancelled.
     pub async fn wait(&self) -> Result<T> {
         match &self.inner {
-            JobInner::Handle { handle, decode } => (decode)(handle.wait().await?),
-            JobInner::Completed(result) => Ok(result.clone()),
+            JobInner::Handle { handle, decode } => {
+                let settled = handle.wait().await;
+                // Waiting already established a terminal state; record it so
+                // the detail accessors do not need another round trip for it.
+                if let Some(state) = terminal_state(&settled) {
+                    self.cache_write().state = Some(state.to_string());
+                }
+                (decode)(settled?)
+            }
+            JobInner::Completed(result) => {
+                self.cache_write().state = Some("finished".to_string());
+                Ok(result.clone())
+            }
         }
     }
 
@@ -224,17 +427,33 @@ where
         U: Clone + Send + Sync + 'static,
         F: Fn(T) -> U + Send + Sync + 'static,
     {
-        match self.inner {
+        // The mapped handle tracks the same job, so it inherits what this one
+        // has already learned about it.
+        let Self { inner, cache } = self;
+        match inner {
             JobInner::Handle { handle, decode } => Job {
                 inner: JobInner::Handle {
                     handle,
                     decode: Arc::new(move |result| Ok(map((decode)(result)?))),
                 },
+                cache,
             },
             JobInner::Completed(result) => Job {
                 inner: JobInner::Completed(map(result)),
+                cache,
             },
         }
+    }
+}
+
+/// The lifecycle state a settled [`JobHandle::wait`] implies.
+fn terminal_state(settled: &Result<TerminalResult>) -> Option<&'static str> {
+    match settled {
+        Ok(_) => Some("finished"),
+        Err(Error::JobFailed { .. }) => Some("failed"),
+        Err(Error::JobCancelled { .. }) => Some("cancelled"),
+        // Anything else is a transport failure, not a verdict on the job.
+        Err(_) => None,
     }
 }
 

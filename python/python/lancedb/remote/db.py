@@ -770,12 +770,14 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.list_jobs())
 
     @override
-    def get_job(self, job_id: str) -> Optional["JobDescription"]:
+    def describe_job(self, job_id: str) -> Optional["JobDescription"]:
         """Describe a single server-side job by id.
 
-        Returns None when the server has no such job.
+        Reports the job's state, its specification, and -- once the job
+        succeeds -- its terminal result. Returns None when the server has no
+        such job.
         """
-        return LOOP.run(self._conn.get_job(job_id))
+        return LOOP.run(self._conn.describe_job(job_id))
 
     @override
     def cancel_job(self, job_id: str) -> bool:
@@ -788,12 +790,18 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.cancel_job(job_id))
 
     @override
-    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    def query_job_events(
+        self,
+        job_id: Optional[str] = None,
+        *,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+    ) -> pa.Table:
+        """The recorded lifecycle events of a server-side job.
 
-        Lists history across all jobs when `job_id` is None.
+        See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
         """
-        return LOOP.run(self._conn.job_history(job_id))
+        return LOOP.run(self._conn.query_job_events(job_id, limit=limit, filter=filter))
 
     @override
     def execute_query_async(
