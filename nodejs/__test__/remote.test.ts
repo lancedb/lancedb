@@ -1056,6 +1056,19 @@ describe("remote connection jobs surface", () => {
 
         const job = db.job("job-1");
         expect(job.id).toEqual("job-1");
+
+        // A handle knows nothing until it has talked to the server.
+        expect(job.state ?? null).toBeNull();
+        expect(job.jobType ?? null).toBeNull();
+
+        await job.refresh();
+        expect(job.state).toEqual("failed");
+        expect(job.jobType).toEqual("create_index");
+        expect(job.creationMs).toEqual(1000);
+        expect(JSON.parse(job.specJson ?? "")).toEqual({ column: "vec" });
+        expect(job.resultJson ?? null).toBeNull();
+        expect(job.failure?.message).toEqual("worker died");
+
         expect(await job.status()).toEqual("failed");
         await expect(job.wait()).rejects.toThrow("worker died");
       },

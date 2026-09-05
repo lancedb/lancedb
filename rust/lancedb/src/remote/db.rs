@@ -728,15 +728,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             Err(err) => return Err(err),
         };
         let body: DescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
-        Ok(Some(JobDescription {
-            job_id: body.job_id,
-            job_type: body.job_type,
-            state: job_state_to_client(&body.job_state),
-            creation_ms: body.creation_ms,
-            spec: body.spec,
-            result: body.result,
-            failure: body.failure.map(|reported| reported.into_job_failure()),
-        }))
+        Ok(Some(body.into_description()))
     }
 
     async fn cancel_job(&self, job_id: &str) -> Result<bool> {
@@ -769,19 +761,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         if let Some(filter) = request.filter {
             body["filter"] = serde_json::Value::String(filter);
         }
-        let req = self.client.post("/v1/jobs/query_events").json(&body);
-        let (request_id, rsp) = self.client.send(req).await?;
-        let rsp = self.client.check_response(&request_id, rsp).await?;
-        let bytes = rsp.bytes().await.err_to_http(request_id)?;
-        let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)?;
-        let schema = reader.schema();
-        let mut batches = reader.collect::<std::result::Result<Vec<_>, _>>()?;
-        // A query that matched nothing still describes the event columns.
-        // Keep that schema so callers can build a typed empty result.
-        if batches.is_empty() {
-            batches.push(arrow_array::RecordBatch::new_empty(schema));
-        }
-        Ok(batches)
+        super::job::fetch_job_events(&self.client, body).await
     }
 
     async fn execute_query_async(
@@ -1323,6 +1303,7 @@ mod tests {
     use crate::{
         Connection, Error,
         database::{CreateTableMode, QueryJobEventsRequest},
+        job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
 
@@ -2811,6 +2792,69 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_job_handle_refreshes_its_own_detail() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "DONE", "creation_ms": 1000, "spec": {"column": "vec"}, "result": {"rows_assigned": 1000000}}"#,
+                )
+                .unwrap()
+        });
+        let job = conn.job("job-1").unwrap();
+
+        // Nothing is known until the handle has talked to the server.
+        assert!(job.state().is_none());
+        assert!(job.description().is_none());
+        assert!(job.job_type().is_none());
+
+        job.refresh().await.unwrap();
+        assert_eq!(job.state().as_deref(), Some("finished"));
+        assert_eq!(job.job_type().as_deref(), Some("refresh_column"));
+        assert_eq!(job.creation_ms(), Some(1000));
+        assert_eq!(job.spec().unwrap()["column"], "vec");
+        assert_eq!(job.result().unwrap()["rows_assigned"], 1_000_000);
+        assert!(job.failure().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_job_handle_events_scope_to_that_job() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "state",
+            DataType::Utf8,
+            false,
+        )]));
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            writer.finish().unwrap();
+        }
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/query_events");
+            let req_body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            // The handle supplies job_id; the caller only narrows it.
+            assert_eq!(req_body["job_id"], "job-1");
+            assert_eq!(req_body["limit"], 500);
+            assert_eq!(req_body["filter"], "state = 'claim_complete'");
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+        conn.job("job-1")
+            .unwrap()
+            .events(
+                JobEventsRequest::default()
+                    .limit(500)
+                    .filter("state = 'claim_complete'"),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

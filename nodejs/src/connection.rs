@@ -501,22 +501,7 @@ impl Connection {
             })
             .await
             .default_error()?;
-        let Some(first) = batches.first() else {
-            return Ok(Buffer::from(Vec::<u8>::new()));
-        };
-        let mut out = Vec::new();
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut out, &first.schema())
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        for batch in &batches {
-            writer
-                .write(batch)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        }
-        writer
-            .finish()
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        drop(writer);
-        Ok(Buffer::from(out))
+        crate::job::batches_to_ipc_buffer(&batches)
     }
 
     #[napi(catch_unwind)]

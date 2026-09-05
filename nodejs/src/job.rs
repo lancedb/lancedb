@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
+use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
@@ -55,6 +57,86 @@ impl Job {
     pub async fn cancel(&self) -> napi::Result<()> {
         self.inner.cancel().await.default_error()
     }
+
+    /// Ask the backend for this job's current state, and for a server-side job
+    /// its full record, then cache it for the getters below.
+    ///
+    /// They are all null until this runs, because submitting an operation
+    /// returns only a job id. {@link Job.status} and {@link Job.wait} refresh
+    /// too.
+    #[napi(catch_unwind)]
+    pub async fn refresh(&self) -> napi::Result<()> {
+        self.inner.refresh().await.default_error()
+    }
+
+    /// The last observed lifecycle state, without contacting the backend.
+    #[napi(getter)]
+    pub fn state(&self) -> Option<String> {
+        self.inner.state()
+    }
+
+    /// The job's type, as the server names it. Null for an in-process job,
+    /// which has no server-side record.
+    #[napi(getter)]
+    pub fn job_type(&self) -> Option<String> {
+        self.inner.job_type()
+    }
+
+    /// When the job was created, in milliseconds since the epoch.
+    #[napi(getter)]
+    pub fn creation_ms(&self) -> Option<i64> {
+        self.inner.creation_ms()
+    }
+
+    /// The job-type-specific specification as a JSON string, when present.
+    #[napi(getter)]
+    pub fn spec_json(&self) -> Option<String> {
+        self.inner.spec().map(|spec| spec.to_string())
+    }
+
+    /// The job-type-specific terminal result as a JSON string. Null until the
+    /// job succeeds, so a job that never terminates reports its progress
+    /// through `Connection.queryJobEvents` instead.
+    #[napi(getter)]
+    pub fn result_json(&self) -> Option<String> {
+        self.inner.result().map(|result| result.to_string())
+    }
+
+    /// Why the job failed, when it failed and the server reports a reason.
+    #[napi(getter)]
+    pub fn failure(&self) -> Option<JobFailureInfo> {
+        self.inner.failure().map(|failure| JobFailureInfo {
+            phase: failure.phase,
+            message: failure.message,
+            retryable: failure.retryable,
+        })
+    }
+
+    // This job's event history is reached through
+    // `Connection.queryJobEvents({ jobId })`, which returns an Arrow table.
+    // `Job` is exported straight from the native module with no TypeScript
+    // wrapper, so a method here could only hand back an IPC buffer, and an
+    // Arrow-table-returning `job.events()` has to wait for that wrapper.
+}
+
+/// Serialise Arrow batches as a single IPC stream for the TypeScript layer.
+pub(crate) fn batches_to_ipc_buffer(batches: &[RecordBatch]) -> napi::Result<Buffer> {
+    let Some(first) = batches.first() else {
+        return Ok(Buffer::from(Vec::<u8>::new()));
+    };
+    let mut out = Vec::new();
+    let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut out, &first.schema())
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    for batch in batches {
+        writer
+            .write(batch)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    }
+    writer
+        .finish()
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    drop(writer);
+    Ok(Buffer::from(out))
 }
 
 /// A row from `Connection.listJobs`: one server-side job.

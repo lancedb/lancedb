@@ -4,10 +4,31 @@
 use std::sync::Arc;
 
 use crate::runtime::future_into_py;
-use pyo3::{Bound, PyAny, PyRef, PyResult, pyclass, pymethods};
+use arrow::{
+    datatypes::Schema,
+    pyarrow::{IntoPyArrow, Table as PyArrowTable},
+};
+use lancedb::job::JobEventsRequest;
+use pyo3::{
+    Bound, PyAny, PyRef, PyResult, Python, exceptions::PyValueError, pyclass, pymethods,
+    types::PyAnyMethods,
+};
 use serde::Serialize;
 
 use crate::error::PythonErrorExt;
+
+/// Parse a stored JSON payload into Python data. The bindings carry these as
+/// strings because that is what crosses the boundary cheaply; the public
+/// Python surface is the parsed form.
+fn parse_json_payload<'py>(
+    py: Python<'py>,
+    raw: Option<&str>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    match raw {
+        None => Ok(None),
+        Some(raw) => Ok(Some(py.import("json")?.call_method1("loads", (raw,))?)),
+    }
+}
 
 #[pyclass]
 pub struct Job {
@@ -65,6 +86,48 @@ impl Job {
         future_into_py(self_.py(), async move {
             inner.cancel().await.infer_error()?;
             Ok(())
+        })
+    }
+
+    pub fn refresh(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner.refresh().await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    /// The last observed lifecycle state, without contacting the backend.
+    #[getter]
+    pub fn _state(&self) -> Option<String> {
+        self.inner.state()
+    }
+
+    /// The last observed server-side record. `None` for an in-process job.
+    #[getter]
+    pub fn _description(&self) -> Option<JobDescription> {
+        self.inner.description().map(JobDescription::from)
+    }
+
+    #[pyo3(signature = (*, limit=None, filter=None))]
+    pub fn events(
+        self_: PyRef<'_, Self>,
+        limit: Option<u32>,
+        filter: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        let request = JobEventsRequest { limit, filter };
+        future_into_py(self_.py(), async move {
+            let batches = inner.events(request).await.infer_error()?;
+            Python::attach(|py| {
+                let schema = batches
+                    .first()
+                    .map(|batch| batch.schema())
+                    .unwrap_or_else(|| Arc::new(Schema::empty()));
+                let table = PyArrowTable::try_new(batches, schema)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                table.into_pyarrow(py).map(|table| table.unbind())
+            })
         })
     }
 }
@@ -129,18 +192,44 @@ pub struct JobDescription {
     job_type: String,
     state: String,
     creation_ms: i64,
-    spec_json: Option<String>,
-    result_json: Option<String>,
+    /// Internal: the wire form behind the `spec` property.
+    _spec_json: Option<String>,
+    /// Internal: the wire form behind the `result` property.
+    _result_json: Option<String>,
     failure: Option<JobFailureInfo>,
 }
 
 #[pymethods]
 impl JobDescription {
+    /// The job-type-specific specification it was submitted with.
+    #[getter]
+    fn spec<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        parse_json_payload(py, self._spec_json.as_deref())
+    }
+
+    /// The job-type-specific terminal result. `None` until the job succeeds.
+    #[getter]
+    fn result<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        parse_json_payload(py, self._result_json.as_deref())
+    }
+
     fn __repr__(&self) -> String {
-        format!(
-            "JobDescription(job_id={:?}, job_type={:?}, state={:?}, creation_ms={})",
-            self.job_id, self.job_type, self.state, self.creation_ms
-        )
+        let mut fields = vec![
+            format!("job_id={:?}", self.job_id),
+            format!("job_type={:?}", self.job_type),
+            format!("state={:?}", self.state),
+            format!("creation_ms={}", self.creation_ms),
+        ];
+        if let Some(spec) = &self._spec_json {
+            fields.push(format!("spec={spec}"));
+        }
+        if let Some(result) = &self._result_json {
+            fields.push(format!("result={result}"));
+        }
+        if let Some(failure) = &self.failure {
+            fields.push(format!("failure={}", failure.__repr__()));
+        }
+        format!("JobDescription({})", fields.join(", "))
     }
 }
 
@@ -151,8 +240,8 @@ impl From<lancedb::database::JobDescription> for JobDescription {
             job_type: description.job_type,
             state: description.state,
             creation_ms: description.creation_ms,
-            spec_json: (!description.spec.is_null()).then(|| description.spec.to_string()),
-            result_json: description
+            _spec_json: (!description.spec.is_null()).then(|| description.spec.to_string()),
+            _result_json: description
                 .result
                 .filter(|result| !result.is_null())
                 .map(|result| result.to_string()),
