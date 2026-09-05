@@ -477,7 +477,10 @@ impl DataFrame {
         }
     }
 
-    /// Intersect two compatible plans, preserving duplicates when `all` is true.
+    /// Intersect two compatible plans using DataFusion set semantics.
+    ///
+    /// When `all` is true, duplicate rows from the left plan are retained when
+    /// a matching row exists in the right plan. When false, results are distinct.
     pub fn intersect(&self, other: &Self, all: bool) -> Result<Self> {
         self.validate_execution_context(other)?;
         if all {
@@ -490,7 +493,10 @@ impl DataFrame {
         }
     }
 
-    /// Subtract a compatible plan, preserving duplicates when `all` is true.
+    /// Subtract a compatible plan using DataFusion set semantics.
+    ///
+    /// When `all` is true, duplicate rows from the left plan are retained when
+    /// no matching row exists in the right plan. When false, results are distinct.
     pub fn except(&self, other: &Self, all: bool) -> Result<Self> {
         self.validate_execution_context(other)?;
         if all {
@@ -803,7 +809,7 @@ mod tests {
         assert_eq!(frame.schema().fields().len(), 2);
         assert_eq!(
             frame.to_sql().unwrap(),
-            "SELECT users.name, users.age FROM users WHERE users.age > 18"
+            "SELECT users.\"name\", users.age FROM users WHERE users.age > 18"
         );
     }
 
@@ -822,7 +828,10 @@ mod tests {
             .limit(10, 2)
             .unwrap();
         let aggregate_sql = aggregate.to_sql().unwrap();
-        assert!(aggregate_sql.contains("SUM"));
+        assert!(
+            aggregate_sql.to_ascii_uppercase().contains("SUM"),
+            "unexpected aggregate SQL: {aggregate_sql}"
+        );
         assert!(aggregate_sql.contains("GROUP BY"));
         assert!(aggregate_sql.contains("ORDER BY"));
         assert!(aggregate_sql.contains("LIMIT 10"));
@@ -865,33 +874,71 @@ mod tests {
         .alias("right")
         .unwrap();
 
-        for join_type in [
-            JoinType::Inner,
-            JoinType::Left,
-            JoinType::Right,
-            JoinType::Full,
-            JoinType::LeftSemi,
-            JoinType::RightSemi,
-            JoinType::LeftAnti,
-            JoinType::RightAnti,
+        for (join_type, expected) in [
+            (JoinType::Inner, " JOIN "),
+            (JoinType::Left, " LEFT OUTER JOIN "),
+            (JoinType::Right, " RIGHT OUTER JOIN "),
+            (JoinType::Full, " FULL JOIN "),
+            (JoinType::LeftSemi, " WHERE EXISTS "),
+            (JoinType::RightSemi, " WHERE EXISTS "),
+            (JoinType::LeftAnti, " WHERE NOT EXISTS "),
+            (JoinType::RightAnti, " WHERE NOT EXISTS "),
         ] {
             let sql = left
                 .join(&right, &["id".to_string()], &["id".to_string()], join_type)
                 .unwrap()
                 .to_sql()
                 .unwrap();
-            assert!(sql.contains("JOIN") || sql.contains("EXISTS"));
+            assert!(
+                sql.to_ascii_uppercase().contains(expected),
+                "expected {expected} in SQL: {sql}"
+            );
         }
 
-        for (frame, operator) in [
-            (left.union(&right, true).unwrap(), "UNION ALL"),
-            (left.union(&right, false).unwrap(), "UNION"),
-            (left.intersect(&right, true).unwrap(), "INTERSECT ALL"),
-            (left.intersect(&right, false).unwrap(), "INTERSECT"),
-            (left.except(&right, true).unwrap(), "EXCEPT ALL"),
-            (left.except(&right, false).unwrap(), "EXCEPT"),
+        let union_all = left.union(&right, true).unwrap().to_sql().unwrap();
+        assert!(
+            union_all.contains("UNION ALL"),
+            "unexpected SQL: {union_all}"
+        );
+
+        let union_distinct = left.union(&right, false).unwrap().to_sql().unwrap();
+        assert!(
+            union_distinct.contains("UNION"),
+            "unexpected SQL: {union_distinct}"
+        );
+        assert!(
+            !union_distinct.contains("UNION ALL"),
+            "unexpected SQL: {union_distinct}"
+        );
+
+        for (frame, expected_prefix, expected_predicate) in [
+            (left.intersect(&right, true).unwrap(), "SELECT ", " EXISTS "),
+            (
+                left.intersect(&right, false).unwrap(),
+                "SELECT DISTINCT ",
+                " EXISTS ",
+            ),
+            (
+                left.except(&right, true).unwrap(),
+                "SELECT ",
+                " NOT EXISTS ",
+            ),
+            (
+                left.except(&right, false).unwrap(),
+                "SELECT DISTINCT ",
+                " NOT EXISTS ",
+            ),
         ] {
-            assert!(frame.to_sql().unwrap().contains(operator));
+            let sql = frame.to_sql().unwrap();
+            let uppercase = sql.to_ascii_uppercase();
+            assert!(
+                uppercase.starts_with(expected_prefix),
+                "expected {expected_prefix} in SQL: {sql}"
+            );
+            assert!(
+                uppercase.contains(expected_predicate),
+                "expected {expected_predicate} in SQL: {sql}"
+            );
         }
     }
 
@@ -942,7 +989,7 @@ mod tests {
         assert_eq!(
             recording_database.submitted.lock().unwrap().as_ref(),
             Some(&(
-                "SELECT users.name, users.age FROM users WHERE users.age > 18".to_string(),
+                "SELECT users.\"name\", users.age FROM users WHERE users.age > 18".to_string(),
                 vec!["public".to_string()],
             ))
         );

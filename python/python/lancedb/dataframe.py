@@ -177,12 +177,20 @@ class _DataFrameBase:
         return self._wrap(self._inner.union(other._inner, not distinct))
 
     def intersect(self, other: "_DataFrameBase", distinct: bool = False):
-        """Intersect two compatible plans."""
+        """Intersect two compatible plans using DataFusion set semantics.
+
+        Unless ``distinct`` is true, duplicate rows from the left plan are retained
+        when a matching row exists in the right plan.
+        """
         self._validate_set_operation(other)
         return self._wrap(self._inner.intersect(other._inner, not distinct))
 
     def except_all(self, other: "_DataFrameBase", distinct: bool = False):
-        """Remove rows present in another compatible plan."""
+        """Remove rows present in another plan using DataFusion set semantics.
+
+        Unless ``distinct`` is true, duplicate rows from the left plan are retained
+        when no matching row exists in the right plan.
+        """
         self._validate_set_operation(other)
         return self._wrap(self._inner.except_(other._inner, not distinct))
 
