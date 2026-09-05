@@ -967,6 +967,52 @@ mod tests {
             "limit must remain inside the distinct input: {distinct_sql}"
         );
 
+        let projected_sql = limited.select(vec![col("id")]).unwrap().to_sql().unwrap();
+        assert!(
+            projected_sql.contains("LIMIT 2") && projected_sql.contains(") AS events"),
+            "a projected limited input must have a usable relation alias: {projected_sql}"
+        );
+
+        let unqualified_sql = events()
+            .select(vec![col("id").alias("renamed")])
+            .unwrap()
+            .limit(2, 0)
+            .unwrap()
+            .filter(col("renamed").gt(lit(0_i64)))
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            unqualified_sql.find("LIMIT 2").unwrap() < unqualified_sql.find("WHERE").unwrap(),
+            "unqualified derived inputs must retain their scope: {unqualified_sql}"
+        );
+
+        let chained_limit_sql = events()
+            .limit(10, 0)
+            .unwrap()
+            .limit(5, 2)
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert_eq!(
+            chained_limit_sql.matches("LIMIT").count(),
+            2,
+            "both chained limits must be retained: {chained_limit_sql}"
+        );
+
+        let chained_sort_sql = events()
+            .sort(vec![(col("id"), true, false)])
+            .unwrap()
+            .sort(vec![(col("value"), false, true)])
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert_eq!(
+            chained_sort_sql.matches("ORDER BY").count(),
+            2,
+            "both chained sorts must retain their scopes: {chained_sort_sql}"
+        );
+
         let right = DataFrame::from_table(
             "other_events",
             Arc::new(Schema::new(vec![
@@ -979,6 +1025,34 @@ mod tests {
         assert!(
             union_sql.find("LIMIT 2").unwrap() < union_sql.find("UNION ALL").unwrap(),
             "limit must apply only to the left union input: {union_sql}"
+        );
+
+        for all in [true, false] {
+            let filtered_union_sql = events()
+                .union(&right, all)
+                .unwrap()
+                .filter(col("id").gt(lit(1_i64)))
+                .unwrap()
+                .to_sql()
+                .unwrap();
+            assert!(
+                filtered_union_sql.find("UNION").unwrap()
+                    < filtered_union_sql.find("WHERE").unwrap(),
+                "filter must apply outside the union: {filtered_union_sql}"
+            );
+        }
+
+        let mixed_union_sql = events()
+            .union(&right, false)
+            .unwrap()
+            .union(&right, true)
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert_eq!(
+            mixed_union_sql.matches("UNION ALL").count(),
+            1,
+            "outer union-all must not inherit inner distinctness: {mixed_union_sql}"
         );
 
         let intersect_sql = limited.intersect(&right, true).unwrap().to_sql().unwrap();

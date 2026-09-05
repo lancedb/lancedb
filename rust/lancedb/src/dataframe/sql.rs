@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use datafusion_common::{
-    Column, NullEquality,
+    Column, NullEquality, TableReference,
     tree_node::{Transformed, TransformedResult, TreeNode},
 };
 use datafusion_expr::{Expr, LogicalPlan, LogicalPlanBuilder, Operator, expr_fn::binary_expr};
@@ -22,34 +22,50 @@ pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<Strin
 fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
     plan.clone()
         .transform_up(|plan| match plan {
-            LogicalPlan::Filter(mut filter)
-                if matches!(filter.input.as_ref(), LogicalPlan::Limit(_)) =>
+            LogicalPlan::Projection(mut projection)
+                if matches!(projection.input.as_ref(), LogicalPlan::Limit(_)) =>
             {
-                filter.input = isolate_join_input(filter.input)?;
+                projection.input = isolate_plan(projection.input, "__lancedb_projection_input")?;
+                Ok(Transformed::yes(LogicalPlan::Projection(projection)))
+            }
+            LogicalPlan::Filter(mut filter) if filter_input_needs_isolation(&filter.input) => {
+                filter.input = isolate_plan(filter.input, "__lancedb_filter_input")?;
                 Ok(Transformed::yes(LogicalPlan::Filter(filter)))
             }
-            LogicalPlan::Sort(mut sort) if matches!(sort.input.as_ref(), LogicalPlan::Limit(_)) => {
-                sort.input = isolate_join_input(sort.input)?;
+            LogicalPlan::Sort(mut sort)
+                if matches!(
+                    sort.input.as_ref(),
+                    LogicalPlan::Limit(_) | LogicalPlan::Sort(_)
+                ) =>
+            {
+                sort.input = isolate_plan(sort.input, "__lancedb_sort_input")?;
                 Ok(Transformed::yes(LogicalPlan::Sort(sort)))
+            }
+            LogicalPlan::Limit(mut limit)
+                if matches!(limit.input.as_ref(), LogicalPlan::Limit(_)) =>
+            {
+                limit.input = isolate_plan(limit.input, "__lancedb_limit_input")?;
+                Ok(Transformed::yes(LogicalPlan::Limit(limit)))
             }
             LogicalPlan::Distinct(mut distinct)
                 if matches!(distinct.input().as_ref(), LogicalPlan::Limit(_)) =>
             {
                 match &mut distinct {
                     datafusion_expr::logical_plan::Distinct::All(input) => {
-                        *input = isolate_join_input(input.clone())?;
+                        *input = isolate_plan(input.clone(), "__lancedb_distinct_input")?;
                     }
                     datafusion_expr::logical_plan::Distinct::On(on) => {
-                        on.input = isolate_join_input(on.input.clone())?;
+                        on.input = isolate_plan(on.input.clone(), "__lancedb_distinct_input")?;
                     }
                 }
                 Ok(Transformed::yes(LogicalPlan::Distinct(distinct)))
             }
             LogicalPlan::Union(mut union) => {
                 let mut transformed = false;
-                for input in &mut union.inputs {
+                for (index, input) in union.inputs.iter_mut().enumerate() {
                     if set_input_needs_isolation(input) {
-                        *input = isolate_join_input(input.clone())?;
+                        *input =
+                            isolate_plan(input.clone(), &format!("__lancedb_set_input_{index}"))?;
                         transformed = true;
                     }
                 }
@@ -72,7 +88,7 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
                     ));
                 }
                 if left_needs_isolation {
-                    join.left = isolate_join_input(join.left)?;
+                    join.left = isolate_plan(join.left, "__lancedb_left_input")?;
                     transformed = true;
                 }
                 let right_has_filter = contains_filter(&join.right);
@@ -86,7 +102,7 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
                     ));
                 }
                 if right_needs_isolation {
-                    join.right = isolate_join_input(join.right)?;
+                    join.right = isolate_plan(join.right, "__lancedb_right_input")?;
                     transformed = true;
                 }
 
@@ -139,25 +155,35 @@ fn contains_join_modifier(plan: &LogicalPlan) -> bool {
     ) || plan.inputs().into_iter().any(contains_join_modifier)
 }
 
-fn set_input_needs_isolation(plan: &LogicalPlan) -> bool {
+fn filter_input_needs_isolation(plan: &LogicalPlan) -> bool {
     match plan {
-        LogicalPlan::Limit(_) | LogicalPlan::Sort(_) => true,
-        LogicalPlan::Filter(filter) => set_input_needs_isolation(&filter.input),
-        LogicalPlan::Distinct(distinct) => set_input_needs_isolation(distinct.input()),
+        LogicalPlan::Limit(_) | LogicalPlan::Union(_) => true,
+        LogicalPlan::Distinct(distinct) => filter_input_needs_isolation(distinct.input()),
         _ => false,
     }
 }
 
-fn isolate_join_input(input: Arc<LogicalPlan>) -> datafusion_common::Result<Arc<LogicalPlan>> {
-    let Some(qualifier) = input
+fn set_input_needs_isolation(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Limit(_) | LogicalPlan::Sort(_) => true,
+        LogicalPlan::Filter(filter) => set_input_needs_isolation(&filter.input),
+        LogicalPlan::Distinct(distinct) => {
+            matches!(distinct.input().as_ref(), LogicalPlan::Union(_))
+                || set_input_needs_isolation(distinct.input())
+        }
+        _ => false,
+    }
+}
+
+fn isolate_plan(
+    input: Arc<LogicalPlan>,
+    fallback_alias: &str,
+) -> datafusion_common::Result<Arc<LogicalPlan>> {
+    let qualifier = input
         .schema()
         .iter()
         .find_map(|(qualifier, _)| qualifier.cloned())
-    else {
-        return Err(datafusion_common::DataFusionError::NotImplemented(
-            "SQL lowering cannot isolate an unqualified join input".to_string(),
-        ));
-    };
+        .unwrap_or_else(|| TableReference::bare(fallback_alias));
     if input
         .schema()
         .iter()
