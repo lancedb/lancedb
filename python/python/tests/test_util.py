@@ -79,6 +79,22 @@ def test_normalize_uri():
         assert parsed_scheme == expected_scheme
 
 
+def test_get_uri_scheme_and_location_pathlib():
+    # Test pathlib.Path instances
+    abs_path = pathlib.Path("/tmp/data")
+    rel_path = pathlib.Path("relative/data")
+
+    assert get_uri_scheme(abs_path) == "file"
+    assert get_uri_scheme(rel_path) == "file"
+
+    assert get_uri_location(abs_path) == str(abs_path)
+    assert get_uri_location(rel_path) == str(rel_path)
+
+    # String URIs still behave identically
+    assert get_uri_scheme("s3://bucket/data") == "s3"
+    assert get_uri_location("s3://bucket/data") == "//bucket/data"
+
+
 def test_join_uri_remote():
     schemes = ["s3", "az", "gs"]
     for scheme in schemes:
