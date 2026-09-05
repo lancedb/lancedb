@@ -134,6 +134,52 @@ export class Job {
     }
     return tableFromIPC(buf);
   }
+
+  /**
+   * Every field the handle currently knows, one per line, with the JSON
+   * payloads indented -- a refresh job's spec and result are the point of
+   * printing it.
+   */
+  toString(): string {
+    if (this.state === null) {
+      const known = this.id === null ? "" : `id=${JSON.stringify(this.id)}, `;
+      return `Job(${known}not refreshed)`;
+    }
+    const fields: string[] = [];
+    if (this.id !== null) {
+      fields.push(`id=${JSON.stringify(this.id)}`);
+    }
+    fields.push(`state=${JSON.stringify(this.state)}`);
+    if (this.jobType !== null) {
+      fields.push(`jobType=${JSON.stringify(this.jobType)}`);
+    }
+    if (this.creationMs !== null) {
+      fields.push(`creationMs=${this.creationMs}`);
+    }
+    for (const [name, value] of [
+      ["spec", this.spec],
+      ["result", this.result],
+    ] as const) {
+      if (value !== null) {
+        fields.push(`${name}=${indentJson(value)}`);
+      }
+    }
+    if (this.failure !== null) {
+      fields.push(`failure=${indentJson(this.failure)}`);
+    }
+    return `Job(${fields.map((field) => `\n${REPR_INDENT}${field},`).join("")}\n)`;
+  }
+
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+}
+
+const REPR_INDENT = "    ";
+
+// biome-ignore lint/suspicious/noExplicitAny: shape varies by job type
+function indentJson(value: any): string {
+  return JSON.stringify(value, null, 4).replace(/\n/g, `\n${REPR_INDENT}`);
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: shape varies by job type

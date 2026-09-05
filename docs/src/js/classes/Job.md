@@ -201,6 +201,22 @@ terminal failure state. Also refreshes the getters above.
 
 ***
 
+### toString()
+
+```ts
+toString(): string
+```
+
+Every field the handle currently knows, one per line, with the JSON
+payloads indented -- a refresh job's spec and result are the point of
+printing it.
+
+#### Returns
+
+`string`
+
+***
+
 ### wait()
 
 ```ts

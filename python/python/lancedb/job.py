@@ -4,6 +4,7 @@
 """Handles to operations a server may run asynchronously."""
 
 import asyncio
+import json
 from datetime import timedelta
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
 
@@ -191,21 +192,46 @@ class AsyncJob(Generic[T]):
         return _job_repr("AsyncJob", self)
 
 
+_REPR_INDENT = " " * 4
+
+
+def _repr_payload(value: Any) -> str:
+    """Render a job payload as indented JSON, aligned under its field."""
+    try:
+        rendered = json.dumps(value, indent=4)
+    except TypeError:
+        return repr(value)
+    return rendered.replace("\n", "\n" + _REPR_INDENT)
+
+
 def _job_repr(kind: str, job: Any) -> str:
-    """Render every field the handle currently knows, omitting the rest."""
+    """Render every field the handle currently knows, omitting the rest.
+
+    One field per line, with the JSON payloads indented, because a refresh
+    job's spec and result are the point of printing it.
+    """
+    state = job.state
+    if state is None:
+        # Nothing has been fetched yet, so there is nothing to lay out.
+        known = f"id={job.id!r}, " if job.id is not None else ""
+        return f"{kind}({known}not refreshed)"
+
     fields = []
     if job.id is not None:
         fields.append(f"id={job.id!r}")
-    state = job.state
-    if state is None:
-        fields.append("not refreshed")
-    else:
-        fields.append(f"state={state!r}")
-        for name in ("job_type", "creation_ms", "spec", "result", "failure"):
-            value = getattr(job, name)
-            if value is not None:
-                fields.append(f"{name}={value!r}")
-    return f"{kind}({', '.join(fields)})"
+    fields.append(f"state={state!r}")
+    for name in ("job_type", "creation_ms"):
+        value = getattr(job, name)
+        if value is not None:
+            fields.append(f"{name}={value!r}")
+    for name in ("spec", "result"):
+        value = getattr(job, name)
+        if value is not None:
+            fields.append(f"{name}={_repr_payload(value)}")
+    if job.failure is not None:
+        fields.append(f"failure={job.failure!r}")
+    body = "".join(f"\n{_REPR_INDENT}{field}," for field in fields)
+    return f"{kind}({body}\n)"
 
 
 class Job(Generic[T]):

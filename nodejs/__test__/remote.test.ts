@@ -1057,6 +1057,27 @@ describe("remote connection jobs surface", () => {
           filter: "state = 'claim_complete'",
         });
 
+        // Printing lays every known field out on its own line, with the JSON
+        // payloads indented rather than crammed onto one line.
+        expect(`${job}`).toEqual(
+          [
+            "Job(",
+            '    id="job-1",',
+            '    state="failed",',
+            '    jobType="create_index",',
+            "    creationMs=1000,",
+            "    spec={",
+            '        "column": "vec"',
+            "    },",
+            "    failure={",
+            '        "phase": "execute",',
+            '        "message": "worker died",',
+            '        "retryable": true',
+            "    },",
+            ")",
+          ].join("\n"),
+        );
+
         expect(await job.status()).toEqual("failed");
         await expect(job.wait()).rejects.toThrow("worker died");
       },

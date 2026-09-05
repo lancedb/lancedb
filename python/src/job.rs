@@ -10,12 +10,16 @@ use arrow::{
 };
 use lancedb::job::JobEventsRequest;
 use pyo3::{
-    Bound, PyAny, PyRef, PyResult, Python, exceptions::PyValueError, pyclass, pymethods,
-    types::PyAnyMethods,
+    Bound, PyAny, PyRef, PyResult, Python,
+    exceptions::PyValueError,
+    pyclass, pymethods,
+    types::{PyAnyMethods, PyDict, PyDictMethods},
 };
 use serde::Serialize;
 
 use crate::error::PythonErrorExt;
+
+const REPR_INDENT: &str = "    ";
 
 /// Parse a stored JSON payload into Python data. The bindings carry these as
 /// strings because that is what crosses the boundary cheaply; the public
@@ -28,6 +32,20 @@ fn parse_json_payload<'py>(
         None => Ok(None),
         Some(raw) => Ok(Some(py.import("json")?.call_method1("loads", (raw,))?)),
     }
+}
+
+/// A payload rendered as indented JSON, aligned under the field that holds it.
+fn pretty_json_payload(py: Python<'_>, raw: Option<&str>) -> PyResult<Option<String>> {
+    let Some(parsed) = parse_json_payload(py, raw)? else {
+        return Ok(None);
+    };
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("indent", 4)?;
+    let rendered: String = py
+        .import("json")?
+        .call_method("dumps", (parsed,), Some(&kwargs))?
+        .extract()?;
+    Ok(Some(rendered.replace('\n', &format!("\n{REPR_INDENT}"))))
 }
 
 #[pyclass]
@@ -220,17 +238,21 @@ impl JobDescription {
             format!("state={:?}", self.state),
             format!("creation_ms={}", self.creation_ms),
         ];
-        // Render the payloads the way the parsed properties return them, so
-        // this repr and the one on `Job` agree.
+        // Lay the payloads out as indented JSON, the same way the `Job` repr
+        // does, so the two agree on how the same data looks.
         for (name, payload) in [("spec", &self._spec_json), ("result", &self._result_json)] {
-            if let Some(parsed) = parse_json_payload(py, payload.as_deref())? {
-                fields.push(format!("{name}={}", parsed.repr()?));
+            if let Some(rendered) = pretty_json_payload(py, payload.as_deref())? {
+                fields.push(format!("{name}={rendered}"));
             }
         }
         if let Some(failure) = &self.failure {
             fields.push(format!("failure={}", failure.__repr__()));
         }
-        Ok(format!("JobDescription({})", fields.join(", ")))
+        let body = fields
+            .iter()
+            .map(|field| format!("\n{REPR_INDENT}{field},"))
+            .collect::<String>();
+        Ok(format!("JobDescription({body}\n)"))
     }
 }
 

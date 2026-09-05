@@ -2651,13 +2651,26 @@ def test_remote_job_handle_reports_its_own_detail():
         assert json.loads(job._result_json) == {"rows_assigned": 1000000}
 
         # print() shows everything the handle knows and nothing it does not.
-        shown = repr(job)
-        assert shown.startswith("Job(id='job-1', state='finished'")
-        assert "job_type='refresh_column'" in shown
-        assert "creation_ms=2000" in shown
-        assert "spec={'column': 'vec'}" in shown
-        assert "result={'rows_assigned': 1000000}" in shown
-        assert "failure" not in shown
+        # print() lays every known field out on its own line, with the JSON
+        # payloads indented rather than crammed onto one line.
+        assert repr(job) == "\n".join(
+            [
+                "Job(",
+                "    id='job-1',",
+                "    state='finished',",
+                "    job_type='refresh_column',",
+                "    creation_ms=2000,",
+                "    spec={",
+                '        "column": "vec"',
+                "    },",
+                "    result={",
+                '        "rows_assigned": 1000000',
+                "    },",
+                ")",
+            ]
+        )
+        # Nothing it does not know shows up.
+        assert "failure" not in repr(job)
 
         events = job.events(filter="state = 'claim_complete'", limit=500)
         assert isinstance(events, pa.Table)
