@@ -182,7 +182,11 @@ class RemoteTable(Table):
         return LOOP.run(self._table.schema())
 
     def to_df(self) -> DataFrame:
-        """Create a lazy DataFrame that scans this table."""
+        """Create a lazy DataFrame that scans this table.
+
+        Execution uses the SQL service and does not inherit this handle's
+        read-consistency interval or read-your-write freshness fence.
+        """
         return DataFrame(LOOP.run(self._table.to_df())._inner)
 
     @property
