@@ -27,7 +27,13 @@ import pandas as pd
 import polars as pl
 import pytest
 import lancedb
-from lancedb.util import flatten_columns, get_uri_scheme, join_uri, value_to_sql
+from lancedb.util import (
+    flatten_columns,
+    get_uri_location,
+    get_uri_scheme,
+    join_uri,
+    value_to_sql,
+)
 from utils import exception_output
 
 
@@ -92,7 +98,7 @@ def test_get_uri_scheme_and_location_pathlib():
 
     # String URIs still behave identically
     assert get_uri_scheme("s3://bucket/data") == "s3"
-    assert get_uri_location("s3://bucket/data") == "//bucket/data"
+    assert get_uri_location("s3://bucket/data") == "bucket/data"
 
 
 def test_join_uri_remote():
