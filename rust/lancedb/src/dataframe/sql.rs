@@ -20,11 +20,39 @@ use datafusion_sql::unparser::Unparser;
 pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<String> {
     let plan = collapse_join_output_projections(plan)?;
     let plan = lift_output_sort_above_projection(plan)?;
+    let plan = collapse_join_output_projections(&plan)?;
+    validate_output_sort(&plan)?;
     let plan = ensure_output_projection(plan)?;
     let plan = preserve_join_semantics(&plan)?;
     Unparser::default()
         .plan_to_sql(&plan)
         .map(|statement| statement.to_string())
+}
+
+fn validate_output_sort(plan: &LogicalPlan) -> datafusion_common::Result<()> {
+    let mut output = plan;
+    while let LogicalPlan::Limit(limit) = output {
+        output = &limit.input;
+    }
+    if matches!(output, LogicalPlan::Sort(_)) || !has_observable_sort(output) {
+        return Ok(());
+    }
+
+    Err(datafusion_common::DataFusionError::NotImplemented(
+        "remote SQL lowering cannot preserve a sort through multiple projections, filters, or aliases; apply sort after those transformations"
+            .to_string(),
+    ))
+}
+
+fn has_observable_sort(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Sort(_) => true,
+        LogicalPlan::Limit(limit) => has_observable_sort(&limit.input),
+        LogicalPlan::Projection(projection) => has_observable_sort(&projection.input),
+        LogicalPlan::Filter(filter) => has_observable_sort(&filter.input),
+        LogicalPlan::SubqueryAlias(alias) => has_observable_sort(&alias.input),
+        _ => false,
+    }
 }
 
 fn lift_output_sort_above_projection(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
@@ -332,7 +360,7 @@ fn isolate_plan(
         .any(|(candidate, _)| candidate.is_some_and(|candidate| candidate != &qualifier))
     {
         return Err(datafusion_common::DataFusionError::NotImplemented(
-            "SQL lowering cannot isolate a join input with multiple relation qualifiers"
+            "remote SQL lowering cannot isolate a relation with columns from multiple qualifiers; select uniquely aliased output columns before limit, distinct, or another scope-building operation"
                 .to_string(),
         ));
     }

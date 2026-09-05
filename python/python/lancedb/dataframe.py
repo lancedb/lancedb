@@ -85,7 +85,12 @@ class _DataFrameBase:
         return self._wrap(self._inner.aggregate(groups, aggregate_exprs))
 
     def sort(self, *expressions: Union[Expression, SortExpr]):
-        """Sort rows using DataFusion-style sort expressions."""
+        """Sort rows using DataFusion-style sort expressions.
+
+        For remote execution, apply sorting after filters and aliases. One final
+        projection after sorting is supported, but ordering through multiple
+        projections cannot yet be preserved.
+        """
         if not expressions:
             raise ValueError("sort requires at least one expression")
         sorts = []
@@ -157,8 +162,9 @@ class _DataFrameBase:
         """Join two plans from the same connection and namespace.
 
         Remote SQL execution currently rejects a transformed plan containing a
-        join when it is used as another join input. Assigning an alias does not
-        remove this limitation.
+        join when it is used as another join input. It also rejects operations
+        that must isolate a join result with columns from multiple relations;
+        select uniquely aliased output columns first.
         """
         if not isinstance(other, _DataFrameBase):
             raise TypeError("join requires another DataFrame")

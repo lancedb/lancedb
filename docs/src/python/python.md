@@ -124,7 +124,16 @@ table handles used to create the plan.
 
 Remote SQL execution currently rejects a transformed plan containing a join when
 it is used as another join input. This avoids changing join semantics while the
-SQL lowering layer does not yet support that compound shape.
+SQL lowering layer does not yet support that compound shape. Operations such as
+`limit` or `distinct` can also require isolating a join result; select uniquely
+aliased output columns before those operations when the join retains columns from
+both input relations.
+
+For deterministic remote ordering, apply `sort` after filters and aliases. One
+final projection after sorting is supported, including a projection that omits
+the sort key. Plans that would need to carry ordering through multiple
+projections, a filter, or an alias are rejected instead of emitting SQL whose
+outer query could lose the ordering.
 
 ::: lancedb.dataframe.DataFrame
     options:

@@ -358,6 +358,10 @@ impl DataFrame {
     }
 
     /// Sort by expressions expressed as `(expression, ascending, nulls_first)`.
+    ///
+    /// For remote SQL execution, apply sorting after filters and aliases. A
+    /// single final projection after sorting is supported, but ordering through
+    /// multiple projections cannot yet be preserved.
     pub fn sort(&self, expressions: Vec<(Expr, bool, bool)>) -> Result<Self> {
         let expressions: Vec<SortExpr> = expressions
             .into_iter()
@@ -440,8 +444,9 @@ impl DataFrame {
     /// Join two plans using corresponding equality keys.
     ///
     /// Remote SQL execution currently rejects a transformed plan containing a
-    /// join when it is used as another join input. Assigning an alias does not
-    /// remove this limitation.
+    /// join when it is used as another join input. It also rejects operations
+    /// that must isolate a join result whose columns retain multiple relation
+    /// qualifiers; select uniquely aliased output columns first.
     pub fn join(
         &self,
         other: &Self,
@@ -980,55 +985,42 @@ mod tests {
             .unwrap();
         assert_eq!(ids.values(), &[2, 3]);
 
-        let filtered_projection_sql = events()
-            .sort(vec![(col("id"), true, false)])
-            .unwrap()
-            .with_column("value", col("value") * lit(2_i64))
-            .unwrap()
-            .filter(col("value").gt(lit(50_i64)))
-            .unwrap()
-            .to_sql()
-            .unwrap();
-        let filtered = ctx
-            .sql(&filtered_projection_sql)
-            .await
-            .unwrap_or_else(|error| {
-                panic!("invalid filtered projection SQL {filtered_projection_sql}: {error}")
-            })
-            .collect()
-            .await
-            .unwrap();
-        let ids = filtered[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap();
-        assert_eq!(ids.values(), &[1, 4]);
-
-        let aliased_filter_sql = events()
-            .sort(vec![(col("value"), true, false)])
-            .unwrap()
-            .select(vec![col("id").alias("renamed")])
-            .unwrap()
-            .filter(col("renamed").gt(lit(2_i64)))
-            .unwrap()
-            .to_sql()
-            .unwrap();
-        let aliased = ctx
-            .sql(&aliased_filter_sql)
-            .await
-            .unwrap_or_else(|error| {
-                panic!("invalid aliased filter SQL {aliased_filter_sql}: {error}")
-            })
-            .collect()
-            .await
-            .unwrap();
-        let renamed = aliased[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap();
-        assert_eq!(renamed.values(), &[3, 4]);
+        let unsupported_orderings = [
+            events()
+                .sort(vec![(col("id"), true, false)])
+                .unwrap()
+                .with_column("value", col("value") * lit(2_i64))
+                .unwrap()
+                .filter(col("value").gt(lit(50_i64)))
+                .unwrap()
+                .limit(2, 0)
+                .unwrap(),
+            events()
+                .sort(vec![(col("value"), true, false)])
+                .unwrap()
+                .select(vec![col("id"), col("value")])
+                .unwrap()
+                .select(vec![col("id")])
+                .unwrap()
+                .limit(2, 0)
+                .unwrap(),
+            events()
+                .sort(vec![(col("value"), true, false)])
+                .unwrap()
+                .select(vec![col("id")])
+                .unwrap()
+                .alias("ordered")
+                .unwrap()
+                .limit(2, 0)
+                .unwrap(),
+        ];
+        for frame in unsupported_orderings {
+            assert!(matches!(
+                frame.to_sql(),
+                Err(Error::NotSupported { message })
+                    if message.contains("apply sort after those transformations")
+            ));
+        }
 
         let distinct_sql = events()
             .sort(vec![(col("value"), true, false)])
@@ -1489,6 +1481,35 @@ mod tests {
         assert!(
             filtered_join_sql.contains(" JOIN ") && filtered_join_sql.contains(" WHERE "),
             "filter after join must remain lowerable: {filtered_join_sql}"
+        );
+        let projected_sort_sql = joined
+            .sort(vec![(left.column("value").unwrap(), true, false)])
+            .unwrap()
+            .select(vec![
+                left.column("id").unwrap(),
+                right.column("value").unwrap(),
+            ])
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            projected_sort_sql.contains(" JOIN ")
+                && projected_sort_sql.contains("ORDER BY")
+                && !projected_sort_sql.contains("FROM (SELECT"),
+            "a projected sorted join must remain lowerable: {projected_sort_sql}"
+        );
+        let scoped_join_error = joined
+            .limit(2, 0)
+            .unwrap()
+            .select(vec![left.column("id").unwrap()])
+            .unwrap()
+            .to_sql()
+            .unwrap_err();
+        assert!(
+            scoped_join_error
+                .to_string()
+                .contains("select uniquely aliased output columns"),
+            "unexpected scoped join error: {scoped_join_error}"
         );
         let joined_aggregate_sql = joined
             .aggregate(
