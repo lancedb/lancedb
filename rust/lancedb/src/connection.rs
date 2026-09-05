@@ -671,7 +671,9 @@ impl Connection {
     }
 
     /// Open a server-side job by id, returning a handle with its record
-    /// already populated. `None` when the server has no such job.
+    /// already populated. Fails with [`crate::Error::JobNotFound`] when the
+    /// server has no such job, the way [`Connection::open_table`] does for a
+    /// missing table.
     ///
     /// This is the one way in: the returned [`crate::job::Job`] answers for
     /// its own state, specification, result, failure and event history, so
@@ -685,17 +687,16 @@ impl Connection {
     /// #     connection: &lancedb::Connection,
     /// #     job_id: &str,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// if let Some(job) = connection.open_job(job_id).await? {
-    ///     println!("{:?} {:?}", job.state(), job.result());
-    ///     let done = job
-    ///         .events(JobEventsRequest::default().filter("state = 'claim_complete'"))
-    ///         .await?;
-    ///     println!("{} completions", done.iter().map(|b| b.num_rows()).sum::<usize>());
-    /// }
+    /// let job = connection.open_job(job_id).await?;
+    /// println!("{:?} {:?}", job.state(), job.result());
+    /// let done = job
+    ///     .events(JobEventsRequest::default().filter("state = 'claim_complete'"))
+    ///     .await?;
+    /// println!("{} completions", done.iter().map(|b| b.num_rows()).sum::<usize>());
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn open_job(&self, job_id: impl AsRef<str>) -> Result<Option<crate::job::Job>> {
+    pub async fn open_job(&self, job_id: impl AsRef<str>) -> Result<crate::job::Job> {
         self.internal.open_job(job_id.as_ref()).await
     }
 

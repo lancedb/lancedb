@@ -2467,7 +2467,7 @@ def test_remote_blob_byte_apis_not_supported_on_old_server():
 
 
 def test_remote_connection_jobs_surface():
-    from lancedb.exceptions import JobFailedError
+    from lancedb.exceptions import JobFailedError, JobNotFoundError
 
     schema = pa.schema([("state", pa.string())])
     batch = pa.record_batch([pa.array(["created", "done"])], schema=schema)
@@ -2579,8 +2579,9 @@ def test_remote_connection_jobs_surface():
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
 
-        # Opening a job hands back a populated handle; a missing one is None.
-        assert db.open_job("missing") is None
+        # Opening a job hands back a populated handle; a missing one fails.
+        with pytest.raises(JobNotFoundError, match="missing"):
+            db.open_job("missing")
         finished = db.open_job("job-2")
         assert finished.state == "finished"
         assert finished.result == {"rows_assigned": 1000000, "rows_failed": 0}

@@ -589,11 +589,12 @@ A page of table names and an
 ### openJob()
 
 ```ts
-abstract openJob(jobId): Promise<null | Job>
+abstract openJob(jobId): Promise<Job>
 ```
 
 Open a server-side job by id, returning a handle with its record already
-populated. Resolves to `null` when the server has no such job.
+populated. Rejects when the server has no such job, the way
+[Connection.openTable](Connection.md#opentable) does for a missing table.
 
 The returned [Job](Job.md) answers for its own state, specification,
 result, failure and event history, so there is no separate
@@ -605,7 +606,7 @@ connection-level call for any of them.
 
 #### Returns
 
-`Promise`&lt;`null` \| [`Job`](Job.md)&gt;
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 

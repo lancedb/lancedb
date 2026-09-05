@@ -1019,19 +1019,16 @@ describe("remote connection jobs surface", () => {
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
 
-        // Opening a job hands back a populated handle; a missing one is null.
-        expect(await db.openJob("missing")).toBeNull();
+        // Opening a job hands back a populated handle; a missing one rejects.
+        await expect(db.openJob("missing")).rejects.toThrow("not found");
         const finished = await db.openJob("job-2");
-        expect(finished?.state).toEqual("finished");
-        expect(finished?.result).toEqual({
+        expect(finished.state).toEqual("finished");
+        expect(finished.result).toEqual({
           // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
           rows_assigned: 1000000,
         });
 
         const job = await db.openJob("job-1");
-        if (job === null) {
-          throw new Error("expected job-1 to open");
-        }
         expect(job.id).toEqual("job-1");
 
         // openJob already populated the handle; refresh() re-reads it.

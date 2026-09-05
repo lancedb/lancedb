@@ -745,13 +745,16 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def open_job(self, job_id: str) -> Optional[Job]:
+    def open_job(self, job_id: str) -> Job:
         """Open a server-side job by id, returning a handle with its record
-        already populated. Returns None when the server has no such job.
+        already populated.
 
         The returned [Job][lancedb.job.Job] answers for its own state,
         specification, result, failure and event history, so there is no
         separate connection-level call for any of them.
+
+        Raises `JobNotFoundError` when the server has no such job, the way
+        `open_table` does for a missing table.
         """
         raise NotImplementedError("open_job is not supported for this connection type")
 
@@ -1447,12 +1450,11 @@ class LanceDBConnection(DBConnection):
         )
 
     @override
-    def open_job(self, job_id: str) -> Optional[Job]:
+    def open_job(self, job_id: str) -> Job:
         """Open a server-side job by id. See
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        inner = LOOP.run(self._conn.open_job(job_id))
-        return Job(inner) if inner is not None else None
+        return Job(LOOP.run(self._conn.open_job(job_id)))
 
     @override
     def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
@@ -2256,12 +2258,11 @@ class AsyncConnection(object):
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
 
-    async def open_job(self, job_id: str) -> Optional[AsyncJob]:
+    async def open_job(self, job_id: str) -> AsyncJob:
         """Open a server-side job by id. See
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        inner = await self._inner.open_job(job_id)
-        return AsyncJob(inner) if inner is not None else None
+        return AsyncJob(await self._inner.open_job(job_id))
 
     async def create_function_async(
         self, definition: UdfDefinition

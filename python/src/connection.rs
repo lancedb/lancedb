@@ -644,7 +644,7 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner.open_job(&job_id).await.infer_error()?;
-            Ok(job.map(crate::job::Job::new))
+            Ok(crate::job::Job::new(job))
         })
     }
 

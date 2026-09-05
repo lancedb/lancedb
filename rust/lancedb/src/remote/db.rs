@@ -671,14 +671,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(response.dropped)
     }
 
-    async fn open_job(&self, job_id: &str) -> Result<Option<Job>> {
+    async fn open_job(&self, job_id: &str) -> Result<Job> {
         let handle = super::job::RemoteJob::new(self.client.clone(), job_id.to_string());
         match crate::job::JobHandle::describe(&handle).await {
-            Ok(description) => Ok(Some(Job::opened(Box::new(handle), description))),
+            Ok(description) => Ok(Job::opened(Box::new(handle), description)),
             Err(Error::Http {
                 status_code: Some(StatusCode::NOT_FOUND),
                 ..
-            }) => Ok(None),
+            }) => Err(Error::JobNotFound {
+                job_id: job_id.to_string(),
+            }),
             Err(err) => Err(err),
         }
     }
@@ -2637,7 +2639,7 @@ mod tests {
         });
         // Opening populates the handle, so the accessors answer without a
         // second round trip.
-        let job = conn.open_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap();
         assert_eq!(job.id(), Some("job-1"));
         assert_eq!(job.job_type().as_deref(), Some("create_index"));
         assert_eq!(job.state().as_deref(), Some("failed"));
@@ -2660,7 +2662,7 @@ mod tests {
                 )
                 .unwrap()
         });
-        let job = conn.open_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap();
         assert_eq!(job.state().as_deref(), Some("finished"));
         let result = job.result().unwrap();
         assert_eq!(result["rows_assigned"], 1_000_000);
@@ -2668,14 +2670,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_open_job_missing_is_none() {
+    async fn test_open_job_missing_fails() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder()
                 .status(404)
                 .body("no such job")
                 .unwrap()
         });
-        assert!(conn.open_job("nope").await.unwrap().is_none());
+        let err = conn.open_job("nope").await.unwrap_err();
+        assert!(
+            matches!(&err, Error::JobNotFound { job_id } if job_id == "nope"),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
@@ -2722,7 +2728,7 @@ mod tests {
                 .body(events.clone())
                 .unwrap()
         });
-        let job = conn.open_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap();
         let batches = job
             .events(
                 JobEventsRequest::default()
@@ -2768,7 +2774,7 @@ mod tests {
                 .body(events.clone())
                 .unwrap()
         });
-        let job = conn.open_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap();
         let batches = job.events(JobEventsRequest::default()).await.unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 0);
@@ -2982,7 +2988,7 @@ mod tests {
                 ))
                 .unwrap()
         });
-        let job = conn.open_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap();
         assert_eq!(job.id(), Some("job-1"));
         // Opening already answered the state; no extra call needed for it.
         assert_eq!(job.state().as_deref(), Some("running"));

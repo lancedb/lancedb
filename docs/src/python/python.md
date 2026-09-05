@@ -316,6 +316,12 @@ still work. Queries return descriptors. Call
 
 ::: lancedb.exceptions.MissingColumnError
 
+::: lancedb.exceptions.JobNotFoundError
+
+::: lancedb.exceptions.JobFailedError
+
+::: lancedb.exceptions.JobCancelledError
+
 ## Integrations
 
 ## Pydantic

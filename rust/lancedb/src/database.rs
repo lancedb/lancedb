@@ -318,8 +318,9 @@ pub trait Database:
         function_catalog_not_supported()
     }
     /// Open a job by id, returning a handle with its record already
-    /// populated. `None` when the server has no such job.
-    async fn open_job(&self, _job_id: &str) -> Result<Option<crate::job::Job>> {
+    /// populated. Fails with [`crate::Error::JobNotFound`] when the server has
+    /// no such job.
+    async fn open_job(&self, _job_id: &str) -> Result<crate::job::Job> {
         job_op_not_supported("open_job")
     }
     /// List server-side jobs across the database's tables.

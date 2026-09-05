@@ -739,12 +739,11 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def open_job(self, job_id: str) -> Optional[Job]:
+    def open_job(self, job_id: str) -> Job:
         """Open a server-side job by id. See
         [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        inner = LOOP.run(self._conn.open_job(job_id))
-        return Job(inner) if inner is not None else None
+        return Job(LOOP.run(self._conn.open_job(job_id)))
 
     @override
     def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:

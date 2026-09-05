@@ -556,13 +556,14 @@ export abstract class Connection {
 
   /**
    * Open a server-side job by id, returning a handle with its record already
-   * populated. Resolves to `null` when the server has no such job.
+   * populated. Rejects when the server has no such job, the way
+   * {@link Connection.openTable} does for a missing table.
    *
    * The returned {@link Job} answers for its own state, specification,
    * result, failure and event history, so there is no separate
    * connection-level call for any of them.
    */
-  abstract openJob(jobId: string): Promise<Job | null>;
+  abstract openJob(jobId: string): Promise<Job>;
 
   /** List server-side jobs across the database's tables. */
   abstract listJobs(): Promise<JobInfo[]>;
@@ -913,9 +914,8 @@ export class LocalConnection extends Connection {
     );
   }
 
-  async openJob(jobId: string): Promise<Job | null> {
-    const inner = await this.inner.openJob(jobId);
-    return inner === null || inner === undefined ? null : new Job(inner);
+  async openJob(jobId: string): Promise<Job> {
+    return new Job(await this.inner.openJob(jobId));
   }
 
   async listJobs(): Promise<JobInfo[]> {

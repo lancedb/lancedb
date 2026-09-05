@@ -443,15 +443,15 @@ impl Connection {
     }
 
     /// Open a server-side job by id, returning a handle with its record
-    /// already populated. Null when the server has no such job.
+    /// already populated. Rejects when the server has no such job.
     ///
     /// The returned handle answers for its own state, specification, result,
     /// failure and event history, so there is no separate connection-level
     /// call for any of them.
     #[napi(catch_unwind)]
-    pub async fn open_job(&self, job_id: String) -> napi::Result<Option<crate::job::Job>> {
+    pub async fn open_job(&self, job_id: String) -> napi::Result<crate::job::Job> {
         let job = self.get_inner()?.open_job(&job_id).await.default_error()?;
-        Ok(job.map(crate::job::Job::new))
+        Ok(crate::job::Job::new(job))
     }
 
     /// List server-side jobs across the database's tables.
