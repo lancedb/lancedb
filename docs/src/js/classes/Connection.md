@@ -586,13 +586,13 @@ A page of table names and an
 
 ***
 
-### loadJob()
+### openJob()
 
 ```ts
-abstract loadJob(jobId): Promise<null | Job>
+abstract openJob(jobId): Promise<null | Job>
 ```
 
-Load a server-side job by id, returning a handle with its record already
+Open a server-side job by id, returning a handle with its record already
 populated. Resolves to `null` when the server has no such job.
 
 The returned [Job](Job.md) answers for its own state, specification,

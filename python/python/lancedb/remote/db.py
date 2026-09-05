@@ -739,11 +739,11 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def load_job(self, job_id: str) -> Optional[Job]:
-        """Load a server-side job by id. See
-        [DBConnection.load_job][lancedb.db.DBConnection.load_job].
+    def open_job(self, job_id: str) -> Optional[Job]:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        inner = LOOP.run(self._conn.load_job(job_id))
+        inner = LOOP.run(self._conn.open_job(job_id))
         return Job(inner) if inner is not None else None
 
     @override

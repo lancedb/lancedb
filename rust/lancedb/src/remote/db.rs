@@ -671,10 +671,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(response.dropped)
     }
 
-    async fn load_job(&self, job_id: &str) -> Result<Option<Job>> {
+    async fn open_job(&self, job_id: &str) -> Result<Option<Job>> {
         let handle = super::job::RemoteJob::new(self.client.clone(), job_id.to_string());
         match crate::job::JobHandle::describe(&handle).await {
-            Ok(description) => Ok(Some(Job::loaded(Box::new(handle), description))),
+            Ok(description) => Ok(Some(Job::opened(Box::new(handle), description))),
             Err(Error::Http {
                 status_code: Some(StatusCode::NOT_FOUND),
                 ..
@@ -2621,7 +2621,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_job() {
+    async fn test_open_job() {
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
             assert_eq!(request.url().path(), "/v1/jobs/describe");
@@ -2635,9 +2635,9 @@ mod tests {
                 )
                 .unwrap()
         });
-        // Loading populates the handle, so the accessors answer without a
+        // Opening populates the handle, so the accessors answer without a
         // second round trip.
-        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap().unwrap();
         assert_eq!(job.id(), Some("job-1"));
         assert_eq!(job.job_type().as_deref(), Some("create_index"));
         assert_eq!(job.state().as_deref(), Some("failed"));
@@ -2651,7 +2651,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_job_reports_the_terminal_result() {
+    async fn test_open_job_reports_the_terminal_result() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder()
                 .status(200)
@@ -2660,7 +2660,7 @@ mod tests {
                 )
                 .unwrap()
         });
-        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap().unwrap();
         assert_eq!(job.state().as_deref(), Some("finished"));
         let result = job.result().unwrap();
         assert_eq!(result["rows_assigned"], 1_000_000);
@@ -2668,14 +2668,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_job_missing_is_none() {
+    async fn test_open_job_missing_is_none() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder()
                 .status(404)
                 .body("no such job")
                 .unwrap()
         });
-        assert!(conn.load_job("nope").await.unwrap().is_none());
+        assert!(conn.open_job("nope").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2722,7 +2722,7 @@ mod tests {
                 .body(events.clone())
                 .unwrap()
         });
-        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap().unwrap();
         let batches = job
             .events(
                 JobEventsRequest::default()
@@ -2768,7 +2768,7 @@ mod tests {
                 .body(events.clone())
                 .unwrap()
         });
-        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap().unwrap();
         let batches = job.events(JobEventsRequest::default()).await.unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 0);
@@ -2982,9 +2982,9 @@ mod tests {
                 ))
                 .unwrap()
         });
-        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        let job = conn.open_job("job-1").await.unwrap().unwrap();
         assert_eq!(job.id(), Some("job-1"));
-        // Loading already answered the state; no extra call needed for it.
+        // Opening already answered the state; no extra call needed for it.
         assert_eq!(job.state().as_deref(), Some("running"));
         assert_eq!(job.status().await.unwrap(), "running");
         job.wait().await.unwrap();

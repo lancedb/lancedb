@@ -745,15 +745,15 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def load_job(self, job_id: str) -> Optional[Job]:
-        """Load a server-side job by id, returning a handle with its record
+    def open_job(self, job_id: str) -> Optional[Job]:
+        """Open a server-side job by id, returning a handle with its record
         already populated. Returns None when the server has no such job.
 
         The returned [Job][lancedb.job.Job] answers for its own state,
         specification, result, failure and event history, so there is no
         separate connection-level call for any of them.
         """
-        raise NotImplementedError("load_job is not supported for this connection type")
+        raise NotImplementedError("open_job is not supported for this connection type")
 
     def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
@@ -1447,11 +1447,11 @@ class LanceDBConnection(DBConnection):
         )
 
     @override
-    def load_job(self, job_id: str) -> Optional[Job]:
-        """Load a server-side job by id. See
-        [DBConnection.load_job][lancedb.db.DBConnection.load_job].
+    def open_job(self, job_id: str) -> Optional[Job]:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        inner = LOOP.run(self._conn.load_job(job_id))
+        inner = LOOP.run(self._conn.open_job(job_id))
         return Job(inner) if inner is not None else None
 
     @override
@@ -2256,11 +2256,11 @@ class AsyncConnection(object):
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
 
-    async def load_job(self, job_id: str) -> Optional[AsyncJob]:
-        """Load a server-side job by id. See
-        [DBConnection.load_job][lancedb.db.DBConnection.load_job].
+    async def open_job(self, job_id: str) -> Optional[AsyncJob]:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        inner = await self._inner.load_job(job_id)
+        inner = await self._inner.open_job(job_id)
         return AsyncJob(inner) if inner is not None else None
 
     async def create_function_async(

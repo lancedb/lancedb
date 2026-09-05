@@ -204,7 +204,7 @@ pub enum ReadConsistency {
 /// compaction, column refresh, ...).
 #[derive(Debug, Clone)]
 pub struct JobInfo {
-    /// The job id -- what [`Database::load_job`] and
+    /// The job id -- what [`Database::open_job`] and
     /// [`Database::cancel_job`] accept.
     pub job_id: String,
     /// The table the job runs against, without URI or namespace.
@@ -317,10 +317,10 @@ pub trait Database:
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
     }
-    /// Load a job by id, returning a handle with its record already
+    /// Open a job by id, returning a handle with its record already
     /// populated. `None` when the server has no such job.
-    async fn load_job(&self, _job_id: &str) -> Result<Option<crate::job::Job>> {
-        job_op_not_supported("load_job")
+    async fn open_job(&self, _job_id: &str) -> Result<Option<crate::job::Job>> {
+        job_op_not_supported("open_job")
     }
     /// List server-side jobs across the database's tables.
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {

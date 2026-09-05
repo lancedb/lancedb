@@ -670,7 +670,7 @@ impl Connection {
         self.internal.read_consistency().await
     }
 
-    /// Load a server-side job by id, returning a handle with its record
+    /// Open a server-side job by id, returning a handle with its record
     /// already populated. `None` when the server has no such job.
     ///
     /// This is the one way in: the returned [`crate::job::Job`] answers for
@@ -681,11 +681,11 @@ impl Connection {
     ///
     /// ```no_run
     /// # use lancedb::job::JobEventsRequest;
-    /// # async fn load_job(
+    /// # async fn open_job(
     /// #     connection: &lancedb::Connection,
     /// #     job_id: &str,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// if let Some(job) = connection.load_job(job_id).await? {
+    /// if let Some(job) = connection.open_job(job_id).await? {
     ///     println!("{:?} {:?}", job.state(), job.result());
     ///     let done = job
     ///         .events(JobEventsRequest::default().filter("state = 'claim_complete'"))
@@ -695,8 +695,8 @@ impl Connection {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn load_job(&self, job_id: impl AsRef<str>) -> Result<Option<crate::job::Job>> {
-        self.internal.load_job(job_id.as_ref()).await
+    pub async fn open_job(&self, job_id: impl AsRef<str>) -> Result<Option<crate::job::Job>> {
+        self.internal.open_job(job_id.as_ref()).await
     }
 
     /// List server-side jobs across the database's tables.

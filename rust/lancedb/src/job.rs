@@ -215,7 +215,7 @@ impl Job<()> {
 
     /// A handle whose record the caller has already fetched, so the detail
     /// accessors answer without a second round trip.
-    pub(crate) fn loaded(handle: Box<dyn JobHandle>, description: JobDescription) -> Self {
+    pub(crate) fn opened(handle: Box<dyn JobHandle>, description: JobDescription) -> Self {
         let job = Self::new(handle);
         {
             let mut cache = job.cache_write();

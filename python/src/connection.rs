@@ -640,10 +640,10 @@ impl Connection {
         })
     }
 
-    pub fn load_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+    pub fn open_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
-            let job = inner.load_job(&job_id).await.infer_error()?;
+            let job = inner.open_job(&job_id).await.infer_error()?;
             Ok(job.map(crate::job::Job::new))
         })
     }

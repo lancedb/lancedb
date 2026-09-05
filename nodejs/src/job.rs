@@ -149,7 +149,7 @@ pub(crate) fn batches_to_ipc_buffer(batches: &[RecordBatch]) -> napi::Result<Buf
 /// A row from `Connection.listJobs`: one server-side job.
 #[napi(object)]
 pub struct JobInfo {
-    /// The job id -- what `Connection.loadJob` and `Connection.cancelJob`
+    /// The job id -- what `Connection.openJob` and `Connection.cancelJob`
     /// accept.
     pub job_id: String,
     /// The table the job runs against, without URI or namespace.
