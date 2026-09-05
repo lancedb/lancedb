@@ -19,7 +19,12 @@ from urllib.parse import urlparse
 from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
-from .expr import Expr, col, lit, func
+from .expr import Expr, SortExpr as SortExpr, col, lit, func
+from .dataframe import (
+    AsyncDataFrame as AsyncDataFrame,
+    DataFrame as DataFrame,
+)
+from . import sql_functions as sql_functions
 from .schema import blob, vector
 from .job import AsyncJob, Job
 from .sql import AsyncQuery as AsyncSqlQuery
@@ -561,6 +566,7 @@ async def connect_async(
 
 
 __all__ = [
+    "AsyncDataFrame",
     "AsyncMaterializedView",
     "MaterializedView",
     "MaterializedViewDefinition",
@@ -585,14 +591,17 @@ __all__ = [
     "BlobType",
     "vector",
     "DBConnection",
+    "DataFrame",
     "Job",
     "QueryDescription",
     "SqlQuery",
+    "SortExpr",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
     "LsmWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",
+    "sql_functions",
     "__version__",
 ]

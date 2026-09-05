@@ -350,6 +350,11 @@ pub trait Database:
             message: "SQL is not supported by this database".to_string(),
         })
     }
+    /// Whether DataFrames should execute through [`Self::execute_query_async`].
+    #[doc(hidden)]
+    fn execute_dataframe_as_sql(&self) -> bool {
+        false
+    }
     /// Describe a submitted SQL query by its connection-scoped id.
     async fn describe_query(&self, _query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
         Err(crate::error::Error::NotSupported {

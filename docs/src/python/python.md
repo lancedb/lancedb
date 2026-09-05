@@ -81,6 +81,76 @@ for batch in query.reader():
 # await query.cancel()
 ```
 
+## DataFrames
+
+Create a lazy DataFusion-style DataFrame from an opened table. Transformations
+are immutable and do not fetch data. `execute` opens the result reader, while
+`execute_async` returns a query lifecycle handle that can be inspected or cancelled.
+LanceDB handles plan conversion and submission internally:
+
+```python
+from lancedb import col
+from lancedb import sql_functions as F
+
+events = db.open_table("events", namespace_path=["production"]).to_df()
+frame = (
+    events.filter(col("status") == "active")
+    .aggregate(["region"], [F.sum(col("amount")).alias("total")])
+    .sort(col("total").sort(ascending=False))
+    .limit(10)
+)
+
+# Choose the blocking reader for a direct result.
+reader = frame.execute()
+
+# Or submit separately and retain a lifecycle handle.
+query = frame.execute_async()
+query.cancel()
+
+# The async API has the same transformations.
+events = await async_db.open_table("events", namespace_path=["production"])
+frame = (await events.to_df()).filter(col("status") == "active").limit(10)
+# Choose the reader or the lifecycle-handle form.
+reader = await frame.execute()
+query = await frame.execute_async()
+await query.cancel()
+```
+
+Local tables execute the plans in-process. Remote tables convert plans to SQL
+and submit them through the remote query service. Remote execution resolves the
+latest revisions visible to that service at submission time; it does not inherit
+per-table read-consistency intervals or read-your-write freshness fences from the
+table handles used to create the plan.
+
+Remote SQL execution currently rejects joins of more than two relations. This
+avoids changing join semantics while the SQL lowering layer does not yet support
+that compound shape. Operations such as `limit` or `distinct` can also require
+isolating a join result; select uniquely aliased output columns before those
+operations when the join retains columns from both input relations.
+
+For deterministic remote ordering, apply `sort` after filters and aliases. One
+final projection directly after sorting is supported, including a projection
+that omits the sort key. Plans that would need to carry ordering through an
+intervening limit, nested limits, multiple projections, a filter, or an alias
+are rejected instead of emitting SQL whose outer query could lose the ordering.
+
+::: lancedb.dataframe.DataFrame
+    options:
+        inherited_members: true
+
+::: lancedb.dataframe.AsyncDataFrame
+    options:
+        inherited_members: true
+
+::: lancedb.sql_functions
+    options:
+        members:
+            - avg
+            - count
+            - max
+            - min
+            - sum
+
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
@@ -176,6 +246,8 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 [select][lancedb.query.LanceQueryBuilder.select].
 
 ::: lancedb.expr.Expr
+
+::: lancedb.expr.SortExpr
 
 ::: lancedb.expr.col
 
