@@ -10,18 +10,41 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode},
 };
 use datafusion_expr::{
-    Expr, JoinType, LogicalPlan, LogicalPlanBuilder, Operator, expr_fn::binary_expr,
-    expr_rewriter::NamePreserver, logical_plan::Projection,
+    Expr, JoinType, LogicalPlan, LogicalPlanBuilder, Operator,
+    expr_fn::binary_expr,
+    expr_rewriter::NamePreserver,
+    logical_plan::{Projection, Sort},
 };
 use datafusion_sql::unparser::Unparser;
 
 pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<String> {
     let plan = collapse_join_output_projections(plan)?;
-    let plan = preserve_join_semantics(&plan)?;
+    let plan = lift_sort_above_projection(plan)?;
     let plan = ensure_output_projection(plan)?;
+    let plan = preserve_join_semantics(&plan)?;
     Unparser::default()
         .plan_to_sql(&plan)
         .map(|statement| statement.to_string())
+}
+
+fn lift_sort_above_projection(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
+    plan.transform_up(|plan| {
+        let LogicalPlan::Projection(mut projection) = plan else {
+            return Ok(Transformed::no(plan));
+        };
+        let LogicalPlan::Sort(sort) = projection.input.as_ref() else {
+            return Ok(Transformed::no(LogicalPlan::Projection(projection)));
+        };
+        let sort = sort.clone();
+
+        projection.input = Arc::clone(&sort.input);
+        Ok(Transformed::yes(LogicalPlan::Sort(Sort {
+            expr: sort.expr,
+            input: Arc::new(LogicalPlan::Projection(projection)),
+            fetch: sort.fetch,
+        })))
+    })
+    .data()
 }
 
 fn collapse_join_output_projections(plan: &LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
@@ -63,33 +86,34 @@ fn collapse_join_output_projections(plan: &LogicalPlan) -> datafusion_common::Re
 }
 
 fn ensure_output_projection(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
-    if !output_needs_projection(&plan) {
-        return Ok(plan);
-    }
-    let projection = plan
-        .schema()
-        .iter()
-        .map(|(qualifier, field)| Expr::Column(Column::new(qualifier.cloned(), field.name())))
-        .collect::<Vec<_>>();
-    LogicalPlanBuilder::from(Arc::new(plan))
-        .project(projection)?
-        .build()
-}
+    plan.transform_up(|plan| {
+        let needs_projection = matches!(plan, LogicalPlan::Aggregate(_))
+            || matches!(
+                &plan,
+                LogicalPlan::Join(join)
+                    if matches!(
+                        join.join_type,
+                        JoinType::LeftSemi
+                            | JoinType::RightSemi
+                            | JoinType::LeftAnti
+                            | JoinType::RightAnti
+                    )
+            );
+        if !needs_projection {
+            return Ok(Transformed::no(plan));
+        }
 
-fn output_needs_projection(plan: &LogicalPlan) -> bool {
-    match plan {
-        LogicalPlan::Aggregate(_) => true,
-        LogicalPlan::Join(join) => matches!(
-            join.join_type,
-            JoinType::LeftSemi | JoinType::RightSemi | JoinType::LeftAnti | JoinType::RightAnti
-        ),
-        LogicalPlan::Filter(filter) => output_needs_projection(&filter.input),
-        LogicalPlan::Sort(sort) => output_needs_projection(&sort.input),
-        LogicalPlan::Limit(limit) => output_needs_projection(&limit.input),
-        LogicalPlan::Distinct(distinct) => output_needs_projection(distinct.input()),
-        LogicalPlan::SubqueryAlias(alias) => output_needs_projection(&alias.input),
-        _ => false,
-    }
+        let projection = plan
+            .schema()
+            .iter()
+            .map(|(qualifier, field)| Expr::Column(Column::new(qualifier.cloned(), field.name())))
+            .collect::<Vec<_>>();
+        LogicalPlanBuilder::from(Arc::new(plan))
+            .project(projection)?
+            .build()
+            .map(Transformed::yes)
+    })
+    .data()
 }
 
 fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<LogicalPlan> {

@@ -913,9 +913,11 @@ mod tests {
         assert!(aggregate_sql.contains("ORDER BY"));
         assert!(aggregate_sql.contains("LIMIT 10"));
         assert!(aggregate_sql.contains("OFFSET 2"));
+        let first_from = aggregate_sql.find(" FROM ").unwrap();
         assert!(
-            aggregate_sql.find("events.id").unwrap()
-                < aggregate_sql.to_ascii_lowercase().find("sum(").unwrap(),
+            !aggregate_sql[..first_from]
+                .to_ascii_lowercase()
+                .contains("sum("),
             "aggregate SQL output must match DataFrame schema order: {aggregate_sql}"
         );
 
@@ -940,6 +942,69 @@ mod tests {
         assert!(expressions.contains("CAST"));
         assert!(expressions.contains("IS NULL"));
         assert!(expressions.contains("+ 1"));
+    }
+
+    #[tokio::test]
+    async fn generated_sql_preserves_projection_and_aggregate_semantics() {
+        let batch = RecordBatch::try_new(
+            Arc::new(events().schema()),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+                Arc::new(Int64Array::from(vec![40, 10, 20, 30])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_batch("events", batch).unwrap();
+
+        let projected_sort_sql = events()
+            .sort(vec![(col("value"), true, false)])
+            .unwrap()
+            .select(vec![col("id")])
+            .unwrap()
+            .limit(2, 0)
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        let projected = ctx
+            .sql(&projected_sort_sql)
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let ids = projected[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(ids.values(), &[2, 3]);
+
+        let aggregate_sql = events()
+            .aggregate(
+                vec![col("id")],
+                vec![aggregate_sum(col("value")).alias("total")],
+            )
+            .unwrap()
+            .sort(vec![(col("total"), false, true)])
+            .unwrap()
+            .limit(2, 0)
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        let aggregate = ctx
+            .sql(&aggregate_sql)
+            .await
+            .unwrap_or_else(|error| panic!("invalid aggregate SQL {aggregate_sql}: {error}"))
+            .collect()
+            .await
+            .unwrap();
+        let totals = aggregate[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(totals.values(), &[40, 30]);
     }
 
     #[test]
@@ -978,8 +1043,23 @@ mod tests {
             "a projected limited input must have a usable relation alias: {projected_sql}"
         );
 
+        let projected_sort_sql = events()
+            .sort(vec![(col("value"), true, false)])
+            .unwrap()
+            .select(vec![col("id")])
+            .unwrap()
+            .limit(2, 0)
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            projected_sort_sql.find("ORDER BY").unwrap()
+                < projected_sort_sql.find("LIMIT 2").unwrap()
+                && !projected_sort_sql.contains("FROM (SELECT"),
+            "projection must preserve observable sort order: {projected_sort_sql}"
+        );
+
         for input in [
-            events().sort(vec![(col("value"), true, false)]).unwrap(),
             events().distinct().unwrap(),
             events()
                 .with_column("next_value", col("value") + lit(1_i64))
