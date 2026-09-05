@@ -438,6 +438,10 @@ impl DataFrame {
     }
 
     /// Join two plans using corresponding equality keys.
+    ///
+    /// Remote SQL execution currently rejects a filtered or aggregated plan
+    /// containing a join when it is used as another join input. Assigning an
+    /// alias does not remove this limitation.
     pub fn join(
         &self,
         other: &Self,
@@ -999,11 +1003,18 @@ mod tests {
             let left_filter_position = sql
                 .find("> 1")
                 .unwrap_or_else(|| panic!("left input filter was lost: {sql}"));
-            assert!(sql.contains("< 100"), "right input filter was lost: {sql}");
+            let right_filter_position = sql
+                .find("< 100")
+                .unwrap_or_else(|| panic!("right input filter was lost: {sql}"));
             if matches!(join_type, JoinType::Left | JoinType::Right | JoinType::Full) {
+                let on_position = uppercase.rfind(" ON ").unwrap();
                 assert!(
                     left_filter_position < join_position,
                     "left input filter must remain inside its join input: {sql}"
+                );
+                assert!(
+                    right_filter_position < on_position,
+                    "right input filter must remain inside its join input: {sql}"
                 );
             }
         }
@@ -1024,29 +1035,18 @@ mod tests {
             "unexpected SQL: {union_distinct}"
         );
 
-        for (frame, expected_prefix, expected_predicate) in [
-            (left.intersect(&right, true).unwrap(), "SELECT ", " EXISTS "),
-            (
-                left.intersect(&right, false).unwrap(),
-                "SELECT DISTINCT ",
-                " EXISTS ",
-            ),
-            (
-                left.except(&right, true).unwrap(),
-                "SELECT ",
-                " NOT EXISTS ",
-            ),
-            (
-                left.except(&right, false).unwrap(),
-                "SELECT DISTINCT ",
-                " NOT EXISTS ",
-            ),
+        for (frame, distinct, expected_predicate) in [
+            (left.intersect(&right, true).unwrap(), false, " EXISTS "),
+            (left.intersect(&right, false).unwrap(), true, " EXISTS "),
+            (left.except(&right, true).unwrap(), false, " NOT EXISTS "),
+            (left.except(&right, false).unwrap(), true, " NOT EXISTS "),
         ] {
             let sql = frame.to_sql().unwrap();
             let uppercase = sql.to_ascii_uppercase();
-            assert!(
-                uppercase.starts_with(expected_prefix),
-                "expected {expected_prefix} in SQL: {sql}"
+            assert_eq!(
+                uppercase.contains("SELECT DISTINCT "),
+                distinct,
+                "unexpected distinct lowering: {sql}"
             );
             assert!(
                 uppercase.contains(expected_predicate),
@@ -1072,6 +1072,86 @@ mod tests {
             assert!(
                 sql.contains("< 100"),
                 "right set-operation input filter was lost: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn isolates_compound_inputs_when_rendering_joins() {
+        let left = events().alias("left").unwrap();
+        let right = DataFrame::from_table(
+            "other_events",
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("value", DataType::Int64, false),
+            ])),
+        )
+        .unwrap()
+        .alias("right")
+        .unwrap();
+
+        let aggregate = left
+            .aggregate(
+                vec![left.column("id").unwrap()],
+                vec![aggregate_sum(left.column("value").unwrap()).alias("total")],
+            )
+            .unwrap();
+        let aggregate_join_sql = aggregate
+            .join(
+                &right,
+                &["id".to_string()],
+                &["id".to_string()],
+                JoinType::Inner,
+            )
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        let uppercase = aggregate_join_sql.to_ascii_uppercase();
+        let join_position = uppercase.find(" JOIN ").unwrap();
+        assert!(
+            uppercase[..join_position].contains("SUM(")
+                && uppercase[..join_position].contains("GROUP BY"),
+            "aggregate input must remain a derived relation: {aggregate_join_sql}"
+        );
+
+        let nested = left
+            .join(
+                &right,
+                &["id".to_string()],
+                &["id".to_string()],
+                JoinType::Inner,
+            )
+            .unwrap()
+            .select(vec![
+                left.column("id").unwrap().alias("left_id"),
+                left.column("value").unwrap(),
+            ])
+            .unwrap()
+            .filter(col("value").gt(lit(1_i64)))
+            .unwrap();
+        let third = DataFrame::from_table(
+            "third_events",
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+        )
+        .unwrap()
+        .alias("third")
+        .unwrap();
+        for join_type in [JoinType::Right, JoinType::Full] {
+            let error = nested
+                .join(
+                    &third,
+                    &["left_id".to_string()],
+                    &["id".to_string()],
+                    join_type,
+                )
+                .unwrap()
+                .to_sql()
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("filtered or aggregated compound left join input"),
+                "unexpected error: {error}"
             );
         }
     }

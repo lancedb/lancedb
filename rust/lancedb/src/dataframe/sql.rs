@@ -24,11 +24,27 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
         .transform_up(|plan| match plan {
             LogicalPlan::Join(mut join) => {
                 let mut transformed = false;
-                if simple_scan_has_filters(&join.left) {
+                let left_has_filter = contains_filter(&join.left);
+                let left_has_aggregate = contains_aggregate(&join.left);
+                if contains_join(&join.left) && (left_has_filter || left_has_aggregate) {
+                    return Err(datafusion_common::DataFusionError::NotImplemented(
+                        "SQL lowering does not yet support a filtered or aggregated compound left join input"
+                            .to_string(),
+                    ));
+                }
+                if left_has_filter || left_has_aggregate {
                     join.left = isolate_join_input(join.left)?;
                     transformed = true;
                 }
-                if simple_scan_has_filters(&join.right) {
+                let right_has_filter = contains_filter(&join.right);
+                let right_has_aggregate = contains_aggregate(&join.right);
+                if contains_join(&join.right) && (right_has_filter || right_has_aggregate) {
+                    return Err(datafusion_common::DataFusionError::NotImplemented(
+                        "SQL lowering does not yet support a filtered or aggregated compound right join input"
+                            .to_string(),
+                    ));
+                }
+                if right_has_filter || right_has_aggregate {
                     join.right = isolate_join_input(join.right)?;
                     transformed = true;
                 }
@@ -57,44 +73,47 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
         .data()
 }
 
-fn simple_scan_has_filters(plan: &LogicalPlan) -> bool {
-    let mut plan = plan;
-    let mut has_filters = false;
-    loop {
-        match plan {
-            LogicalPlan::SubqueryAlias(alias) => plan = &alias.input,
-            LogicalPlan::Filter(filter) => {
-                has_filters = true;
-                plan = &filter.input;
-            }
-            LogicalPlan::TableScan(scan) => return has_filters || !scan.filters.is_empty(),
-            _ => return false,
-        }
-    }
+fn contains_aggregate(plan: &LogicalPlan) -> bool {
+    matches!(plan, LogicalPlan::Aggregate(_)) || plan.inputs().into_iter().any(contains_aggregate)
+}
+
+fn contains_filter(plan: &LogicalPlan) -> bool {
+    matches!(plan, LogicalPlan::Filter(_))
+        || matches!(plan, LogicalPlan::TableScan(scan) if !scan.filters.is_empty())
+        || plan.inputs().into_iter().any(contains_filter)
+}
+
+fn contains_join(plan: &LogicalPlan) -> bool {
+    matches!(plan, LogicalPlan::Join(_)) || plan.inputs().into_iter().any(contains_join)
 }
 
 fn isolate_join_input(input: Arc<LogicalPlan>) -> datafusion_common::Result<Arc<LogicalPlan>> {
     let Some(qualifier) = input
         .schema()
         .iter()
-        .next()
-        .and_then(|(qualifier, _)| qualifier.cloned())
+        .find_map(|(qualifier, _)| qualifier.cloned())
     else {
-        return Ok(input);
+        return Err(datafusion_common::DataFusionError::NotImplemented(
+            "SQL lowering cannot isolate an unqualified join input".to_string(),
+        ));
     };
     if input
         .schema()
         .iter()
-        .any(|(candidate, _)| candidate != Some(&qualifier))
+        .any(|(candidate, _)| candidate.is_some_and(|candidate| candidate != &qualifier))
     {
-        return Ok(input);
+        return Err(datafusion_common::DataFusionError::NotImplemented(
+            "SQL lowering cannot isolate a join input with multiple relation qualifiers"
+                .to_string(),
+        ));
     }
 
     let projection = input
         .schema()
-        .fields()
         .iter()
-        .map(|field| Expr::Column(Column::new(Some(qualifier.clone()), field.name())))
+        .map(|(field_qualifier, field)| {
+            Expr::Column(Column::new(field_qualifier.cloned(), field.name()))
+        })
         .collect::<Vec<_>>();
     let plan = LogicalPlanBuilder::from(input)
         .project(projection)?
