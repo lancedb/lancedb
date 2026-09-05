@@ -573,7 +573,9 @@ impl DataFrame {
             (None, None) => Ok(()),
             (Some(left), Some(right))
                 if Arc::ptr_eq(&left.database, &right.database)
-                    && left.default_namespace_path == right.default_namespace_path =>
+                    && left.execute_as_sql == right.execute_as_sql
+                    && (!left.execute_as_sql
+                        || left.default_namespace_path == right.default_namespace_path) =>
             {
                 Ok(())
             }
@@ -803,6 +805,52 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn namespace_restriction_only_applies_to_remote_sql() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = connect(directory.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap()
+            .database()
+            .clone();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let execution = |namespace: &str, execute_as_sql| ExecutionContext {
+            database: database.clone(),
+            default_namespace_path: vec![namespace.to_string()],
+            execute_as_sql,
+            source_tables: vec![],
+        };
+
+        let local_left = DataFrame::from_table_with_execution(
+            "left",
+            schema.clone(),
+            Some(execution("first", false)),
+        )
+        .unwrap();
+        let local_right = DataFrame::from_table_with_execution(
+            "right",
+            schema.clone(),
+            Some(execution("second", false)),
+        )
+        .unwrap();
+        assert!(local_left.union(&local_right, true).is_ok());
+
+        let remote_left = DataFrame::from_table_with_execution(
+            "left",
+            schema.clone(),
+            Some(execution("first", true)),
+        )
+        .unwrap();
+        let remote_right =
+            DataFrame::from_table_with_execution("right", schema, Some(execution("second", true)))
+                .unwrap();
+        assert!(matches!(
+            remote_left.union(&remote_right, true),
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+
     #[test]
     fn builds_and_renders_an_immutable_plan() {
         let frame = DataFrame::from_table(
@@ -821,7 +869,7 @@ mod tests {
         assert_eq!(frame.schema().fields().len(), 2);
         assert_eq!(
             frame.to_sql().unwrap(),
-            "SELECT users.\"name\", users.age FROM users WHERE users.age > 18"
+            "SELECT users.\"name\", users.age FROM users WHERE (users.age > 18)"
         );
     }
 
@@ -1006,7 +1054,7 @@ mod tests {
         assert_eq!(
             recording_database.submitted.lock().unwrap().as_ref(),
             Some(&(
-                "SELECT users.\"name\", users.age FROM users WHERE users.age > 18".to_string(),
+                "SELECT users.\"name\", users.age FROM users WHERE (users.age > 18)".to_string(),
                 vec!["public".to_string()],
             ))
         );
