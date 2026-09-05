@@ -191,11 +191,15 @@ where
 }
 
 impl Job<()> {
-    /// A job whose operation finished before the handle was created.
+    /// A job whose operation finished before the handle was created. Its
+    /// state is known without asking anyone, so the cache starts populated.
     pub(crate) fn new_done() -> Self {
         Self {
             inner: JobInner::Completed(()),
-            cache: RwLock::default(),
+            cache: RwLock::new(JobCache {
+                state: Some("finished".to_string()),
+                description: None,
+            }),
         }
     }
 

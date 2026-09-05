@@ -264,6 +264,17 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         crate::job::JobHandle::status(&self.inner).await
     }
 
+    async fn describe(&self) -> Result<crate::database::JobDescription> {
+        crate::job::JobHandle::describe(&self.inner).await
+    }
+
+    async fn events(
+        &self,
+        request: crate::job::JobEventsRequest,
+    ) -> Result<Vec<arrow_array::RecordBatch>> {
+        crate::job::JobHandle::events(&self.inner, request).await
+    }
+
     async fn wait(&self) -> Result<crate::job::TerminalResult> {
         let result = crate::job::JobHandle::wait(&self.inner).await?;
         let version = self.version.read().await;
@@ -7980,6 +7991,72 @@ mod tests {
                 if message.contains("refresh_column_async")),
             "{err:?}"
         );
+    }
+
+    /// The refresh handle is wrapped for read-freshness tracking, so it has to
+    /// forward the detail APIs too -- this is the job an operator is holding
+    /// when a backfill goes quiet.
+    #[tokio::test]
+    async fn test_refresh_job_handle_reports_detail_and_events() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "state",
+            DataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::StringArray::from(vec![
+                "claim_complete",
+            ]))],
+        )
+        .unwrap();
+        let mut events = Vec::new();
+        {
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(&mut events, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/backfill_column" => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id": "j-42"}"#.as_bytes().to_vec())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"job_id": "j-42", "job_type": "refresh_column", "job_state": "IN_PROGRESS", "creation_ms": 7, "spec": {"column": "doubled"}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    )
+                    .unwrap(),
+                "/v1/jobs/query_events" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["job_id"], "j-42");
+                    http::Response::builder()
+                        .status(200)
+                        .body(events.clone())
+                        .unwrap()
+                }
+                other => panic!("unexpected path {other}"),
+            }
+        });
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        job.refresh().await.unwrap();
+        assert_eq!(job.state().as_deref(), Some("running"));
+        assert_eq!(job.job_type().as_deref(), Some("refresh_column"));
+        assert_eq!(job.creation_ms(), Some(7));
+        assert_eq!(job.spec().unwrap()["column"], "doubled");
+
+        let batches = job
+            .events(crate::job::JobEventsRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
     }
 
     #[tokio::test]

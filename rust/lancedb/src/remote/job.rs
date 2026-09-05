@@ -127,8 +127,7 @@ impl DescribeJobResponse {
     }
 }
 
-/// One `/v1/jobs/query_events` round trip. Shared by the connection-level and
-/// handle-level entry points, which differ only in the request body.
+/// One `/v1/jobs/query_events` round trip.
 pub(super) async fn fetch_job_events<S: HttpSend>(
     client: &RestfulLanceDbClient<S>,
     body: serde_json::Value,
