@@ -9,12 +9,16 @@ use datafusion_common::{
     Column, NullEquality, TableReference,
     tree_node::{Transformed, TransformedResult, TreeNode},
 };
-use datafusion_expr::{Expr, LogicalPlan, LogicalPlanBuilder, Operator, expr_fn::binary_expr};
+use datafusion_expr::{
+    Expr, JoinType, LogicalPlan, LogicalPlanBuilder, Operator, expr_fn::binary_expr,
+    expr_rewriter::NamePreserver, logical_plan::Projection,
+};
 use datafusion_sql::unparser::Unparser;
 
 pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<String> {
     let plan = collapse_join_output_projections(plan)?;
     let plan = preserve_join_semantics(&plan)?;
+    let plan = ensure_output_projection(plan)?;
     Unparser::default()
         .plan_to_sql(&plan)
         .map(|statement| statement.to_string())
@@ -33,10 +37,12 @@ fn collapse_join_output_projections(plan: &LogicalPlan) -> datafusion_common::Re
                 return Ok(Transformed::no(LogicalPlan::Projection(projection)));
             }
 
+            let name_preserver = NamePreserver::new_for_projection();
             let expr = projection
                 .expr
                 .into_iter()
                 .map(|expr| {
+                    let original_name = name_preserver.save(&expr);
                     expr.transform_up(|expr| match expr {
                         Expr::Column(column) => {
                             let index = input.schema.index_of_column(&column)?;
@@ -46,17 +52,44 @@ fn collapse_join_output_projections(plan: &LogicalPlan) -> datafusion_common::Re
                         }
                         expr => Ok(Transformed::no(expr)),
                     })
-                    .map(|result| result.data)
+                    .map(|result| original_name.restore(result.data))
                 })
                 .collect::<datafusion_common::Result<Vec<_>>>()?;
-            let projection = datafusion_expr::logical_plan::Projection::try_new_with_schema(
-                expr,
-                Arc::clone(&input.input),
-                projection.schema,
-            )?;
+            let projection =
+                Projection::try_new_with_schema(expr, Arc::clone(&input.input), projection.schema)?;
             Ok(Transformed::yes(LogicalPlan::Projection(projection)))
         })
         .data()
+}
+
+fn ensure_output_projection(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
+    if !output_needs_projection(&plan) {
+        return Ok(plan);
+    }
+    let projection = plan
+        .schema()
+        .iter()
+        .map(|(qualifier, field)| Expr::Column(Column::new(qualifier.cloned(), field.name())))
+        .collect::<Vec<_>>();
+    LogicalPlanBuilder::from(Arc::new(plan))
+        .project(projection)?
+        .build()
+}
+
+fn output_needs_projection(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Aggregate(_) => true,
+        LogicalPlan::Join(join) => matches!(
+            join.join_type,
+            JoinType::LeftSemi | JoinType::RightSemi | JoinType::LeftAnti | JoinType::RightAnti
+        ),
+        LogicalPlan::Filter(filter) => output_needs_projection(&filter.input),
+        LogicalPlan::Sort(sort) => output_needs_projection(&sort.input),
+        LogicalPlan::Limit(limit) => output_needs_projection(&limit.input),
+        LogicalPlan::Distinct(distinct) => output_needs_projection(distinct.input()),
+        LogicalPlan::SubqueryAlias(alias) => output_needs_projection(&alias.input),
+        _ => false,
+    }
 }
 
 fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
@@ -216,24 +249,32 @@ fn projection_input_needs_isolation(plan: &LogicalPlan) -> bool {
 }
 
 fn aggregate_input_needs_isolation(plan: &LogicalPlan) -> bool {
-    matches!(
-        plan,
-        LogicalPlan::Projection(_)
-            | LogicalPlan::Aggregate(_)
-            | LogicalPlan::Limit(_)
-            | LogicalPlan::Sort(_)
-            | LogicalPlan::Distinct(_)
-            | LogicalPlan::Union(_)
-            | LogicalPlan::Window(_)
-    )
+    match plan {
+        LogicalPlan::Projection(projection) => projection_establishes_scope(projection),
+        LogicalPlan::Aggregate(_)
+        | LogicalPlan::Limit(_)
+        | LogicalPlan::Sort(_)
+        | LogicalPlan::Distinct(_)
+        | LogicalPlan::Union(_)
+        | LogicalPlan::Window(_) => true,
+        _ => false,
+    }
 }
 
 fn filter_input_needs_isolation(plan: &LogicalPlan) -> bool {
     match plan {
-        LogicalPlan::Projection(_) | LogicalPlan::Limit(_) | LogicalPlan::Union(_) => true,
+        LogicalPlan::Projection(projection) => projection_establishes_scope(projection),
+        LogicalPlan::Limit(_) | LogicalPlan::Union(_) => true,
         LogicalPlan::Distinct(distinct) => filter_input_needs_isolation(distinct.input()),
         _ => false,
     }
+}
+
+fn projection_establishes_scope(projection: &Projection) -> bool {
+    projection
+        .expr
+        .iter()
+        .any(|expression| !matches!(expression, Expr::Column(_)))
 }
 
 fn set_input_needs_isolation(plan: &LogicalPlan) -> bool {

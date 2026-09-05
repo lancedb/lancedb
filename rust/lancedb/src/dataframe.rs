@@ -913,6 +913,11 @@ mod tests {
         assert!(aggregate_sql.contains("ORDER BY"));
         assert!(aggregate_sql.contains("LIMIT 10"));
         assert!(aggregate_sql.contains("OFFSET 2"));
+        assert!(
+            aggregate_sql.find("events.id").unwrap()
+                < aggregate_sql.to_ascii_lowercase().find("sum(").unwrap(),
+            "aggregate SQL output must match DataFrame schema order: {aggregate_sql}"
+        );
 
         let distinct = events()
             .select(vec![col("value")])
@@ -1227,6 +1232,26 @@ mod tests {
             "unexpected SQL: {union_distinct}"
         );
 
+        let bare_left = events();
+        let bare_right = DataFrame::from_table(
+            "other_events",
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("value", DataType::Int64, false),
+            ])),
+        )
+        .unwrap();
+        for frame in [
+            bare_left.intersect(&bare_right, true).unwrap(),
+            bare_left.except(&bare_right, true).unwrap(),
+        ] {
+            let sql = frame.to_sql().unwrap();
+            assert!(
+                !sql.contains("SELECT FROM") && sql.starts_with("SELECT "),
+                "set operation must include its output columns: {sql}"
+            );
+        }
+
         for (frame, distinct, expected_predicate) in [
             (left.intersect(&right, true).unwrap(), false, " EXISTS "),
             (left.intersect(&right, false).unwrap(), true, " EXISTS "),
@@ -1298,6 +1323,41 @@ mod tests {
             renamed_join_sql.contains(") AS \"left\"")
                 && renamed_join_sql.contains(") AS \"right\""),
             "projected join inputs must retain their aliases: {renamed_join_sql}"
+        );
+
+        let joined = left
+            .join(
+                &right,
+                &["id".to_string()],
+                &["id".to_string()],
+                JoinType::Inner,
+            )
+            .unwrap();
+        let filtered_join_sql = joined
+            .filter(left.column("value").unwrap().gt(lit(0_i64)))
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            filtered_join_sql.contains(" JOIN ") && filtered_join_sql.contains(" WHERE "),
+            "filter after join must remain lowerable: {filtered_join_sql}"
+        );
+        let joined_aggregate_sql = joined
+            .aggregate(
+                vec![left.column("id").unwrap()],
+                vec![aggregate_sum(right.column("value").unwrap()).alias("total")],
+            )
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        let group_position = joined_aggregate_sql.find("\"left\".id").unwrap();
+        let aggregate_position = joined_aggregate_sql
+            .to_ascii_lowercase()
+            .find("sum(")
+            .unwrap();
+        assert!(
+            group_position < aggregate_position,
+            "aggregate output must follow DataFrame schema order: {joined_aggregate_sql}"
         );
 
         let aggregate = left
@@ -1460,6 +1520,16 @@ mod tests {
         assert!(sql.contains("JOIN"));
         assert!(sql.contains("left_value"));
         assert!(sql.contains("right_value"));
+
+        let chained_sql = joined
+            .select(vec![col("left_value")])
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        assert!(
+            chained_sql.contains(" AS left_value"),
+            "chained join projection must retain its output alias: {chained_sql}"
+        );
     }
 
     #[test]
