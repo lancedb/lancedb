@@ -184,7 +184,7 @@ impl JobFailureInfo {
     }
 }
 
-/// A described job from `Connection.describe_job`.
+/// The server-side record behind a `Job` handle.
 #[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct JobDescription {

@@ -76,7 +76,7 @@ if TYPE_CHECKING:
     from .pydantic import LanceModel
 
     from ._lancedb import Connection as LanceDbConnection
-    from ._lancedb import JobDescription, JobInfo
+    from ._lancedb import JobInfo
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from ._lancedb import Session
@@ -745,29 +745,19 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def job(self, job_id: str) -> Job:
-        """A [Job][lancedb.job.Job] handle for a server-side job by id.
+    def load_job(self, job_id: str) -> Optional[Job]:
+        """Load a server-side job by id, returning a handle with its record
+        already populated. Returns None when the server has no such job.
 
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+        The returned [Job][lancedb.job.Job] answers for its own state,
+        specification, result, failure and event history, so there is no
+        separate connection-level call for any of them.
         """
-        raise NotImplementedError("job is not supported for this connection type")
+        raise NotImplementedError("load_job is not supported for this connection type")
 
     def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
         raise NotImplementedError("list_jobs is not supported for this connection type")
-
-    def describe_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Reports the job's state, its specification, and -- once the job
-        succeeds -- its terminal result. Returns None when the server has no
-        such job.
-        """
-        raise NotImplementedError(
-            "describe_job is not supported for this connection type"
-        )
 
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -778,42 +768,6 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError(
             "cancel_job is not supported for this connection type"
-        )
-
-    def query_job_events(
-        self,
-        job_id: Optional[str] = None,
-        *,
-        limit: Optional[int] = None,
-        filter: Optional[str] = None,
-    ) -> pa.Table:
-        """The recorded lifecycle events of a server-side job.
-
-        Where
-        [describe_job][lancedb.db.DBConnection.describe_job] reports a
-        terminal result only once the job reaches one, events are written as
-        the job runs and outlive the workers that produced them. A
-        distributed job records a `claim`/`claim_complete` pair per unit of
-        work, each carrying `rows_processed`, so a job that never finishes
-        still accounts for what it did.
-
-        Covers every job when `job_id` is None.
-
-        Parameters
-        ----------
-        job_id: str, optional
-            Restrict to one job.
-        limit: int, optional
-            Maximum event rows to return. The server caps results at 1000 by
-            default and 10,000 at most, and truncates without saying so, so
-            pass this for a job that emits an event per fragment.
-        filter: str, optional
-            SQL-like expression over the `state`, `updated_by`,
-            `emitted_from`, `emitted_by`, and `claim_entity` columns, such as
-            ``state = 'claim_complete'``.
-        """
-        raise NotImplementedError(
-            "query_job_events is not supported for this connection type"
         )
 
     def execute_query(
@@ -1493,14 +1447,12 @@ class LanceDBConnection(DBConnection):
         )
 
     @override
-    def job(self, job_id: str) -> Job:
-        """A [Job][lancedb.job.Job] handle for a server-side job by id.
-
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+    def load_job(self, job_id: str) -> Optional[Job]:
+        """Load a server-side job by id. See
+        [DBConnection.load_job][lancedb.db.DBConnection.load_job].
         """
-        return Job(self._conn.job(job_id))
+        inner = LOOP.run(self._conn.load_job(job_id))
+        return Job(inner) if inner is not None else None
 
     @override
     def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
@@ -1525,16 +1477,6 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.list_jobs())
 
     @override
-    def describe_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Reports the job's state, its specification, and -- once the job
-        succeeds -- its terminal result. Returns None when the server has no
-        such job.
-        """
-        return LOOP.run(self._conn.describe_job(job_id))
-
-    @override
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
 
@@ -1543,20 +1485,6 @@ class LanceDBConnection(DBConnection):
         success.
         """
         return LOOP.run(self._conn.cancel_job(job_id))
-
-    @override
-    def query_job_events(
-        self,
-        job_id: Optional[str] = None,
-        *,
-        limit: Optional[int] = None,
-        filter: Optional[str] = None,
-    ) -> pa.Table:
-        """The recorded lifecycle events of a server-side job.
-
-        See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
-        """
-        return LOOP.run(self._conn.query_job_events(job_id, limit=limit, filter=filter))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -2328,15 +2256,12 @@ class AsyncConnection(object):
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
 
-    def job(self, job_id: str) -> AsyncJob:
-        """An [AsyncJob][lancedb.job.AsyncJob] handle for a server-side job
-        by id.
-
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+    async def load_job(self, job_id: str) -> Optional[AsyncJob]:
+        """Load a server-side job by id. See
+        [DBConnection.load_job][lancedb.db.DBConnection.load_job].
         """
-        return AsyncJob(self._inner.job(job_id))
+        inner = await self._inner.load_job(job_id)
+        return AsyncJob(inner) if inner is not None else None
 
     async def create_function_async(
         self, definition: UdfDefinition
@@ -2376,15 +2301,6 @@ class AsyncConnection(object):
         """List server-side jobs across the database's tables."""
         return await self._inner.list_jobs()
 
-    async def describe_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Reports the job's state, its specification, and -- once the job
-        succeeds -- its terminal result. Returns None when the server has no
-        such job.
-        """
-        return await self._inner.describe_job(job_id)
-
     async def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
 
@@ -2393,19 +2309,6 @@ class AsyncConnection(object):
         success.
         """
         return await self._inner.cancel_job(job_id)
-
-    async def query_job_events(
-        self,
-        job_id: Optional[str] = None,
-        *,
-        limit: Optional[int] = None,
-        filter: Optional[str] = None,
-    ) -> pa.Table:
-        """The recorded lifecycle events of a server-side job.
-
-        See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
-        """
-        return await self._inner.query_job_events(job_id, limit=limit, filter=filter)
 
     async def execute_query(
         self,

@@ -1016,51 +1016,26 @@ describe("remote connection jobs surface", () => {
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
 
-        const description = await db.describeJob("job-1");
-        expect(description?.state).toEqual("failed");
-        expect(JSON.parse(description?.specJson ?? "")).toEqual({
-          column: "vec",
-        });
-        expect(description?.resultJson ?? null).toBeNull();
-        expect(description?.failure?.message).toEqual("worker died");
-        expect(await db.describeJob("missing")).toBeNull();
+        expect(await db.cancelJob("job-1")).toBe(true);
+        expect(await db.cancelJob("missing")).toBe(false);
 
-        const finished = await db.describeJob("job-2");
+        // Loading a job hands back a populated handle; a missing one is null.
+        expect(await db.loadJob("missing")).toBeNull();
+        const finished = await db.loadJob("job-2");
         expect(finished?.state).toEqual("finished");
-        expect(JSON.parse(finished?.resultJson ?? "")).toEqual({
+        expect(finished?.result).toEqual({
           // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
           rows_assigned: 1000000,
         });
 
-        expect(await db.cancelJob("job-1")).toBe(true);
-        expect(await db.cancelJob("missing")).toBe(false);
-
-        const history = await db.queryJobEvents({ jobId: "job-1" });
-        expect(history.numRows).toEqual(2);
-        expect(queryEventsPayloads.pop()).toEqual({
-          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
-          job_id: "job-1",
-        });
-
-        await db.queryJobEvents({
-          jobId: "job-1",
-          limit: 10000,
-          filter: "state = 'claim_complete'",
-        });
-        expect(queryEventsPayloads.pop()).toEqual({
-          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
-          job_id: "job-1",
-          limit: 10000,
-          filter: "state = 'claim_complete'",
-        });
-
-        const job = db.job("job-1");
+        const job = await db.loadJob("job-1");
+        if (job === null) {
+          throw new Error("expected job-1 to load");
+        }
         expect(job.id).toEqual("job-1");
 
-        // A handle knows nothing until it has talked to the server.
-        expect(job.state ?? null).toBeNull();
-        expect(job.jobType ?? null).toBeNull();
-
+        // loadJob already populated the handle; refresh() re-reads it.
+        expect(job.state).toEqual("failed");
         await job.refresh();
         expect(job.state).toEqual("failed");
         expect(job.jobType).toEqual("create_index");

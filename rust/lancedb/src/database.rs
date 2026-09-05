@@ -18,8 +18,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::RecordBatch;
-
 use lance::dataset::ReadParams;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
@@ -206,7 +204,7 @@ pub enum ReadConsistency {
 /// compaction, column refresh, ...).
 #[derive(Debug, Clone)]
 pub struct JobInfo {
-    /// The job id -- what [`Database::describe_job`] and
+    /// The job id -- what [`Database::load_job`] and
     /// [`Database::cancel_job`] accept.
     pub job_id: String,
     /// The table the job runs against, without URI or namespace.
@@ -218,8 +216,8 @@ pub struct JobInfo {
     pub created_at_millis: i64,
 }
 
-/// A described job from [`Database::describe_job`]: lifecycle state plus the
-/// job-type-specific specification and result.
+/// The server-side record behind a [`crate::job::Job`] handle: lifecycle
+/// state plus the job-type-specific specification and result.
 #[derive(Debug, Clone)]
 pub struct JobDescription {
     pub job_id: String,
@@ -232,61 +230,11 @@ pub struct JobDescription {
     pub spec: serde_json::Value,
     /// The job-type-specific terminal result, for job types that define one.
     /// `None` until the job succeeds, so a job that never terminates reports
-    /// its progress through [`Database::query_job_events`] instead.
+    /// its progress through [`crate::job::Job::events`] instead.
     pub result: Option<serde_json::Value>,
     /// Why the job failed, when the job is failed and the server reports a
     /// reason.
     pub failure: Option<crate::error::JobFailure>,
-}
-
-/// Which job events [`Database::query_job_events`] returns.
-///
-/// Defaults to every event of every job, up to the server's own row cap.
-#[derive(Debug, Clone, Default)]
-pub struct QueryJobEventsRequest {
-    /// Restrict to one job. All jobs when `None`.
-    pub job_id: Option<String>,
-    /// Maximum event rows to return. The server applies its own default
-    /// (1000 rows) and maximum (10,000 rows) when this is `None`, and
-    /// truncates without saying so, which matters for a job with one event
-    /// per fragment.
-    pub limit: Option<u32>,
-    /// SQL-like filter over the event columns `state`, `updated_by`,
-    /// `emitted_from`, `emitted_by`, and `claim_entity`. For example
-    /// `state = 'claim_complete'` selects only per-claim completions.
-    pub filter: Option<String>,
-}
-
-impl QueryJobEventsRequest {
-    /// Every event of one job.
-    pub fn new(job_id: impl Into<String>) -> Self {
-        Self {
-            job_id: Some(job_id.into()),
-            ..Default::default()
-        }
-    }
-
-    pub fn limit(mut self, limit: u32) -> Self {
-        self.limit = Some(limit);
-        self
-    }
-
-    pub fn filter(mut self, filter: impl Into<String>) -> Self {
-        self.filter = Some(filter.into());
-        self
-    }
-}
-
-impl From<&str> for QueryJobEventsRequest {
-    fn from(job_id: &str) -> Self {
-        Self::new(job_id)
-    }
-}
-
-impl From<String> for QueryJobEventsRequest {
-    fn from(job_id: String) -> Self {
-        Self::new(job_id)
-    }
 }
 
 fn job_op_not_supported<T>(what: &str) -> Result<T> {
@@ -369,35 +317,20 @@ pub trait Database:
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
     }
-    /// A [`crate::job::Job`] handle for a server-side job by id, suitable for
-    /// waiting on or cancelling the job. The handle is constructed without a
-    /// server round trip; an unknown id surfaces when the handle is used.
-    fn job(&self, _job_id: &str) -> Result<crate::job::Job> {
-        job_op_not_supported("job")
+    /// Load a job by id, returning a handle with its record already
+    /// populated. `None` when the server has no such job.
+    async fn load_job(&self, _job_id: &str) -> Result<Option<crate::job::Job>> {
+        job_op_not_supported("load_job")
     }
     /// List server-side jobs across the database's tables.
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
         job_op_not_supported("list_jobs")
-    }
-    /// Describe a single job by id. `None` when the server has no such job.
-    async fn describe_job(&self, _job_id: &str) -> Result<Option<JobDescription>> {
-        job_op_not_supported("describe_job")
     }
     /// Request cancellation of a job by id. Returns true if the server
     /// accepted the cancellation, false if no such job exists. Cancelling an
     /// already-terminal job is a no-op success.
     async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
         job_op_not_supported("cancel_job")
-    }
-    /// The recorded lifecycle events of a job, as Arrow batches. Every event
-    /// the job registry kept, including per-claim `claim`, `heartbeat`, and
-    /// `claim_complete` rows, so progress stays readable after the worker
-    /// that reported it is gone.
-    ///
-    /// A query that matches no events returns one empty batch rather than no
-    /// batches, so the event schema is always available.
-    async fn query_job_events(&self, _request: QueryJobEventsRequest) -> Result<Vec<RecordBatch>> {
-        job_op_not_supported("query_job_events")
     }
     /// Start executing a SQL statement on a remote database.
     async fn execute_query_async(

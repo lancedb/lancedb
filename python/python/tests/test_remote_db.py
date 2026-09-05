@@ -2576,47 +2576,21 @@ def test_remote_connection_jobs_surface():
         assert jobs[0].table == "t1"
         assert jobs[1].state == "finished"
 
-        description = db.describe_job("job-1")
-        assert description.job_type == "create_index"
-        assert description.state == "failed"
-        assert description.spec == {"column": "vec"}
-        assert description.result is None
-        assert description.failure.message == "worker died"
-        assert description.failure.retryable is True
-        assert db.describe_job("missing") is None
-        # repr shows everything, including the fields that used to be dropped.
-        assert "spec=" in repr(description)
-        assert "failure=" in repr(description)
-
-        finished = db.describe_job("job-2")
-        assert finished.state == "finished"
-        assert finished.result == {
-            "rows_assigned": 1000000,
-            "rows_failed": 0,
-        }
-        assert json.loads(finished._result_json) == finished.result
-
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
 
-        events = db.query_job_events("job-1")
-        assert isinstance(events, pa.Table)
-        assert events.num_rows == 2
-        assert events.column("state").to_pylist() == ["created", "done"]
-        assert query_events_payloads[-1] == {"job_id": "job-1"}
+        # Loading a job hands back a populated handle; a missing one is None.
+        assert db.load_job("missing") is None
+        finished = db.load_job("job-2")
+        assert finished.state == "finished"
+        assert finished.result == {"rows_assigned": 1000000, "rows_failed": 0}
 
-        db.query_job_events("job-1", limit=10_000, filter="state = 'claim_complete'")
-        assert query_events_payloads[-1] == {
-            "job_id": "job-1",
-            "limit": 10_000,
-            "filter": "state = 'claim_complete'",
-        }
-
-        db.query_job_events()
-        assert query_events_payloads[-1] == {}
-
-        job = db.job("job-1")
+        job = db.load_job("job-1")
         assert job.id == "job-1"
+        # Loading already populated the handle.
+        assert job.state == "failed"
+        assert job.spec == {"column": "vec"}
+        assert job.failure.message == "worker died"
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
@@ -2662,16 +2636,11 @@ def test_remote_job_handle_reports_its_own_detail():
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        job = db.job("job-1")
+        job = db.load_job("job-1")
 
-        # A handle knows nothing until it has talked to the server, because
-        # submitting an operation returns only a job id.
-        assert job.state is None
-        assert job.job_type is None
-        assert repr(job) == "Job(id='job-1', not refreshed)"
-
-        job.refresh()
+        # Loading populates the handle in the same round trip.
         assert job.state == "finished"
+        job.refresh()
         assert job.job_type == "refresh_column"
         assert job.creation_ms == 2000
         assert job.spec == {"column": "vec"}

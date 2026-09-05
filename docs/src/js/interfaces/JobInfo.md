@@ -26,7 +26,7 @@ When the job was created, in milliseconds since the epoch.
 jobId: string;
 ```
 
-The job id -- what `Connection.describeJob` and `Connection.cancelJob`
+The job id -- what `Connection.loadJob` and `Connection.cancelJob`
 accept.
 
 ***

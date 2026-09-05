@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lancedb::database::{CreateTableMode, Database, QueryJobEventsRequest};
+use lancedb::database::{CreateTableMode, Database};
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
@@ -442,14 +442,16 @@ impl Connection {
         self.get_inner()?.drop_all_tables(&ns).await.default_error()
     }
 
-    /// A `Job` handle for a server-side job by id.
+    /// Load a server-side job by id, returning a handle with its record
+    /// already populated. Null when the server has no such job.
     ///
-    /// The handle is constructed without a server round trip; an unknown id
-    /// surfaces when the handle is used.
-    #[napi]
-    pub fn job(&self, job_id: String) -> napi::Result<crate::job::Job> {
-        let job = self.get_inner()?.job(job_id).default_error()?;
-        Ok(crate::job::Job::new(job))
+    /// The returned handle answers for its own state, specification, result,
+    /// failure and event history, so there is no separate connection-level
+    /// call for any of them.
+    #[napi(catch_unwind)]
+    pub async fn load_job(&self, job_id: String) -> napi::Result<Option<crate::job::Job>> {
+        let job = self.get_inner()?.load_job(&job_id).await.default_error()?;
+        Ok(job.map(crate::job::Job::new))
     }
 
     /// List server-side jobs across the database's tables.
@@ -459,49 +461,11 @@ impl Connection {
         Ok(jobs.into_iter().map(Into::into).collect())
     }
 
-    /// Describe a single server-side job by id: its state, its specification,
-    /// and -- once it succeeds -- its terminal result. `null` when the server
-    /// has no such job.
-    #[napi(catch_unwind)]
-    pub async fn describe_job(
-        &self,
-        job_id: String,
-    ) -> napi::Result<Option<crate::job::JobDescription>> {
-        let description = self
-            .get_inner()?
-            .describe_job(&job_id)
-            .await
-            .default_error()?;
-        Ok(description.map(Into::into))
-    }
-
     /// Request cancellation of a server-side job by id. Returns true if the
     /// server accepted the cancellation, false if no such job exists.
     #[napi(catch_unwind)]
     pub async fn cancel_job(&self, job_id: String) -> napi::Result<bool> {
         self.get_inner()?.cancel_job(&job_id).await.default_error()
-    }
-
-    /// The recorded lifecycle events of a server-side job (all jobs when
-    /// `job_id` is null), as an Arrow IPC stream buffer. A job with no
-    /// matching events yields a stream carrying only the event schema.
-    #[napi(catch_unwind)]
-    pub async fn query_job_events(
-        &self,
-        job_id: Option<String>,
-        limit: Option<u32>,
-        filter: Option<String>,
-    ) -> napi::Result<Buffer> {
-        let batches = self
-            .get_inner()?
-            .query_job_events(QueryJobEventsRequest {
-                job_id,
-                limit,
-                filter,
-            })
-            .await
-            .default_error()?;
-        crate::job::batches_to_ipc_buffer(&batches)
     }
 
     #[napi(catch_unwind)]

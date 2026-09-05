@@ -17,8 +17,8 @@ use crate::error::{Error, JobFailure, Result};
 
 /// Which of a job's events [`Job::events`] returns.
 ///
-/// This is [`crate::database::QueryJobEventsRequest`] without `job_id`, which
-/// the handle already knows.
+/// The handle already knows which job to ask about, so this narrows the
+/// query rather than naming one.
 #[derive(Debug, Clone, Default)]
 pub struct JobEventsRequest {
     /// Maximum event rows to return. The server applies its own default
@@ -207,6 +207,18 @@ impl Job<()> {
             },
             cache: RwLock::default(),
         }
+    }
+
+    /// A handle whose record the caller has already fetched, so the detail
+    /// accessors answer without a second round trip.
+    pub(crate) fn loaded(handle: Box<dyn JobHandle>, description: JobDescription) -> Self {
+        let job = Self::new(handle);
+        {
+            let mut cache = job.cache_write();
+            cache.state = Some(description.state.clone());
+            cache.description = Some(description);
+        }
+        job
     }
 }
 

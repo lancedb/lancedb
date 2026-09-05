@@ -317,27 +317,6 @@ Creates a new Table and initialize it with new data.
 
 ***
 
-### describeJob()
-
-```ts
-abstract describeJob(jobId): Promise<null | JobDescription>
-```
-
-Describe a single server-side job by id: its state, its specification,
-and -- once the job succeeds -- its terminal result.
-
-Resolves to `null` when the server has no such job.
-
-#### Parameters
-
-* **jobId**: `string`
-
-#### Returns
-
-`Promise`&lt;`null` \| [`JobDescription`](../interfaces/JobDescription.md)&gt;
-
-***
-
 ### describeNamespace()
 
 ```ts
@@ -483,28 +462,6 @@ Return true if the connection has not been closed
 
 ***
 
-### job()
-
-```ts
-abstract job(jobId): Job
-```
-
-A [Job](Job.md) handle for a server-side job by id.
-
-The handle is constructed without a server round trip; an unknown id
-surfaces when the handle is used. Dropping the handle has no effect on
-the job itself.
-
-#### Parameters
-
-* **jobId**: `string`
-
-#### Returns
-
-[`Job`](Job.md)
-
-***
-
 ### listJobs()
 
 ```ts
@@ -629,6 +586,29 @@ A page of table names and an
 
 ***
 
+### loadJob()
+
+```ts
+abstract loadJob(jobId): Promise<null | Job>
+```
+
+Load a server-side job by id, returning a handle with its record already
+populated. Resolves to `null` when the server has no such job.
+
+The returned [Job](Job.md) answers for its own state, specification,
+result, failure and event history, so there is no separate
+connection-level call for any of them.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`null` \| [`Job`](Job.md)&gt;
+
+***
+
 ### openMaterializedView()
 
 ```ts
@@ -669,36 +649,6 @@ abstract openTable(
 #### Returns
 
 `Promise`&lt;[`Table`](Table.md)&gt;
-
-***
-
-### queryJobEvents()
-
-```ts
-abstract queryJobEvents(options?): Promise<Table<any>>
-```
-
-The recorded lifecycle events of a server-side job, as an Arrow table.
-
-Where [Connection.describeJob](Connection.md#describejob) reports a terminal result only once
-the job reaches one, events are written as the job runs and outlive the
-workers that produced them. A distributed job records a
-`claim`/`claim_complete` pair per unit of work, each carrying
-`rows_processed`.
-
-Covers every job when `jobId` is omitted. The server caps results at 1000
-rows by default and 10,000 at most, and truncates without saying so, so
-pass `limit` for a job that emits an event per fragment. `filter` is a
-SQL-like expression over the `state`, `updated_by`, `emitted_from`,
-`emitted_by`, and `claim_entity` columns.
-
-#### Parameters
-
-* **options?**: [`QueryJobEventsOptions`](../interfaces/QueryJobEventsOptions.md)
-
-#### Returns
-
-`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 ***
 

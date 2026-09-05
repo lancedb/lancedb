@@ -20,14 +20,13 @@ use lance_namespace::models::{
 
 use crate::Error;
 use crate::database::{
-    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    JobDescription, JobInfo, OpenTableRequest, QueryJobEventsRequest, ReadConsistency,
-    TableNamesRequest,
+    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, JobInfo,
+    OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
-use crate::remote::job::{DescribeJobResponse, RemoteJob, job_state_to_client};
+use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
@@ -672,11 +671,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(response.dropped)
     }
 
-    fn job(&self, job_id: &str) -> Result<crate::job::Job> {
-        Ok(crate::job::Job::new(Box::new(super::job::RemoteJob::new(
-            self.client.clone(),
-            job_id.to_string(),
-        ))))
+    async fn load_job(&self, job_id: &str) -> Result<Option<Job>> {
+        let handle = super::job::RemoteJob::new(self.client.clone(), job_id.to_string());
+        match crate::job::JobHandle::describe(&handle).await {
+            Ok(description) => Ok(Some(Job::loaded(Box::new(handle), description))),
+            Err(Error::Http {
+                status_code: Some(StatusCode::NOT_FOUND),
+                ..
+            }) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
@@ -713,24 +717,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(out)
     }
 
-    async fn describe_job(&self, job_id: &str) -> Result<Option<JobDescription>> {
-        let req = self
-            .client
-            .post("/v1/jobs/describe")
-            .json(&serde_json::json!({ "job_id": job_id }));
-        let (request_id, rsp) = self.client.send(req).await?;
-        let rsp = match self.client.check_response(&request_id, rsp).await {
-            Ok(rsp) => rsp,
-            Err(Error::Http {
-                status_code: Some(StatusCode::NOT_FOUND),
-                ..
-            }) => return Ok(None),
-            Err(err) => return Err(err),
-        };
-        let body: DescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
-        Ok(Some(body.into_description()))
-    }
-
     async fn cancel_job(&self, job_id: &str) -> Result<bool> {
         let req = self
             .client
@@ -745,23 +731,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }) => Ok(false),
             Err(err) => Err(err),
         }
-    }
-
-    async fn query_job_events(
-        &self,
-        request: QueryJobEventsRequest,
-    ) -> Result<Vec<arrow_array::RecordBatch>> {
-        let mut body = serde_json::json!({});
-        if let Some(job_id) = request.job_id {
-            body["job_id"] = serde_json::Value::String(job_id);
-        }
-        if let Some(limit) = request.limit {
-            body["limit"] = serde_json::Value::from(limit);
-        }
-        if let Some(filter) = request.filter {
-            body["filter"] = serde_json::Value::String(filter);
-        }
-        super::job::fetch_job_events(&self.client, body).await
     }
 
     async fn execute_query_async(
@@ -1302,7 +1271,7 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::{
         Connection, Error,
-        database::{CreateTableMode, QueryJobEventsRequest},
+        database::CreateTableMode,
         job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
@@ -2652,7 +2621,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_describe_job() {
+    async fn test_load_job() {
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
             assert_eq!(request.url().path(), "/v1/jobs/describe");
@@ -2666,21 +2635,23 @@ mod tests {
                 )
                 .unwrap()
         });
-        let job = conn.describe_job("job-1").await.unwrap().unwrap();
-        assert_eq!(job.job_id, "job-1");
-        assert_eq!(job.job_type, "create_index");
-        assert_eq!(job.state, "failed");
-        assert_eq!(job.creation_ms, 1000);
-        assert_eq!(job.spec["column"], "vec");
-        assert!(job.result.is_none());
-        let failure = job.failure.unwrap();
+        // Loading populates the handle, so the accessors answer without a
+        // second round trip.
+        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        assert_eq!(job.id(), Some("job-1"));
+        assert_eq!(job.job_type().as_deref(), Some("create_index"));
+        assert_eq!(job.state().as_deref(), Some("failed"));
+        assert_eq!(job.creation_ms(), Some(1000));
+        assert_eq!(job.spec().unwrap()["column"], "vec");
+        assert!(job.result().is_none());
+        let failure = job.failure().unwrap();
         assert_eq!(failure.phase.as_deref(), Some("execute"));
         assert_eq!(failure.message.as_deref(), Some("worker died"));
         assert_eq!(failure.retryable, Some(true));
     }
 
     #[tokio::test]
-    async fn test_describe_job_reports_the_terminal_result() {
+    async fn test_load_job_reports_the_terminal_result() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder()
                 .status(200)
@@ -2689,46 +2660,26 @@ mod tests {
                 )
                 .unwrap()
         });
-        let job = conn.describe_job("job-1").await.unwrap().unwrap();
-        assert_eq!(job.state, "finished");
-        let result = job.result.unwrap();
+        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        assert_eq!(job.state().as_deref(), Some("finished"));
+        let result = job.result().unwrap();
         assert_eq!(result["rows_assigned"], 1_000_000);
         assert_eq!(result["rows_failed"], 0);
     }
 
     #[tokio::test]
-    async fn test_describe_job_missing_is_none() {
+    async fn test_load_job_missing_is_none() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder()
                 .status(404)
                 .body("no such job")
                 .unwrap()
         });
-        assert!(conn.describe_job("nope").await.unwrap().is_none());
+        assert!(conn.load_job("nope").await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn test_cancel_job() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.url().path(), "/v1/jobs/cancel");
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"job_id": "job-1"}"#)
-                .unwrap()
-        });
-        assert!(conn.cancel_job("job-1").await.unwrap());
-
-        let conn = Connection::new_with_handler(|_| {
-            http::Response::builder()
-                .status(404)
-                .body("no such job")
-                .unwrap()
-        });
-        assert!(!conn.cancel_job("nope").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_query_job_events_parses_arrow_stream() {
+    async fn test_job_events_scope_to_that_job() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "state",
             DataType::Utf8,
@@ -2737,117 +2688,42 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![Arc::new(arrow_array::StringArray::from(vec![
-                "created", "done",
+                "claim_complete",
             ]))],
         )
         .unwrap();
-        let mut body = Vec::new();
+        let mut events = Vec::new();
         {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(&mut events, &schema).unwrap();
             writer.write(&batch).unwrap();
             writer.finish().unwrap();
         }
         let conn = Connection::new_with_handler(move |request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            if request.url().path() == "/v1/jobs/describe" {
+                return http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "IN_PROGRESS", "creation_ms": 1}"#
+                            .as_bytes()
+                            .to_vec(),
+                    )
+                    .unwrap();
+            }
             assert_eq!(request.url().path(), "/v1/jobs/query_events");
-            let req_body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(req_body["job_id"], "job-1");
+            // The handle supplies job_id; the caller only narrows the query.
+            assert_eq!(body["job_id"], "job-1");
+            assert_eq!(body["limit"], 500);
+            assert_eq!(body["filter"], "state = 'claim_complete'");
             http::Response::builder()
                 .status(200)
-                .body(body.clone())
+                .body(events.clone())
                 .unwrap()
         });
-        let batches = conn.query_job_events("job-1").await.unwrap();
-        assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].num_rows(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_query_job_events_sends_the_limit_and_filter() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "state",
-            DataType::Utf8,
-            false,
-        )]));
-        let mut body = Vec::new();
-        {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
-            writer.finish().unwrap();
-        }
-        let conn = Connection::new_with_handler(move |request| {
-            let req_body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(req_body["job_id"], "job-1");
-            assert_eq!(req_body["limit"], 10_000);
-            assert_eq!(req_body["filter"], "state = 'claim_complete'");
-            http::Response::builder()
-                .status(200)
-                .body(body.clone())
-                .unwrap()
-        });
-        conn.query_job_events(
-            QueryJobEventsRequest::new("job-1")
-                .filter("state = 'claim_complete'")
-                .limit(10_000),
-        )
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_job_handle_refreshes_its_own_detail() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.url().path(), "/v1/jobs/describe");
-            http::Response::builder()
-                .status(200)
-                .body(
-                    r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "DONE", "creation_ms": 1000, "spec": {"column": "vec"}, "result": {"rows_assigned": 1000000}}"#,
-                )
-                .unwrap()
-        });
-        let job = conn.job("job-1").unwrap();
-
-        // Nothing is known until the handle has talked to the server.
-        assert!(job.state().is_none());
-        assert!(job.description().is_none());
-        assert!(job.job_type().is_none());
-
-        job.refresh().await.unwrap();
-        assert_eq!(job.state().as_deref(), Some("finished"));
-        assert_eq!(job.job_type().as_deref(), Some("refresh_column"));
-        assert_eq!(job.creation_ms(), Some(1000));
-        assert_eq!(job.spec().unwrap()["column"], "vec");
-        assert_eq!(job.result().unwrap()["rows_assigned"], 1_000_000);
-        assert!(job.failure().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_job_handle_events_scope_to_that_job() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "state",
-            DataType::Utf8,
-            false,
-        )]));
-        let mut body = Vec::new();
-        {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
-            writer.finish().unwrap();
-        }
-        let conn = Connection::new_with_handler(move |request| {
-            assert_eq!(request.url().path(), "/v1/jobs/query_events");
-            let req_body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            // The handle supplies job_id; the caller only narrows it.
-            assert_eq!(req_body["job_id"], "job-1");
-            assert_eq!(req_body["limit"], 500);
-            assert_eq!(req_body["filter"], "state = 'claim_complete'");
-            http::Response::builder()
-                .status(200)
-                .body(body.clone())
-                .unwrap()
-        });
-        conn.job("job-1")
-            .unwrap()
+        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        let batches = job
             .events(
                 JobEventsRequest::default()
                     .limit(500)
@@ -2855,33 +2731,45 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 1);
     }
 
     #[tokio::test]
-    async fn test_query_job_events_defaults_to_every_job() {
+    async fn test_job_events_keep_the_schema_when_nothing_matches() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "state",
             DataType::Utf8,
             false,
         )]));
-        let mut body = Vec::new();
+        let mut events = Vec::new();
         {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(&mut events, &schema).unwrap();
             writer.finish().unwrap();
         }
         let conn = Connection::new_with_handler(move |request| {
-            let req_body: serde_json::Value =
+            if request.url().path() == "/v1/jobs/describe" {
+                return http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "IN_PROGRESS", "creation_ms": 1}"#
+                            .as_bytes()
+                            .to_vec(),
+                    )
+                    .unwrap();
+            }
+            let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(req_body, serde_json::json!({}));
+            // Only the job id when the caller narrows nothing.
+            assert_eq!(body, serde_json::json!({ "job_id": "job-1" }));
             http::Response::builder()
                 .status(200)
-                .body(body.clone())
+                .body(events.clone())
                 .unwrap()
         });
-        let batches = conn
-            .query_job_events(QueryJobEventsRequest::default())
-            .await
-            .unwrap();
+        let job = conn.load_job("job-1").await.unwrap().unwrap();
+        let batches = job.events(JobEventsRequest::default()).await.unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 0);
         assert_eq!(batches[0].schema(), schema);
@@ -3079,7 +2967,9 @@ mod tests {
         let polls_ref = polls.clone();
         let conn = Connection::new_with_handler(move |request| {
             assert_eq!(request.url().path(), "/v1/jobs/describe");
-            let state = if polls_ref.fetch_add(1, Ordering::SeqCst) == 0 {
+            // Two in-progress answers: one for the load, one for the first
+            // status poll.
+            let state = if polls_ref.fetch_add(1, Ordering::SeqCst) < 2 {
                 "IN_PROGRESS"
             } else {
                 "DONE"
@@ -3092,11 +2982,13 @@ mod tests {
                 ))
                 .unwrap()
         });
-        let job = conn.job("job-1").unwrap();
+        let job = conn.load_job("job-1").await.unwrap().unwrap();
         assert_eq!(job.id(), Some("job-1"));
+        // Loading already answered the state; no extra call needed for it.
+        assert_eq!(job.state().as_deref(), Some("running"));
         assert_eq!(job.status().await.unwrap(), "running");
         job.wait().await.unwrap();
         assert_eq!(job.status().await.unwrap(), "finished");
-        assert!(polls.load(Ordering::SeqCst) >= 3);
+        assert!(polls.load(Ordering::SeqCst) >= 4);
     }
 }

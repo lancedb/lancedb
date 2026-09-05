@@ -92,15 +92,9 @@ export {
   DropNamespaceResponse,
   DescribeNamespaceResponse,
   RenameTableOptions,
-  QueryJobEventsOptions,
 } from "./connection";
 
-export {
-  JobDescription,
-  JobFailureInfo,
-  JobInfo,
-  Session,
-} from "./native.js";
+export { JobFailureInfo, JobInfo, Session } from "./native.js";
 
 export { Job, JobEventsOptions } from "./job";
 

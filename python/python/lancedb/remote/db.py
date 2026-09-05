@@ -31,7 +31,7 @@ from ..sql import QueryDescription
 from ..materialized_view import MaterializedView, SelectArg
 
 if TYPE_CHECKING:
-    from .._lancedb import JobDescription, JobInfo
+    from .._lancedb import JobInfo
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
@@ -739,14 +739,12 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def job(self, job_id: str) -> Job:
-        """A [Job][lancedb.job.Job] handle for a server-side job by id.
-
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+    def load_job(self, job_id: str) -> Optional[Job]:
+        """Load a server-side job by id. See
+        [DBConnection.load_job][lancedb.db.DBConnection.load_job].
         """
-        return Job(self._conn.job(job_id))
+        inner = LOOP.run(self._conn.load_job(job_id))
+        return Job(inner) if inner is not None else None
 
     @override
     def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
@@ -770,16 +768,6 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.list_jobs())
 
     @override
-    def describe_job(self, job_id: str) -> Optional["JobDescription"]:
-        """Describe a single server-side job by id.
-
-        Reports the job's state, its specification, and -- once the job
-        succeeds -- its terminal result. Returns None when the server has no
-        such job.
-        """
-        return LOOP.run(self._conn.describe_job(job_id))
-
-    @override
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
 
@@ -788,20 +776,6 @@ class RemoteDBConnection(DBConnection):
         success.
         """
         return LOOP.run(self._conn.cancel_job(job_id))
-
-    @override
-    def query_job_events(
-        self,
-        job_id: Optional[str] = None,
-        *,
-        limit: Optional[int] = None,
-        filter: Optional[str] = None,
-    ) -> pa.Table:
-        """The recorded lifecycle events of a server-side job.
-
-        See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
-        """
-        return LOOP.run(self._conn.query_job_events(job_id, limit=limit, filter=filter))
 
     @override
     def execute_query_async(

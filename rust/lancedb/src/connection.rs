@@ -23,8 +23,8 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, JobDescription, JobInfo, OpenTableRequest,
-    QueryJobEventsRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, ReadConsistency,
+    TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -670,14 +670,33 @@ impl Connection {
         self.internal.read_consistency().await
     }
 
-    /// A [`crate::job::Job`] handle for a server-side job by id, suitable for
-    /// waiting on or cancelling the job.
+    /// Load a server-side job by id, returning a handle with its record
+    /// already populated. `None` when the server has no such job.
     ///
-    /// The handle is constructed without a server round trip; an unknown id
-    /// surfaces when the handle is used. Only server-backed databases support
-    /// job handles by id.
-    pub fn job(&self, job_id: impl AsRef<str>) -> Result<crate::job::Job> {
-        self.internal.job(job_id.as_ref())
+    /// This is the one way in: the returned [`crate::job::Job`] answers for
+    /// its own state, specification, result, failure and event history, so
+    /// there is no separate connection-level call for any of them.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use lancedb::job::JobEventsRequest;
+    /// # async fn load_job(
+    /// #     connection: &lancedb::Connection,
+    /// #     job_id: &str,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// if let Some(job) = connection.load_job(job_id).await? {
+    ///     println!("{:?} {:?}", job.state(), job.result());
+    ///     let done = job
+    ///         .events(JobEventsRequest::default().filter("state = 'claim_complete'"))
+    ///         .await?;
+    ///     println!("{} completions", done.iter().map(|b| b.num_rows()).sum::<usize>());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn load_job(&self, job_id: impl AsRef<str>) -> Result<Option<crate::job::Job>> {
+        self.internal.load_job(job_id.as_ref()).await
     }
 
     /// List server-side jobs across the database's tables.
@@ -685,67 +704,10 @@ impl Connection {
         self.internal.list_jobs().await
     }
 
-    /// Describe a single server-side job by id: its state, its specification,
-    /// and -- once it succeeds -- its terminal result. `None` when the server
-    /// has no such job.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # async fn describe_job(
-    /// #     connection: &lancedb::Connection,
-    /// #     job_id: &str,
-    /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// if let Some(job) = connection.describe_job(job_id).await? {
-    ///     println!("{} {} {:?}", job.job_type, job.state, job.result);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn describe_job(&self, job_id: impl AsRef<str>) -> Result<Option<JobDescription>> {
-        self.internal.describe_job(job_id.as_ref()).await
-    }
-
     /// Request cancellation of a server-side job by id. Returns true if the
     /// server accepted the cancellation, false if no such job exists.
     pub async fn cancel_job(&self, job_id: impl AsRef<str>) -> Result<bool> {
         self.internal.cancel_job(job_id.as_ref()).await
-    }
-
-    /// The recorded lifecycle events of a server-side job, as Arrow batches.
-    ///
-    /// Unlike [`Connection::describe_job`], which reports a terminal result
-    /// only once the job reaches one, the event history is written as the job
-    /// runs and outlives the workers that produced it. Distributed jobs record
-    /// one `claim`/`claim_complete` pair per unit of work, each carrying
-    /// `rows_processed`, so a job that never finishes still accounts for what
-    /// it did.
-    ///
-    /// A bare job id asks for that job's whole history; build a
-    /// [`QueryJobEventsRequest`] to narrow it.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use lancedb::database::QueryJobEventsRequest;
-    /// # async fn query_job_events(
-    /// #     connection: &lancedb::Connection,
-    /// #     job_id: &str,
-    /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// let request = QueryJobEventsRequest::new(job_id)
-    ///     .filter("state = 'claim_complete'")
-    ///     .limit(10_000);
-    /// for batch in connection.query_job_events(request).await? {
-    ///     println!("{} completions", batch.num_rows());
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn query_job_events(
-        &self,
-        request: impl Into<QueryJobEventsRequest>,
-    ) -> Result<Vec<RecordBatch>> {
-        self.internal.query_job_events(request.into()).await
     }
 
     /// Drop a table in the database.
