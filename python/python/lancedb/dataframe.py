@@ -88,8 +88,8 @@ class _DataFrameBase:
         """Sort rows using DataFusion-style sort expressions.
 
         For remote execution, apply sorting after filters and aliases. One final
-        projection after sorting is supported, but ordering through multiple
-        projections cannot yet be preserved.
+        projection directly after sorting is supported, but ordering through an
+        intervening limit or multiple projections cannot yet be preserved.
         """
         if not expressions:
             raise ValueError("sort requires at least one expression")

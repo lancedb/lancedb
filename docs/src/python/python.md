@@ -130,10 +130,10 @@ aliased output columns before those operations when the join retains columns fro
 both input relations.
 
 For deterministic remote ordering, apply `sort` after filters and aliases. One
-final projection after sorting is supported, including a projection that omits
-the sort key. Plans that would need to carry ordering through multiple
-projections, a filter, or an alias are rejected instead of emitting SQL whose
-outer query could lose the ordering.
+final projection directly after sorting is supported, including a projection
+that omits the sort key. Plans that would need to carry ordering through an
+intervening limit, nested limits, multiple projections, a filter, or an alias
+are rejected instead of emitting SQL whose outer query could lose the ordering.
 
 ::: lancedb.dataframe.DataFrame
     options:

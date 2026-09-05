@@ -30,16 +30,17 @@ pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<Strin
 }
 
 fn validate_output_sort(plan: &LogicalPlan) -> datafusion_common::Result<()> {
-    let mut output = plan;
-    while let LogicalPlan::Limit(limit) = output {
-        output = &limit.input;
-    }
+    let output = if let LogicalPlan::Limit(limit) = plan {
+        limit.input.as_ref()
+    } else {
+        plan
+    };
     if matches!(output, LogicalPlan::Sort(_)) || !has_observable_sort(output) {
         return Ok(());
     }
 
     Err(datafusion_common::DataFusionError::NotImplemented(
-        "remote SQL lowering cannot preserve a sort through multiple projections, filters, or aliases; apply sort after those transformations"
+        "remote SQL lowering cannot preserve a sort through nested limits, multiple projections, filters, or aliases; apply sort after those transformations"
             .to_string(),
     ))
 }

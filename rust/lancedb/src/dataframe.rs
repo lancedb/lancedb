@@ -360,8 +360,9 @@ impl DataFrame {
     /// Sort by expressions expressed as `(expression, ascending, nulls_first)`.
     ///
     /// For remote SQL execution, apply sorting after filters and aliases. A
-    /// single final projection after sorting is supported, but ordering through
-    /// multiple projections cannot yet be preserved.
+    /// single final projection directly after sorting is supported, but
+    /// ordering through an intervening limit or multiple projections cannot
+    /// yet be preserved.
     pub fn sort(&self, expressions: Vec<(Expr, bool, bool)>) -> Result<Self> {
         let expressions: Vec<SortExpr> = expressions
             .into_iter()
@@ -1012,6 +1013,20 @@ mod tests {
                 .alias("ordered")
                 .unwrap()
                 .limit(2, 0)
+                .unwrap(),
+            events()
+                .sort(vec![(col("value"), true, false)])
+                .unwrap()
+                .limit(3, 0)
+                .unwrap()
+                .limit(2, 1)
+                .unwrap(),
+            events()
+                .sort(vec![(col("value"), true, false)])
+                .unwrap()
+                .limit(3, 0)
+                .unwrap()
+                .select(vec![col("id")])
                 .unwrap(),
         ];
         for frame in unsupported_orderings {
