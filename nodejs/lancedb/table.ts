@@ -19,6 +19,7 @@ import {
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
+import { Job } from "./job";
 import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsResult,
@@ -30,7 +31,6 @@ import {
   DropColumnsResult,
   IndexConfig,
   IndexStatistics,
-  Job,
   LsmStats,
   Branches as NativeBranches,
   OptimizeStats,
@@ -1124,13 +1124,15 @@ export class LocalTable extends Table {
   ): Promise<Job> {
     // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
-    return await this.inner.createIndexAsync(
-      nativeIndex,
-      column,
-      options?.replace,
-      options?.waitTimeoutSeconds,
-      options?.name,
-      options?.train,
+    return new Job(
+      await this.inner.createIndexAsync(
+        nativeIndex,
+        column,
+        options?.replace,
+        options?.waitTimeoutSeconds,
+        options?.name,
+        options?.train,
+      ),
     );
   }
 
@@ -1313,7 +1315,7 @@ export class LocalTable extends Table {
   }
 
   async refreshColumnAsync(column: string): Promise<Job> {
-    return await this.inner.refreshColumnAsync(column);
+    return new Job(await this.inner.refreshColumnAsync(column));
   }
 
   async refreshMaterializedView(

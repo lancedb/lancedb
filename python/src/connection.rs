@@ -13,11 +13,7 @@ use crate::{
     runtime::future_into_py,
     table::Table,
 };
-use arrow::{
-    datatypes::Schema,
-    ffi_stream::ArrowArrayStreamReader,
-    pyarrow::{FromPyArrow, ToPyArrow},
-};
+use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
@@ -28,7 +24,7 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods},
+    types::{PyAnyMethods, PyDict, PyDictMethods, PyList},
 };
 
 #[pyclass]
@@ -644,9 +640,12 @@ impl Connection {
         })
     }
 
-    pub fn job(&self, job_id: String) -> PyResult<crate::job::Job> {
-        let inner = self.get_inner()?.clone();
-        Ok(crate::job::Job::new(inner.job(job_id).infer_error()?))
+    pub fn open_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let job = inner.open_job(&job_id).await.infer_error()?;
+            Ok(crate::job::Job::new(job))
+        })
     }
 
     pub fn create_function_async(
@@ -716,36 +715,10 @@ impl Connection {
         })
     }
 
-    pub fn get_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            let description = inner.get_job(&job_id).await.infer_error()?;
-            Ok(description.map(crate::job::JobDescription::from))
-        })
-    }
-
     pub fn cancel_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             inner.cancel_job(&job_id).await.infer_error()
-        })
-    }
-
-    #[pyo3(signature = (job_id=None))]
-    pub fn job_history(
-        self_: PyRef<'_, Self>,
-        job_id: Option<String>,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            let batches = inner.job_history(job_id.as_deref()).await.infer_error()?;
-            Python::attach(|py| {
-                let list = PyList::empty(py);
-                for batch in batches {
-                    list.append(batch.to_pyarrow(py)?)?;
-                }
-                Ok(list.unbind())
-            })
         })
     }
 }

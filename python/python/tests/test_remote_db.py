@@ -2467,7 +2467,7 @@ def test_remote_blob_byte_apis_not_supported_on_old_server():
 
 
 def test_remote_connection_jobs_surface():
-    from lancedb.exceptions import JobFailedError
+    from lancedb.exceptions import JobFailedError, JobNotFoundError
 
     schema = pa.schema([("state", pa.string())])
     batch = pa.record_batch([pa.array(["created", "done"])], schema=schema)
@@ -2475,6 +2475,7 @@ def test_remote_connection_jobs_surface():
     with pa.ipc.new_stream(sink, schema) as writer:
         writer.write_batch(batch)
     events_body = sink.getvalue().to_pybytes()
+    query_events_payloads = []
 
     def handler(request):
         content_len = int(request.headers.get("Content-Length", 0))
@@ -2512,6 +2513,22 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
             request.wfile.write(json.dumps(rsp).encode())
         elif request.path == "/v1/jobs/describe":
+            if payload["job_id"] == "job-2":
+                request.send_response(200)
+                request.send_header("Content-Type", "application/json")
+                request.end_headers()
+                request.wfile.write(
+                    json.dumps(
+                        dict(
+                            job_id="job-2",
+                            job_type="refresh_column",
+                            job_state="DONE",
+                            creation_ms=2000,
+                            result=dict(rows_assigned=1000000, rows_failed=0),
+                        )
+                    ).encode()
+                )
+                return
             if payload["job_id"] != "job-1":
                 request.send_response(404)
                 request.end_headers()
@@ -2543,7 +2560,7 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
             request.wfile.write(b'{"job_id": "job-1"}')
         elif request.path == "/v1/jobs/query_events":
-            assert payload["job_id"] == "job-1"
+            query_events_payloads.append(payload)
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
             request.end_headers()
@@ -2559,24 +2576,109 @@ def test_remote_connection_jobs_surface():
         assert jobs[0].table == "t1"
         assert jobs[1].state == "finished"
 
-        description = db.get_job("job-1")
-        assert description.job_type == "create_index"
-        assert description.state == "failed"
-        assert json.loads(description.spec_json) == {"column": "vec"}
-        assert description.failure.message == "worker died"
-        assert description.failure.retryable is True
-        assert db.get_job("missing") is None
-
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
 
-        batches = db.job_history("job-1")
-        assert len(batches) == 1
-        assert batches[0].num_rows == 2
-        assert batches[0].column("state").to_pylist() == ["created", "done"]
+        # Opening a job hands back a populated handle; a missing one fails.
+        with pytest.raises(JobNotFoundError, match="missing"):
+            db.open_job("missing")
+        finished = db.open_job("job-2")
+        assert finished.state == "finished"
+        assert finished.result == {"rows_assigned": 1000000, "rows_failed": 0}
 
-        job = db.job("job-1")
+        job = db.open_job("job-1")
         assert job.id == "job-1"
+        # Opening already populated the handle.
+        assert job.state == "failed"
+        assert job.spec == {"column": "vec"}
+        assert job.failure.message == "worker died"
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
+
+
+def test_remote_job_handle_reports_its_own_detail():
+    schema = pa.schema([("state", pa.string())])
+    batch = pa.record_batch([pa.array(["claim_complete"])], schema=schema)
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, schema) as writer:
+        writer.write_batch(batch)
+    events_body = sink.getvalue().to_pybytes()
+    event_payloads = []
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        payload = json.loads(body) if body else {}
+        if request.path == "/v1/jobs/describe":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        job_id="job-1",
+                        job_type="refresh_column",
+                        job_state="DONE",
+                        creation_ms=2000,
+                        spec=dict(column="vec"),
+                        result=dict(rows_assigned=1000000),
+                    )
+                ).encode()
+            )
+        elif request.path == "/v1/jobs/query_events":
+            event_payloads.append(payload)
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.end_headers()
+            request.wfile.write(events_body)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        job = db.open_job("job-1")
+
+        # Opening populates the handle in the same round trip.
+        assert job.state == "finished"
+        job.refresh()
+        assert job.job_type == "refresh_column"
+        assert job.creation_ms == 2000
+        assert job.spec == {"column": "vec"}
+        assert job.result == {"rows_assigned": 1000000}
+        assert job.failure is None
+        # The JSON payloads stay reachable, but as internal APIs.
+        assert json.loads(job._spec_json) == {"column": "vec"}
+        assert json.loads(job._result_json) == {"rows_assigned": 1000000}
+
+        # print() shows everything the handle knows and nothing it does not.
+        # print() lays every known field out on its own line, with the JSON
+        # payloads indented rather than crammed onto one line.
+        assert repr(job) == "\n".join(
+            [
+                "Job(",
+                "    id='job-1',",
+                "    state='finished',",
+                "    job_type='refresh_column',",
+                "    creation_ms=2000,",
+                "    spec={",
+                '        "column": "vec"',
+                "    },",
+                "    result={",
+                '        "rows_assigned": 1000000',
+                "    },",
+                ")",
+            ]
+        )
+        # Nothing it does not know shows up.
+        assert "failure" not in repr(job)
+
+        events = job.events(filter="state = 'claim_complete'", limit=500)
+        assert isinstance(events, pa.Table)
+        assert events.column("state").to_pylist() == ["claim_complete"]
+        # The handle supplies job_id; the caller only narrows the query.
+        assert event_payloads[-1] == {
+            "job_id": "job-1",
+            "limit": 500,
+            "filter": "state = 'claim_complete'",
+        }
