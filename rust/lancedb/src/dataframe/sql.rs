@@ -19,7 +19,7 @@ use datafusion_sql::unparser::Unparser;
 
 pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<String> {
     let plan = collapse_join_output_projections(plan)?;
-    let plan = lift_sort_above_projection(plan)?;
+    let plan = lift_output_sort_above_projection(plan)?;
     let plan = ensure_output_projection(plan)?;
     let plan = preserve_join_semantics(&plan)?;
     Unparser::default()
@@ -27,24 +27,28 @@ pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<Strin
         .map(|statement| statement.to_string())
 }
 
-fn lift_sort_above_projection(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
-    plan.transform_up(|plan| {
-        let LogicalPlan::Projection(mut projection) = plan else {
-            return Ok(Transformed::no(plan));
-        };
-        let LogicalPlan::Sort(sort) = projection.input.as_ref() else {
-            return Ok(Transformed::no(LogicalPlan::Projection(projection)));
-        };
-        let sort = sort.clone();
-
-        projection.input = Arc::clone(&sort.input);
-        Ok(Transformed::yes(LogicalPlan::Sort(Sort {
-            expr: sort.expr,
-            input: Arc::new(LogicalPlan::Projection(projection)),
-            fetch: sort.fetch,
-        })))
-    })
-    .data()
+fn lift_output_sort_above_projection(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
+    match plan {
+        LogicalPlan::Limit(mut limit) => {
+            limit.input = Arc::new(lift_output_sort_above_projection(Arc::unwrap_or_clone(
+                limit.input,
+            ))?);
+            Ok(LogicalPlan::Limit(limit))
+        }
+        LogicalPlan::Projection(mut projection) => {
+            let LogicalPlan::Sort(sort) = projection.input.as_ref() else {
+                return Ok(LogicalPlan::Projection(projection));
+            };
+            let sort = sort.clone();
+            projection.input = Arc::clone(&sort.input);
+            Ok(LogicalPlan::Sort(Sort {
+                expr: sort.expr,
+                input: Arc::new(LogicalPlan::Projection(projection)),
+                fetch: sort.fetch,
+            }))
+        }
+        plan => Ok(plan),
+    }
 }
 
 fn collapse_join_output_projections(plan: &LogicalPlan) -> datafusion_common::Result<LogicalPlan> {

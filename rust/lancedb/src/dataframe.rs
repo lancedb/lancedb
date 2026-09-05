@@ -980,6 +980,74 @@ mod tests {
             .unwrap();
         assert_eq!(ids.values(), &[2, 3]);
 
+        let filtered_projection_sql = events()
+            .sort(vec![(col("id"), true, false)])
+            .unwrap()
+            .with_column("value", col("value") * lit(2_i64))
+            .unwrap()
+            .filter(col("value").gt(lit(50_i64)))
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        let filtered = ctx
+            .sql(&filtered_projection_sql)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("invalid filtered projection SQL {filtered_projection_sql}: {error}")
+            })
+            .collect()
+            .await
+            .unwrap();
+        let ids = filtered[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(ids.values(), &[1, 4]);
+
+        let aliased_filter_sql = events()
+            .sort(vec![(col("value"), true, false)])
+            .unwrap()
+            .select(vec![col("id").alias("renamed")])
+            .unwrap()
+            .filter(col("renamed").gt(lit(2_i64)))
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        let aliased = ctx
+            .sql(&aliased_filter_sql)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("invalid aliased filter SQL {aliased_filter_sql}: {error}")
+            })
+            .collect()
+            .await
+            .unwrap();
+        let renamed = aliased[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(renamed.values(), &[3, 4]);
+
+        let distinct_sql = events()
+            .sort(vec![(col("value"), true, false)])
+            .unwrap()
+            .select(vec![col("id")])
+            .unwrap()
+            .distinct()
+            .unwrap()
+            .to_sql()
+            .unwrap();
+        let distinct = ctx
+            .sql(&distinct_sql)
+            .await
+            .unwrap_or_else(|error| panic!("invalid distinct SQL {distinct_sql}: {error}"))
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(distinct.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+
         let aggregate_sql = events()
             .aggregate(
                 vec![col("id")],
