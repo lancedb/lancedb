@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use lancedb::job::JobEventsRequest;
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 
@@ -96,7 +97,7 @@ impl Job {
 
     /// The job-type-specific terminal result as a JSON string. Null until the
     /// job succeeds, so a job that never terminates reports its progress
-    /// through `Connection.queryJobEvents` instead.
+    /// through {@link Job.events} instead.
     #[napi(getter)]
     pub fn result_json(&self) -> Option<String> {
         self.inner.result().map(|result| result.to_string())
@@ -112,11 +113,17 @@ impl Job {
         })
     }
 
-    // This job's event history is reached through
-    // `Connection.queryJobEvents({ jobId })`, which returns an Arrow table.
-    // `Job` is exported straight from the native module with no TypeScript
-    // wrapper, so a method here could only hand back an IPC buffer, and an
-    // Arrow-table-returning `job.events()` has to wait for that wrapper.
+    /// This job's recorded lifecycle events, as an Arrow IPC stream buffer.
+    /// The TypeScript wrapper turns it into an Arrow table.
+    #[napi(catch_unwind)]
+    pub async fn events(&self, limit: Option<u32>, filter: Option<String>) -> napi::Result<Buffer> {
+        let batches = self
+            .inner
+            .events(JobEventsRequest { limit, filter })
+            .await
+            .default_error()?;
+        batches_to_ipc_buffer(&batches)
+    }
 }
 
 /// Serialise Arrow batches as a single IPC stream for the TypeScript layer.

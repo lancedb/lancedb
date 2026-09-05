@@ -16,6 +16,7 @@ import {
   makeEmptyTable,
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { Job } from "./job";
 import {
   MaterializedView,
   MaterializedViewSelect,
@@ -27,7 +28,6 @@ import type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
   DropNamespaceResponse,
-  Job,
   JobDescription,
   JobInfo,
   ListNamespacesResponse,
@@ -890,7 +890,7 @@ export class LocalConnection extends Connection {
   }
 
   async dropTableAsync(name: string, namespacePath?: string[]): Promise<Job> {
-    return this.inner.dropTableAsync(name, namespacePath ?? []);
+    return new Job(await this.inner.dropTableAsync(name, namespacePath ?? []));
   }
 
   async dropAllTables(namespacePath?: string[]): Promise<void> {
@@ -950,7 +950,7 @@ export class LocalConnection extends Connection {
   }
 
   job(jobId: string): Job {
-    return this.inner.job(jobId);
+    return new Job(this.inner.job(jobId));
   }
 
   async listJobs(): Promise<JobInfo[]> {

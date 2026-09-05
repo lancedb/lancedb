@@ -1065,9 +1065,22 @@ describe("remote connection jobs surface", () => {
         expect(job.state).toEqual("failed");
         expect(job.jobType).toEqual("create_index");
         expect(job.creationMs).toEqual(1000);
-        expect(JSON.parse(job.specJson ?? "")).toEqual({ column: "vec" });
-        expect(job.resultJson ?? null).toBeNull();
+        expect(job.spec).toEqual({ column: "vec" });
+        expect(job.result).toBeNull();
         expect(job.failure?.message).toEqual("worker died");
+
+        // The handle reaches its own events, supplying its job id.
+        const jobEvents = await job.events({
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+        expect(jobEvents.numRows).toEqual(2);
+        expect(queryEventsPayloads.pop()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          job_id: "job-1",
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
 
         expect(await job.status()).toEqual("failed");
         await expect(job.wait()).rejects.toThrow("worker died");

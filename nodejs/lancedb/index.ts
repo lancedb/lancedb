@@ -96,12 +96,13 @@ export {
 } from "./connection";
 
 export {
-  Job,
   JobDescription,
   JobFailureInfo,
   JobInfo,
   Session,
 } from "./native.js";
+
+export { Job, JobEventsOptions } from "./job";
 
 export {
   AutoQuery,

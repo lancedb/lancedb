@@ -97,6 +97,7 @@
 - [IvfPqOptions](interfaces/IvfPqOptions.md)
 - [IvfRqOptions](interfaces/IvfRqOptions.md)
 - [JobDescription](interfaces/JobDescription.md)
+- [JobEventsOptions](interfaces/JobEventsOptions.md)
 - [JobFailureInfo](interfaces/JobFailureInfo.md)
 - [JobInfo](interfaces/JobInfo.md)
 - [ListNamespacesOptions](interfaces/ListNamespacesOptions.md)
