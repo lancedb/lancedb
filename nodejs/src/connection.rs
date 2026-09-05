@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lancedb::database::{CreateTableMode, Database};
+use lancedb::database::{CreateTableMode, Database, QueryJobEventsRequest};
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
@@ -459,14 +459,19 @@ impl Connection {
         Ok(jobs.into_iter().map(Into::into).collect())
     }
 
-    /// Describe a single server-side job by id. `null` when the server has
-    /// no such job.
+    /// Describe a single server-side job by id: its state, its specification,
+    /// and -- once it succeeds -- its terminal result. `null` when the server
+    /// has no such job.
     #[napi(catch_unwind)]
-    pub async fn get_job(
+    pub async fn describe_job(
         &self,
         job_id: String,
     ) -> napi::Result<Option<crate::job::JobDescription>> {
-        let description = self.get_inner()?.get_job(&job_id).await.default_error()?;
+        let description = self
+            .get_inner()?
+            .describe_job(&job_id)
+            .await
+            .default_error()?;
         Ok(description.map(Into::into))
     }
 
@@ -477,14 +482,23 @@ impl Connection {
         self.get_inner()?.cancel_job(&job_id).await.default_error()
     }
 
-    /// The lifecycle event history of a server-side job (all jobs when
+    /// The recorded lifecycle events of a server-side job (all jobs when
     /// `job_id` is null), as an Arrow IPC stream buffer. Empty when there is
     /// no history.
     #[napi(catch_unwind)]
-    pub async fn job_history(&self, job_id: Option<String>) -> napi::Result<Buffer> {
+    pub async fn query_job_events(
+        &self,
+        job_id: Option<String>,
+        limit: Option<u32>,
+        filter: Option<String>,
+    ) -> napi::Result<Buffer> {
         let batches = self
             .get_inner()?
-            .job_history(job_id.as_deref())
+            .query_job_events(QueryJobEventsRequest {
+                job_id,
+                limit,
+                filter,
+            })
             .await
             .default_error()?;
         let Some(first) = batches.first() else {

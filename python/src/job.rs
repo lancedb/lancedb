@@ -121,7 +121,7 @@ impl JobFailureInfo {
     }
 }
 
-/// A described job from `Connection.get_job`.
+/// A described job from `Connection.describe_job`.
 #[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone)]
 pub struct JobDescription {
@@ -130,6 +130,7 @@ pub struct JobDescription {
     state: String,
     creation_ms: i64,
     spec_json: Option<String>,
+    result_json: Option<String>,
     failure: Option<JobFailureInfo>,
 }
 
@@ -151,6 +152,10 @@ impl From<lancedb::database::JobDescription> for JobDescription {
             state: description.state,
             creation_ms: description.creation_ms,
             spec_json: (!description.spec.is_null()).then(|| description.spec.to_string()),
+            result_json: description
+                .result
+                .filter(|result| !result.is_null())
+                .map(|result| result.to_string()),
             failure: description.failure.map(|failure| JobFailureInfo {
                 phase: failure.phase,
                 message: failure.message,

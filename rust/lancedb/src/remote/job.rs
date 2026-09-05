@@ -86,7 +86,7 @@ pub(super) struct DescribeJobResponse {
     #[serde(default)]
     pub(super) spec: serde_json::Value,
     #[serde(default)]
-    result: Option<serde_json::Value>,
+    pub(super) result: Option<serde_json::Value>,
     #[serde(default)]
     pub(super) failure: Option<ReportedFailure>,
 }

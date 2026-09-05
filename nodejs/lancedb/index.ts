@@ -92,6 +92,7 @@ export {
   DropNamespaceResponse,
   DescribeNamespaceResponse,
   RenameTableOptions,
+  QueryJobEventsOptions,
 } from "./connection";
 
 export {

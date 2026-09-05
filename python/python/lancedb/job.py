@@ -10,8 +10,17 @@ from typing import Any, Callable, Generic, Optional, TypeVar, cast
 from lancedb.background_loop import LOOP
 
 from . import _lancedb
+from ._lancedb import JobDescription, JobFailureInfo, JobInfo
 
 T = TypeVar("T")
+
+__all__ = [
+    "AsyncJob",
+    "Job",
+    "JobDescription",
+    "JobFailureInfo",
+    "JobInfo",
+]
 
 
 class AsyncJob(Generic[T]):

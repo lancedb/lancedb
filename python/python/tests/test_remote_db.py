@@ -2475,6 +2475,7 @@ def test_remote_connection_jobs_surface():
     with pa.ipc.new_stream(sink, schema) as writer:
         writer.write_batch(batch)
     events_body = sink.getvalue().to_pybytes()
+    query_events_payloads = []
 
     def handler(request):
         content_len = int(request.headers.get("Content-Length", 0))
@@ -2512,6 +2513,22 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
             request.wfile.write(json.dumps(rsp).encode())
         elif request.path == "/v1/jobs/describe":
+            if payload["job_id"] == "job-2":
+                request.send_response(200)
+                request.send_header("Content-Type", "application/json")
+                request.end_headers()
+                request.wfile.write(
+                    json.dumps(
+                        dict(
+                            job_id="job-2",
+                            job_type="refresh_column",
+                            job_state="DONE",
+                            creation_ms=2000,
+                            result=dict(rows_assigned=1000000, rows_failed=0),
+                        )
+                    ).encode()
+                )
+                return
             if payload["job_id"] != "job-1":
                 request.send_response(404)
                 request.end_headers()
@@ -2543,7 +2560,7 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
             request.wfile.write(b'{"job_id": "job-1"}')
         elif request.path == "/v1/jobs/query_events":
-            assert payload["job_id"] == "job-1"
+            query_events_payloads.append(payload)
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
             request.end_headers()
@@ -2559,21 +2576,40 @@ def test_remote_connection_jobs_surface():
         assert jobs[0].table == "t1"
         assert jobs[1].state == "finished"
 
-        description = db.get_job("job-1")
+        description = db.describe_job("job-1")
         assert description.job_type == "create_index"
         assert description.state == "failed"
         assert json.loads(description.spec_json) == {"column": "vec"}
+        assert description.result_json is None
         assert description.failure.message == "worker died"
         assert description.failure.retryable is True
-        assert db.get_job("missing") is None
+        assert db.describe_job("missing") is None
+
+        finished = db.describe_job("job-2")
+        assert finished.state == "finished"
+        assert json.loads(finished.result_json) == {
+            "rows_assigned": 1000000,
+            "rows_failed": 0,
+        }
 
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
 
-        batches = db.job_history("job-1")
-        assert len(batches) == 1
-        assert batches[0].num_rows == 2
-        assert batches[0].column("state").to_pylist() == ["created", "done"]
+        events = db.query_job_events("job-1")
+        assert isinstance(events, pa.Table)
+        assert events.num_rows == 2
+        assert events.column("state").to_pylist() == ["created", "done"]
+        assert query_events_payloads[-1] == {"job_id": "job-1"}
+
+        db.query_job_events("job-1", limit=10_000, filter="state = 'claim_complete'")
+        assert query_events_payloads[-1] == {
+            "job_id": "job-1",
+            "limit": 10_000,
+            "filter": "state = 'claim_complete'",
+        }
+
+        db.query_job_events()
+        assert query_events_payloads[-1] == {}
 
         job = db.job("job-1")
         assert job.id == "job-1"

@@ -24,7 +24,7 @@ use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, Database, DatabaseOptions, JobDescription, JobInfo, OpenTableRequest,
-    ReadConsistency, TableNamesRequest,
+    QueryJobEventsRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -685,10 +685,25 @@ impl Connection {
         self.internal.list_jobs().await
     }
 
-    /// Describe a single server-side job by id. `None` when the server has no
-    /// such job.
-    pub async fn get_job(&self, job_id: impl AsRef<str>) -> Result<Option<JobDescription>> {
-        self.internal.get_job(job_id.as_ref()).await
+    /// Describe a single server-side job by id: its state, its specification,
+    /// and -- once it succeeds -- its terminal result. `None` when the server
+    /// has no such job.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn describe_job(
+    /// #     connection: &lancedb::Connection,
+    /// #     job_id: &str,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// if let Some(job) = connection.describe_job(job_id).await? {
+    ///     println!("{} {} {:?}", job.job_type, job.state, job.result);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn describe_job(&self, job_id: impl AsRef<str>) -> Result<Option<JobDescription>> {
+        self.internal.describe_job(job_id.as_ref()).await
     }
 
     /// Request cancellation of a server-side job by id. Returns true if the
@@ -697,10 +712,37 @@ impl Connection {
         self.internal.cancel_job(job_id.as_ref()).await
     }
 
-    /// The lifecycle event history of a server-side job (all jobs when
-    /// `job_id` is `None`), as recorded Arrow batches.
-    pub async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
-        self.internal.job_history(job_id).await
+    /// The recorded lifecycle events of a server-side job, as Arrow batches.
+    ///
+    /// Unlike [`Connection::describe_job`], which reports a terminal result
+    /// only once the job reaches one, the event history is written as the job
+    /// runs and outlives the workers that produced it. Distributed jobs record
+    /// one `claim`/`claim_complete` pair per unit of work, each carrying
+    /// `rows_processed`, so a job that never finishes still accounts for what
+    /// it did.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use lancedb::database::QueryJobEventsRequest;
+    /// # async fn query_job_events(
+    /// #     connection: &lancedb::Connection,
+    /// #     job_id: &str,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let request = QueryJobEventsRequest::new(job_id)
+    ///     .filter("state = 'claim_complete'")
+    ///     .limit(10_000);
+    /// for batch in connection.query_job_events(request).await? {
+    ///     println!("{} completions", batch.num_rows());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn query_job_events(
+        &self,
+        request: QueryJobEventsRequest,
+    ) -> Result<Vec<RecordBatch>> {
+        self.internal.query_job_events(request).await
     }
 
     /// Drop a table in the database.

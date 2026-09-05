@@ -60,7 +60,7 @@ impl Job {
 /// A row from `Connection.listJobs`: one server-side job.
 #[napi(object)]
 pub struct JobInfo {
-    /// The job id -- what `Connection.getJob` and `Connection.cancelJob`
+    /// The job id -- what `Connection.describeJob` and `Connection.cancelJob`
     /// accept.
     pub job_id: String,
     /// The table the job runs against, without URI or namespace.
@@ -92,7 +92,7 @@ pub struct JobFailureInfo {
     pub retryable: Option<bool>,
 }
 
-/// A described job from `Connection.getJob`.
+/// A described job from `Connection.describeJob`.
 #[napi(object)]
 pub struct JobDescription {
     pub job_id: String,
@@ -103,6 +103,9 @@ pub struct JobDescription {
     pub creation_ms: i64,
     /// The job-type-specific specification as a JSON string, when present.
     pub spec_json: Option<String>,
+    /// The job-type-specific terminal result as a JSON string, for job types
+    /// that define one. Absent until the job succeeds.
+    pub result_json: Option<String>,
     /// Why the job failed, when the job is failed and the server reports a
     /// reason.
     pub failure: Option<JobFailureInfo>,
@@ -116,6 +119,10 @@ impl From<lancedb::database::JobDescription> for JobDescription {
             state: description.state,
             creation_ms: description.creation_ms,
             spec_json: (!description.spec.is_null()).then(|| description.spec.to_string()),
+            result_json: description
+                .result
+                .filter(|result| !result.is_null())
+                .map(|result| result.to_string()),
             failure: description.failure.map(|failure| JobFailureInfo {
                 phase: failure.phase,
                 message: failure.message,

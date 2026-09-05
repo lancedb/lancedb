@@ -157,6 +157,12 @@ listing a storage directory.
 
 ::: lancedb.job.AsyncJob
 
+::: lancedb.job.JobInfo
+
+::: lancedb.job.JobDescription
+
+::: lancedb.job.JobFailureInfo
+
 ::: lancedb.sql.Query
 
 ::: lancedb.sql.AsyncQuery

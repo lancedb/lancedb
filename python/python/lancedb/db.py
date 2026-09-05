@@ -758,12 +758,16 @@ class DBConnection(EnforceOverrides):
         """List server-side jobs across the database's tables."""
         raise NotImplementedError("list_jobs is not supported for this connection type")
 
-    def get_job(self, job_id: str) -> Optional[JobDescription]:
+    def describe_job(self, job_id: str) -> Optional[JobDescription]:
         """Describe a single server-side job by id.
 
-        Returns None when the server has no such job.
+        Reports the job's state, its specification, and -- once the job
+        succeeds -- its terminal result. Returns None when the server has no
+        such job.
         """
-        raise NotImplementedError("get_job is not supported for this connection type")
+        raise NotImplementedError(
+            "describe_job is not supported for this connection type"
+        )
 
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -776,13 +780,40 @@ class DBConnection(EnforceOverrides):
             "cancel_job is not supported for this connection type"
         )
 
-    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    def query_job_events(
+        self,
+        job_id: Optional[str] = None,
+        *,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+    ) -> pa.Table:
+        """The recorded lifecycle events of a server-side job.
 
-        Lists history across all jobs when `job_id` is None.
+        Where
+        [describe_job][lancedb.db.DBConnection.describe_job] reports a
+        terminal result only once the job reaches one, events are written as
+        the job runs and outlive the workers that produced them. A
+        distributed job records a `claim`/`claim_complete` pair per unit of
+        work, each carrying `rows_processed`, so a job that never finishes
+        still accounts for what it did.
+
+        Covers every job when `job_id` is None.
+
+        Parameters
+        ----------
+        job_id: str, optional
+            Restrict to one job.
+        limit: int, optional
+            Maximum event rows to return. The server caps results at 1000 by
+            default and 10,000 at most, and truncates without saying so, so
+            pass this for a job that emits an event per fragment.
+        filter: str, optional
+            SQL-like expression over the `state`, `updated_by`,
+            `emitted_from`, `emitted_by`, and `claim_entity` columns, such as
+            ``state = 'claim_complete'``.
         """
         raise NotImplementedError(
-            "job_history is not supported for this connection type"
+            "query_job_events is not supported for this connection type"
         )
 
     def execute_query(
@@ -1494,12 +1525,14 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.list_jobs())
 
     @override
-    def get_job(self, job_id: str) -> Optional[JobDescription]:
+    def describe_job(self, job_id: str) -> Optional[JobDescription]:
         """Describe a single server-side job by id.
 
-        Returns None when the server has no such job.
+        Reports the job's state, its specification, and -- once the job
+        succeeds -- its terminal result. Returns None when the server has no
+        such job.
         """
-        return LOOP.run(self._conn.get_job(job_id))
+        return LOOP.run(self._conn.describe_job(job_id))
 
     @override
     def cancel_job(self, job_id: str) -> bool:
@@ -1512,12 +1545,18 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.cancel_job(job_id))
 
     @override
-    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    def query_job_events(
+        self,
+        job_id: Optional[str] = None,
+        *,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+    ) -> pa.Table:
+        """The recorded lifecycle events of a server-side job.
 
-        Lists history across all jobs when `job_id` is None.
+        See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
         """
-        return LOOP.run(self._conn.job_history(job_id))
+        return LOOP.run(self._conn.query_job_events(job_id, limit, filter))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -2337,12 +2376,14 @@ class AsyncConnection(object):
         """List server-side jobs across the database's tables."""
         return await self._inner.list_jobs()
 
-    async def get_job(self, job_id: str) -> Optional[JobDescription]:
+    async def describe_job(self, job_id: str) -> Optional[JobDescription]:
         """Describe a single server-side job by id.
 
-        Returns None when the server has no such job.
+        Reports the job's state, its specification, and -- once the job
+        succeeds -- its terminal result. Returns None when the server has no
+        such job.
         """
-        return await self._inner.get_job(job_id)
+        return await self._inner.describe_job(job_id)
 
     async def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -2353,12 +2394,18 @@ class AsyncConnection(object):
         """
         return await self._inner.cancel_job(job_id)
 
-    async def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    async def query_job_events(
+        self,
+        job_id: Optional[str] = None,
+        *,
+        limit: Optional[int] = None,
+        filter: Optional[str] = None,
+    ) -> pa.Table:
+        """The recorded lifecycle events of a server-side job.
 
-        Lists history across all jobs when `job_id` is None.
+        See [DBConnection.query_job_events][lancedb.db.DBConnection.query_job_events].
         """
-        return await self._inner.job_history(job_id)
+        return await self._inner.query_job_events(job_id, limit, filter)
 
     async def execute_query(
         self,

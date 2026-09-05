@@ -569,11 +569,12 @@ export abstract class Connection {
   abstract listJobs(): Promise<JobInfo[]>;
 
   /**
-   * Describe a single server-side job by id.
+   * Describe a single server-side job by id: its state, its specification,
+   * and -- once the job succeeds -- its terminal result.
    *
    * Resolves to `null` when the server has no such job.
    */
-  abstract getJob(jobId: string): Promise<JobDescription | null>;
+  abstract describeJob(jobId: string): Promise<JobDescription | null>;
 
   /**
    * Request cancellation of a server-side job by id.
@@ -584,11 +585,31 @@ export abstract class Connection {
   abstract cancelJob(jobId: string): Promise<boolean>;
 
   /**
-   * The lifecycle event history of a server-side job, as an Arrow table.
+   * The recorded lifecycle events of a server-side job, as an Arrow table.
    *
-   * Lists history across all jobs when `jobId` is omitted.
+   * Where {@link Connection.describeJob} reports a terminal result only once
+   * the job reaches one, events are written as the job runs and outlive the
+   * workers that produced them. A distributed job records a
+   * `claim`/`claim_complete` pair per unit of work, each carrying
+   * `rows_processed`.
+   *
+   * Covers every job when `jobId` is omitted. The server caps results at 1000
+   * rows by default and 10,000 at most, and truncates without saying so, so
+   * pass `limit` for a job that emits an event per fragment. `filter` is a
+   * SQL-like expression over the `state`, `updated_by`, `emitted_from`,
+   * `emitted_by`, and `claim_entity` columns.
    */
-  abstract jobHistory(jobId?: string): Promise<ArrowTable>;
+  abstract queryJobEvents(options?: QueryJobEventsOptions): Promise<ArrowTable>;
+}
+
+/** Which events {@link Connection.queryJobEvents} returns. */
+export interface QueryJobEventsOptions {
+  /** Restrict to one job. Every job when omitted. */
+  jobId?: string;
+  /** Maximum event rows to return, up to the server maximum of 10,000. */
+  limit?: number;
+  /** SQL-like filter over the event columns. */
+  filter?: string;
 }
 
 /** @hideconstructor */
@@ -936,16 +957,20 @@ export class LocalConnection extends Connection {
     return this.inner.listJobs();
   }
 
-  async getJob(jobId: string): Promise<JobDescription | null> {
-    return this.inner.getJob(jobId);
+  async describeJob(jobId: string): Promise<JobDescription | null> {
+    return this.inner.describeJob(jobId);
   }
 
   async cancelJob(jobId: string): Promise<boolean> {
     return this.inner.cancelJob(jobId);
   }
 
-  async jobHistory(jobId?: string): Promise<ArrowTable> {
-    const buf = await this.inner.jobHistory(jobId);
+  async queryJobEvents(options?: QueryJobEventsOptions): Promise<ArrowTable> {
+    const buf = await this.inner.queryJobEvents(
+      options?.jobId,
+      options?.limit,
+      options?.filter,
+    );
     if (buf.length === 0) {
       return new ArrowTable();
     }
