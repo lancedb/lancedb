@@ -247,9 +247,29 @@ fn function_catalog_not_supported<T>() -> Result<T> {
     })
 }
 
+fn secret_catalog_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Secret operations are not supported by this database".to_string(),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
+/// What a database records about a Secret. Never its value.
+///
+/// Returned by [`crate::connection::Connection::describe_secret`]. There is no
+/// field for the credential and no method that could produce one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct SecretInfo {
+    /// The Secret's database-scoped name.
+    pub name: String,
+    /// When the Secret was created, as an RFC 3339 timestamp.
+    pub created_at: String,
+    /// When the Secret's value was last rotated, as an RFC 3339 timestamp.
+    pub updated_at: String,
+}
+
 #[async_trait::async_trait]
 pub trait Database:
     Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static
@@ -314,6 +334,34 @@ pub trait Database:
     /// Drop one exact immutable Function version from the remote catalog.
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
+    }
+    /// Create a named Secret in this database. Fails if the name is taken, so
+    /// a create can never silently become a rotation.
+    async fn create_secret(&self, _name: &str, _value: &str) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// Replace the credential behind an existing Secret. Fails if it does not
+    /// exist. Every Function bound to it resolves the new value from its next
+    /// execution, with no new Function version.
+    async fn alter_secret(&self, _name: &str, _value: &str) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// The names of every Secret in this database.
+    ///
+    /// Names only. No API path returns a stored credential, by construction
+    /// rather than by policy.
+    async fn list_secrets(&self) -> Result<Vec<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a Secret. Functions bound to it fail at their next job, which is
+    /// the revocation path.
+    async fn drop_secret(&self, _name: &str) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// What the database records about one Secret: its name and timestamps,
+    /// never its value.
+    async fn describe_secret(&self, _name: &str) -> Result<SecretInfo> {
+        secret_catalog_not_supported()
     }
     /// A [`crate::job::Job`] handle for a server-side job by id, suitable for
     /// waiting on or cancelling the job. The handle is constructed without a
