@@ -483,8 +483,8 @@ impl Connection {
     }
 
     /// The recorded lifecycle events of a server-side job (all jobs when
-    /// `job_id` is null), as an Arrow IPC stream buffer. Empty when there is
-    /// no history.
+    /// `job_id` is null), as an Arrow IPC stream buffer. A job with no
+    /// matching events yields a stream carrying only the event schema.
     #[napi(catch_unwind)]
     pub async fn query_job_events(
         &self,

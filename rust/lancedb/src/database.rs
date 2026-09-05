@@ -277,6 +277,18 @@ impl QueryJobEventsRequest {
     }
 }
 
+impl From<&str> for QueryJobEventsRequest {
+    fn from(job_id: &str) -> Self {
+        Self::new(job_id)
+    }
+}
+
+impl From<String> for QueryJobEventsRequest {
+    fn from(job_id: String) -> Self {
+        Self::new(job_id)
+    }
+}
+
 fn job_op_not_supported<T>(what: &str) -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: format!("{} is not supported by this database", what),

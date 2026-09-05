@@ -2776,10 +2776,7 @@ mod tests {
                 .body(body.clone())
                 .unwrap()
         });
-        let batches = conn
-            .query_job_events(QueryJobEventsRequest::new("job-1"))
-            .await
-            .unwrap();
+        let batches = conn.query_job_events("job-1").await.unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 2);
     }

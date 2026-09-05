@@ -6,7 +6,7 @@
 
 # Interface: JobDescription
 
-A described job from `Connection.getJob`.
+A described job from `Connection.describeJob`.
 
 ## Properties
 
@@ -44,6 +44,17 @@ jobId: string;
 ```ts
 jobType: string;
 ```
+
+***
+
+### resultJson?
+
+```ts
+optional resultJson: string;
+```
+
+The job-type-specific terminal result as a JSON string, for job types
+that define one. Absent until the job succeeds.
 
 ***
 

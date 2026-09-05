@@ -1021,7 +1021,7 @@ describe("remote connection jobs surface", () => {
         expect(JSON.parse(description?.specJson ?? "")).toEqual({
           column: "vec",
         });
-        expect(description?.resultJson).toBeNull();
+        expect(description?.resultJson ?? null).toBeNull();
         expect(description?.failure?.message).toEqual("worker died");
         expect(await db.describeJob("missing")).toBeNull();
 

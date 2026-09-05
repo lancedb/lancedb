@@ -114,6 +114,7 @@
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
 - [QueryExecutionOptions](interfaces/QueryExecutionOptions.md)
+- [QueryJobEventsOptions](interfaces/QueryJobEventsOptions.md)
 - [RefreshColumnResult](interfaces/RefreshColumnResult.md)
 - [RefreshMaterializedViewResult](interfaces/RefreshMaterializedViewResult.md)
 - [RemovalStats](interfaces/RemovalStats.md)

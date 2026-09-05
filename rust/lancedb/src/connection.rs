@@ -721,6 +721,9 @@ impl Connection {
     /// `rows_processed`, so a job that never finishes still accounts for what
     /// it did.
     ///
+    /// A bare job id asks for that job's whole history; build a
+    /// [`QueryJobEventsRequest`] to narrow it.
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -740,9 +743,9 @@ impl Connection {
     /// ```
     pub async fn query_job_events(
         &self,
-        request: QueryJobEventsRequest,
+        request: impl Into<QueryJobEventsRequest>,
     ) -> Result<Vec<RecordBatch>> {
-        self.internal.query_job_events(request).await
+        self.internal.query_job_events(request.into()).await
     }
 
     /// Drop a table in the database.

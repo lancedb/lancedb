@@ -317,6 +317,27 @@ Creates a new Table and initialize it with new data.
 
 ***
 
+### describeJob()
+
+```ts
+abstract describeJob(jobId): Promise<null | JobDescription>
+```
+
+Describe a single server-side job by id: its state, its specification,
+and -- once the job succeeds -- its terminal result.
+
+Resolves to `null` when the server has no such job.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`null` \| [`JobDescription`](../interfaces/JobDescription.md)&gt;
+
+***
+
 ### describeNamespace()
 
 ```ts
@@ -448,26 +469,6 @@ on the returned job to know when cleanup has finished.
 
 ***
 
-### getJob()
-
-```ts
-abstract getJob(jobId): Promise<null | JobDescription>
-```
-
-Describe a single server-side job by id.
-
-Resolves to `null` when the server has no such job.
-
-#### Parameters
-
-* **jobId**: `string`
-
-#### Returns
-
-`Promise`&lt;`null` \| [`JobDescription`](../interfaces/JobDescription.md)&gt;
-
-***
-
 ### isOpen()
 
 ```ts
@@ -501,26 +502,6 @@ the job itself.
 #### Returns
 
 [`Job`](Job.md)
-
-***
-
-### jobHistory()
-
-```ts
-abstract jobHistory(jobId?): Promise<Table<any>>
-```
-
-The lifecycle event history of a server-side job, as an Arrow table.
-
-Lists history across all jobs when `jobId` is omitted.
-
-#### Parameters
-
-* **jobId?**: `string`
-
-#### Returns
-
-`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 ***
 
@@ -688,6 +669,36 @@ abstract openTable(
 #### Returns
 
 `Promise`&lt;[`Table`](Table.md)&gt;
+
+***
+
+### queryJobEvents()
+
+```ts
+abstract queryJobEvents(options?): Promise<Table<any>>
+```
+
+The recorded lifecycle events of a server-side job, as an Arrow table.
+
+Where [Connection.describeJob](Connection.md#describejob) reports a terminal result only once
+the job reaches one, events are written as the job runs and outlive the
+workers that produced them. A distributed job records a
+`claim`/`claim_complete` pair per unit of work, each carrying
+`rows_processed`.
+
+Covers every job when `jobId` is omitted. The server caps results at 1000
+rows by default and 10,000 at most, and truncates without saying so, so
+pass `limit` for a job that emits an event per fragment. `filter` is a
+SQL-like expression over the `state`, `updated_by`, `emitted_from`,
+`emitted_by`, and `claim_entity` columns.
+
+#### Parameters
+
+* **options?**: [`QueryJobEventsOptions`](../interfaces/QueryJobEventsOptions.md)
+
+#### Returns
+
+`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 ***
 
