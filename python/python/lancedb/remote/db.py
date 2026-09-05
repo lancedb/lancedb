@@ -7,7 +7,16 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Union,
+)
 from urllib.parse import urlparse
 import warnings
 
@@ -26,7 +35,7 @@ from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
 from ..materialized_view import MaterializedView, SelectArg
-from ..secrets import SecretRef
+from ..secrets import EnvVarSecret, SecretInfo
 
 if TYPE_CHECKING:
     from .._lancedb import JobDescription, JobInfo
@@ -747,7 +756,7 @@ class RemoteDBConnection(DBConnection):
         self,
         definition: UdfDefinition,
         *,
-        secrets: Optional[Mapping[str, SecretRef]] = None,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
         return Job(job)
@@ -773,6 +782,9 @@ class RemoteDBConnection(DBConnection):
         LOOP.run(self._conn.alter_secret(name, value))
 
     @override
+    def describe_secret(self, name: str) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name))
+
     def list_secrets(self) -> List[str]:
         return LOOP.run(self._conn.list_secrets())
 

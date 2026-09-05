@@ -24,7 +24,7 @@ use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, Database, DatabaseOptions, JobDescription, JobInfo, OpenTableRequest,
-    ReadConsistency, TableNamesRequest,
+    ReadConsistency, SecretInfo, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -602,6 +602,15 @@ impl Connection {
     /// Local databases return [`Error::NotSupported`].
     pub async fn drop_secret(&self, name: impl AsRef<str>) -> Result<()> {
         self.internal.drop_secret(name.as_ref()).await
+    }
+
+    /// What this database records about one Secret: its name and timestamps.
+    ///
+    /// Never the value. The type it returns has no field for one, so this is a
+    /// property of the API rather than of what the caller chooses to read.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn describe_secret(&self, name: impl AsRef<str>) -> Result<SecretInfo> {
+        self.internal.describe_secret(name.as_ref()).await
     }
 
     /// Rename a table in the database.

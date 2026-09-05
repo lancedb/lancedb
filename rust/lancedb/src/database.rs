@@ -256,6 +256,20 @@ fn secret_catalog_not_supported<T>() -> Result<T> {
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
+/// What a database records about a Secret. Never its value.
+///
+/// Returned by [`crate::connection::Connection::describe_secret`]. There is no
+/// field for the credential and no method that could produce one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct SecretInfo {
+    /// The Secret's database-scoped name.
+    pub name: String,
+    /// When the Secret was created, as an RFC 3339 timestamp.
+    pub created_at: String,
+    /// When the Secret's value was last rotated, as an RFC 3339 timestamp.
+    pub updated_at: String,
+}
+
 #[async_trait::async_trait]
 pub trait Database:
     Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static
@@ -342,6 +356,11 @@ pub trait Database:
     /// Drop a Secret. Functions bound to it fail at their next job, which is
     /// the revocation path.
     async fn drop_secret(&self, _name: &str) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// What the database records about one Secret: its name and timestamps,
+    /// never its value.
+    async fn describe_secret(&self, _name: &str) -> Result<SecretInfo> {
         secret_catalog_not_supported()
     }
     /// A [`crate::job::Job`] handle for a server-side job by id, suitable for

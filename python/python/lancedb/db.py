@@ -16,8 +16,8 @@ from typing import (
     Iterable,
     List,
     Literal,
-    Mapping,
     Optional,
+    Sequence,
     Union,
 )
 
@@ -54,7 +54,7 @@ from .materialized_view import (
     SelectArg,
     normalize_select,
 )
-from .secrets import SecretRef, validate_secret_name
+from .secrets import EnvVarSecret, SecretInfo, validate_secret_name
 from .table import (
     AsyncTable,
     LanceTable,
@@ -693,7 +693,7 @@ class DBConnection(EnforceOverrides):
         self,
         definition: UdfDefinition,
         *,
-        secrets: Optional[Mapping[str, SecretRef]] = None,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
     ) -> FunctionVersion:
         """Register a scalar Python UDF and wait for its immutable version.
 
@@ -704,10 +704,11 @@ class DBConnection(EnforceOverrides):
         ----------
         definition : UdfDefinition
             A callable decorated with [udf][lancedb.udf].
-        secrets : mapping of str to SecretRef, optional
-            One [SecretRef][lancedb.secrets.SecretRef] per environment variable
-            the definition declared, from :meth:`ref_secret`. The keys must be
-            exactly the declared names.
+        secrets : sequence of EnvVarSecret, optional
+            One [EnvVarSecret][lancedb.secrets.EnvVarSecret] per credential the
+            Function needs, each naming a Secret and the environment variable
+            its value arrives in. The Function's source is unchanged by this;
+            it reads the variable the way it already did.
 
         Examples
         --------
@@ -715,7 +716,9 @@ class DBConnection(EnforceOverrides):
         db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
         db.create_function(
             analyze_caption,
-            secrets={"OPENAI_API_KEY": db.ref_secret("openai-prod")},
+            secrets=[
+                EnvVarSecret(secret="openai-prod", env_variable="OPENAI_API_KEY")
+            ],
         )
         ```
         """
@@ -725,7 +728,7 @@ class DBConnection(EnforceOverrides):
         self,
         definition: UdfDefinition,
         *,
-        secrets: Optional[Mapping[str, SecretRef]] = None,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
     ) -> Job[FunctionVersion]:
         """Register a scalar Python UDF through the remote Function catalog.
 
@@ -817,16 +820,15 @@ class DBConnection(EnforceOverrides):
             "Secret operations are not supported for this connection type"
         )
 
-    def ref_secret(self, name: str) -> SecretRef:
-        """A reference to a named Secret, for binding in :meth:`create_function`.
+    def describe_secret(self, name: str) -> SecretInfo:
+        """What this database records about a Secret: name and timestamps.
 
-        A pure constructor: it validates the name's shape and never contacts
-        the server, so it always returns a reference and says nothing about
-        whether the Secret exists. Existence is checked at registration, where
-        a mistyped name is a clear error instead of a client-side check that
-        was already stale.
+        Never the value -- there is no code path that could return one. Local
+        connections raise ``NotImplementedError``.
         """
-        return SecretRef(name)
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
 
     def job(self, job_id: str) -> Job:
         """A [Job][lancedb.job.Job] handle for a server-side job by id.
@@ -1525,7 +1527,7 @@ class LanceDBConnection(DBConnection):
         self,
         definition: UdfDefinition,
         *,
-        secrets: Optional[Mapping[str, SecretRef]] = None,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
     ) -> Job[FunctionVersion]:
         job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
         return Job(job)
@@ -1557,6 +1559,10 @@ class LanceDBConnection(DBConnection):
     @override
     def drop_secret(self, name: str) -> None:
         LOOP.run(self._conn.drop_secret(name))
+
+    @override
+    def describe_secret(self, name: str) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -2373,13 +2379,14 @@ class AsyncConnection(object):
         self,
         definition: UdfDefinition,
         *,
-        secrets: Optional[Mapping[str, SecretRef]] = None,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
     ) -> AsyncJob[FunctionVersion]:
         """Register a scalar Python UDF through the remote Function catalog.
 
         The returned typed job resolves to the immutable Function version.
-        ``secrets`` binds one [SecretRef][lancedb.secrets.SecretRef] per
-        environment variable the definition declared. Local connections raise
+        ``secrets`` is a sequence of
+        [EnvVarSecret][lancedb.secrets.EnvVarSecret], each naming a Secret and
+        the environment variable its value arrives in. Local connections raise
         ``NotImplementedError``.
         """
         if not isinstance(definition, UdfDefinition):
@@ -2431,12 +2438,11 @@ class AsyncConnection(object):
         """Drop a Secret. Bound Functions fail at their next job."""
         await self._inner.drop_secret(validate_secret_name(name))
 
-    def ref_secret(self, name: str) -> SecretRef:
-        """A reference to a named Secret, for binding in ``create_function``.
-
-        Not a coroutine: this contacts no server, so there is nothing to await.
-        """
-        return SecretRef(name)
+    async def describe_secret(self, name: str) -> SecretInfo:
+        """What this database records about a Secret. Never the value."""
+        return SecretInfo.from_json(
+            await self._inner.describe_secret(validate_secret_name(name))
+        )
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""

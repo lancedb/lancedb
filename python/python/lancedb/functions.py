@@ -25,7 +25,7 @@ import re
 import sys
 import textwrap
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import (
     Annotated,
@@ -50,7 +50,7 @@ from pydantic import (
 )
 
 from .schema import is_blob_v2_field as _is_blob_v2_field
-from .secrets import SecretRef
+from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
@@ -1217,7 +1217,6 @@ class UdfDefinition:
         output_schema: Optional[pa.DataType | pa.Field | pa.Schema],
         pip: tuple[str, ...],
         env: Mapping[str, str],
-        secrets: tuple[str, ...] = (),
         python_version: Optional[str],
         gpu: bool = False,
         conda: tuple[str, ...] = (),
@@ -1245,33 +1244,6 @@ class UdfDefinition:
             for key, value in environment.items()
         ):
             raise TypeError("Function env keys and values must be strings")
-        declared_secrets = tuple(secrets)
-        invalid_secrets = [
-            secret
-            for secret in declared_secrets
-            if not isinstance(secret, str) or not _DECLARED_SECRET.fullmatch(secret)
-        ]
-        if invalid_secrets:
-            raise ValueError(f"invalid Function secret names: {invalid_secrets!r}")
-        duplicates = sorted(
-            {
-                secret
-                for secret in declared_secrets
-                if declared_secrets.count(secret) > 1
-            }
-        )
-        if duplicates:
-            raise ValueError(f"duplicate Function secret names: {duplicates!r}")
-        if len(declared_secrets) > MAX_FUNCTION_SECRET_BINDINGS:
-            raise ValueError(
-                f"a Function binds at most {MAX_FUNCTION_SECRET_BINDINGS} secrets, "
-                f"not {len(declared_secrets)}"
-            )
-        overlap = sorted(set(environment) & set(declared_secrets))
-        if overlap:
-            raise ValueError(
-                f"Function env and secret names must be disjoint: {overlap!r}"
-            )
         signature = _infer_signature(function, input_schema, output_schema)
         source = _package_source(function)
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
@@ -1285,7 +1257,6 @@ class UdfDefinition:
             gpu=gpu_marker,
         )
         self._function = function
-        self._declared_secrets = declared_secrets
         self._request = FunctionRegistrationRequest(
             name=function_name,
             artifact=FunctionArtifactRequest(
@@ -1310,60 +1281,57 @@ class UdfDefinition:
     def registration_request(self) -> FunctionRegistrationRequest:
         """The immutable request sent by ``create_function_async``.
 
-        Carries no secret bindings. A Function that declares secrets is
-        registered from :meth:`bind_secrets`, which is what
-        ``create_function`` calls.
+        Carries no secret bindings. Binding is a registration-time decision,
+        so a Function bound to Secrets is registered through :meth:`bind_secrets`,
+        which is what ``create_function`` calls.
         """
         return self._request
 
-    @property
-    def declared_secrets(self) -> tuple[str, ...]:
-        """Environment variable names this Function requires, in declared order.
-
-        Names only. The decorator states the requirement; ``create_function``
-        satisfies it, so the names are not part of the registration request and
-        are not persisted -- after registration the binding's keys are exactly
-        these names.
-        """
-        return self._declared_secrets
-
     def bind_secrets(
-        self, secrets: Optional[Mapping[str, SecretRef]]
+        self, secrets: Optional[Sequence[EnvVarSecret]]
     ) -> FunctionRegistrationRequest:
         """The registration request for this definition bound to ``secrets``.
 
-        The bound key set must equal :attr:`declared_secrets` exactly. A
-        declared name left unbound would run the Function without a credential
-        its source reads; a binding with no declaration would deliver one
-        nothing reads.
+        Binding does not change the Function's source: each
+        [EnvVarSecret][lancedb.secrets.EnvVarSecret] names a Secret and the
+        environment variable its value should arrive in, and the Function reads
+        that variable the way it already did. Whether the named Secrets exist is
+        the server's answer, not this one.
         """
-        bindings = {} if secrets is None else dict(secrets)
-        declared = set(self._declared_secrets)
-        bound = set(bindings)
-        if declared != bound:
-            details = []
-            missing = sorted(declared - bound)
-            unknown = sorted(bound - declared)
-            if missing:
-                details.append(f"declared but not bound: {missing!r}")
-            if unknown:
-                details.append(f"bound but not declared: {unknown!r}")
-            raise ValueError(
-                "Function secret bindings must match the declared names ("
-                + "; ".join(details)
-                + ")"
+        bindings = () if secrets is None else tuple(secrets)
+        wrong_type = [
+            binding for binding in bindings if not isinstance(binding, EnvVarSecret)
+        ]
+        if wrong_type:
+            kinds = sorted({type(binding).__name__ for binding in wrong_type})
+            raise TypeError(
+                f"Function secrets must be EnvVarSecret values, not {kinds!r}; a "
+                "credential value is never sent to this API"
             )
-        resolved = {}
-        for variable, reference in bindings.items():
-            if not isinstance(reference, SecretRef):
-                raise TypeError(
-                    f"Function secret {variable!r} must be a SecretRef from "
-                    f"db.ref_secret(...), not {type(reference).__name__}; a "
-                    "credential value is never sent to this API"
-                )
-            resolved[variable] = reference.name
-        if not resolved:
+        if len(bindings) > MAX_FUNCTION_SECRET_BINDINGS:
+            raise ValueError(
+                f"a Function binds at most {MAX_FUNCTION_SECRET_BINDINGS} secrets, "
+                f"not {len(bindings)}"
+            )
+        variables = [binding.env_variable for binding in bindings]
+        duplicates = sorted({name for name in variables if variables.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                "a Function binds each environment variable once; duplicated: "
+                f"{duplicates!r}"
+            )
+        # `env` is ordinary configuration carried in the definition, so a name in
+        # both would have a value visible in the Function's record and a value
+        # that is not. Refuse rather than pick.
+        environment = self._request.runtime.env or {}
+        overlap = sorted(set(environment) & set(variables))
+        if overlap:
+            raise ValueError(
+                f"Function env and secret bindings must be disjoint: {overlap!r}"
+            )
+        if not bindings:
             return self._request
+        resolved = {binding.env_variable: binding.secret for binding in bindings}
         return self._request._copy(update={"secret_bindings": resolved})
 
     def __call__(self, *args, **kwargs):
@@ -1383,7 +1351,6 @@ def udf(
     output_schema: Optional[pa.DataType | pa.Field | pa.Schema] = None,
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
-    secrets: tuple[str, ...] | list[str] = (),
     python_version: Optional[str] = None,
     gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
@@ -1399,7 +1366,6 @@ def udf(
     output_schema: Optional[pa.DataType | pa.Field | pa.Schema] = None,
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
-    secrets: tuple[str, ...] | list[str] = (),
     python_version: Optional[str] = None,
     gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
@@ -1434,15 +1400,6 @@ def udf(
         Environment variables included in the Function definition. Not for
         credentials -- these are ordinary configuration, stored with the
         Function and visible wherever it is.
-    secrets : sequence of str, optional
-        Environment variable names this Function requires at run time, such as
-        ``["OPENAI_API_KEY"]``. Names only: the decorator states the
-        requirement, and
-        [DBConnection.create_function][lancedb.db.DBConnection.create_function]
-        satisfies it by binding each name to a named Secret. No credential is
-        accepted by this API or included in the registration request, and the
-        source stays portable -- the same names are what an SDK reads from the
-        environment in a notebook.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
     gpu : bool, default False
@@ -1473,11 +1430,6 @@ def udf(
     ...     return value * 2
     >>> score(1.5)
     3.0
-    >>> @udf(pip=["openai==3.7.0"], secrets=["OPENAI_API_KEY"])
-    ... def analyze(caption: str) -> str:
-    ...     return caption
-    >>> analyze.declared_secrets
-    ('OPENAI_API_KEY',)
     >>> @udf(pip=["cupy-cuda12x"], gpu=True)
     ... def gpu_score(value: int) -> int:
     ...     return value * 2
@@ -1493,7 +1445,6 @@ def udf(
             output_schema=output_schema,
             pip=tuple(pip),
             env={} if env is None else env,
-            secrets=tuple(secrets),
             python_version=python_version,
             gpu=gpu,
             conda=tuple(conda),

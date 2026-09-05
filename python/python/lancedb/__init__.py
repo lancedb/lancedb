@@ -33,7 +33,8 @@ from .functions import (
     UdfDefinition as UdfDefinition,
     udf as udf,
 )
-from .secrets import SecretRef as SecretRef
+from .secrets import EnvVarSecret as EnvVarSecret
+from .secrets import SecretInfo as SecretInfo
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,

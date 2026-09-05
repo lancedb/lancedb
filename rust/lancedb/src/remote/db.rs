@@ -21,7 +21,7 @@ use lance_namespace::models::{
 use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
+    JobDescription, JobInfo, OpenTableRequest, ReadConsistency, SecretInfo, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
@@ -729,6 +729,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, response) = self.client.send(req).await?;
         self.client.check_response(&request_id, response).await?;
         Ok(())
+    }
+
+    async fn describe_secret(&self, name: &str) -> Result<SecretInfo> {
+        let req = self
+            .client
+            .post("/v1/secrets/describe")
+            .json(&serde_json::json!({ "name": name }));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
     }
 
     fn job(&self, job_id: &str) -> Result<crate::job::Job> {
