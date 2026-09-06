@@ -402,6 +402,7 @@ class RemoteTable(Table):
         /,
         *,
         config: IndexConfigType,
+        replace: bool = ...,
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
@@ -416,7 +417,7 @@ class RemoteTable(Table):
         index_cache_size: Optional[int] = ...,
         num_partitions: Optional[int] = ...,
         num_sub_vectors: Optional[int] = ...,
-        replace: Optional[bool] = ...,
+        replace: bool = ...,
         accelerator: Optional[str] = ...,
         index_type: Literal[
             "VECTOR", "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
@@ -435,7 +436,7 @@ class RemoteTable(Table):
         index_cache_size: Optional[int] = None,
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
-        replace: Optional[bool] = None,
+        replace: bool = False,
         accelerator: Optional[str] = None,
         index_type="vector",
         wait_timeout: Optional[timedelta] = None,
@@ -479,7 +480,6 @@ class RemoteTable(Table):
             vector_column_name,
             accelerator,
             index_cache_size,
-            replace,
         )
 
         if is_legacy:
@@ -503,12 +503,6 @@ class RemoteTable(Table):
                     "If you have 100M+ vectors to index,"
                     "please contact us at contact@lancedb.com"
                 )
-            if replace is not None:
-                logging.warning(
-                    "replace is not supported on LanceDB cloud."
-                    "Existing indexes will always be replaced."
-                )
-
             idx_type = index_type.upper()
             if idx_type == "VECTOR" or idx_type == "IVF_PQ":
                 config = IvfPq(
@@ -561,7 +555,7 @@ class RemoteTable(Table):
         column: str,
         *,
         config: IndexConfigType,
-        replace: Optional[bool] = None,
+        replace: bool = False,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
@@ -593,7 +587,6 @@ class RemoteTable(Table):
         vector_column_name: str,
         accelerator: Optional[str],
         index_cache_size: Optional[int],
-        replace: Optional[bool],
     ) -> bool:
         """Detect if this is a legacy create_index call."""
         if config is not None:
@@ -605,7 +598,6 @@ class RemoteTable(Table):
                 num_sub_vectors,
                 accelerator,
                 index_cache_size,
-                replace,
             )
         ):
             return True

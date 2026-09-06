@@ -841,7 +841,7 @@ export interface IndexOptions {
    * and the same name, then an error will be returned.  This is true even if
    * that index is out of date.
    *
-   * The default is true
+   * The default is false
    */
   replace?: boolean;
 
