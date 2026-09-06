@@ -759,14 +759,33 @@ fn function_output_field(name: &str, nullable: bool, raw: &str) -> Result<JsonAr
     Ok(field)
 }
 
-fn function_output_field_matches(expected: &ArrowField, actual: &ArrowField) -> bool {
-    expected.name() == actual.name()
-        && expected.is_nullable() == actual.is_nullable()
-        && if expected.is_blob_v2() {
+/// Whether two fields describe the same Function output.
+///
+/// `compare_identity` covers the field's own name and nullability. Struct
+/// children carry both as part of the declaration and compare with it on. List
+/// children do not: Lance rewrites a list item's name and nullability when it
+/// writes, so a stored `fixed_size_list<item: float not null>` comes back as
+/// `fixed_size_list<item: float>` and never matches the declaration again.
+/// Comparing those by type alone keeps this agreeing with the server, which
+/// draws the same distinction and is what accepted the column when it was
+/// declared.
+fn function_output_field_matches(
+    expected: &ArrowField,
+    actual: &ArrowField,
+    compare_identity: bool,
+) -> bool {
+    if compare_identity
+        && (expected.name() != actual.name() || expected.is_nullable() != actual.is_nullable())
+    {
+        return false;
+    }
+    match (expected.is_blob_v2(), actual.is_blob_v2()) {
+        (false, false) => function_output_type_matches(expected.data_type(), actual.data_type()),
+        (true, true) => {
             has_supported_blob_v2_layout(expected) && has_supported_blob_v2_layout(actual)
-        } else {
-            function_output_type_matches(expected.data_type(), actual.data_type())
         }
+        _ => false,
+    }
 }
 
 fn function_output_type_matches(expected: &DataType, actual: &DataType) -> bool {
@@ -779,18 +798,19 @@ fn function_output_type_matches(expected: &DataType, actual: &DataType) -> bool 
                 && expected
                     .iter()
                     .zip(actual)
-                    .all(|(expected, actual)| function_output_field_matches(expected, actual))
+                    .all(|(expected, actual)| function_output_field_matches(expected, actual, true))
         }
         (DataType::List(expected), DataType::List(actual))
         | (DataType::LargeList(expected), DataType::LargeList(actual)) => {
-            function_output_field_matches(expected, actual)
+            function_output_field_matches(expected, actual, false)
         }
         (
             DataType::FixedSizeList(expected, expected_size),
             DataType::FixedSizeList(actual, actual_size),
-        ) => expected_size == actual_size && function_output_field_matches(expected, actual),
+        ) => expected_size == actual_size && function_output_field_matches(expected, actual, false),
         (DataType::Map(expected, expected_sorted), DataType::Map(actual, actual_sorted)) => {
-            expected_sorted == actual_sorted && function_output_field_matches(expected, actual)
+            expected_sorted == actual_sorted
+                && function_output_field_matches(expected, actual, true)
         }
         _ => false,
     }
@@ -1813,6 +1833,69 @@ mod tests {
         ));
         let declarations = vec![("a".to_string(), "x + 1".to_string())];
         assert!(super::validate_declarations(schema, &declarations).is_err());
+    }
+
+    #[test]
+    fn list_children_match_by_type_but_struct_children_by_identity() {
+        use arrow_schema::Field as F;
+
+        // Lance rewrites a list item's name and nullability on write, so the
+        // stored field is no longer identical to what was declared. Comparing
+        // those by type keeps a table with a vector output usable.
+        let declared =
+            DataType::FixedSizeList(Arc::new(F::new("item", DataType::Float32, false)), 4);
+        let stored = DataType::FixedSizeList(Arc::new(F::new("item", DataType::Float32, true)), 4);
+        assert!(super::function_output_type_matches(&declared, &stored));
+
+        let renamed =
+            DataType::FixedSizeList(Arc::new(F::new("element", DataType::Float32, true)), 4);
+        assert!(super::function_output_type_matches(&declared, &renamed));
+
+        // The dimension is still part of the declaration.
+        let resized = DataType::FixedSizeList(Arc::new(F::new("item", DataType::Float32, true)), 8);
+        assert!(!super::function_output_type_matches(&declared, &resized));
+
+        // Struct children keep comparing by name and nullability.
+        let struct_declared =
+            DataType::Struct(vec![F::new("changed", DataType::Boolean, false)].into());
+        let struct_nullable =
+            DataType::Struct(vec![F::new("changed", DataType::Boolean, true)].into());
+        let struct_renamed =
+            DataType::Struct(vec![F::new("altered", DataType::Boolean, false)].into());
+        assert!(super::function_output_type_matches(
+            &struct_declared,
+            &struct_declared
+        ));
+        assert!(!super::function_output_type_matches(
+            &struct_declared,
+            &struct_nullable
+        ));
+        assert!(!super::function_output_type_matches(
+            &struct_declared,
+            &struct_renamed
+        ));
+
+        // A list nested inside a struct gets the list rule.
+        let nested_declared = DataType::Struct(
+            vec![F::new(
+                "tokens",
+                DataType::List(Arc::new(F::new("item", DataType::Utf8, false))),
+                true,
+            )]
+            .into(),
+        );
+        let nested_stored = DataType::Struct(
+            vec![F::new(
+                "tokens",
+                DataType::List(Arc::new(F::new("item", DataType::Utf8, true))),
+                true,
+            )]
+            .into(),
+        );
+        assert!(super::function_output_type_matches(
+            &nested_declared,
+            &nested_stored
+        ));
     }
 
     #[test]
