@@ -8021,7 +8021,7 @@ mod tests {
             match request.url().path() {
                 "/v1/table/my_table/backfill_column" => http::Response::builder()
                     .status(202)
-                    .body(r#"{"job_id": "j-42"}"#.as_bytes().to_vec())
+                    .body(br#"{"job_id": "j-42"}"#.to_vec())
                     .unwrap(),
                 "/v1/jobs/describe" => http::Response::builder()
                     .status(200)
