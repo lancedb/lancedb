@@ -3949,9 +3949,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use lance_io::assert_io_lt;
+
     use crate::connect;
     use crate::connection::ConnectBuilder;
-    use crate::io::object_store::io_tracking::IoTrackingStore;
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
@@ -5886,34 +5887,31 @@ mod tests {
             table.add(batch.clone()).execute().await.unwrap();
         }
 
-        // Reopen through a tracking store so the counters cover `stats()` alone and
-        // not the writes above.
-        let (wrapper, io_stats) = IoTrackingStore::new_wrapper();
-        let table = conn
-            .open_table("test_stats_io")
-            .lance_read_params(ReadParams {
-                store_options: Some(ObjectStoreParams {
-                    object_store_wrapper: Some(wrapper),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            })
-            .execute()
-            .await
-            .unwrap();
-        io_stats.lock().unwrap().read_iops = 0;
+        // Reopen, then count against the store's own tracker so the counters cover
+        // `stats()` alone and not the writes above.
+        let table = conn.open_table("test_stats_io").execute().await.unwrap();
+        let io_tracker = {
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            dataset
+                .object_store(None)
+                .await
+                .unwrap()
+                .io_tracker()
+                .clone()
+        };
+        io_tracker.incremental_stats();
 
         let stats = table.stats().await.unwrap();
-        let read_iops = io_stats.lock().unwrap().read_iops;
+        let io_stats = io_tracker.incremental_stats();
 
         assert_eq!(stats.fragment_stats.num_fragments, NUM_APPENDS + 1);
         assert!(stats.total_bytes > 0);
         // Reading the fragments' data files would take at least one IOP each.
-        assert!(
-            read_iops < stats.fragment_stats.num_fragments as u64,
-            "stats() issued {} read IOPs across {} fragments",
+        assert_io_lt!(
+            io_stats,
             read_iops,
-            stats.fragment_stats.num_fragments
+            stats.fragment_stats.num_fragments as u64,
+            "stats() should not read the fragments' data files"
         );
     }
 }
