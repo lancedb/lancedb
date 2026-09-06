@@ -1,0 +1,56 @@
+name: Optional Intel macOS wheel
+
+# Intel publishing was retired in #2836. This is an opt-in source-build
+# path, not a restoration of the default PyPI release/support matrix.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/macos-intel-wheel.yml
+      - ci/smoke_native_wheel.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheel:
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '10.15'
+      CARGO_BUILD_JOBS: '3'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Require an Intel runner
+        run: test "$(uname -m)" = x86_64
+      - uses: ./.github/workflows/build_mac_wheel
+        with:
+          python-minor-version: 12
+          args: --locked --release --strip --target x86_64-apple-darwin --features fp16kernels
+      - name: Install the wheel outside the source tree
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv wheel-env
+          wheel-env/bin/python -m pip install "$GITHUB_WORKSPACE"/target/wheels/lancedb-*.whl
+          wheel-env/bin/python -m pip check
+          wheel-env/bin/python "$GITHUB_WORKSPACE/ci/smoke_native_wheel.py" --architecture x86_64
+      - name: Record build provenance
+        run: |
+          git rev-parse HEAD > target/wheels/UPSTREAM_COMMIT.txt
+          cp Cargo.lock target/wheels/Cargo.lock
+          rustc --version > target/wheels/RUST_VERSION.txt
+          shasum -a 256 target/wheels/*.whl > target/wheels/SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-macos-x86_64
+          path: target/wheels/*
+          if-no-files-found: error
+          retention-days: 14
