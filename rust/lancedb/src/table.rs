@@ -2804,7 +2804,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
+        let batches = computed_columns::admit_create_source(batches)?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2904,6 +2904,7 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
+        let batches = computed_columns::admit_create_source(batches)?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());

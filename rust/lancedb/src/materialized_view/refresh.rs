@@ -24,8 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
-use arrow_array::{RecordBatch, UInt64Array};
-use arrow_schema::{Schema as ArrowSchema, SchemaRef};
+use arrow_array::{RecordBatch, UInt64Array, new_null_array};
+use arrow_schema::{FieldRef, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::ScalarValue;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::SendableRecordBatchStream;
@@ -34,7 +34,7 @@ use datafusion::prelude::{col, lit};
 use futures::{StreamExt, TryStreamExt};
 use lance::Dataset;
 use lance::dataset::mem_wal::DatasetMemWalExt;
-use lance::dataset::transaction::{Operation, Transaction};
+use lance::dataset::transaction::{Operation, Transaction, UpdateMode};
 use lance::dataset::write::delete::DeleteBuilder;
 use lance::dataset::write::merge_insert::inserted_rows::{
     KeyExistenceFilter, KeyExistenceFilterBuilder, KeyValue,
@@ -51,6 +51,9 @@ use super::{
     definition_to_metadata,
 };
 use crate::database::OpenTableRequest;
+use crate::table::computed_columns::{
+    computed_column_from_field, computed_columns, ensure_declarations_are_planned,
+};
 use crate::table::{NativeTable, NativeTableExt, Table};
 use crate::{Error, Result};
 
@@ -167,30 +170,52 @@ pub(crate) async fn execute_refresh(
         .map(|p| (p.output.clone(), p.expression.clone()))
         .collect();
     validate_inputs(&source_ds, definition)?;
-    let (replanned, mut planned_fields, _renames) = super::plan(
+    let (replanned, planned_fields, _renames) = super::plan(
         source_schema,
         &definition.source_table,
         &definition.source_namespace,
-        &projections,
+        Some(&projections),
         definition.filter.as_deref(),
         definition.limit,
     )?;
+    let mut planned_fields = planned_fields;
     planned_fields.push(arrow_schema::Field::new(
         SOURCE_ROW_ID_COLUMN,
         arrow_schema::DataType::UInt64,
         false,
     ));
+    // A computed column is not planned from the source: refresh writes it
+    // NULL and its declaration's owner fills it. Its declaration must still
+    // be complete, and it must be able to hold NULL.
     let physical = ArrowSchema::from(view_ds.schema());
-    let planned_shape: Vec<_> = planned_fields
-        .iter()
-        .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
-        .collect();
-    let physical_shape: Vec<_> = physical
+    let mut computed = computed_columns(&physical).into_iter().map(|c| c.name);
+    if let Some(name) = computed.by_ref().find(|name| {
+        physical
+            .field_with_name(name)
+            .is_ok_and(|f| !f.is_nullable())
+    }) {
+        return Err(Error::Schema {
+            message: format!(
+                "computed column '{name}' of view '{}' cannot hold NULL; recreate the view",
+                view.name()
+            ),
+        });
+    }
+    ensure_declarations_are_planned(&physical)?;
+    let physical_planned: Vec<&FieldRef> = physical
         .fields()
         .iter()
-        .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
+        .filter(|f| computed_column_from_field(f).is_none())
         .collect();
-    if planned_shape != physical_shape {
+    // A projected column that became nullable at the source still fits the
+    // view's nullable field; the reverse would not.
+    let matches = planned_fields.len() == physical_planned.len()
+        && planned_fields.iter().zip(&physical_planned).all(|(e, p)| {
+            e.name() == p.name()
+                && e.data_type() == p.data_type()
+                && (p.is_nullable() || !e.is_nullable())
+        });
+    if !matches {
         return Err(Error::Schema {
             message: format!(
                 "the stored definition of view '{}' does not produce this \
@@ -229,11 +254,18 @@ pub(crate) async fn execute_refresh(
         .get(SOURCE_VERSION_TS_META_KEY)
         .and_then(|raw| raw.parse().ok());
     // The watermark speaks only for the view state its refresh left behind;
-    // any other commit on the view since then is drift.
-    let view_intact = metadata
+    // any other commit on the view since then is drift, except a fill of its
+    // computed columns, which rewrites nothing refresh certifies.
+    let recorded_view_version = metadata
         .get(VIEW_VERSION_META_KEY)
-        .and_then(|raw| raw.parse::<u64>().ok())
-        == Some(view_ds.version().version);
+        .and_then(|raw| raw.parse::<u64>().ok());
+    let view_intact = match recorded_view_version {
+        Some(recorded) if recorded == view_ds.version().version => true,
+        Some(recorded) if recorded < view_ds.version().version => {
+            only_computed_rewrites_since(&view_ds, recorded).await?
+        }
+        _ => false,
+    };
 
     if !full && watermark == Some(source_version) && view_intact && recorded_ts == Some(source_ts) {
         return Ok(RefreshMaterializedViewResult {
@@ -1090,6 +1122,69 @@ struct RowScope {
     limit: Option<u64>,
 }
 
+/// Whether every commit on the view after `recorded` is a fill of its
+/// computed columns: a column rewrite or data replacement touching only
+/// those fields and neither adding nor removing rows. A version whose
+/// transaction cannot be read is not proven, so it counts as drift.
+async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Result<bool> {
+    // A fill may write any field under a computed column, so the whole
+    // subtree counts, not only the root.
+    let physical = ArrowSchema::from(view_ds.schema());
+    fn subtree(field: &lance_core::datatypes::Field, ids: &mut Vec<u32>) {
+        ids.push(field.id as u32);
+        for child in &field.children {
+            subtree(child, ids);
+        }
+    }
+    let mut computed_fields = Vec::new();
+    for column in computed_columns(&physical) {
+        if let Some(field) = view_ds.schema().field(&column.name) {
+            subtree(field, &mut computed_fields);
+        }
+    }
+    if computed_fields.is_empty() {
+        return Ok(false);
+    }
+    for version in recorded + 1..=view_ds.version().version {
+        let Some(transaction) = view_ds.read_transaction_by_version(version).await? else {
+            return Ok(false);
+        };
+        let fill = match &transaction.operation {
+            Operation::Update {
+                removed_fragment_ids,
+                new_fragments,
+                fields_modified,
+                update_mode: Some(UpdateMode::RewriteColumns),
+                ..
+            } => {
+                removed_fragment_ids.is_empty()
+                    && new_fragments.is_empty()
+                    && !fields_modified.is_empty()
+                    && fields_modified
+                        .iter()
+                        .all(|field| computed_fields.contains(field))
+            }
+            // What `refresh_column` commits for a SQL declaration.
+            Operation::DataReplacement { replacements } => {
+                !replacements.is_empty()
+                    && replacements.iter().all(|group| {
+                        !group.1.fields.is_empty()
+                            && group
+                                .1
+                                .fields
+                                .iter()
+                                .all(|field| computed_fields.contains(&(*field as u32)))
+                    })
+            }
+            _ => false,
+        };
+        if !fill {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 async fn compute_stream(
     source: &Dataset,
     definition: &MaterializedViewDefinition,
@@ -1158,6 +1253,10 @@ async fn compute_stream(
         let batch = batch.map_err(|e| DataFusionError::External(Box::new(e)))?;
         let mut columns = Vec::with_capacity(out_schema.fields().len());
         for field in out_schema.fields() {
+            if computed_column_from_field(field).is_some() {
+                columns.push(new_null_array(field.data_type(), batch.num_rows()));
+                continue;
+            }
             let name = if field.name() == SOURCE_ROW_ID_COLUMN {
                 ROW_ID
             } else {
@@ -2768,7 +2867,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1]).await;
         let prepared = crate::materialized_view::prepare_declaration(
             &source,
-            &[("x".into(), "x".into()), ("twice".into(), "x * 2".into())],
+            Some(&[("x".into(), "x".into()), ("twice".into(), "x * 2".into())]),
             None,
             None,
         )
@@ -3131,5 +3230,425 @@ mod tests {
         table.unset_lsm_write_spec().await.unwrap();
         let err = view.refresh().execute().await.unwrap_err();
         assert!(err.to_string().contains("source table 'src'"), "{err}");
+    }
+
+    /// A view with a computed column, declared over `people` and refreshed.
+    async fn refreshed_computed_view(conn: &Connection) -> MaterializedView {
+        use crate::materialized_view::tests::{computed_field, people, test_binding};
+        let source = people(conn).await;
+        let view = crate::materialized_view::prepare_declaration(
+            &source,
+            Some(&[
+                ("id".to_string(), "id".to_string()),
+                ("name".to_string(), "name".to_string()),
+            ]),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_computed_columns(
+            vec![(2, computed_field("emb", "fb_1", "name"))],
+            &[test_binding("fb_1", "name", "emb")],
+        )
+        .unwrap()
+        .create("v")
+        .await
+        .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        view
+    }
+
+    async fn unfilled(view: &MaterializedView) -> usize {
+        view.table()
+            .count_rows(Some("emb IS NULL".to_string()))
+            .await
+            .unwrap()
+    }
+
+    async fn append_people(conn: &Connection, ids: Vec<i32>, names: Vec<&str>) {
+        let batch = record_batch!(("id", Int32, ids), ("name", Utf8, names)).unwrap();
+        conn.open_table("people")
+            .execute()
+            .await
+            .unwrap()
+            .add(batch)
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    /// Commit the fill job's shape on the view: a column rewrite of
+    /// `fields`, touching no rows. The data is left as it is; what matters
+    /// here is how the next refresh classifies the commit.
+    async fn commit_column_rewrite(view: &MaterializedView, fields: &[&str]) {
+        let native = view.table().as_native().unwrap();
+        native.dataset.reload().await.unwrap();
+        let dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        let fields_modified = fields
+            .iter()
+            .map(|name| dataset.schema().field(name).unwrap().id as u32)
+            .collect();
+        let updated_fragments = dataset
+            .get_fragments()
+            .iter()
+            .map(|fragment| fragment.metadata().clone())
+            .collect();
+        let operation = Operation::Update {
+            removed_fragment_ids: Vec::new(),
+            updated_fragments,
+            new_fragments: Vec::new(),
+            fields_modified,
+            compacted_sstables: Vec::new(),
+            fields_for_preserving_frag_bitmap: Vec::new(),
+            update_mode: Some(UpdateMode::RewriteColumns),
+            inserted_rows_filter: None,
+            updated_fragment_offsets: None,
+        };
+        let read_version = dataset.version().version;
+        CommitBuilder::new(WriteDestination::Dataset(Arc::new(dataset)))
+            .execute(Transaction::new(read_version, operation, None))
+            .await
+            .unwrap();
+    }
+
+    /// Refresh never computes a computed column: every row it writes, on a
+    /// rebuild, an append and a rewrite, carries NULL there, and the
+    /// declaration survives all three.
+    #[tokio::test]
+    async fn test_computed_columns_are_written_null_and_kept() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_computed_view(&conn).await;
+        assert_eq!(unfilled(&view).await, 3);
+
+        append_people(&conn, vec![4, 5], vec!["d", "e"]).await;
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(unfilled(&view).await, 5);
+
+        conn.open_table("people")
+            .execute()
+            .await
+            .unwrap()
+            .update()
+            .column("name", "'z'")
+            .only_if("id = 1")
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(unfilled(&view).await, 5);
+        assert_eq!(read(view.table(), "id").await, vec![1, 2, 3, 4, 5]);
+
+        let schema = view.table().schema().await.unwrap();
+        assert!(
+            crate::table::computed_columns::function_bindings(&schema)
+                .unwrap()
+                .iter()
+                .any(|b| b.binding_id() == "fb_1"),
+            "the binding envelope was lost"
+        );
+        assert!(
+            computed_column_from_field(schema.field_with_name("emb").unwrap()).is_some(),
+            "the declaration was lost"
+        );
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+    }
+
+    /// The fill job's commit rewrites only computed columns. It is the one
+    /// commit on a view that is not drift: the next refresh carries on from
+    /// its watermark instead of rebuilding, which would null what the fill
+    /// just wrote.
+    #[tokio::test]
+    async fn test_a_computed_column_fill_is_not_drift() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_computed_view(&conn).await;
+
+        commit_column_rewrite(&view, &["emb"]).await;
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+
+        commit_column_rewrite(&view, &["emb"]).await;
+        append_people(&conn, vec![4], vec!["d"]).await;
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(result.rows_written, 1);
+        assert_eq!(read(view.table(), "id").await, vec![1, 2, 3, 4]);
+    }
+
+    /// A column rewrite that reaches a projected column is drift like any
+    /// other write: refresh certifies those columns and must recompute them.
+    #[tokio::test]
+    async fn test_a_rewrite_of_a_projected_column_is_drift() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_computed_view(&conn).await;
+
+        commit_column_rewrite(&view, &["emb", "name"]).await;
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Rebuild
+        );
+    }
+
+    /// The declaration contract is checked before any refresh mutation: a
+    /// missing binding envelope and a column that lost its declaration both
+    /// fail closed.
+    #[tokio::test]
+    async fn test_a_broken_declaration_is_refused_before_refresh() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_computed_view(&conn).await;
+        let native = view.table().as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_schema_metadata(vec![(
+                crate::table::computed_columns::FUNCTION_BINDINGS_META_KEY.to_string(),
+                None,
+            )])
+            .await
+            .unwrap();
+        let err = view.refresh().execute().await.unwrap_err().to_string();
+        assert!(err.contains("references missing binding 'fb_1'"), "{err}");
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_computed_view(&conn).await;
+        let native = view.table().as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .replace_field_metadata(vec![(
+                dataset.schema().field("emb").unwrap().id as u32,
+                HashMap::new(),
+            )])
+            .await
+            .unwrap();
+        let err = view.refresh().execute().await.unwrap_err().to_string();
+        assert!(err.contains("does not match binding 'fb_1'"), "{err}");
+    }
+
+    /// An input the view does not project is materialized on every refresh
+    /// path, before the provenance column, with the source's values.
+    #[tokio::test]
+    async fn test_internal_inputs_are_materialized_and_refreshed() {
+        use crate::materialized_view::tests::{computed_field, strict_people, test_binding};
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = strict_people(&conn).await;
+        let mut prepared = crate::materialized_view::prepare_declaration(
+            &source,
+            Some(&[("id".to_string(), "id".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let input = prepared.input_column("name").unwrap();
+        let view = prepared
+            .with_computed_columns(
+                vec![(1, computed_field("emb", "fb_1", &input))],
+                &[test_binding("fb_1", &input, "emb")],
+            )
+            .unwrap()
+            .create("v")
+            .await
+            .unwrap();
+        let names: Vec<String> = view
+            .table()
+            .schema()
+            .await
+            .unwrap()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["id", "emb", "__input_name", SOURCE_ROW_ID_COLUMN]);
+
+        let unfilled_inputs = || async {
+            view.table()
+                .count_rows(Some("__input_name IS NULL".to_string()))
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Rebuild
+        );
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
+        assert_eq!(unfilled_inputs().await, 0);
+
+        let more = arrow_array::RecordBatch::try_new(
+            source.schema().await.unwrap(),
+            vec![
+                Arc::new(Int32Array::from(vec![4])),
+                Arc::new(arrow_array::StringArray::from(vec!["d"])),
+            ],
+        )
+        .unwrap();
+        source.add(more).execute().await.unwrap();
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Incremental
+        );
+        assert_eq!(unfilled_inputs().await, 0);
+        assert_eq!(
+            view.table()
+                .count_rows(Some("__input_name = 'd'".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        source
+            .update()
+            .column("name", "'z'")
+            .only_if("id = 1")
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            view.table()
+                .count_rows(Some("__input_name = 'z'".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            unfilled(&view).await,
+            4,
+            "rewritten and new rows are unfilled"
+        );
+    }
+
+    /// A SQL declaration is filled by `refresh_column` on the view, which
+    /// commits a data replacement; the next refresh continues from its
+    /// watermark and keeps what the fill wrote, and only rows the view added
+    /// since come back unfilled.
+    #[tokio::test]
+    async fn test_a_sql_fill_is_not_drift() {
+        use crate::materialized_view::tests::{people, sql_field};
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = people(&conn).await;
+        let view = crate::materialized_view::prepare_declaration(
+            &source,
+            Some(&[("id".to_string(), "id".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_computed_columns(
+            vec![(
+                1,
+                sql_field("next", arrow_schema::DataType::Int32, "id + 1", r#"["id"]"#),
+            )],
+            &[],
+        )
+        .unwrap()
+        .create("v")
+        .await
+        .unwrap();
+        let filled = || async {
+            view.table()
+                .count_rows(Some("next = id + 1".to_string()))
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Rebuild
+        );
+        assert_eq!(
+            view.table()
+                .refresh_column("next")
+                .await
+                .unwrap()
+                .rows_filled,
+            3
+        );
+        assert_eq!(filled().await, 3);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+        assert_eq!(filled().await, 3);
+
+        append_people(&conn, vec![4], vec!["d"]).await;
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Incremental
+        );
+        assert_eq!(filled().await, 3);
+        assert_eq!(
+            view.table()
+                .refresh_column("next")
+                .await
+                .unwrap()
+                .rows_filled,
+            1
+        );
+        assert_eq!(filled().await, 4);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+    }
+
+    /// A fill of a nested computed column writes its child fields; that is
+    /// still a fill, not drift.
+    #[tokio::test]
+    async fn test_a_nested_sql_fill_is_not_drift() {
+        use crate::materialized_view::tests::{people, sql_field};
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = people(&conn).await;
+        let payload = sql_field(
+            "payload",
+            arrow_schema::DataType::Struct(
+                vec![arrow_schema::Field::new(
+                    "value",
+                    arrow_schema::DataType::Utf8,
+                    true,
+                )]
+                .into(),
+            ),
+            "named_struct('value', name)",
+            r#"["name"]"#,
+        );
+        let view = crate::materialized_view::prepare_declaration(
+            &source,
+            Some(&[("name".to_string(), "name".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_computed_columns(vec![(1, payload)], &[])
+        .unwrap()
+        .create("v")
+        .await
+        .unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            view.table()
+                .refresh_column("payload")
+                .await
+                .unwrap()
+                .rows_filled,
+            3
+        );
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+        assert_eq!(
+            view.table()
+                .count_rows(Some("payload.value = name".to_string()))
+                .await
+                .unwrap(),
+            3
+        );
     }
 }
