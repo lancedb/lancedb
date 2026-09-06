@@ -342,6 +342,42 @@ def _multiworker_dataloader_target(db_uri: str, result_queue):
     result_queue.put(count)
 
 
+class _LazyPermutationDataset(torch.utils.data.Dataset):
+    """Match applications that create their Permutation inside a fork worker."""
+
+    def __init__(self, table):
+        self._table = table
+        self._permutation = None
+        self._length = table.count_rows()
+
+    def __len__(self):
+        return self._length
+
+    def __getitems__(self, indices):
+        if self._permutation is None:
+            inherited_connection = self._table._conn
+            self._permutation = Permutation.identity(self._table)
+            if self._table._conn is inherited_connection:
+                raise RuntimeError("Permutation reused a connection inherited by fork")
+        return self._permutation.__getitems__(indices)
+
+
+def _lazy_multiworker_dataloader_target(db_uri: str, result_queue):
+    table = lancedb.connect(db_uri).open_table("test_table")
+    dataset = _LazyPermutationDataset(table)
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=10,
+        num_workers=2,
+        multiprocessing_context="fork",
+    )
+    count = 0
+    for batch in dataloader:
+        assert batch["a"].size(0) == 10
+        count += 1
+    result_queue.put(count)
+
+
 def _remote_multiworker_dataloader_target(port: int, result_queue):
     import lancedb
     from lancedb.permutation import Permutation
@@ -404,6 +440,46 @@ def test_permutation_dataloader_fork_workers(tmp_path):
             proc.kill()
             proc.join()
         pytest.fail("Permutation hung when iterated in a fork-based DataLoader worker")
+
+    assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
+    assert not queue.empty(), "child produced no batches"
+    assert queue.get() == 100
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason=(
+        "fork() is unavailable on Windows and unsafe on macOS "
+        "(Apple frameworks/TLS are not fork-safe)"
+    ),
+)
+def test_lazy_permutation_reopens_inherited_table_in_fork_worker(tmp_path):
+    """A lazily built Permutation must not reuse an inherited table client.
+
+    Object-store table handles contain HTTP connection pools that are unsafe
+    after fork. The local table makes the handle replacement deterministic
+    without requiring an S3 service in the unit-test environment.
+    """
+    db_uri = str(tmp_path / "db")
+    db = lancedb.connect(db_uri)
+    db.create_table("test_table", pa.table({"a": list(range(1000))}))
+
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_lazy_multiworker_dataloader_target,
+        args=(db_uri, queue),
+    )
+    proc.start()
+    proc.join(timeout=30)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        pytest.fail("Lazy Permutation hung in a fork-based DataLoader worker")
 
     assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
     assert not queue.empty(), "child produced no batches"

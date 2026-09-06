@@ -961,7 +961,7 @@ class LanceDBConnection(DBConnection):
                 "manifest_enabled": self._manifest_enabled,
                 "namespace_client_properties": self._namespace_client_properties,
                 "read_consistency_interval_seconds": (
-                    rci.total_seconds() if rci else None
+                    rci.total_seconds() if rci is not None else None
                 ),
             }
         )
