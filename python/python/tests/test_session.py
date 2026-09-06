@@ -36,3 +36,36 @@ def test_session_cache_configuration(tmp_path):
     assert final_cache_size > initial_cache_size  # Cache should have grown
     assert final_cache_items >= initial_cache_items  # Items should not decrease
     assert initial_cache_size < index_cache_size + metadata_cache_size
+
+
+def test_clear_metadata_cache_releases_cached_metadata(tmp_path):
+    """A session holds cached metadata for the life of every connection
+    using it, with no way to hand that memory back. Clearing must actually
+    shrink it."""
+    session = lancedb.Session()
+    db = lancedb.connect(tmp_path, session=session)
+    table = db.create_table("cached", [{"id": i} for i in range(100)])
+    table.to_arrow()
+
+    before = session.size_bytes
+    assert before > 0, "expected reading the table to populate the session cache"
+
+    session.clear_metadata_cache()
+
+    assert session.size_bytes < before
+
+
+def test_clear_metadata_cache_is_a_no_op_on_an_untouched_session():
+    """Edge case: clearing a session that never cached anything, and
+    clearing twice in a row, must both be harmless rather than failing."""
+    session = lancedb.Session()
+    baseline = session.size_bytes
+
+    session.clear_metadata_cache()
+    session.clear_metadata_cache()
+
+    # A fresh session already reports the fixed overhead of its own cache
+    # structures, so the guarantee is that clearing never grows it and
+    # leaves nothing cached -- not that it reaches zero.
+    assert session.size_bytes <= baseline
+    assert session.approx_num_items == 0
