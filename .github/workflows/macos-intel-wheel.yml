@@ -19,7 +19,9 @@ concurrency:
 jobs:
   wheel:
     runs-on: macos-15-intel
-    timeout-minutes: 120
+    # Native release compilation exceeded 120 minutes in the validated run.
+    # Keep release flags intact and leave time for installed-wheel tests.
+    timeout-minutes: 240
     env:
       MACOSX_DEPLOYMENT_TARGET: '10.15'
       CARGO_BUILD_JOBS: '3'
