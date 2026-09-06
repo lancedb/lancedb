@@ -1080,4 +1080,27 @@ describe("remote connection jobs surface", () => {
       },
     );
   });
+
+  it("leaves numDeletedRows absent when the server omits it", async () => {
+    // A server that predates num_deleted_rows says nothing about deleted rows
+    const statsReply =
+      '{"total_bytes":1,"num_rows":3,"num_indices":0,"fragment_stats":' +
+      '{"num_fragments":1,"num_small_fragments":0,' +
+      '"lengths":{"min":3,"max":3,"mean":3,"p25":3,"p50":3,"p75":3,"p99":3}}}';
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        const body = path.endsWith("/describe/")
+          ? JSON.stringify({ name: "t", version: 1, schema: { fields: [] } })
+          : statsReply;
+        res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+      },
+      async (db) => {
+        const stats = await (await db.openTable("t")).stats();
+        expect("numDeletedRows" in stats).toBe(false);
+        expect(stats.numDeletedRows).toBeUndefined();
+      },
+    );
+  });
 });
