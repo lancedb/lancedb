@@ -240,6 +240,30 @@ def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
     assert vector_column.to_pylist() == [[0.0, 300.0]]
 
 
+def test_create_table_all_null_vector_column(mem_db: DBConnection):
+    # A vector column can legitimately arrive with every value null, e.g. when
+    # the embeddings have not been computed yet. The dimension is unknowable in
+    # that case, so schema inference must not crash and should leave the column
+    # as a variable-length list rather than a fixed-size one.
+    data = pa.table(
+        {
+            "id": pa.array([1, 2]),
+            "vector": pa.array([None, None], type=pa.list_(pa.float32())),
+        }
+    )
+
+    table = mem_db.create_table("all_null_vector", data=data)
+
+    vector_field = table.schema.field("vector")
+    assert pa.types.is_list(vector_field.type)
+    assert vector_field.type.value_type == pa.float32()
+
+    result = table.to_arrow()
+    assert result.num_rows == 2
+    assert result.column("vector").to_pylist() == [None, None]
+    assert table.count_rows() == 2
+
+
 @pytest.mark.asyncio
 async def test_create_table_async_infers_large_int_vectors(
     mem_db_async: AsyncConnection,
