@@ -737,11 +737,12 @@ it("should query documents with LangChain PDF metadata", async () => {
 
 describe("merge insert", () => {
   let tmpDir: tmp.DirResult;
+  let conn: Connection;
   let table: Table;
 
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
-    const conn = await connect(tmpDir.name);
+    conn = await connect(tmpDir.name);
 
     table = await conn.createTable("some_table", [
       { a: 1, b: "a" },
@@ -778,6 +779,38 @@ describe("merge insert", () => {
     const result = (await table.toArrow()).toArray().sort((a, b) => a.a - b.a);
 
     expect(result.map((row) => ({ ...row }))).toEqual(expected);
+  });
+  test("upsert on a composite key", async () => {
+    const composite = await conn.createTable("composite", [
+      { shard: "a", id: 1, val: "x" },
+      { shard: "a", id: 2, val: "y" },
+      { shard: "b", id: 1, val: "z" },
+    ]);
+
+    // ("a", 1) matches an existing row and updates it. ("b", 2) agrees with an
+    // existing row on each key column separately but on neither pair, so it is
+    // an insert.
+    const mergeInsertRes = await composite
+      .mergeInsert(["shard", "id"])
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { shard: "a", id: 1, val: "X" },
+        { shard: "b", id: 2, val: "W" },
+      ]);
+    expect(mergeInsertRes.numUpdatedRows).toBe(1);
+    expect(mergeInsertRes.numInsertedRows).toBe(1);
+
+    const result = (await composite.toArrow())
+      .toArray()
+      .sort((a, b) => a.shard.localeCompare(b.shard) || a.id - b.id);
+
+    expect(result.map((row) => ({ ...row }))).toEqual([
+      { shard: "a", id: 1, val: "X" },
+      { shard: "a", id: 2, val: "y" },
+      { shard: "b", id: 1, val: "z" },
+      { shard: "b", id: 2, val: "W" },
+    ]);
   });
   test("conditional update", async () => {
     const newData = [

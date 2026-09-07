@@ -48,6 +48,28 @@ describe("materialized views", () => {
     expect(definitionFromMetadata(safe, "v").limit).toBe(42);
   });
 
+  it("reads the namespaced select kind and refuses unknown kinds", () => {
+    // "namespaced_select" is the namespaced form of "select": same shape, a
+    // separate kind so readers that predate it refuse instead of resolving
+    // the source at the root.
+    const namespaced = new Map([
+      [
+        DEFINITION_META_KEY,
+        '{"kind":"namespaced_select","source_table":"people","source_namespace":["ns"]}',
+      ],
+    ]);
+    const definition = definitionFromMetadata(namespaced, "v");
+    expect(definition.sourceTable).toBe("people");
+    expect(definition.sourceNamespace).toEqual(["ns"]);
+
+    const unknown = new Map([
+      [DEFINITION_META_KEY, '{"kind":"select_v3","source_table":"people"}'],
+    ]);
+    expect(() => definitionFromMetadata(unknown, "v")).toThrow(
+      /cannot refresh/,
+    );
+  });
+
   it("creates, refreshes and queries a view", async () => {
     const view = await db.createMaterializedView("adults", "people", {
       select: ["name", ["shout", "upper(name)"]],

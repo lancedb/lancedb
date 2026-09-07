@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -20,19 +20,20 @@ use lance_namespace::models::{
 
 use crate::Error;
 use crate::database::{
-    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, JobInfo,
+    OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
-use crate::remote::job::{DescribeJobResponse, RemoteJob, job_state_to_client};
+use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
 };
+use super::sql::SqlClient;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
@@ -97,6 +98,7 @@ pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
 pub const OPT_REMOTE_API_KEY: &str = "remote_database_api_key";
 pub const OPT_REMOTE_REGION: &str = "remote_database_region";
 pub const OPT_REMOTE_HOST_OVERRIDE: &str = "remote_database_host_override";
+pub const OPT_REMOTE_SQL_HOST_OVERRIDE: &str = "remote_database_sql_host_override";
 // TODO: add support for configuring client config via key/value options
 
 #[derive(Clone, Debug, Default)]
@@ -212,6 +214,7 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     namespace_context_provider: Option<Arc<dyn DynamicContextProvider>>,
     /// TLS configuration for mTLS support
     tls_config: Option<super::client::TlsConfig>,
+    sql_client: Option<SqlClient>,
 }
 
 #[derive(Clone)]
@@ -269,22 +272,35 @@ impl DynamicContextProvider for NamespaceHeaderProviderContext {
     }
 }
 
+pub struct RemoteHostOverrides {
+    pub rest: Option<String>,
+    pub sql: Option<String>,
+}
+
 impl RemoteDatabase {
-    pub fn try_new(
+    pub(crate) fn try_new(
         uri: &str,
         api_key: &str,
         region: &str,
-        host_override: Option<String>,
+        host_overrides: RemoteHostOverrides,
         client_config: ClientConfig,
         options: RemoteOptions,
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
+        let sql_client = SqlClient::new(
+            parsed.db_name.clone(),
+            parsed.db_prefix.clone(),
+            api_key.to_string(),
+            host_overrides.rest.clone(),
+            host_overrides.sql,
+            client_config.clone(),
+        );
         let header_map = RestfulLanceDbClient::<Sender>::default_headers(
             api_key,
             region,
             &parsed.db_name,
-            host_override.is_some(),
+            host_overrides.rest.is_some(),
             &options,
             parsed.db_prefix.as_deref(),
             &client_config,
@@ -312,7 +328,7 @@ impl RemoteDatabase {
         let client = RestfulLanceDbClient::try_new(
             &parsed,
             region,
-            host_override,
+            host_overrides.rest,
             header_map,
             client_config.clone(),
             read_consistency_interval,
@@ -330,6 +346,7 @@ impl RemoteDatabase {
             namespace_headers,
             namespace_context_provider,
             tls_config: client_config.tls_config,
+            sql_client: Some(sql_client),
         })
     }
 }
@@ -427,6 +444,7 @@ mod test_utils {
                 namespace_headers: HashMap::new(),
                 namespace_context_provider: None,
                 tls_config: None,
+                sql_client: None,
             }
         }
 
@@ -449,6 +467,7 @@ mod test_utils {
                 namespace_headers: config.extra_headers.clone(),
                 namespace_context_provider,
                 tls_config: config.tls_config.clone(),
+                sql_client: None,
             }
         }
     }
@@ -534,6 +553,19 @@ struct RemoteListJobsResponse {
 }
 
 #[derive(serde::Deserialize)]
+struct RemoteListedFunctionVersion {
+    definition: FunctionVersion,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListFunctionsResponse {
+    #[serde(default)]
+    functions: Vec<RemoteListedFunctionVersion>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct RemoteDropFunctionResponse {
     dropped: bool,
 }
@@ -588,6 +620,43 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         response.json().await.err_to_http(request_id)
     }
 
+    async fn list_functions(&self) -> Result<Vec<FunctionVersion>> {
+        let mut functions = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let mut body = serde_json::json!({ "include_definition": true });
+            if let Some(token) = &page_token {
+                body["page_token"] = serde_json::Value::String(token.clone());
+            }
+            let req = self.client.post("/v1/functions/list").json(&body);
+            let (request_id, response) = self.client.send(req).await?;
+            let response = self.client.check_response(&request_id, response).await?;
+            let status = response.status();
+            let response: RemoteListFunctionsResponse =
+                response.json().await.err_to_http(request_id.clone())?;
+            functions.extend(
+                response
+                    .functions
+                    .into_iter()
+                    .map(|listed| listed.definition),
+            );
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(Error::Http {
+                    source: "Function listing response repeated a page_token".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(functions)
+    }
+
     async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
         let req = self
             .client
@@ -602,11 +671,18 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(response.dropped)
     }
 
-    fn job(&self, job_id: &str) -> Result<crate::job::Job> {
-        Ok(crate::job::Job::new(Box::new(super::job::RemoteJob::new(
-            self.client.clone(),
-            job_id.to_string(),
-        ))))
+    async fn open_job(&self, job_id: &str) -> Result<Job> {
+        let handle = super::job::RemoteJob::new(self.client.clone(), job_id.to_string());
+        match crate::job::JobHandle::describe(&handle).await {
+            Ok(description) => Ok(Job::opened(Box::new(handle), description)),
+            Err(Error::Http {
+                status_code: Some(StatusCode::NOT_FOUND),
+                ..
+            }) => Err(Error::JobNotFound {
+                job_id: job_id.to_string(),
+            }),
+            Err(err) => Err(err),
+        }
     }
 
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
@@ -643,31 +719,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(out)
     }
 
-    async fn get_job(&self, job_id: &str) -> Result<Option<JobDescription>> {
-        let req = self
-            .client
-            .post("/v1/jobs/describe")
-            .json(&serde_json::json!({ "job_id": job_id }));
-        let (request_id, rsp) = self.client.send(req).await?;
-        let rsp = match self.client.check_response(&request_id, rsp).await {
-            Ok(rsp) => rsp,
-            Err(Error::Http {
-                status_code: Some(StatusCode::NOT_FOUND),
-                ..
-            }) => return Ok(None),
-            Err(err) => return Err(err),
-        };
-        let body: DescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
-        Ok(Some(JobDescription {
-            job_id: body.job_id,
-            job_type: body.job_type,
-            state: job_state_to_client(&body.job_state),
-            creation_ms: body.creation_ms,
-            spec: body.spec,
-            failure: body.failure.map(|reported| reported.into_job_failure()),
-        }))
-    }
-
     async fn cancel_job(&self, job_id: &str) -> Result<bool> {
         let req = self
             .client
@@ -684,19 +735,28 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
     }
 
-    async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<arrow_array::RecordBatch>> {
-        let mut body = serde_json::json!({});
-        if let Some(job_id) = job_id {
-            body["job_id"] = serde_json::Value::String(job_id.to_string());
-        }
-        let req = self.client.post("/v1/jobs/query_events").json(&body);
-        let (request_id, rsp) = self.client.send(req).await?;
-        let rsp = self.client.check_response(&request_id, rsp).await?;
-        let bytes = rsp.bytes().await.err_to_http(request_id)?;
-        let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)?;
-        reader
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+    async fn execute_query_async(
+        &self,
+        query: &str,
+        default_namespace_path: &[String],
+    ) -> Result<crate::sql::Query> {
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".to_string(),
+            })?;
+        client.submit(query, default_namespace_path).await
+    }
+
+    async fn describe_query(&self, query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".to_string(),
+            })?;
+        client.describe(query_id).await
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
@@ -1214,6 +1274,7 @@ mod tests {
     use crate::{
         Connection, Error,
         database::CreateTableMode,
+        job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
 
@@ -2562,7 +2623,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_job() {
+    async fn test_open_job() {
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
             assert_eq!(request.url().path(), "/v1/jobs/describe");
@@ -2576,51 +2637,55 @@ mod tests {
                 )
                 .unwrap()
         });
-        let job = conn.get_job("job-1").await.unwrap().unwrap();
-        assert_eq!(job.job_id, "job-1");
-        assert_eq!(job.job_type, "create_index");
-        assert_eq!(job.state, "failed");
-        assert_eq!(job.creation_ms, 1000);
-        assert_eq!(job.spec["column"], "vec");
-        let failure = job.failure.unwrap();
+        // Opening populates the handle, so the accessors answer without a
+        // second round trip.
+        let job = conn.open_job("job-1").await.unwrap();
+        assert_eq!(job.id(), Some("job-1"));
+        assert_eq!(job.job_type().as_deref(), Some("create_index"));
+        assert_eq!(job.state().as_deref(), Some("failed"));
+        assert_eq!(job.creation_ms(), Some(1000));
+        assert_eq!(job.spec().unwrap()["column"], "vec");
+        assert!(job.result().is_none());
+        let failure = job.failure().unwrap();
         assert_eq!(failure.phase.as_deref(), Some("execute"));
         assert_eq!(failure.message.as_deref(), Some("worker died"));
         assert_eq!(failure.retryable, Some(true));
     }
 
     #[tokio::test]
-    async fn test_get_job_missing_is_none() {
+    async fn test_open_job_reports_the_terminal_result() {
         let conn = Connection::new_with_handler(|_| {
-            http::Response::builder()
-                .status(404)
-                .body("no such job")
-                .unwrap()
-        });
-        assert!(conn.get_job("nope").await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_cancel_job() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.url().path(), "/v1/jobs/cancel");
             http::Response::builder()
                 .status(200)
-                .body(r#"{"job_id": "job-1"}"#)
+                .body(
+                    r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "DONE", "creation_ms": 1000, "result": {"rows_assigned": 1000000, "rows_failed": 0}}"#,
+                )
                 .unwrap()
         });
-        assert!(conn.cancel_job("job-1").await.unwrap());
+        let job = conn.open_job("job-1").await.unwrap();
+        assert_eq!(job.state().as_deref(), Some("finished"));
+        let result = job.result().unwrap();
+        assert_eq!(result["rows_assigned"], 1_000_000);
+        assert_eq!(result["rows_failed"], 0);
+    }
 
+    #[tokio::test]
+    async fn test_open_job_missing_fails() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder()
                 .status(404)
                 .body("no such job")
                 .unwrap()
         });
-        assert!(!conn.cancel_job("nope").await.unwrap());
+        let err = conn.open_job("nope").await.unwrap_err();
+        assert!(
+            matches!(&err, Error::JobNotFound { job_id } if job_id == "nope"),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
-    async fn test_job_history_parses_arrow_stream() {
+    async fn test_job_events_scope_to_that_job() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "state",
             DataType::Utf8,
@@ -2629,29 +2694,91 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![Arc::new(arrow_array::StringArray::from(vec![
-                "created", "done",
+                "claim_complete",
             ]))],
         )
         .unwrap();
-        let mut body = Vec::new();
+        let mut events = Vec::new();
         {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(&mut events, &schema).unwrap();
             writer.write(&batch).unwrap();
             writer.finish().unwrap();
         }
         let conn = Connection::new_with_handler(move |request| {
-            assert_eq!(request.url().path(), "/v1/jobs/query_events");
-            let req_body: serde_json::Value =
+            let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(req_body["job_id"], "job-1");
+            if request.url().path() == "/v1/jobs/describe" {
+                return http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "IN_PROGRESS", "creation_ms": 1}"#
+                            .as_bytes()
+                            .to_vec(),
+                    )
+                    .unwrap();
+            }
+            assert_eq!(request.url().path(), "/v1/jobs/query_events");
+            // The handle supplies job_id; the caller only narrows the query.
+            assert_eq!(body["job_id"], "job-1");
+            assert_eq!(body["limit"], 500);
+            assert_eq!(body["filter"], "state = 'claim_complete'");
             http::Response::builder()
                 .status(200)
-                .body(body.clone())
+                .body(events.clone())
                 .unwrap()
         });
-        let batches = conn.job_history(Some("job-1")).await.unwrap();
+        let job = conn.open_job("job-1").await.unwrap();
+        let batches = job
+            .events(
+                JobEventsRequest::default()
+                    .limit(500)
+                    .filter("state = 'claim_complete'"),
+            )
+            .await
+            .unwrap();
         assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].num_rows(), 2);
+        assert_eq!(batches[0].num_rows(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_job_events_keep_the_schema_when_nothing_matches() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "state",
+            DataType::Utf8,
+            false,
+        )]));
+        let mut events = Vec::new();
+        {
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(&mut events, &schema).unwrap();
+            writer.finish().unwrap();
+        }
+        let conn = Connection::new_with_handler(move |request| {
+            if request.url().path() == "/v1/jobs/describe" {
+                return http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"job_id": "job-1", "job_type": "refresh_column", "job_state": "IN_PROGRESS", "creation_ms": 1}"#
+                            .as_bytes()
+                            .to_vec(),
+                    )
+                    .unwrap();
+            }
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            // Only the job id when the caller narrows nothing.
+            assert_eq!(body, serde_json::json!({ "job_id": "job-1" }));
+            http::Response::builder()
+                .status(200)
+                .body(events.clone())
+                .unwrap()
+        });
+        let job = conn.open_job("job-1").await.unwrap();
+        let batches = job.events(JobEventsRequest::default()).await.unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 0);
+        assert_eq!(batches[0].schema(), schema);
     }
 
     #[tokio::test]
@@ -2709,6 +2836,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_functions_requests_definitions_and_paginates() {
+        const VERSION: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let version: serde_json::Value = serde_json::from_str(VERSION).unwrap();
+        let page = Arc::new(AtomicUsize::new(0));
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/functions/list");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["include_definition"], true);
+            match page.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(body.get("page_token").is_none());
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"functions": [], "page_token": "next"}"#.to_string())
+                        .unwrap()
+                }
+                _ => {
+                    assert_eq!(body["page_token"], "next");
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            serde_json::json!({
+                                "functions": [{
+                                    "name": "embed",
+                                    "version": "fv_01K3EXACT",
+                                    "definition": version.clone(),
+                                }],
+                            })
+                            .to_string(),
+                        )
+                        .unwrap()
+                }
+            }
+        });
+        let functions = conn.list_functions().await.unwrap();
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name(), "embed");
+        assert_eq!(functions[0].version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_list_functions_stops_on_an_empty_page_token() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert!(body.get("page_token").is_none());
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"functions": [], "page_token": ""}"#)
+                .unwrap()
+        });
+
+        let functions = conn.list_functions().await.unwrap();
+        assert!(functions.is_empty());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_list_functions_rejects_a_page_token_cycle() {
+        let page = Arc::new(AtomicUsize::new(0));
+        let requests = page.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let next_page_token = match page.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(body.get("page_token").is_none());
+                    "one"
+                }
+                1 => {
+                    assert_eq!(body["page_token"], "one");
+                    "two"
+                }
+                2 => {
+                    assert_eq!(body["page_token"], "two");
+                    "one"
+                }
+                page => panic!("unexpected page: {page}"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "functions": [],
+                        "page_token": next_page_token,
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+
+        let error = conn.list_functions().await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                Error::Http {
+                    status_code: Some(http::StatusCode::OK),
+                    ..
+                }
+            ),
+            "got {error:?}"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
     async fn test_drop_function_sends_exact_version_and_decodes_replay() {
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
@@ -2733,7 +2973,9 @@ mod tests {
         let polls_ref = polls.clone();
         let conn = Connection::new_with_handler(move |request| {
             assert_eq!(request.url().path(), "/v1/jobs/describe");
-            let state = if polls_ref.fetch_add(1, Ordering::SeqCst) == 0 {
+            // Two in-progress answers: one for the load, one for the first
+            // status poll.
+            let state = if polls_ref.fetch_add(1, Ordering::SeqCst) < 2 {
                 "IN_PROGRESS"
             } else {
                 "DONE"
@@ -2746,11 +2988,13 @@ mod tests {
                 ))
                 .unwrap()
         });
-        let job = conn.job("job-1").unwrap();
+        let job = conn.open_job("job-1").await.unwrap();
         assert_eq!(job.id(), Some("job-1"));
+        // Opening already answered the state; no extra call needed for it.
+        assert_eq!(job.state().as_deref(), Some("running"));
         assert_eq!(job.status().await.unwrap(), "running");
         job.wait().await.unwrap();
         assert_eq!(job.status().await.unwrap(), "finished");
-        assert!(polls.load(Ordering::SeqCst) >= 3);
+        assert!(polls.load(Ordering::SeqCst) >= 4);
     }
 }

@@ -133,7 +133,7 @@ impl NativeTable {
                     ),
                 });
             }
-            (resolved.canonical_path, resolved.field)
+            (resolved.canonical_path, resolved.terminal_field)
         } else {
             Self::resolve_index_field(dataset.schema(), &opts.columns[0])?
         };
@@ -439,7 +439,8 @@ mod tests {
     use arrow_array::record_batch;
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeListArray, Float32Array, Int32Array,
-        LargeBinaryArray, LargeStringArray, RecordBatch, StringArray, StructArray,
+        LargeBinaryArray, LargeStringArray, ListArray, RecordBatch, StringArray, StructArray,
+        UInt32Array,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
@@ -458,6 +459,7 @@ mod tests {
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::table::optimize::{CompactionOptions, OptimizeAction};
     use lance_index::scalar::FullTextSearchQuery;
+    use lance_index::scalar::inverted::query::{FtsQuery, MatchQuery};
 
     fn create_fixed_size_list<T: Array>(
         values: T,
@@ -597,6 +599,80 @@ mod tests {
             .execute_async()
             .await;
         assert!(invalid_granularity.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_nested_list_fts_uses_deepest_document_coordinates() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let mut docs = ListBuilder::new(ListBuilder::new(StringBuilder::new()));
+
+        docs.values().values().append_value("alpha");
+        docs.values().values().append_value("beta");
+        docs.values().append(true);
+        docs.values().values().append_value("gamma");
+        docs.values().values().append_value("alpha delta");
+        docs.values().append(true);
+        docs.append(true);
+
+        docs.values().append(true);
+        docs.values().values().append_value("alpha");
+        docs.values().append(true);
+        docs.append(true);
+
+        let batch = RecordBatch::try_from_iter(vec![
+            ("id", Arc::new(Int32Array::from(vec![0, 1])) as ArrayRef),
+            ("docs", Arc::new(docs.finish()) as ArrayRef),
+        ])
+        .unwrap();
+        let table = conn.create_table("nested", batch).execute().await.unwrap();
+
+        let job = table
+            .create_index(
+                &["docs"],
+                Index::FTS(
+                    FtsIndexBuilder::default()
+                        .document_granularity(DocumentGranularity::ListElement),
+                ),
+            )
+            .execute_async()
+            .await
+            .unwrap();
+        job.wait().await.unwrap();
+
+        let query = FullTextSearchQuery::new_query(FtsQuery::Match(
+            MatchQuery::new("alpha".to_string())
+                .with_column(Some("docs".to_string()))
+                .with_document_granularity(DocumentGranularity::ListElement),
+        ));
+        let batches = table
+            .query()
+            .full_text_search(query)
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let mut hits = Vec::new();
+        for batch in batches {
+            let ids = batch["id"].as_any().downcast_ref::<Int32Array>().unwrap();
+            let coordinates = batch["_doc_index"]
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                let coordinate = coordinates.value(row);
+                let coordinate = coordinate.as_any().downcast_ref::<UInt32Array>().unwrap();
+                hits.push((ids.value(row), coordinate.values().to_vec()));
+            }
+        }
+        hits.sort_unstable();
+        assert_eq!(
+            hits,
+            vec![(0, vec![0, 0]), (0, vec![1, 1]), (1, vec![1, 0])]
+        );
     }
 
     /// Concurrent waiters, and a wait issued after the job settled, all

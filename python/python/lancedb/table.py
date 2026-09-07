@@ -119,6 +119,9 @@ def _should_push_down_query_table(
 
 
 def _requires_local_namespace_execution(query: Query) -> bool:
+    # Take-by-offset queries are resolved locally against the table.
+    if query.take_offsets is not None:
+        return True
     # The namespace QueryTable request has no approx_mode field yet, so pushing
     # the query down would silently ignore the user's setting.
     return query.approx_mode is not None
@@ -1553,7 +1556,9 @@ class Table(ABC):
         on: Union[str, Iterable[str]]
             A column (or columns) to join on.  This is how records from the
             source table and target table are matched.  Typically this is some
-            kind of key or id column.
+            kind of key or id column.  Passing several columns matches on the
+            composite key: a source row updates a target row only when it
+            agrees on every one of them.
 
         Examples
         --------
@@ -1684,9 +1689,9 @@ class Table(ABC):
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.  If
-        you desire an output order that matches the order of the given offsets, you will
-        need to add the row offset column to the output and align it yourself.
+        No guarantees are made regarding the order in which results are returned.
+        Repeated offsets produce repeated rows, which makes this method suitable for
+        sampling with replacement.
 
         Parameters
         ----------
@@ -1797,6 +1802,9 @@ class Table(ABC):
         The result has the same length and order as ``row_ids``. Null blobs
         produce null slots; valid empty blobs produce ``b""``.
 
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
+
         Convenience for small payloads. For large values use
         :meth:`fetch_blob_files`.
         """
@@ -1814,6 +1822,9 @@ class Table(ABC):
         The result has the same length and order as ``requests``; null blobs
         produce null slots and empty ranges on non-null blobs produce ``b""``.
 
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
+
         Row IDs can be obtained from a query with ``with_row_id(True)``. This
         API is currently supported only by local tables.
         """
@@ -1829,6 +1840,9 @@ class Table(ABC):
         ``_rowid`` or a ``_lance_row_id`` field on the blob descriptor. Null
         rows are ``None``. Remote tables require LanceDB Cloud server 0.5.0 or
         newer.
+
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
         """
 
     @abstractmethod
@@ -5707,7 +5721,9 @@ class AsyncTable:
         on: Union[str, Iterable[str]]
             A column (or columns) to join on.  This is how records from the
             source table and target table are matched.  Typically this is some
-            kind of key or id column.
+            kind of key or id column.  Passing several columns matches on the
+            composite key: a source row updates a target row only when it
+            agrees on every one of them.
 
         Examples
         --------
@@ -5990,7 +6006,23 @@ class AsyncTable:
 
     def _sync_query_to_async(
         self, query: Query
-    ) -> AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery | AsyncQuery:
+    ) -> (
+        AsyncHybridQuery
+        | AsyncFTSQuery
+        | AsyncVectorQuery
+        | AsyncQuery
+        | AsyncTakeQuery
+    ):
+        if query.take_offsets is not None:
+            take_query = self.take_offsets(query.take_offsets)
+            if query.columns:
+                take_query = take_query.select(query.columns)
+            if query.use_lsm is not None:
+                take_query = take_query.use_lsm(query.use_lsm)
+            if query.with_row_id:
+                take_query = take_query.with_row_id()
+            return take_query
+
         async_query = self.query()
         if query.limit is not None:
             async_query = async_query.limit(query.limit)
@@ -6554,6 +6586,9 @@ class AsyncTable:
 
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
+
+        No guarantees are made regarding the order in which results are returned.
+        Repeated offsets produce repeated rows.
 
         Parameters
         ----------

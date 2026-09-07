@@ -31,7 +31,7 @@ use lance::io::RecordBatchStream;
 use lance_arrow::RecordBatchExt;
 use lance_core::ROW_ID;
 use lance_core::error::LanceOptionExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Reads a permutation of a source table based on row IDs stored in a separate table
@@ -234,7 +234,14 @@ impl PermutationReader {
             .expect_ok()?
             .values();
 
-        let in_list: Vec<Expr> = row_ids.iter().map(|id| lit(*id)).collect();
+        let mut unique_row_ids = HashSet::with_capacity(num_rows);
+        let in_list: Vec<Expr> = row_ids
+            .iter()
+            .copied()
+            .filter(|row_id| unique_row_ids.insert(*row_id))
+            .map(lit)
+            .collect();
+        let num_unique_row_ids = unique_row_ids.len();
 
         let base_query = QueryRequest {
             filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
@@ -247,7 +254,7 @@ impl PermutationReader {
             .query(
                 &AnyQuery::Query(base_query),
                 QueryExecutionOptions {
-                    max_batch_length: num_rows as u32,
+                    max_batch_length: num_unique_row_ids as u32,
                     ..Default::default()
                 },
             )
@@ -262,9 +269,9 @@ impl PermutationReader {
             });
         }
 
-        if batches.iter().map(|b| b.num_rows()).sum::<usize>() != num_rows {
+        if batches.iter().map(|b| b.num_rows()).sum::<usize>() != num_unique_row_ids {
             return Err(Error::InvalidInput {
-                message: "Base table returned different number of rows than the number of row IDs"
+                message: "Base table returned a different number of rows than the number of unique row IDs"
                     .to_string(),
             });
         }
@@ -504,6 +511,7 @@ impl PermutationReader {
             let table = Table::from(self.base_table.clone());
             let batches = table
                 .take_offsets(offsets.to_vec())
+                .preserve_order()
                 .select(selection.clone())
                 .execute()
                 .await?
@@ -803,10 +811,10 @@ mod tests {
         .unwrap();
 
         // Take offsets in reverse order and verify returned rows match that order
-        let offsets = vec![5, 3, 1, 0];
+        let offsets = vec![5, 3, 5, 1, 0];
         let batch = reader.take_offsets(&offsets, Select::All).await.unwrap();
 
-        assert_eq!(batch.num_rows(), 4);
+        assert_eq!(batch.num_rows(), 5);
 
         let idx_values = batch
             .column(0)
@@ -818,6 +826,52 @@ mod tests {
             .map(|&o| row_ids[o as usize] as i32)
             .collect();
         assert_eq!(idx_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_preserves_repeated_rows_in_permutation() {
+        let base_table = lance_datagen::gen_batch()
+            .col("idx", lance_datagen::array::step::<Int32Type>())
+            .into_mem_table("tbl", RowCount::from(5), BatchCount::from(1))
+            .await;
+        let base_row_ids = collect_column::<UInt64Type>(&base_table, "_rowid").await;
+        let permutation_row_ids = vec![
+            base_row_ids[3],
+            base_row_ids[1],
+            base_row_ids[3],
+            base_row_ids[2],
+        ];
+        let permutation_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("row_id", DataType::UInt64, false),
+                Field::new(SPLIT_ID_COLUMN, DataType::UInt64, false),
+            ])),
+            vec![
+                Arc::new(UInt64Array::from(permutation_row_ids)),
+                Arc::new(UInt64Array::from(vec![0; 4])),
+            ],
+        )
+        .unwrap();
+        let permutation_table = virtual_table("row_ids", &permutation_batch).await;
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            permutation_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let batch = reader
+            .take_offsets(&[0, 1, 2, 3], Select::All)
+            .await
+            .unwrap();
+        let idx_values = batch
+            .column(0)
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+
+        assert_eq!(idx_values, vec![3, 1, 3, 2]);
     }
 
     #[tokio::test]
@@ -883,17 +937,17 @@ mod tests {
             .unwrap();
 
         // With no permutation table, take_offsets uses the base table directly
-        let offsets = vec![0, 2, 4, 6];
+        let offsets = vec![0, 2, 0, 4, 6];
         let batch = reader.take_offsets(&offsets, Select::All).await.unwrap();
 
-        assert_eq!(batch.num_rows(), 4);
+        assert_eq!(batch.num_rows(), 5);
 
         let idx_values = batch
             .column(0)
             .as_primitive::<Int32Type>()
             .values()
             .to_vec();
-        assert_eq!(idx_values, vec![0, 2, 4, 6]);
+        assert_eq!(idx_values, vec![0, 2, 0, 4, 6]);
     }
 
     #[tokio::test]

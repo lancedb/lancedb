@@ -668,6 +668,167 @@ def test_blob_fields_use_the_scalar_function_semantic_type():
     assert signature.output.arrow_type == "blob_v2"
 
 
+def test_whole_named_struct_function_can_include_a_blob_result_field():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=pa.field(
+            "payload",
+            pa.struct(
+                [
+                    pa.field("mime_type", pa.string(), nullable=False),
+                    lancedb.blob("image", nullable=False),
+                ]
+            ),
+            nullable=False,
+        ),
+    )
+    def inspect_blob(image):
+        return {"mime_type": "image/png", "image": image}
+
+    output = inspect_blob.registration_request.signature.output
+    assert output.kind == "named_struct"
+    assert [(field.name, field.arrow_type) for field in output.fields] == [
+        ("mime_type", "utf8"),
+        ("image", "blob_v2"),
+    ]
+
+
+def test_struct_blob_signature_fields_preserve_exact_metadata_and_nullability():
+    nested_input = pa.field(
+        "payload",
+        pa.struct(
+            [
+                pa.field("mime_type", pa.string(), nullable=False),
+                pa.field(
+                    "nested",
+                    pa.struct([lancedb.blob("image", nullable=True)]),
+                    nullable=True,
+                ),
+            ]
+        ),
+        nullable=True,
+    )
+    nested_output = pa.field(
+        "result",
+        pa.struct(
+            [
+                pa.field("mime_type", pa.string(), nullable=False),
+                pa.field(
+                    "nested",
+                    pa.struct([lancedb.blob("image", nullable=True)]),
+                    nullable=False,
+                ),
+            ]
+        ),
+        nullable=False,
+    )
+
+    @udf(input_schema=pa.schema([nested_input]), output_schema=nested_output)
+    def copy_payload(payload):
+        return payload
+
+    signature = copy_payload.registration_request.signature
+    input_type = json.loads(signature.inputs[0].arrow_type)
+    assert input_type["fields"][1]["nullable"] is True
+    input_blob = input_type["fields"][1]["type"]["fields"][0]
+    assert input_blob["nullable"] is True
+    assert input_blob["metadata"] == {"ARROW:extension:name": "lance.blob.v2"}
+
+    assert signature.output.kind == "named_struct"
+    nested_result = next(
+        field for field in signature.output.fields if field.name == "nested"
+    )
+    output_type = json.loads(nested_result.arrow_type)
+    output_blob = output_type["fields"][0]
+    assert output_blob["nullable"] is True
+    assert output_blob["metadata"] == {"ARROW:extension:name": "lance.blob.v2"}
+
+
+def test_struct_blob_signature_supports_multiple_struct_levels():
+    recursive = pa.field(
+        "value",
+        pa.struct(
+            [
+                pa.field(
+                    "level_1",
+                    pa.struct(
+                        [
+                            pa.field(
+                                "level_2",
+                                pa.struct([lancedb.blob("image", nullable=False)]),
+                                nullable=False,
+                            )
+                        ]
+                    ),
+                    nullable=False,
+                )
+            ]
+        ),
+        nullable=False,
+    )
+
+    @udf(
+        input_schema=pa.schema([recursive]),
+        output_schema=pa.field("size", pa.int64(), nullable=False),
+    )
+    def blob_size(value):
+        return len(value["level_1"]["level_2"]["image"])
+
+    encoded = json.loads(blob_size.registration_request.signature.inputs[0].arrow_type)
+    blob = encoded["fields"][0]["type"]["fields"][0]["type"]["fields"][0]
+    assert blob["metadata"]["ARROW:extension:name"] == "lance.blob.v2"
+
+
+@pytest.mark.parametrize(
+    "data_type",
+    [
+        pa.list_(lancedb.blob("item", nullable=False)),
+        pa.large_list(lancedb.blob("item", nullable=False)),
+        pa.list_(lancedb.blob("item", nullable=False), 2),
+        pa.map_(pa.string(), lancedb.blob("value", nullable=False).type),
+    ],
+)
+def test_blob_signature_rejects_collection_ancestors(data_type):
+    with pytest.raises(
+        TypeError,
+        match="Blob v2 fields nested under collection types are not supported",
+    ):
+
+        @udf(
+            input_schema=pa.schema([pa.field("value", data_type, nullable=False)]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+        def blob_size(value):
+            return len(value)
+
+
+def test_blob_signature_rejects_collection_below_a_struct():
+    nested = pa.field(
+        "value",
+        pa.struct(
+            [
+                pa.field(
+                    "images",
+                    pa.list_(lancedb.blob("item", nullable=False)),
+                    nullable=False,
+                )
+            ]
+        ),
+        nullable=False,
+    )
+    with pytest.raises(
+        TypeError,
+        match="Blob v2 fields nested under collection types are not supported",
+    ):
+
+        @udf(
+            input_schema=pa.schema([nested]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+        def blob_size(value):
+            return len(value["images"])
+
+
 def test_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -687,6 +848,43 @@ def test_named_struct_function_can_include_a_blob_result_field():
         ("thumbnail", "blob_v2"),
         ("width", "int32"),
     ]
+
+
+def test_named_struct_function_preserves_nullable_result_fields():
+    @udf(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.schema(
+            [
+                pa.field("result", pa.int64(), nullable=True),
+                pa.field("failure_code", pa.int32(), nullable=False),
+            ]
+        ),
+    )
+    def nullable_result(value):
+        return {"result": value, "failure_code": 0}
+
+    output = nullable_result.registration_request.signature.output
+    assert [(field.name, field.nullable) for field in output.fields] == [
+        ("result", True),
+        ("failure_code", False),
+    ]
+
+    @udf(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.schema(
+            [
+                pa.field("result", pa.int64(), nullable=True),
+                pa.field("failure_code", pa.int32(), nullable=True),
+            ]
+        ),
+    )
+    def all_nullable(value):
+        return {"result": value, "failure_code": None}
+
+    assert all(
+        field.nullable
+        for field in all_nullable.registration_request.signature.output.fields
+    )
 
 
 def test_metadata_marked_blob_field_uses_the_semantic_type():
@@ -727,22 +925,6 @@ def test_blob_marker_rejects_invalid_storage_layout():
         )
         def blob_size(image):
             return len(image)
-
-
-def test_nested_blob_signature_field_has_a_clear_error():
-    nested = pa.field(
-        "value",
-        pa.struct([lancedb.blob("image", nullable=False)]),
-        nullable=False,
-    )
-    with pytest.raises(TypeError, match="nested Blob v2 fields are not supported"):
-
-        @udf(
-            input_schema=pa.schema([nested]),
-            output_schema=pa.field("size", pa.int64(), nullable=False),
-        )
-        def blob_size(value):
-            return len(value["image"])
 
 
 def test_nested_non_blob_extension_is_not_silently_unwrapped():
@@ -1018,6 +1200,8 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version="fv_exact")
     with pytest.raises(NotImplementedError, match=message):
+        db.list_functions()
+    with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version="fv_exact")
 
 
@@ -1064,6 +1248,22 @@ def _mock_remote_function_catalog():
                     "version": "fv_exact",
                 }
                 response = state["version"]
+            elif self.path == "/v1/functions/list":
+                assert body["include_definition"] is True
+                if "page_token" not in body:
+                    response = {
+                        "functions": [
+                            {
+                                "name": "normalize_score",
+                                "version": "fv_exact",
+                                "definition": state["version"],
+                            }
+                        ],
+                        "page_token": "next",
+                    }
+                else:
+                    assert body["page_token"] == "next"
+                    response = {"functions": []}
             elif self.path == "/v1/functions/drop":
                 assert body == {
                     "name": "normalize_score",
@@ -1127,6 +1327,49 @@ def test_blocking_remote_registration_returns_function_version():
     assert [path for path, _ in state["requests"]] == [
         "/v1/functions/create",
         "/v1/jobs/describe",
+    ]
+
+
+def test_remote_list_functions_paginates_and_returns_typed_versions():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        created = db.create_function(normalize_score)
+        state["requests"].clear()
+        functions = db.list_functions()
+
+    assert functions == [created]
+    assert state["requests"] == [
+        ("/v1/functions/list", {"include_definition": True}),
+        (
+            "/v1/functions/list",
+            {"include_definition": True, "page_token": "next"},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_remote_list_functions_returns_typed_versions():
+    with _mock_remote_function_catalog() as (host, state):
+        db = await lancedb.connect_async(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        registration = await db.create_function_async(normalize_score)
+        created = await registration.wait()
+        state["requests"].clear()
+        functions = await db.list_functions()
+
+    assert functions == [created]
+    assert [path for path, _ in state["requests"]] == [
+        "/v1/functions/list",
+        "/v1/functions/list",
     ]
 
 

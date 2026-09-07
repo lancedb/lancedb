@@ -18,7 +18,7 @@ use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
 
-use crate::blob::{ensure_blob_storage_version, has_blob_columns};
+use crate::blob::ensure_blob_storage_version;
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
@@ -827,7 +827,6 @@ impl ListingDatabase {
         if let Some(enable_stable_row_ids) = overrides
             .enable_stable_row_ids
             .or(self.new_table_config.enable_stable_row_ids)
-            .or(has_blob_columns(&data_schema).then_some(true))
         {
             write_params.enable_stable_row_ids = enable_stable_row_ids;
         }

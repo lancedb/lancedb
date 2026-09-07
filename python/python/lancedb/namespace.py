@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from uuid import UUID
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -48,8 +49,11 @@ from lancedb._lancedb import (
     connect_namespace_client as _connect_namespace_client,
 )
 from lancedb.background_loop import LOOP
+from lancedb.arrow import AsyncRecordBatchReader
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.job import AsyncJob, Job
+from lancedb.sql import AsyncQuery as AsyncSqlQuery
+from lancedb.sql import QueryDescription
 from lance_namespace import (
     LanceNamespace,
     connect as namespace_connect,
@@ -1446,6 +1450,37 @@ class AsyncLanceNamespaceDBConnection:
         return await self._inner.list_tables(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
+
+    async def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute SQL when supported by the underlying connection."""
+        return await self._inner.execute_query(
+            query,
+            default_namespace_path=default_namespace_path,
+        )
+
+    async def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncSqlQuery:
+        """Start executing SQL when supported by the underlying connection.
+
+        Namespace-backed local connections do not support SQL.
+        """
+        return await self._inner.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        )
+
+    async def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query when supported."""
+        return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the namespace client for this connection.

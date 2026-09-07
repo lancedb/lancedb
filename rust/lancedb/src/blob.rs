@@ -7,7 +7,9 @@
 //! raw `Binary` / `LargeBinary` into the blob struct layout. Queries return
 //! small descriptors, not bytes.
 //!
-//! Blob tables require Lance file format >= 2.2 and stable row ids at create.
+//! Blob tables require Lance file format >= 2.2. `_rowid` values stay valid
+//! after compaction when the table has stable row ids. Overwrite is a new
+//! create and does not keep the previous table's stable row id setting.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -324,6 +326,7 @@ pub(crate) fn blob_column_names(schema: &Schema) -> Vec<String> {
 }
 
 /// Bumps storage format to at least [`LanceFileVersion::V2_2`] for blob schemas.
+/// Leaves `enable_stable_row_ids` unchanged.
 pub(crate) fn ensure_blob_storage_version(schema: &Schema, params: &mut WriteParams) {
     if !has_blob_columns(schema) {
         return;
@@ -385,6 +388,30 @@ fn ensure_all_row_ids_resolved(column: &str, requested: usize, resolved: usize) 
     }
 }
 
+/// Lance take reports a missing physical row address as NotSupported or InvalidInput.
+fn map_blob_take_error(column: &str, requested: usize, err: lance::Error) -> Error {
+    let missing_row_addr = match &err {
+        lance::Error::NotSupported { source, .. } => {
+            source.to_string().contains("must not target deleted rows")
+        }
+        lance::Error::InvalidInput { source, .. } => source
+            .to_string()
+            .contains("belongs to non-existent fragment"),
+        _ => false,
+    };
+
+    if missing_row_addr {
+        Error::InvalidInput {
+            message: format!(
+                "blob read for column '{column}' requested {requested} row ids but some \
+                 do not exist in the table; pass row ids collected from this table"
+            ),
+        }
+    } else {
+        err.into()
+    }
+}
+
 /// Materialize blob-local ranges (same length and order as `requests`, nulls preserved).
 pub(crate) async fn take_blob_ranges_aligned(
     dataset: &Arc<Dataset>,
@@ -405,7 +432,8 @@ pub(crate) async fn take_blob_ranges_aligned(
         .with_row_ids(lance_requests)
         .preserve_order(true)
         .execute()
-        .await?;
+        .await
+        .map_err(|err| map_blob_take_error(column, requests.len(), err))?;
     ensure_all_row_ids_resolved(column, requests.len(), payloads.len())?;
 
     let mut builder = LargeBinaryBuilder::new();
@@ -434,7 +462,8 @@ pub(crate) async fn take_blobs_aligned(
         .with_row_ids(row_ids.to_vec())
         .preserve_order(true)
         .execute()
-        .await?;
+        .await
+        .map_err(|err| map_blob_take_error(column, row_ids.len(), err))?;
     ensure_all_row_ids_resolved(column, row_ids.len(), payloads.len())?;
 
     let mut builder = LargeBinaryBuilder::new();
@@ -458,7 +487,10 @@ pub(crate) async fn take_blob_files_aligned(
         return Ok(Vec::new());
     }
 
-    let handles = dataset.take_blobs(row_ids, column).await?;
+    let handles = dataset
+        .take_blobs(row_ids, column)
+        .await
+        .map_err(|err| map_blob_take_error(column, row_ids.len(), err))?;
     ensure_all_row_ids_resolved(column, row_ids.len(), handles.len())?;
     Ok(handles
         .into_iter()
@@ -500,6 +532,21 @@ mod tests {
     fn storage_version_bumps_to_v2_2() {
         let mut params = WriteParams::default();
         ensure_blob_storage_version(&blob_schema(), &mut params);
+        assert_eq!(
+            params.data_storage_version.unwrap().resolve(),
+            ConcreteFileVersion::V2_2
+        );
+        assert!(!params.enable_stable_row_ids);
+    }
+
+    #[test]
+    fn storage_version_leaves_stable_row_ids_enabled() {
+        let mut params = WriteParams {
+            enable_stable_row_ids: true,
+            ..Default::default()
+        };
+        ensure_blob_storage_version(&blob_schema(), &mut params);
+        assert!(params.enable_stable_row_ids);
         assert_eq!(
             params.data_storage_version.unwrap().resolve(),
             ConcreteFileVersion::V2_2
@@ -576,5 +623,6 @@ mod tests {
         let mut params = WriteParams::default();
         ensure_blob_storage_version(&schema, &mut params);
         assert!(params.data_storage_version.is_none());
+        assert!(!params.enable_stable_row_ids);
     }
 }
