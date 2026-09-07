@@ -458,9 +458,12 @@ pub struct FunctionArtifactContent {
 
 /// Internal execution adapter selected for a Python callable artifact.
 ///
-/// The adapter converts the public scalar callable to the Arrow batch ABI
-/// used by the remote executor. It is part of the request envelope, not a
-/// public batch-UDF authoring mode.
+/// This is part of the executor request envelope, not the user-facing UDF
+/// authoring mode. For version 1, the executor selects vectorized execution
+/// when every callable parameter is annotated as `pyarrow.Array`; it passes one
+/// Arrow array per declared input and requires an Arrow array matching the
+/// declared output. Other callables are invoked row by row. Both modes use the
+/// same internal adapter kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonAdapterSpec {
     pub kind: String,
