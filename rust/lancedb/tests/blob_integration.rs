@@ -19,6 +19,7 @@ use lancedb::{
     connect, connect_namespace,
     database::listing::{
         ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
+        OPT_NEW_TABLE_STORAGE_VERSION,
     },
     query::{ExecutableQuery, QueryBase},
     table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions},
@@ -146,7 +147,10 @@ async fn non_blob_table_keeps_default_format_and_row_id_setting() -> Result<()> 
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let table = db.create_empty_table("t", schema).execute().await?;
 
-    assert!(!supports_blob_v2(storage_format_version(&table).await));
+    assert_eq!(
+        storage_format_version(&table).await,
+        LanceFileVersion::Stable.resolve()
+    );
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -809,7 +813,11 @@ async fn fetch_blobs_rejects_unknown_column() -> Result<()> {
 #[tokio::test]
 async fn fetch_blobs_rejects_legacy_v1_blob_column() -> Result<()> {
     let tmp = tempdir().unwrap();
-    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    // Legacy v1 blob columns are only writable at file version <= 2.1.
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_options([(OPT_NEW_TABLE_STORAGE_VERSION, "2.1")])
+        .execute()
+        .await?;
     let legacy = Field::new("image", DataType::LargeBinary, true).with_metadata(
         std::collections::HashMap::from([("lance-encoding:blob".to_string(), "true".to_string())]),
     );

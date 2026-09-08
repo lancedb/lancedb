@@ -64,15 +64,23 @@ async def _blob_v2_table_async(db: AsyncConnection, name: str):
     return table
 
 
+# Legacy v1 blob columns are only writable at file version <= 2.1.
+LEGACY_BLOB_STORAGE_OPTIONS = {"new_table_data_storage_version": "2.1"}
+
+
 def _blob_table(db: DBConnection, name: str, blob_schema: str):
     if blob_schema == "v1":
-        return db.create_table(name, data=_blob_test_data())
+        return db.create_table(
+            name, data=_blob_test_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return _blob_v2_table(db, name)
 
 
 async def _blob_table_async(db: AsyncConnection, name: str, blob_schema: str):
     if blob_schema == "v1":
-        return await db.create_table(name, data=_blob_test_data())
+        return await db.create_table(
+            name, data=_blob_test_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return await _blob_v2_table_async(db, name)
 
 
@@ -147,7 +155,11 @@ def test_table_to_pandas_invalid_blob_mode_non_blob_table(tmp_db: DBConnection):
 @pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
 def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
     pytest.importorskip("lance")
-    table = tmp_db.create_table(f"test_to_pandas_blob_{blob_mode}", _blob_test_data())
+    table = tmp_db.create_table(
+        f"test_to_pandas_blob_{blob_mode}",
+        _blob_test_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
 
     df = table.to_pandas(blob_mode=blob_mode)
 
@@ -3959,7 +3971,7 @@ def test_stats(mem_db: DBConnection):
     print(f"{stats=}")
     assert stats == {
         # Full on-disk size of the data file, footer and metadata included.
-        "total_bytes": 633,
+        "total_bytes": 637,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {

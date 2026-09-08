@@ -1917,7 +1917,16 @@ mod tests {
     /// declaration buried in a struct child binds as hard as one on top.
     #[tokio::test]
     async fn test_nested_projection_metadata_and_declarations() {
-        let conn = connect("memory://").execute().await.unwrap();
+        // The schema below carries the legacy v1 blob marker, which Lance only
+        // allows writing at file version <= 2.1.
+        let conn = connect("memory://")
+            .storage_options([(
+                crate::database::listing::OPT_NEW_TABLE_STORAGE_VERSION,
+                "2.1",
+            )])
+            .execute()
+            .await
+            .unwrap();
         let payload = crate::blob("payload", true).with_metadata(HashMap::from([
             ("lance-encoding:blob".to_string(), "true".to_string()),
             (
