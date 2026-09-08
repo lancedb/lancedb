@@ -751,7 +751,7 @@ class IvfPq:
         This value controls how much the vector is compressed during the
         quantization step.  The more sub vectors there are the less the vector is
         compressed.  The default is the dimension of the vector divided by 16.  If
-        the dimension is not evenly divisible by 16 we use the dimension divded by
+        the dimension is not evenly divisible by 16 we use the dimension divided by
         8.
 
         The above two cases are highly preferred.  Having 8 or 16 values per

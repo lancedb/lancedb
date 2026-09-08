@@ -859,7 +859,7 @@ class Query(pydantic.BaseModel):
         return query
 
     # This tells pydantic to allow custom types (needed for the `vector` query since
-    # pa.Array wouln't be allowed otherwise)
+    # pa.Array wouldn't be allowed otherwise)
     model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
 
