@@ -297,7 +297,10 @@ def test_blob_v2_projection_sources_use_typed_column_name():
 
 
 def _legacy_v1_table(name):
-    db = lancedb.connect("memory:///")
+    # Legacy v1 blob columns are only writable at file version <= 2.1.
+    db = lancedb.connect(
+        "memory:///", storage_options={"new_table_data_storage_version": "2.1"}
+    )
     schema = pa.schema(
         [
             pa.field("id", pa.int64()),

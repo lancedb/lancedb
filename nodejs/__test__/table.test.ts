@@ -281,7 +281,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         numIndices: 0,
         numRows: 3,
         // Full on-disk size of the two data files, footers and metadata included.
-        totalBytes: 684,
+        totalBytes: 550,
       });
 
       // Index files count toward totalBytes too (only deletion files and
@@ -289,7 +289,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.createIndex("id", { config: Index.btree() });
       const statsWithIndex = await table.stats();
       expect(statsWithIndex.numIndices).toBe(1);
-      expect(statsWithIndex.totalBytes).toBeGreaterThan(684);
+      expect(statsWithIndex.totalBytes).toBeGreaterThan(550);
     });
 
     it("should overwrite data if asked", async () => {

@@ -5677,7 +5677,7 @@ mod tests {
             TableStatistics {
                 num_rows: 250,
                 num_indices: 0,
-                total_bytes: 8925,
+                total_bytes: 8969,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,

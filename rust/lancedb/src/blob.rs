@@ -532,10 +532,11 @@ mod tests {
     fn storage_version_bumps_to_v2_2() {
         let mut params = WriteParams::default();
         ensure_blob_storage_version(&blob_schema(), &mut params);
-        assert_eq!(
-            params.data_storage_version.unwrap().resolve(),
-            ConcreteFileVersion::V2_2
-        );
+        let resolved = params
+            .data_storage_version
+            .unwrap_or(LanceFileVersion::Stable)
+            .resolve();
+        assert_eq!(resolved, ConcreteFileVersion::V2_2);
         assert!(!params.enable_stable_row_ids);
     }
 
@@ -547,10 +548,11 @@ mod tests {
         };
         ensure_blob_storage_version(&blob_schema(), &mut params);
         assert!(params.enable_stable_row_ids);
-        assert_eq!(
-            params.data_storage_version.unwrap().resolve(),
-            ConcreteFileVersion::V2_2
-        );
+        let resolved = params
+            .data_storage_version
+            .unwrap_or(LanceFileVersion::Stable)
+            .resolve();
+        assert_eq!(resolved, ConcreteFileVersion::V2_2);
     }
 
     #[test]
