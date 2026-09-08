@@ -1236,7 +1236,9 @@ def test_stats():
         table = db.create_table("test", [{"id": 1}])
         res = table.stats()
         print(f"{res=}")
-        assert res == stats
+        # The server does not report num_deleted_rows, and that unsupported
+        # state is preserved as None.
+        assert res == {**stats, "num_deleted_rows": None}
 
 
 @contextlib.contextmanager

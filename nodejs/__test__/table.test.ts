@@ -280,6 +280,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         },
         numIndices: 0,
         numRows: 3,
+        numDeletedRows: 0,
         // Full on-disk size of the two data files, footers and metadata included.
         totalBytes: 684,
       });
@@ -290,6 +291,15 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const statsWithIndex = await table.stats();
       expect(statsWithIndex.numIndices).toBe(1);
       expect(statsWithIndex.totalBytes).toBeGreaterThan(684);
+
+      // Both rows with id = 1 are deleted, but that empties the second
+      // fragment, which is dropped outright rather than kept with a deletion
+      // file, so only the row marked in the surviving fragment is counted.
+      await table.delete("id = 1");
+      const stats = await table.stats();
+      expect(stats.numRows).toBe(1);
+      expect(stats.numDeletedRows).toBe(1);
+      expect(stats.fragmentStats.numFragments).toBe(1);
     });
 
     it("should overwrite data if asked", async () => {

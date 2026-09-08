@@ -1113,6 +1113,7 @@ impl Table {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
                 dict.set_item("num_rows", stats.num_rows)?;
+                dict.set_item("num_deleted_rows", stats.num_deleted_rows)?;
                 dict.set_item("num_indices", stats.num_indices)?;
 
                 let fragment_stats = PyDict::new(py);
