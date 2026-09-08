@@ -3252,7 +3252,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const db = await connect(tmpDir.name);
       const data = [
         { text: "fa", vector: [0.1, 0.2, 0.3] },
-        { text: "fo", vector: [0.4, 0.5, 0.6] },
+        { text: "fo", vector: [0.4, 0.5, 0.6] }, // spellchecker:disable-line
         { text: "fob", vector: [0.4, 0.5, 0.6] },
         { text: "focus", vector: [0.4, 0.5, 0.6] },
         { text: "foo", vector: [0.4, 0.5, 0.6] },
@@ -3277,7 +3277,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const resultSet = new Set(fuzzyResults.map((r) => r.text));
       expect(resultSet.has("foo")).toBe(true);
       expect(resultSet.has("fob")).toBe(true);
-      expect(resultSet.has("fo")).toBe(true);
+      expect(resultSet.has("fo")).toBe(true); // spellchecker:disable-line
       expect(resultSet.has("food")).toBe(true);
 
       const prefixResults = await table

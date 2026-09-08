@@ -1,0 +1,19 @@
+[default]
+extend-ignore-re = ["(?Rm)^.*(#|//)\\s*spellchecker:disable-line$"]
+
+[default.extend-words]
+# Azure Kubernetes Service, mentioned in rust/lancedb/src/remote/oauth.rs.
+AKS = "AKS"
+# RabitQ is the name of a vector quantization algorithm, not a typo of "Rabbit".
+Rabit = "Rabit"
+# `VarBuilder::from_mmaped_safetensors` is the real (if oddly-spelled) name of
+# the candle-core API we call in rust/lancedb/src/embeddings/sentence_transformers.rs.
+mmaped = "mmaped"
+# `WriteableBuffer` is the real name of a type from Python's `_typeshed` stubs,
+# used in python/python/lancedb/_blob.py.
+Writeable = "Writeable"
+
+[files]
+extend-exclude = [
+    "*_THIRD_PARTY_LICENSES.*",
+]

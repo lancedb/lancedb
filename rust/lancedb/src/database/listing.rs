@@ -512,7 +512,7 @@ impl ListingDatabase {
                 // iter thru the query params and extract the commit store param
                 let mut engine = None;
                 let mut mirrored_store = None;
-                let mut filtered_querys = vec![];
+                let mut filtered_queries = vec![];
 
                 // WARNING: specifying engine is NOT a publicly supported feature in lancedb yet
                 // THE API WILL CHANGE
@@ -528,13 +528,13 @@ impl ListingDatabase {
                         mirrored_store = Some(value.to_string());
                     } else {
                         // to owned so we can modify the url
-                        filtered_querys.push((key.to_string(), value.to_string()));
+                        filtered_queries.push((key.to_string(), value.to_string()));
                     }
                 }
 
                 // Filter out the commit store query param -- it's a lancedb param
                 url.query_pairs_mut().clear();
-                url.query_pairs_mut().extend_pairs(filtered_querys);
+                url.query_pairs_mut().extend_pairs(filtered_queries);
                 // Take a copy of the query string so we can propagate it to lance.
                 // `query_pairs_mut()` leaves the URL with `Some("")` even when no
                 // pairs survive (or none existed in the first place), so an empty
@@ -896,11 +896,11 @@ impl Database for ListingDatabase {
     }
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
-        if let Some(read_consistency_inverval) = self.read_consistency_interval {
-            if read_consistency_inverval.is_zero() {
+        if let Some(interval) = self.read_consistency_interval {
+            if interval.is_zero() {
                 Ok(ReadConsistency::Strong)
             } else {
-                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+                Ok(ReadConsistency::Eventual(interval))
             }
         } else {
             Ok(ReadConsistency::Manual)
@@ -3043,15 +3043,15 @@ mod tests {
     /// across platforms — see the `file://` test below).
     fn capture_query_like_connect(input_uri: &str) -> Option<String> {
         let mut url = url::Url::parse(input_uri).unwrap();
-        let mut filtered_querys = Vec::new();
+        let mut filtered_queries = Vec::new();
         for (key, value) in url.query_pairs() {
             if key == ENGINE || key == MIRRORED_STORE {
                 continue;
             }
-            filtered_querys.push((key.to_string(), value.to_string()));
+            filtered_queries.push((key.to_string(), value.to_string()));
         }
         url.query_pairs_mut().clear();
-        url.query_pairs_mut().extend_pairs(filtered_querys);
+        url.query_pairs_mut().extend_pairs(filtered_queries);
         url.query().filter(|q| !q.is_empty()).map(|s| s.to_string())
     }
 

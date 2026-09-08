@@ -16,7 +16,7 @@ optional config: Index;
 
 Advanced index configuration
 
-This option allows you to specify a specfic index to create and also
+This option allows you to specify a specific index to create and also
 allows you to pass in configuration for training the index.
 
 See the static methods on Index for details on the various index types.
