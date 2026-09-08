@@ -12,6 +12,7 @@
 //! of rows.
 
 pub mod builder;
+pub mod py1e;
 pub mod reader;
 pub mod shuffle;
 pub mod split;
