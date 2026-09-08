@@ -24,6 +24,7 @@
     },
     "runtime_digest": "sha256:runtime",
     "environment_digest": "sha256:environment",
+    "secret_bindings": {"HF_TOKEN": "hf-prod"},
     "created_at": "2026-08-21T00:00:00Z"
   },
   "future_job": {"trace_id": "trace-1"}

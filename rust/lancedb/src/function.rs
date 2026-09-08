@@ -5,7 +5,7 @@
 //! backend-neutral terminal result of a computed-column refresh.
 //!
 //! This module contains client/wire values only. Catalog persistence,
-//! environment bake, and execution are owned by Sophon.
+//! environment bake, secret resolution, and execution are owned by Sophon.
 
 use std::collections::BTreeMap;
 
@@ -409,6 +409,8 @@ pub struct FunctionVersion {
     runtime: PythonRuntimeSpec,
     runtime_digest: String,
     environment_digest: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    secret_bindings: BTreeMap<String, String>,
     created_at: String,
 }
 
@@ -439,6 +441,16 @@ impl FunctionVersion {
 
     pub fn environment_digest(&self) -> &str {
         &self.environment_digest
+    }
+
+    /// Declared environment variable name to the Secret each one resolves.
+    ///
+    /// Bindings are part of this version's identity; the credentials behind
+    /// them are not, and resolve at execution. Rotating a bound Secret
+    /// therefore changes what the same version runs with, and no value has a
+    /// field in this model.
+    pub fn secret_bindings(&self) -> &BTreeMap<String, String> {
+        &self.secret_bindings
     }
 
     pub fn created_at(&self) -> &str {
@@ -482,12 +494,20 @@ pub struct FunctionArtifactRequest {
 }
 
 /// Stable request envelope for remote immutable Function registration.
+///
+/// Credential values deliberately have no field here. The only secret-shaped
+/// thing a client sends is `secret_bindings`: the name of a Secret the
+/// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
+    /// Declared environment variable name to the Secret it binds. Every bound
+    /// Secret must already exist; registration fails otherwise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_bindings: BTreeMap<String, String>,
 }
 
 impl_json!(FunctionRegistrationRequest);

@@ -4,7 +4,7 @@
 """Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
-environment bake, and execution are owned by Sophon.
+environment bake, secret resolution, and execution are owned by Sophon.
 ``RefreshColumnResult`` is also the backend-neutral result of a local
 expression-backed refresh job.
 """
@@ -25,7 +25,7 @@ import re
 import sys
 import textwrap
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import (
     Annotated,
@@ -50,6 +50,7 @@ from pydantic import (
 )
 
 from .schema import is_blob_v2_field as _is_blob_v2_field
+from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
@@ -309,6 +310,7 @@ class FunctionVersion(_RemoteValue):
     runtime: PythonRuntimeSpec
     runtime_digest: str
     environment_digest: str
+    secret_bindings: Mapping[str, str] = {}
     created_at: str
 
     def __call__(self, **inputs: Any) -> FunctionApplication:
@@ -370,12 +372,18 @@ class FunctionVersion(_RemoteValue):
 
 
 class FunctionRegistrationRequest(_RemoteValue):
-    """Stable remote registration envelope produced by :func:`udf`."""
+    """Stable remote registration envelope produced by :func:`udf`.
+
+    Credential values deliberately have no field here. The only secret-shaped
+    thing a client sends is ``secret_bindings``: the name of a Secret the
+    database already holds, which the remote service resolves at execution.
+    """
 
     name: str
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
+    secret_bindings: Mapping[str, str] = {}
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -524,6 +532,14 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_DECLARED_SECRET = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+MAX_FUNCTION_SECRET_BINDINGS = 16
+"""A Function binds at most this many Secrets.
+
+Each bound Secret is one extra read on the launch path of every fragment, so
+the count needs a bound for the same reason a credential needs a size limit.
+"""
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
 _BLOB_V2_EXTENSION_NAME = "lance.blob.v2"
@@ -1265,8 +1281,60 @@ class UdfDefinition:
 
     @property
     def registration_request(self) -> FunctionRegistrationRequest:
-        """The immutable request sent by ``create_function_async``."""
+        """The immutable request sent by ``create_function_async``.
+
+        Carries no secret bindings. Binding is a registration-time decision,
+        so a Function bound to Secrets is registered through :meth:`bind_secrets`,
+        which is what ``create_function`` calls.
+        """
         return self._request
+
+    def bind_secrets(
+        self, secrets: Optional[Sequence[EnvVarSecret]]
+    ) -> FunctionRegistrationRequest:
+        """The registration request for this definition bound to ``secrets``.
+
+        Binding does not change the Function's source: each
+        [EnvVarSecret][lancedb.secrets.EnvVarSecret] names a Secret and the
+        environment variable its value should arrive in, and the Function reads
+        that variable the way it already did. Whether the named Secrets exist is
+        the server's answer, not this one.
+        """
+        bindings = () if secrets is None else tuple(secrets)
+        wrong_type = [
+            binding for binding in bindings if not isinstance(binding, EnvVarSecret)
+        ]
+        if wrong_type:
+            kinds = sorted({type(binding).__name__ for binding in wrong_type})
+            raise TypeError(
+                f"Function secrets must be EnvVarSecret values, not {kinds!r}; a "
+                "credential value is never sent to this API"
+            )
+        if len(bindings) > MAX_FUNCTION_SECRET_BINDINGS:
+            raise ValueError(
+                f"a Function binds at most {MAX_FUNCTION_SECRET_BINDINGS} secrets, "
+                f"not {len(bindings)}"
+            )
+        variables = [binding.env_variable for binding in bindings]
+        duplicates = sorted({name for name in variables if variables.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                "a Function binds each environment variable once; duplicated: "
+                f"{duplicates!r}"
+            )
+        # `env` is ordinary configuration carried in the definition, so a name in
+        # both would have a value visible in the Function's record and a value
+        # that is not. Refuse rather than pick.
+        environment = self._request.runtime.env or {}
+        overlap = sorted(set(environment) & set(variables))
+        if overlap:
+            raise ValueError(
+                f"Function env and secret bindings must be disjoint: {overlap!r}"
+            )
+        if not bindings:
+            return self._request
+        resolved = {binding.env_variable: binding.secret for binding in bindings}
+        return self._request._copy(update={"secret_bindings": resolved})
 
     def __call__(self, *args, **kwargs):
         return self._function(*args, **kwargs)
@@ -1332,7 +1400,9 @@ def udf(
     conda_channels : sequence of str, optional
         Conda channels in priority order; requires ``conda``.
     env : mapping of str to str, optional
-        Environment variables included in the Function definition.
+        Environment variables included in the Function definition. Not for
+        credentials -- these are ordinary configuration, stored with the
+        Function and visible wherever it is.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
     gpu : bool, default False
