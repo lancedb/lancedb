@@ -249,7 +249,7 @@ def retry_with_exponential_backoff(
         initial_delay (float): Initial delay in seconds (default is 1).
         exponential_base (float): The base for exponential backoff (default is 2).
         jitter (bool): Whether to add jitter to the delay (default is True).
-        max_retries (int): Maximum number of retries (default is 10).
+        max_retries (int): Maximum number of retries (default is 7).
 
     Returns:
         function: The decorated function.
