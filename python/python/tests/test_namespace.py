@@ -358,6 +358,23 @@ class TestNamespaceConnection:
         result = list(db.table_names(namespace_path=["test_ns"]))
         assert "test_table" in result
 
+    def test_table_names_does_not_truncate_by_default(self):
+        """Namespace-backed sync table_names() should not stop at 10 results."""
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        db.create_namespace(["test_ns"])
+
+        schema = pa.schema([pa.field("id", pa.int64())])
+        for idx in range(12):
+            db.create_table(
+                f"table_{idx:02d}",
+                schema=schema,
+                namespace_path=["test_ns"],
+            )
+
+        table_names = list(db.table_names(namespace_path=["test_ns"]))
+
+        assert table_names == [f"table_{idx:02d}" for idx in range(12)]
+
     def test_table_operations(self):
         """Test various table operations through namespace."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
