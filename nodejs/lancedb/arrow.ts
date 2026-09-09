@@ -500,9 +500,15 @@ function transposeData(
         nullCount > 0
           ? arrowUtil.packBools(blobRows.map((row) => row !== null))
           : undefined,
-      children: childVectors as unknown as ArrowData<DataType>[],
+      children: childVectors.map((v) => v.data[0]),
     });
     return arrowMakeVector(structData);
+  }
+  if (
+    (isList(field.type) || isFixedSizeList(field.type)) &&
+    needsBlobCoercion(field.type.children[0])
+  ) {
+    return transposeListData(data, field, valuesPath);
   }
   const values = data.map((datum) => valueAtPath(datum, valuesPath));
   if (field.type instanceof Struct) {
@@ -519,12 +525,87 @@ function transposeData(
         nullCount > 0
           ? arrowUtil.packBools(values.map((value) => value !== null))
           : undefined,
-      children: childVectors as unknown as ArrowData<DataType>[],
+      children: childVectors.map((v) => v.data[0]),
     });
     return arrowMakeVector(structData);
   } else {
     return makeVector(values, field.type, undefined, field.nullable);
   }
+}
+
+function transposeListData(
+  data: Record<string, unknown>[],
+  field: Field,
+  valuesPath: string[],
+): Vector {
+  const listType = field.type as List | FixedSizeList;
+  const childField = listType.children[0];
+  const lists = data.map((datum) => valueAtPath(datum, valuesPath));
+  const flattened: Record<string, unknown>[] = [];
+  const validity: boolean[] = [];
+  const offsets: number[] = [0];
+  const listSize = isFixedSizeList(listType) ? listType.listSize : undefined;
+
+  for (const list of lists) {
+    if (list == null) {
+      validity.push(false);
+      if (listSize !== undefined) {
+        // Null fixed-size lists still need child slots to preserve later positions.
+        for (let i = 0; i < listSize; i++) {
+          flattened.push({ [childField.name]: null });
+        }
+      }
+      offsets.push(flattened.length);
+      continue;
+    }
+    if (!Array.isArray(list)) {
+      throw new Error(`expected an array for list field '${field.name}'`);
+    }
+    if (listSize !== undefined && list.length !== listSize) {
+      throw new Error(
+        `expected ${listSize} elements for list field '${field.name}'`,
+      );
+    }
+    validity.push(true);
+    for (const element of list) {
+      flattened.push({ [childField.name]: element });
+    }
+    offsets.push(flattened.length);
+  }
+
+  const childVector = transposeData(flattened, childField, []);
+  const nullCount = validity.filter((valid) => !valid).length;
+  const child = childVector.data[0];
+  if (isFixedSizeList(listType)) {
+    return arrowMakeVector(
+      makeData({
+        type: listType,
+        length: lists.length,
+        nullCount,
+        nullBitmap: nullCount > 0 ? arrowUtil.packBools(validity) : undefined,
+        child,
+      }),
+    );
+  }
+  return arrowMakeVector(
+    makeData({
+      type: listType,
+      length: lists.length,
+      nullCount,
+      nullBitmap: nullCount > 0 ? arrowUtil.packBools(validity) : undefined,
+      valueOffsets: Int32Array.from(offsets),
+      child,
+    }),
+  );
+}
+
+function needsBlobCoercion(field: Field): boolean {
+  if (isBlobField(field)) {
+    return true;
+  }
+  return (field.type.children ?? []).some((child: Field) =>
+    needsBlobCoercion(child),
+  );
 }
 
 /**

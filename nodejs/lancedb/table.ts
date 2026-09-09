@@ -17,6 +17,7 @@ import {
   tableFromIPC,
 } from "./arrow";
 
+import { BlobFile } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
@@ -26,7 +27,6 @@ import {
   AddColumnsSql,
   AddResult,
   AlterColumnsResult,
-  BlobFile,
   BranchContents,
   DeleteResult,
   DropColumnsResult,
@@ -529,12 +529,11 @@ export abstract class Table {
   ): Promise<(Buffer | null)[]>;
 
   /**
-   * {@link BlobFile} handles for `column` at row IDs from
-   * {@link Query.withRowId}.
+   * Opens lazy blob handles for `column` at the given row IDs using the
+   * table's current checkout.
    *
-   * Same version and alignment rules as {@link Table.fetchBlobs}. Prefer this
-   * for large payloads. {@link BlobFile.readRange} fails when `end` is past
-   * the blob size.
+   * Preserves input order, duplicates, and nulls. Use this for large payloads.
+   * See {@link Table.fetchBlobs} for row-ID validity across versions.
    */
   abstract fetchBlobFiles(
     column: string,
@@ -1216,7 +1215,9 @@ export class LocalTable extends Table {
       rowIdsToBigInts(rowIds),
     );
     // N-API Option maps missing values to undefined. Collapse those to null.
-    return files.map((file) => file ?? null);
+    return files.map((file) =>
+      file == null ? null : BlobFile.fromNative(file),
+    );
   }
 
   query(): Query {

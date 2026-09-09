@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Field, Int64, Schema } from "apache-arrow";
+import {
+  Field,
+  FixedSizeList,
+  Int64,
+  List,
+  Schema,
+  Struct,
+  Utf8,
+} from "apache-arrow";
 import { makeArrowTable } from "../lancedb/arrow";
 import {
   BLOB_V2_EXTENSION_NAME,
+  BlobFile,
   blob,
   coerceBlobValue,
   isBlobField,
@@ -100,6 +109,14 @@ describe("coerceBlobValue", () => {
   });
 });
 
+describe("BlobFile", () => {
+  it("rejects constructing BlobFile without a native handle", () => {
+    expect(() => new (BlobFile as unknown as { new (): BlobFile })()).toThrow(
+      /fetchBlobFiles/,
+    );
+  });
+});
+
 describe("makeArrowTable blob columns", () => {
   it("coerces Buffer input onto a blob field", () => {
     const schema = new Schema([
@@ -114,5 +131,96 @@ describe("makeArrowTable blob columns", () => {
     expect(image.nullCount).toBe(0);
     expect(image.getChild("uri")!.get(0)).toBeNull();
     expect(image.getChild("data")!.nullCount).toBe(0);
+    expect(Buffer.from(image.getChild("data")!.get(0)!).toString()).toBe(
+      "hello",
+    );
+  });
+
+  it("coerces Buffer elements inside a list and keeps null slots", () => {
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("images", new List(blob("image")), true),
+    ]);
+    const table = makeArrowTable(
+      [
+        { id: 1n, images: [Buffer.from("a"), Buffer.from("bb")] },
+        { id: 2n, images: null },
+        { id: 3n, images: [Buffer.from("c"), null] },
+        { id: 4n, images: [] },
+      ],
+      { schema },
+    );
+    const images = table.getChild("images")!;
+    expect(images.nullCount).toBe(1);
+    const rows = images.toArray();
+    expect(rows[1]).toBeNull();
+    expect(Array.from(rows[3] as Iterable<unknown>)).toHaveLength(0);
+    const first = Array.from(rows[0] as Iterable<{ data: Uint8Array | null }>);
+    expect(Buffer.from(first[0].data!).toString()).toBe("a");
+    expect(Buffer.from(first[1].data!).toString()).toBe("bb");
+    const third = Array.from(
+      rows[2] as Iterable<{ data: Uint8Array | null } | null>,
+    );
+    expect(Buffer.from(third[0]!.data!).toString()).toBe("c");
+    expect(third[1]).toBeNull();
+  });
+
+  it("coerces Buffer fields inside list structs", () => {
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "items",
+        new List(
+          new Field(
+            "item",
+            new Struct([new Field("name", new Utf8(), true), blob("image")]),
+            true,
+          ),
+        ),
+        true,
+      ),
+    ]);
+    const table = makeArrowTable(
+      [
+        {
+          id: 1n,
+          items: [{ name: "one", image: Buffer.from("alpha") }],
+        },
+      ],
+      { schema },
+    );
+    const items = Array.from(
+      table.getChild("items")!.toArray()[0] as Iterable<{
+        name: string;
+        image: { data: Uint8Array | null };
+      }>,
+    );
+    expect(items[0].name).toBe("one");
+    expect(Buffer.from(items[0].image.data!).toString()).toBe("alpha");
+  });
+
+  it("coerces Buffer elements inside a fixed-size list and keeps null rows", () => {
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("frames", new FixedSizeList(2, blob("frame")), true),
+    ]);
+    const table = makeArrowTable(
+      [
+        { id: 1n, frames: [Buffer.from("a"), Buffer.from("b")] },
+        { id: 2n, frames: null },
+        { id: 3n, frames: [Buffer.from("c"), Buffer.from("d")] },
+      ],
+      { schema },
+    );
+    const frames = table.getChild("frames")!;
+    expect(frames.nullCount).toBe(1);
+    const rows = frames.toArray();
+    expect(rows[1]).toBeNull();
+    const first = Array.from(rows[0] as Iterable<{ data: Uint8Array | null }>);
+    expect(Buffer.from(first[0].data!).toString()).toBe("a");
+    expect(Buffer.from(first[1].data!).toString()).toBe("b");
+    const third = Array.from(rows[2] as Iterable<{ data: Uint8Array | null }>);
+    expect(Buffer.from(third[0].data!).toString()).toBe("c");
+    expect(Buffer.from(third[1].data!).toString()).toBe("d");
   });
 });

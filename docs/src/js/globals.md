@@ -19,6 +19,7 @@
 ## Classes
 
 - [AutoQuery](classes/AutoQuery.md)
+- [BlobFile](classes/BlobFile.md)
 - [BooleanQuery](classes/BooleanQuery.md)
 - [BoostQuery](classes/BoostQuery.md)
 - [BranchContents](classes/BranchContents.md)
@@ -143,6 +144,7 @@
 
 - [AnalyzePlanDistributedMetrics](type-aliases/AnalyzePlanDistributedMetrics.md)
 - [BaseTokenizer](type-aliases/BaseTokenizer.md)
+- [BlobOptions](type-aliases/BlobOptions.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
 - [FieldLike](type-aliases/FieldLike.md)
@@ -155,12 +157,18 @@
 - [TableLike](type-aliases/TableLike.md)
 - [TokenizeTableOptions](type-aliases/TokenizeTableOptions.md)
 
+## Variables
+
+- [BLOB\_V2\_EXTENSION\_NAME](variables/BLOB_V2_EXTENSION_NAME.md)
+
 ## Functions
 
 - [RecordBatchIterator](functions/RecordBatchIterator.md)
+- [blob](functions/blob.md)
 - [connect](functions/connect.md)
 - [connectNamespace](functions/connectNamespace.md)
 - [instrumentLanceDbMetrics](functions/instrumentLanceDbMetrics.md)
+- [isBlobField](functions/isBlobField.md)
 - [makeArrowTable](functions/makeArrowTable.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)

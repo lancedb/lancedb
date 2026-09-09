@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Field, LargeBinary, Struct, Utf8 } from "apache-arrow";
+import { BlobFile as NativeBlobFile } from "./native";
 
 export const BLOB_V2_EXTENSION_NAME = "lance.blob.v2";
 
@@ -17,12 +18,22 @@ export type BlobInput = {
 };
 
 export type BlobOptions = {
+  /** Defaults to true. */
   nullable?: boolean;
-  /** Max payload bytes kept inline in the data file. Zero is allowed. */
+  /**
+   * Max payload bytes kept inline in the data file. Zero is allowed. Must be a
+   * safe integer.
+   */
   inlineSizeThreshold?: number;
-  /** Max payload bytes stored in a packed sidecar before a dedicated file. Must be > 0. */
+  /**
+   * Max payload bytes stored in a packed sidecar before a dedicated file. Must
+   * be a positive safe integer.
+   */
   dedicatedSizeThreshold?: number;
-  /** Max bytes in one packed sidecar before starting another. Must be > 0. */
+  /**
+   * Max bytes in one packed sidecar before starting another. Must be a positive
+   * safe integer.
+   */
   packFileSizeThreshold?: number;
 };
 
@@ -30,8 +41,35 @@ export type BlobOptions = {
  * Declares a `lance.blob.v2` column.
  *
  * Query results are descriptors, not payload bytes. Use {@link Table.fetchBlobs}
- * or {@link Table.fetchBlobFiles} to read bytes. A Buffer column without this
- * field stays inline Binary.
+ * or {@link Table.fetchBlobFiles} to read bytes.
+ *
+ * @example
+ * ```ts
+ * import { readFile } from "node:fs/promises";
+ * import { Field, Int64, Schema } from "apache-arrow";
+ * import { blob, connect } from "@lancedb/lancedb";
+ *
+ * const db = await connect("./data");
+ * const video = await readFile("clip.mp4");
+ * const table = await db.createTable(
+ *   "videos",
+ *   [{ id: 1n, video }],
+ *   {
+ *     schema: new Schema([
+ *       new Field("id", new Int64()),
+ *       blob("video"),
+ *     ]),
+ *   },
+ * );
+ *
+ * const rows = await table.query().select(["id"]).withRowId().toArray();
+ * const rowIds = rows.map((row) => row._rowid as bigint);
+ * const bytes = await table.fetchBlobs("video", rowIds);
+ *
+ * const [handle] = await table.fetchBlobFiles("video", rowIds);
+ * const size = handle!.size();
+ * const header = await handle!.readRange(0n, size < 65536n ? size : 65536n);
+ * ```
  */
 export function blob(name: string, options: BlobOptions = {}): Field {
   const metadata = new Map<string, string>([
@@ -69,8 +107,57 @@ export function blob(name: string, options: BlobOptions = {}): Field {
   );
 }
 
+/**
+ * Checks for the `lance.blob.v2` extension marker. Does not validate the
+ * field's storage type.
+ */
 export function isBlobField(field: Field): boolean {
   return field.metadata?.get("ARROW:extension:name") === BLOB_V2_EXTENSION_NAME;
+}
+
+/**
+ * A lazy handle to blob bytes. Create one with {@link Table.fetchBlobFiles}.
+ *
+ * @hideconstructor
+ */
+export class BlobFile {
+  private readonly inner: NativeBlobFile;
+
+  private constructor(inner: NativeBlobFile) {
+    if (!(inner instanceof NativeBlobFile)) {
+      throw new Error("BlobFile handles come from Table.fetchBlobFiles");
+    }
+    this.inner = inner;
+  }
+
+  /** @ignore */
+  static fromNative(inner: NativeBlobFile): BlobFile {
+    return new BlobFile(inner);
+  }
+
+  /** Returns the blob size in bytes. */
+  size(): bigint {
+    return this.inner.size();
+  }
+
+  /**
+   * Reads from the cursor to the end and advances the cursor.
+   *
+   * A second call returns an empty buffer. {@link BlobFile.readRange} does
+   * not move the cursor.
+   */
+  read(): Promise<Buffer> {
+    return this.inner.read();
+  }
+
+  /**
+   * Reads the half-open byte range `[start, end)`.
+   *
+   * Fails when `end` is past the blob size. Does not move the cursor.
+   */
+  readRange(start: bigint, end: bigint): Promise<Buffer> {
+    return this.inner.readRange(start, end);
+  }
 }
 
 export function coerceBlobValue(value: unknown): BlobInput | null {

@@ -55,7 +55,6 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
-  BlobFile,
   RefreshColumnResult,
   RefreshMaterializedViewResult,
   AlterColumnsResult,
@@ -78,7 +77,12 @@ export {
   VectorColumnOptions,
 } from "./arrow";
 
-export { blob, isBlobField, BLOB_V2_EXTENSION_NAME } from "./blob";
+export {
+  blob,
+  isBlobField,
+  BLOB_V2_EXTENSION_NAME,
+  BlobFile,
+} from "./blob";
 export type { BlobOptions } from "./blob";
 
 export {

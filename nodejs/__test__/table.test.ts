@@ -2458,6 +2458,14 @@ describe("when dealing with blob columns", () => {
     );
   });
 
+  it("readRange does not move the cursor", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    expect((await handle!.readRange(1n, 3n)).toString()).toBe("lp");
+    expect(await handle!.read()).toEqual(alpha);
+    expect(await handle!.read()).toEqual(Buffer.alloc(0));
+  });
+
   it("fails when readRange end is past the blob size", async () => {
     const { table, rowIds, alpha } = await openBlobTable();
     const files = await table.fetchBlobFiles("image", rowIds);
@@ -2490,6 +2498,95 @@ describe("when dealing with blob columns", () => {
     ]);
     expect(bytes[0]!.equals(payload)).toBe(true);
   });
+
+  it("creates and adds list blob columns", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("images", new List(blob("image")), true),
+    ]);
+    const alpha = Buffer.from("alpha");
+    const beta = Buffer.from("beta");
+    const gamma = Buffer.from("gamma");
+    const table = await db.createTable(
+      "list_blobs",
+      [{ id: 1n, images: [alpha, beta] }],
+      { schema },
+    );
+    await table.add([
+      { id: 2n, images: null },
+      { id: 3n, images: [gamma, null] },
+      { id: 4n, images: [] },
+    ]);
+    expect(await table.blobColumns()).toEqual(["images.image"]);
+    const rows = await table.query().toArray();
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(descriptorSizes(byId.get(1)!.images)).toEqual([
+      alpha.length,
+      beta.length,
+    ]);
+    expect(byId.get(2)!.images).toBeNull();
+    expect(descriptorSizes(byId.get(3)!.images)).toEqual([gamma.length, null]);
+    expect(Array.from(byId.get(4)!.images as Iterable<unknown>)).toHaveLength(
+      0,
+    );
+  });
+
+  it("creates and adds list struct blob columns", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "items",
+        new List(
+          new Field(
+            "item",
+            new Struct([new Field("name", new Utf8(), true), blob("image")]),
+            true,
+          ),
+        ),
+        true,
+      ),
+    ]);
+    const alpha = Buffer.from("nested-alpha");
+    const beta = Buffer.from("nested-beta");
+    const table = await db.createTable(
+      "list_struct_blobs",
+      [{ id: 1n, items: [{ name: "one", image: alpha }] }],
+      { schema },
+    );
+    await table.add([
+      {
+        id: 2n,
+        items: [
+          { name: "two", image: beta },
+          { name: "three", image: null },
+        ],
+      },
+    ]);
+    const rows = await table.query().toArray();
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(
+      descriptorSizes(
+        Array.from(byId.get(1)!.items as Iterable<{ image: unknown }>).map(
+          (item) => item.image,
+        ),
+      ),
+    ).toEqual([alpha.length]);
+    expect(
+      descriptorSizes(
+        Array.from(byId.get(2)!.items as Iterable<{ image: unknown }>).map(
+          (item) => item.image,
+        ),
+      ),
+    ).toEqual([beta.length, null]);
+  });
+
+  function descriptorSizes(values: unknown): (number | null)[] {
+    return Array.from(
+      values as Iterable<{ size?: bigint | number } | null>,
+    ).map((value) => (value == null ? null : Number(value.size)));
+  }
 
   async function openBlobTable() {
     const db = await connect(tmpDir.name);

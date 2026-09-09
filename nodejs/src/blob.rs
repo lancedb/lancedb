@@ -37,9 +37,6 @@ impl BlobFile {
         Ok(Buffer::from(bytes.as_ref()))
     }
 
-    /// Reads the half-open byte range `[start, end)`.
-    ///
-    /// Fails when `end` is past the blob size.
     #[napi]
     pub async fn read_range(&self, start: BigInt, end: BigInt) -> napi::Result<Buffer> {
         let range = bigint_range(start, end)?;
