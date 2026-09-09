@@ -361,7 +361,10 @@ impl<S: HttpSend> RemoteDatabase<S> {
             "name": name,
             "value": value,
         }));
-        let (request_id, response) = self.client.send(req).await?;
+        // This call is what says the body is a credential. Nothing downstream
+        // can tell from the bytes, and a route list in the transport would have
+        // to be kept in step with endpoints declared here.
+        let (request_id, response) = self.client.send_suppressing_body(req).await?;
         self.client.check_response(&request_id, response).await?;
         Ok(())
     }

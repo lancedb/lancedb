@@ -11,6 +11,7 @@ import types
 from datetime import date
 import http.server
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -176,6 +177,67 @@ def test_a_function_binds_at_most_sixteen_secrets():
             LOOP.run(submit_envelope())
 
     assert state["requests"] == []
+
+
+_SECRET_DEBUG_LOG_SOURCE = """
+import http.server
+import json
+import threading
+
+import lancedb
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        payload = json.dumps({}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+server = http.server.ThreadingHTTPServer(("localhost", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+try:
+    db = lancedb.connect(
+        "db://dev",
+        api_key="API_KEY_SENTINEL",
+        host_override="http://localhost:%d" % server.server_address[1],
+        client_config={"retry_config": {"retries": 0}},
+    )
+    db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
+finally:
+    server.shutdown()
+"""
+
+
+def test_a_credential_never_reaches_a_debug_log(tmp_path):
+    """The logger sees the serialized body, so no value-side redaction reaches it.
+
+    Runs in a subprocess because the Rust logger reads ``LANCEDB_LOG`` once, at
+    import.
+    """
+    script = tmp_path / "write_secret.py"
+    script.write_text(_SECRET_DEBUG_LOG_SOURCE)
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LANCEDB_LOG": "debug"},
+    )
+    output = result.stdout + result.stderr
+
+    # Without this the test passes when debug logging is simply off.
+    assert "Sending request_id=" in output, output
+    assert "SECRET_VALUE_SENTINEL" not in output
+    assert "API_KEY_SENTINEL" not in output
 
 
 def test_a_credential_value_is_rejected_in_the_binding_position():
