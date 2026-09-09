@@ -1129,6 +1129,80 @@ mod tests {
         assert_eq!(totals.values(), &[40, 30]);
     }
 
+    #[tokio::test]
+    async fn generated_sql_sorts_projected_aliases() {
+        let batch = RecordBatch::try_new(
+            Arc::new(events().schema()),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+                Arc::new(Int64Array::from(vec![40, 10, 20, 30])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_batch("events", batch).unwrap();
+
+        let frame = events()
+            .with_column_renamed("value", "renamed")
+            .unwrap()
+            .sort(vec![(col("renamed"), true, false)])
+            .unwrap();
+        let sql = frame.to_sql().unwrap();
+        let sorted = ctx
+            .sql(&sql)
+            .await
+            .unwrap_or_else(|error| panic!("invalid renamed-column sort SQL {sql}: {error}"))
+            .collect()
+            .await
+            .unwrap();
+
+        assert_eq!(sorted[0].schema().field(1).name(), "renamed");
+        let values = sorted[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(values.values(), &[10, 20, 30, 40]);
+    }
+
+    #[tokio::test]
+    async fn generated_sql_uses_the_planned_scan_schema() {
+        let evolved_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("value", DataType::Int64, false),
+            Field::new("extra", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            evolved_schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 1])),
+                Arc::new(Int64Array::from(vec![10, 10])),
+                Arc::new(Int64Array::from(vec![100, 200])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_batch("events", batch).unwrap();
+
+        for (frame, expected_rows) in [(events(), 2), (events().distinct().unwrap(), 1)] {
+            let sql = frame.to_sql().unwrap();
+            let batches = ctx
+                .sql(&sql)
+                .await
+                .unwrap_or_else(|error| panic!("invalid schema-preserving SQL {sql}: {error}"))
+                .collect()
+                .await
+                .unwrap();
+
+            assert!(!sql.contains("SELECT *"), "unexpected wildcard SQL: {sql}");
+            assert_eq!(batches[0].schema().fields(), frame.schema().fields());
+            assert_eq!(
+                batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                expected_rows
+            );
+        }
+    }
+
     #[test]
     fn preserves_limit_and_set_operation_scopes_in_sql() {
         let limited = events().limit(2, 0).unwrap();

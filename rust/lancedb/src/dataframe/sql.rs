@@ -24,6 +24,7 @@ pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<Strin
     validate_output_sort(&plan)?;
     let plan = ensure_output_projection(plan)?;
     let plan = preserve_join_semantics(&plan)?;
+    let plan = project_table_scans(plan)?;
     Unparser::default()
         .plan_to_sql(&plan)
         .map(|statement| statement.to_string())
@@ -199,7 +200,12 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
             }
             LogicalPlan::Sort(mut sort)
                 if matches!(sort.input.as_ref(), LogicalPlan::Limit(_))
-                    || contains_unscoped_sort(&sort.input) =>
+                    || contains_unscoped_sort(&sort.input)
+                    || matches!(
+                        sort.input.as_ref(),
+                        LogicalPlan::Projection(projection)
+                            if projection_establishes_scope(projection)
+                    ) =>
             {
                 sort.input = isolate_plan(sort.input, "__lancedb_sort_input")?;
                 Ok(Transformed::yes(LogicalPlan::Sort(sort)))
@@ -291,6 +297,25 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
             _ => Ok(Transformed::no(plan)),
         })
         .data()
+}
+
+fn project_table_scans(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
+    plan.transform_up(|plan| {
+        if !matches!(plan, LogicalPlan::TableScan(_)) {
+            return Ok(Transformed::no(plan));
+        }
+
+        let projection = plan
+            .schema()
+            .iter()
+            .map(|(qualifier, field)| Expr::Column(Column::new(qualifier.cloned(), field.name())))
+            .collect::<Vec<_>>();
+        LogicalPlanBuilder::from(Arc::new(plan))
+            .project(projection)?
+            .build()
+            .map(Transformed::yes)
+    })
+    .data()
 }
 
 fn contains_aggregate(plan: &LogicalPlan) -> bool {
