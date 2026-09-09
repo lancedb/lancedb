@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import re
 
-_SECRET_NAME = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
+# The same characters LanceDB already admits in a namespace or table name, and
+# no positional rule on top of them: a segment may begin with `_`, `-` or `.`
+# today, so anything narrower would put Secrets out of reach inside namespaces
+# that already exist. Matches the service, which admits the same set.
+_SECRET_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,255}$")
 _ENV_VARIABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
