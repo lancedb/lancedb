@@ -2981,18 +2981,44 @@ async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
 
 
 @pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
-@pytest.mark.parametrize("input_kind", ["arrow", "pylist"])
+@pytest.mark.parametrize(
+    ("input_kind", "input_type"),
+    [
+        pytest.param("arrow", pa.string(), id="arrow-utf8"),
+        pytest.param("arrow", pa.large_string(), id="arrow-large-utf8"),
+        pytest.param(
+            "arrow",
+            pa.string_view() if hasattr(pa, "string_view") else pa.string(),
+            id="arrow-string-view",
+            marks=pytest.mark.skipif(
+                not hasattr(pa, "string_view"),
+                reason="requires PyArrow StringView type",
+            ),
+        ),
+        pytest.param("pylist", None, id="pylist"),
+    ],
+)
 @pytest.mark.parametrize("mode", ["append", None])
 @pytest.mark.asyncio
 async def test_add_coerces_string_json(
-    mem_db_async: AsyncConnection, input_kind: str, mode: str | None
+    mem_db_async: AsyncConnection,
+    input_kind: str,
+    input_type,
+    mode: str | None,
 ):
     json_type = pa.json_()
     schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
-    table = await mem_db_async.create_table(f"json_add_{input_kind}", schema=schema)
+    table = await mem_db_async.create_table(
+        f"json_add_{input_kind}_{input_type}", schema=schema
+    )
 
     if input_kind == "arrow":
-        data = pa.table({"id": ["a"], "j": ['{"k": 4}']})
+        data = pa.table(
+            {
+                "id": ["a"],
+                "j": pa.array(['{"k": 4}'], type=input_type),
+            }
+        )
     else:
         data = [{"id": "a", "j": '{"k": 4}'}]
 
@@ -3000,6 +3026,26 @@ async def test_add_coerces_string_json(
 
     rows = await table.query().where("json_extract(j, '$.k') = '4'").to_list()
     assert rows == [{"id": "a", "j": '{"k":4}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_overwrite_coerces_string_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    table = await mem_db_async.create_table("json_add_overwrite", schema=schema)
+
+    data = pa.table(
+        {
+            "id": pa.array(["a"], type=pa.string()),
+            "j": pa.array(['{"k": 9}'], type=pa.string()),
+        }
+    )
+
+    await table.add(data, mode="overwrite")
+
+    rows = await table.query().where("json_extract(j, '$.k') = '9'").to_list()
+    assert rows == [{"id": "a", "j": '{"k":9}'}]
 
 
 @pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")

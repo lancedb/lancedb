@@ -5714,8 +5714,7 @@ class AsyncTable:
             )
         _register_optional_converters()
         data = to_scannable(data)
-        if mode in (None, "append"):
-            data = _coerce_json_scannable(data, schema)
+        data = _coerce_json_scannable(data, schema)
         progress, owns = _normalize_progress(progress)
         try:
             return await self._inner.add(
