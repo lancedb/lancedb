@@ -20,37 +20,37 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Live per-bucket LSM state, as returned by {@link LanceDbTableLsm#getLsmStats()}.
+ * Live per-tableShard LSM state, as returned by {@link LanceDbTableLsm#getLsmStats()}.
  *
- * <p>Nothing here is derived: sums and differences (total L0 bytes, WAL lag) are the caller's to
+ * <p>Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are the caller's to
  * compute. There is no "LSM is off" shape — that case is an empty {@link java.util.Optional},
  * because a stats object of zeros would read as measurements.
  */
 public class LsmStats {
   private static final String CONTEXT = "lsm stats";
 
-  private final List<BucketStats> buckets;
+  private final List<TableShardStats> tableShards;
 
-  LsmStats(List<BucketStats> buckets) {
-    this.buckets = Collections.unmodifiableList(buckets);
+  LsmStats(List<TableShardStats> tableShards) {
+    this.tableShards = Collections.unmodifiableList(tableShards);
   }
 
-  /** One entry per bucket. */
-  public List<BucketStats> buckets() {
-    return buckets;
+  /** One entry per tableShard. */
+  public List<TableShardStats> tableShards() {
+    return tableShards;
   }
 
   static LsmStats fromJson(JsonNode node) {
     JsonFields.requiredObject(node, CONTEXT);
-    List<BucketStats> buckets = new ArrayList<BucketStats>();
-    for (JsonNode bucket : JsonFields.requiredArray(node, "buckets", CONTEXT)) {
-      buckets.add(BucketStats.fromJson(bucket));
+    List<TableShardStats> tableShards = new ArrayList<TableShardStats>();
+    for (JsonNode tableShard : JsonFields.requiredArray(node, "table_shards", CONTEXT)) {
+      tableShards.add(TableShardStats.fromJson(tableShard));
     }
-    return new LsmStats(buckets);
+    return new LsmStats(tableShards);
   }
 
   @Override
   public String toString() {
-    return "LsmStats{buckets=" + buckets + "}";
+    return "LsmStats{tableShards=" + tableShards + "}";
   }
 }

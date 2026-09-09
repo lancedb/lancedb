@@ -26,7 +26,7 @@ import java.util.OptionalLong;
  *
  * <p>Installing an {@link LsmWriteSpec} routes {@code mergeInsert} upserts through Lance's MemWAL —
  * an LSM-style append — instead of the standard merge path. Rows land in an in-memory memtable,
- * seal into L0 generations, and are merged into the base table by compaction.
+ * freeze into SSTables, and are merged into the base table by compaction.
  *
  * <p>These routes are not part of the Lance Namespace specification, so they are issued directly
  * rather than through {@link org.lance.namespace.LanceNamespace}.
@@ -38,7 +38,7 @@ import java.util.OptionalLong;
  *     .buildRestClient();
  *
  * LanceDbTableLsm lsm = new LanceDbTableLsm(client, "my_table");
- * lsm.setLsmWriteSpec(LsmWriteSpec.bucket("id", 16));
+ * lsm.setLsmWriteSpec(LsmWriteSpec.tableShard("id", 16));
  * // ... merge_insert traffic ...
  * lsm.checkpointLsm();
  * }</pre>
@@ -94,7 +94,7 @@ public class LanceDbTableLsm {
    * Install an {@link LsmWriteSpec} on this table, selecting the MemWAL LSM write path for future
    * {@code mergeInsert} calls.
    *
-   * <p>All variants require the table to have an unenforced primary key; bucket sharding
+   * <p>All variants require the table to have an unenforced primary key; tableShard sharding
    * additionally requires it to be the single column being bucketed.
    */
   public void setLsmWriteSpec(LsmWriteSpec spec) {
@@ -130,7 +130,7 @@ public class LanceDbTableLsm {
   }
 
   /**
-   * Seal every bucket's active memtable into a new L0 generation.
+   * Freeze every table shard's active memtable into a new SSTable.
    *
    * <p>Returns once the seal is committed. Sealing an empty memtable is a no-op, so this is safe to
    * call repeatedly.
@@ -140,7 +140,7 @@ public class LanceDbTableLsm {
   }
 
   /**
-   * Trigger a background L0 → base compaction pass per bucket.
+   * Trigger a background SSTable compaction pass per table shard.
    *
    * <p>Returns once the passes are <em>dispatched</em>, not once they finish — watch {@link
    * #getLsmStats}, or use {@link #checkpointLsm} to wait for convergence.
@@ -150,9 +150,9 @@ public class LanceDbTableLsm {
   }
 
   /**
-   * Read live per-bucket LSM state.
+   * Read live per-tableShard LSM state.
    *
-   * <p>Answers "how far behind is my fresh tier", "which bucket is hot", and "why is my fresh-tier
+   * <p>Answers "how far behind is my fresh tier", "which tableShard is hot", and "why is my fresh-tier
    * vector search brute-force". Mutates no table state.
    *
    * <p>Empty only when the LSM write path is not enabled — that is, when the server sends an absent
@@ -160,13 +160,13 @@ public class LanceDbTableLsm {
    * one throws rather than decoding to something empty, because {@link #checkpointLsm} reads
    * convergence out of these numbers and cannot tell a defaulted array from a drained one.
    *
-   * @param includeGenerationRows Also count rows per L0 generation. Off by default because each
+   * @param includeSstableRows Also count rows per SSTable. Off by default because each
    *     count opens an uncached Lance dataset.
    * @throws IllegalStateException if the response is absent or does not decode.
    */
-  public Optional<LsmStats> getLsmStats(boolean includeGenerationRows) {
+  public Optional<LsmStats> getLsmStats(boolean includeSstableRows) {
     Map<String, Object> body = new LinkedHashMap<String, Object>();
-    body.put("include_generation_rows", includeGenerationRows);
+    body.put("include_sstable_rows", includeSstableRows);
     JsonNode response = client.post(route("get_lsm_stats"), body);
     if (response == null) {
       throw new IllegalStateException("get_lsm_stats returned an empty response body");
@@ -186,8 +186,8 @@ public class LanceDbTableLsm {
   /**
    * Converge this table's LSM write path into its base table.
    *
-   * <p>Seals once, fixes a target watermark from the resulting L0, then triggers compaction and
-   * polls until that L0 is gone. The target set is fixed at the start, so generations created
+   * <p>Freezes once, fixes a target watermark from the resulting SSTables, then triggers compaction and
+   * polls until those SSTables are gone. The target set is fixed at the start, so sstables created
    * <em>during</em> the checkpoint are ignored — that is what lets it terminate under write load,
    * and what makes it best-effort: it converges the fresh tier as of some instant. Idempotent,
    * abandonable at any point, safe on a cadence.
@@ -204,7 +204,7 @@ public class LanceDbTableLsm {
     for (int reissue = 0; reissue <= MAX_REISSUES; reissue++) {
       // The seal turns everything written before this call into a generation, so the
       // watermark has to be read after it. Idempotent: sealing an empty memtable is a
-      // no-op, so a re-issue does not churn empty generations.
+      // no-op, so a re-issue does not churn empty sstables.
       if (issueVoid(this::flushLsm)) {
         backoff(reissue);
         continue;
@@ -220,7 +220,7 @@ public class LanceDbTableLsm {
         return;
       }
 
-      Map<String, Long> targets = newestGenerations(stats.value.get());
+      Map<String, Long> targets = newestSstableGenerations(stats.value.get());
       if (targets.isEmpty()) {
         return;
       }
@@ -236,7 +236,7 @@ public class LanceDbTableLsm {
   }
 
   /**
-   * Trigger and poll until no bucket holds a generation at or below its target.
+   * Trigger and poll until no tableShard holds a generation at or below its target.
    *
    * @return true when the drain finished, false when the table needs re-claiming from flush.
    */
@@ -250,21 +250,21 @@ public class LanceDbTableLsm {
         return true;
       }
 
-      // `compacting` is the bucket's compaction latch, held from dispatch until the pass
+      // `compacting` is the tableShard's compaction latch, held from dispatch until the pass
       // ends — including while it waits on a pod-wide permit. So it answers one question
       // only: do not pile on. Buckets with nothing outstanding are skipped, not counted
       // as idle.
       long outstanding = 0;
       boolean allCompacting = true;
-      for (BucketStats bucket : stats.value.get().buckets()) {
-        Long target = targets.get(bucket.shardId());
+      for (TableShardStats tableShard : stats.value.get().tableShards()) {
+        Long target = targets.get(tableShard.shardId());
         if (target == null) {
           continue;
         }
-        long remaining = bucket.outstandingGenerations(target);
+        long remaining = tableShard.outstandingSstables(target);
         if (remaining > 0) {
           outstanding += remaining;
-          allCompacting &= bucket.compacting();
+          allCompacting &= tableShard.compacting();
         }
       }
       if (outstanding == 0) {
@@ -281,7 +281,7 @@ public class LanceDbTableLsm {
           if (!isRetryable(e)) {
             throw e;
           }
-          // A 429 here means the server could latch no bucket at all, which the poll
+          // A 429 here means the server could latch no tableShard at all, which the poll
           // above already handles. Not retried in place: the latch it would contend for
           // is the one doing the work, so fall through and re-read — POLL_INTERVAL_MS is
           // the backoff.
@@ -291,13 +291,13 @@ public class LanceDbTableLsm {
     }
   }
 
-  /** The newest generation held by each bucket, skipping buckets holding none. */
-  private static Map<String, Long> newestGenerations(LsmStats stats) {
+  /** The newest generation held by each tableShard, skipping tableShards holding none. */
+  private static Map<String, Long> newestSstableGenerations(LsmStats stats) {
     Map<String, Long> targets = new HashMap<String, Long>();
-    for (BucketStats bucket : stats.buckets()) {
-      OptionalLong newest = bucket.newestGeneration();
+    for (TableShardStats tableShard : stats.tableShards()) {
+      OptionalLong newest = tableShard.newestSstableGeneration();
       if (newest.isPresent()) {
-        targets.put(bucket.shardId(), newest.getAsLong());
+        targets.put(tableShard.shardId(), newest.getAsLong());
       }
     }
     return targets;

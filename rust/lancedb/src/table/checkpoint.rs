@@ -4,7 +4,7 @@
 //! Converging a table's LSM write path into its base table.
 //!
 //! `checkpoint_lsm` seals once, then triggers compaction and watches
-//! generation numbers until the L0 that existed at the start is gone.
+//! generation numbers until the SSTables that existed at the start are gone.
 //!
 //! The loop runs in the client, not the server: `compact_lsm` dispatches a
 //! pass and returns, so nothing holds a socket and a client can vanish
@@ -150,7 +150,7 @@ where
 }
 
 /// Drive [`Table::checkpoint_lsm`]: seal once, fix the target watermark
-/// from the resulting L0, then trigger and poll until it drains.
+/// from the resulting SSTables, then trigger and poll until they drain.
 pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
     for reissue in 0..=MAX_REISSUES {
         // The seal turns everything written before this call into a
@@ -177,9 +177,9 @@ pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
             return Ok(());
         };
         let targets: HashMap<String, u64> = stats
-            .buckets
+            .table_shards
             .iter()
-            .filter_map(|b| Some((b.shard_id.clone(), b.newest_generation()?)))
+            .filter_map(|b| Some((b.shard_id.clone(), b.newest_sstable_generation()?)))
             .collect();
         if targets.is_empty() {
             return Ok(());
@@ -226,11 +226,11 @@ async fn drain_to_targets(
         // with nothing outstanding are skipped, not counted as idle.
         let mut outstanding = 0;
         let mut all_compacting = true;
-        for b in &stats.buckets {
+        for b in &stats.table_shards {
             let Some(target) = targets.get(&b.shard_id) else {
                 continue;
             };
-            let n = b.outstanding_generations(*target);
+            let n = b.outstanding_sstables(*target);
             if n > 0 {
                 outstanding += n;
                 all_compacting &= b.compacting;

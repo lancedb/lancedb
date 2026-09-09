@@ -902,7 +902,7 @@ pub struct QueryRequest {
     /// [`crate::Table::set_lsm_write_spec`]) is routed through the LSM scanner so
     /// it also sees data written via the `merge_insert` LSM path that has not yet
     /// been compacted into the base table — the active and frozen in-memory
-    /// memtables and the flushed (L0) generations, deduplicated by primary key
+    /// memtables and the SSTables, deduplicated by primary key
     /// against the base table (newest generation wins); a table without a spec
     /// reads the base table.
     ///

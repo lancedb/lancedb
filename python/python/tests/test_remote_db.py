@@ -1311,9 +1311,9 @@ def test_get_lsm_stats_sync():
     with lsm_test_table(lsm_handler) as table:
         assert table.get_lsm_stats() == {"buckets": [bucket]}
         # Off by default, and forwarded when asked for.
-        assert seen_bodies == [{"include_generation_rows": False}]
-        table.get_lsm_stats(include_generation_rows=True)
-        assert seen_bodies[-1] == {"include_generation_rows": True}
+        assert seen_bodies == [{"include_sstable_rows": False}]
+        table.get_lsm_stats(include_sstable_rows=True)
+        assert seen_bodies[-1] == {"include_sstable_rows": True}
 
 
 def test_get_lsm_stats_sync_returns_none_when_lsm_disabled():
@@ -1342,7 +1342,7 @@ def test_flush_and_compact_lsm_sync():
 
 
 def test_checkpoint_lsm_sync():
-    """Seal, read the watermark, and return once L0 holds nothing.
+    """Freeze, read the watermark, and return once no SSTables remain.
 
     The convergence loop itself is covered in Rust; this pins the sync
     binding to the endpoints it drives.
@@ -1352,7 +1352,7 @@ def test_checkpoint_lsm_sync():
     def lsm_handler(request, route):
         called.append(route)
         if route == "get_lsm_stats":
-            # An empty L0 yields no target watermark, so the loop is done
+            # An empty SSTable tier yields no target watermark, so the loop is done
             # after the seal without ever polling compaction.
             send_json(request, {"lsm_stats": {"buckets": []}})
         else:

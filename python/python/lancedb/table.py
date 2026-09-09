@@ -4377,11 +4377,11 @@ class LanceTable(Table):
         [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
         return LOOP.run(self._table.compact_lsm())
 
-    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+    def get_lsm_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
         [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
         return LOOP.run(
-            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+            self._table.get_lsm_stats(include_sstable_rows=include_sstable_rows)
         )
 
     def close_lsm_writers(self) -> None:
@@ -5104,16 +5104,16 @@ class AsyncTable:
     async def checkpoint_lsm(self) -> None:
         """Converge this table's LSM write path into its base table.
 
-        One flush, sealing every memtable into L0, then compaction triggers
+        One flush, freezing every memtable into an SSTable, then compaction triggers
         until every generation that existed at that moment has reached base.
         The loop runs client-side, reading progress from ``get_lsm_stats``.
 
-        Best-effort: generations created *while* it runs are deliberately not
+        Best-effort: SSTables created *while* it runs are deliberately not
         waited on, which is what lets it terminate on a table taking writes.
         Idempotent and safe on a cadence.
 
         There is no deadline, and the caller owns that. It returns when the
-        target generations are gone, raises on a terminal server fault, and
+        target SSTables are gone, raises on a terminal server fault, and
         otherwise waits however long the server takes. A slow table and a
         stuck one are the same picture from the client: the compactor pool is
         shared across every table on the node, so a checkpoint queued behind
@@ -5124,25 +5124,25 @@ class AsyncTable:
         await self._inner.checkpoint_lsm()
 
     async def flush_lsm(self) -> None:
-        """Seal every bucket's active memtable into L0.
+        """Freeze every table shard's active memtable into an SSTable.
 
-        Does not touch the base table — moving L0 into base is
+        Does not touch the base table — compacting SSTables into base is
         `compact_lsm`. On a node that has not claimed this table, this claims
         it and replays its WAL log first.
         """
         await self._inner.flush_lsm()
 
     async def compact_lsm(self) -> None:
-        """Trigger a background L0 to base compaction pass per bucket.
+        """Trigger a background SSTable compaction pass per table shard.
 
         Returns once the passes are dispatched, not once they finish: watch
         ``get_lsm_stats`` for progress, or use ``checkpoint_lsm`` to loop
-        until the current L0 has reached base.
+        until the current SSTables have reached base.
         """
         await self._inner.compact_lsm()
 
     async def get_lsm_stats(
-        self, *, include_generation_rows: bool = False
+        self, *, include_sstable_rows: bool = False
     ) -> Optional[dict]:
         """Read live per-bucket LSM state.
 
@@ -5155,12 +5155,12 @@ class AsyncTable:
 
         Parameters
         ----------
-        include_generation_rows
-            Report a row count per L0 generation. Off by default: each count
+        include_sstable_rows
+            Report a row count per SSTable. Off by default: each count
             opens an uncached Lance dataset, and ``checkpoint_lsm`` polls this
             needing only generation numbers.
         """
-        return await self._inner.get_lsm_stats(include_generation_rows)
+        return await self._inner.get_lsm_stats(include_sstable_rows)
 
     async def close_lsm_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.
