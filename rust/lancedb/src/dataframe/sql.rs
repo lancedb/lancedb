@@ -208,7 +208,15 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
                             if projection_establishes_scope(projection)
                     ) =>
             {
-                sort.input = isolate_plan(sort.input, "__lancedb_sort_input")?;
+                sort.input = if matches!(
+                    sort.input.as_ref(),
+                    LogicalPlan::Projection(projection)
+                        if projection_establishes_scope(projection)
+                ) {
+                    alias_plan(sort.input, "__lancedb_sort_input")?
+                } else {
+                    isolate_plan(sort.input, "__lancedb_sort_input")?
+                };
                 Ok(Transformed::yes(LogicalPlan::Sort(sort)))
             }
             LogicalPlan::Limit(mut limit)
@@ -447,6 +455,34 @@ fn isolate_plan(
     input: Arc<LogicalPlan>,
     fallback_alias: &str,
 ) -> datafusion_common::Result<Arc<LogicalPlan>> {
+    let qualifier = isolation_qualifier(&input, fallback_alias)?;
+    let projection = input
+        .schema()
+        .iter()
+        .map(|(field_qualifier, field)| {
+            Expr::Column(Column::new(field_qualifier.cloned(), field.name()))
+        })
+        .collect::<Vec<_>>();
+    let plan = LogicalPlanBuilder::from(input)
+        .project(projection)?
+        .alias(qualifier)?
+        .build()?;
+    Ok(Arc::new(plan))
+}
+
+fn alias_plan(
+    input: Arc<LogicalPlan>,
+    fallback_alias: &str,
+) -> datafusion_common::Result<Arc<LogicalPlan>> {
+    let qualifier = isolation_qualifier(&input, fallback_alias)?;
+    let plan = LogicalPlanBuilder::from(input).alias(qualifier)?.build()?;
+    Ok(Arc::new(plan))
+}
+
+fn isolation_qualifier(
+    input: &LogicalPlan,
+    fallback_alias: &str,
+) -> datafusion_common::Result<TableReference> {
     let qualifier = input
         .schema()
         .iter()
@@ -462,17 +498,5 @@ fn isolate_plan(
                 .to_string(),
         ));
     }
-
-    let projection = input
-        .schema()
-        .iter()
-        .map(|(field_qualifier, field)| {
-            Expr::Column(Column::new(field_qualifier.cloned(), field.name()))
-        })
-        .collect::<Vec<_>>();
-    let plan = LogicalPlanBuilder::from(input)
-        .project(projection)?
-        .alias(qualifier)?
-        .build()?;
-    Ok(Arc::new(plan))
+    Ok(qualifier)
 }
