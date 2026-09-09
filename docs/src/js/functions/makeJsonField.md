@@ -7,16 +7,18 @@
 # Function: makeJsonField()
 
 ```ts
-function makeJsonField(name: string, nullable?: boolean): Field
+function makeJsonField(name, nullable): Field
 ```
 
 Create an Arrow field backed by LanceDB's JSON extension type.
 
 ## Parameters
 
-* **name**: `string` — The field name.
+* **name**: `string`
+    The field name.
 
-* **nullable?**: `boolean` — Whether the field accepts null values. **Default** `true`
+* **nullable**: `boolean` = `true`
+    Whether the field accepts null values.
 
 ## Returns
 
