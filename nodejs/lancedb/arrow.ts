@@ -600,7 +600,7 @@ function makeVector(
   }
   if (values.length === 0) {
     throw Error(
-      "makeVector requires at least one value or the type must be specfied",
+      "makeVector requires at least one value or the type must be specified",
     );
   }
   const sampleValue = values.find((val) => val !== null && val !== undefined);
@@ -858,7 +858,7 @@ async function applyEmbeddings<T>(
  * customized by the `embeddingDataType` property of the embedding function.
  *
  * If a schema is provided in `makeTableOptions` then it should include the
- * embedding columns.  If no schema is provded then embedding columns will
+ * embedding columns.  If no schema is provided then embedding columns will
  * be placed at the end of the table, after all of the input columns.
  */
 export async function convertToTable(

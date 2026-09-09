@@ -906,7 +906,7 @@ fn unsharded_shard_id() -> Uuid {
 
 /// Build a [`ShardWriterConfig`] from the persisted `writer_config_defaults`.
 ///
-/// Unknown or unparseable keys are ignored; absent keys keep the
+/// Unknown or unparsable keys are ignored; absent keys keep the
 /// [`ShardWriterConfig`] default. The shard id is set by `mem_wal_writer`.
 fn shard_writer_config_from_defaults(defaults: &HashMap<String, String>) -> ShardWriterConfig {
     let mut config = ShardWriterConfig::default().with_shard_spec_id(SHARDING_SPEC_ID);
