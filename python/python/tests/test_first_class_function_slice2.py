@@ -281,11 +281,30 @@ def test_a_credential_value_is_rejected_in_the_binding_position():
         ("openai-prod", "not-a-var", "invalid environment variable name"),
         ("openai-prod", "API-TOKEN", "invalid environment variable name"),
         ("not a name", "API_TOKEN", "invalid Secret name"),
+        ("openai$prod", "API_TOKEN", "invalid Secret name"),
     ],
 )
 def test_a_binding_validates_both_names_locally(secret, variable, message):
     with pytest.raises(ValueError, match=message):
         EnvVarSecret(secret=secret, env_variable=variable)
+
+
+def test_a_secret_name_admits_what_a_namespace_name_does():
+    """A Secret has to be nameable wherever a namespace already is.
+
+    LanceDB namespace and table names are `[A-Za-z0-9_.-]` with no rule about
+    which character comes first, so a name may lead with `_`, `-` or `.`.
+    Anything narrower here would leave Secrets unaddressable inside namespaces
+    that already exist -- the reason periods are admitted is the reason the
+    edges are too.
+    """
+    for name in ["openai.prod.v1", ".hidden", "_internal", "-lead", "trailing."]:
+        binding = EnvVarSecret(secret=name, env_variable="OPENAI_API_KEY")
+        assert binding.secret == name
+
+    for name in ["", "with/slash", "with$delimiter", "a" * 256]:
+        with pytest.raises(ValueError, match="invalid Secret name"):
+            EnvVarSecret(secret=name, env_variable="OPENAI_API_KEY")
 
 
 def _main_udf_source(
