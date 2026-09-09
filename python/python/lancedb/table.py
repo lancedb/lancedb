@@ -5638,7 +5638,7 @@ class AsyncTable:
         if fill_value is None:
             fill_value = 0.0
 
-        # _santitize_data is an old code path, but we will use it until the
+        # _sanitize_data is an old code path, but we will use it until the
         # new code path is ready.
         if mode == "overwrite":
             # For overwrite, apply the same preprocessing as create_table

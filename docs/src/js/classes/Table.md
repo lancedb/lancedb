@@ -1266,7 +1266,7 @@ value is 0")
 Note: if your condition is something like "some_id_column == 7" and
 you are updating many rows (with different ids) then you will get
 better performance with a single [`merge_insert`] call instead of
-repeatedly calilng this method.
+repeatedly calling this method.
 
 ##### Parameters
 

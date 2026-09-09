@@ -26,7 +26,7 @@ export interface IvfPqOptions {
    * This value controls how much the vector is compressed during the quantization step.
    * The more sub vectors there are the less the vector is compressed.  The default is
    * the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-   * by 16 we use the dimension divded by 8.
+   * by 16 we use the dimension divided by 8.
    *
    * The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
    * us to use efficient SIMD instructions.
@@ -228,7 +228,7 @@ export interface HnswPqOptions {
    * This value controls how much the vector is compressed during the quantization step.
    * The more sub vectors there are the less the vector is compressed.  The default is
    * the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-   * by 16 we use the dimension divded by 8.
+   * by 16 we use the dimension divided by 8.
    *
    * The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
    * us to use efficient SIMD instructions.
@@ -825,7 +825,7 @@ export interface IndexOptions {
   /**
    * Advanced index configuration
    *
-   * This option allows you to specify a specfic index to create and also
+   * This option allows you to specify a specific index to create and also
    * allows you to pass in configuration for training the index.
    *
    * See the static methods on Index for details on the various index types.
