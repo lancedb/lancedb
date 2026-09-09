@@ -59,7 +59,7 @@
       },
       "source": false
     },
-    "secret_bindings": {"HF_TOKEN": "hf-prod"}
+    "secret_env_bindings": {"HF_TOKEN": "hf-prod"}
   },
   "future_job": {
     "trace_id": "trace-1"
