@@ -586,10 +586,15 @@ impl Connection {
     /// Registration is remote-only and always asynchronous. Waiting on the
     /// returned typed job yields the durable [`crate::function::FunctionVersion`].
     /// Local databases return [`Error::NotSupported`].
+    ///
+    /// The request's binding shape is validated here rather than in any one
+    /// language binding, so every client surface rejects the same envelopes
+    /// before one reaches the wire.
     pub async fn create_function_async(
         &self,
         request: crate::function::FunctionRegistrationRequest,
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
+        request.validate()?;
         self.internal.create_function_async(request).await
     }
 

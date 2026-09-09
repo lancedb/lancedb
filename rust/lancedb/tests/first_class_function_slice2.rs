@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use lancedb::Error;
-use lancedb::function::FunctionRegistrationRequest;
+use lancedb::function::{FunctionRegistrationRequest, MAX_FUNCTION_SECRET_ENV_BINDINGS};
 use serde_json::Value;
 
 fn fixture(name: &str) -> String {
@@ -44,8 +44,8 @@ fn registration_request_matches_shared_canonical_golden() {
     assert_eq!(request.name, "normalize_score");
     assert_eq!(request.artifact.adapter.kind, "scalar_to_arrow_batch");
     // The unchanged path: a Function that binds nothing serializes today's
-    // bytes, with no `secret_bindings` key at all.
-    assert!(request.secret_bindings.is_empty());
+    // bytes, with no `secret_env_bindings` key at all.
+    assert!(request.secret_env_bindings.is_empty());
     assert_eq!(
         request.to_canonical_json().expect("canonical request"),
         fixture("remote_function_registration_request.canonical.json").trim()
@@ -67,7 +67,7 @@ fn secret_bound_registration_request_matches_shared_canonical_golden() {
     .expect("registration request");
     assert_eq!(request.name, "analyze_caption");
     assert_eq!(
-        request.secret_bindings,
+        request.secret_env_bindings,
         std::collections::BTreeMap::from([(
             "OPENAI_API_KEY".to_string(),
             "openai-prod".to_string()
@@ -112,4 +112,29 @@ async fn local_function_catalog_operations_return_stable_not_supported() {
                 if message == "Function catalog operations are not supported by this database"
         ));
     }
+}
+
+/// The cap is enforced above the backend, so every database and every language
+/// surface rejects the same envelope. A local connection would otherwise answer
+/// `NotSupported` first, which is what makes it the honest probe here.
+#[tokio::test]
+async fn a_function_binds_at_most_sixteen_secrets() {
+    let directory = tempfile::tempdir().unwrap();
+    let connection = lancedb::connect(directory.path().to_str().unwrap())
+        .execute()
+        .await
+        .unwrap();
+    let mut request = FunctionRegistrationRequest::from_json(&fixture(
+        "remote_function_registration_request.json",
+    ))
+    .unwrap();
+    request.secret_env_bindings = (0..=MAX_FUNCTION_SECRET_ENV_BINDINGS)
+        .map(|index| (format!("TOKEN_{index}"), format!("secret-{index}")))
+        .collect();
+
+    let error = connection.create_function_async(request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidInput { message } if message.contains("at most 16 secrets")
+    ));
 }

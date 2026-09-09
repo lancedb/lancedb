@@ -50,7 +50,7 @@ fn function_version_job_result_matches_shared_canonical_golden() {
     assert_eq!(version.version(), "fv_01K3EXACT");
     assert_eq!(version.runtime_digest(), "sha256:runtime");
     assert_eq!(
-        version.secret_bindings(),
+        version.secret_env_bindings(),
         &BTreeMap::from([("HF_TOKEN".to_string(), "hf-prod".to_string())])
     );
     assert_eq!(
@@ -180,7 +180,7 @@ fn canonical_client_values_carry_bindings_and_no_credentials() {
     .expect("canonical JSON");
 
     assert_eq!(
-        canonical["secret_bindings"],
+        canonical["secret_env_bindings"],
         serde_json::json!({"HF_TOKEN": "hf-prod"})
     );
     assert_no_secret_values(&canonical);
@@ -193,14 +193,14 @@ fn a_version_without_bindings_keeps_the_original_wire_shape() {
     result
         .as_object_mut()
         .expect("Function version object")
-        .remove("secret_bindings");
+        .remove("secret_env_bindings");
     let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
 
-    assert!(version.secret_bindings().is_empty());
+    assert!(version.secret_env_bindings().is_empty());
     assert!(
         !version
             .to_canonical_json()
             .expect("canonical FunctionVersion")
-            .contains("secret_bindings")
+            .contains("secret_env_bindings")
     );
 }

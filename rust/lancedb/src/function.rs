@@ -410,7 +410,7 @@ pub struct FunctionVersion {
     runtime_digest: String,
     environment_digest: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    secret_bindings: BTreeMap<String, String>,
+    secret_env_bindings: BTreeMap<String, String>,
     created_at: String,
 }
 
@@ -449,8 +449,8 @@ impl FunctionVersion {
     /// them are not, and resolve at execution. Rotating a bound Secret
     /// therefore changes what the same version runs with, and no value has a
     /// field in this model.
-    pub fn secret_bindings(&self) -> &BTreeMap<String, String> {
-        &self.secret_bindings
+    pub fn secret_env_bindings(&self) -> &BTreeMap<String, String> {
+        &self.secret_env_bindings
     }
 
     pub fn created_at(&self) -> &str {
@@ -493,10 +493,16 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
+/// A Function binds at most this many Secrets to environment variables.
+///
+/// Each bound Secret is one extra read on the launch path of every fragment, so
+/// the count needs a bound for the same reason a credential needs a size limit.
+pub const MAX_FUNCTION_SECRET_ENV_BINDINGS: usize = 16;
+
 /// Stable request envelope for remote immutable Function registration.
 ///
 /// Credential values deliberately have no field here. The only secret-shaped
-/// thing a client sends is `secret_bindings`: the name of a Secret the
+/// thing a client sends is `secret_env_bindings`: the name of a Secret the
 /// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
@@ -504,10 +510,30 @@ pub struct FunctionRegistrationRequest {
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
-    /// Declared environment variable name to the Secret it binds. Every bound
-    /// Secret must already exist; registration fails otherwise.
+    /// Declared environment variable name to the Secret it binds. A binding is
+    /// a reference: whether the Secret exists is answered when a column is
+    /// declared against this version, not here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub secret_bindings: BTreeMap<String, String>,
+    pub secret_env_bindings: BTreeMap<String, String>,
+}
+
+impl FunctionRegistrationRequest {
+    /// Reject a registration whose bindings exceed what a launch can deliver.
+    ///
+    /// Shape only, and deliberately not a check that each bound Secret exists:
+    /// that is the service's answer, and it is asked for the first time when a
+    /// column is declared against the registered version.
+    pub fn validate(&self) -> Result<()> {
+        if self.secret_env_bindings.len() > MAX_FUNCTION_SECRET_ENV_BINDINGS {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "a Function binds at most {MAX_FUNCTION_SECRET_ENV_BINDINGS} secrets, not {}",
+                    self.secret_env_bindings.len()
+                ),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl_json!(FunctionRegistrationRequest);
