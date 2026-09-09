@@ -45,7 +45,11 @@ async fn local_function_catalog_operations_return_stable_not_supported() {
         .get_function("normalize_score", "fv_exact")
         .await
         .unwrap_err();
-    for error in [create_error, lookup_error] {
+    let drop_error = connection
+        .drop_function("normalize_score", "fv_exact")
+        .await
+        .unwrap_err();
+    for error in [create_error, lookup_error, drop_error] {
         assert!(matches!(
             error,
             Error::NotSupported { message }

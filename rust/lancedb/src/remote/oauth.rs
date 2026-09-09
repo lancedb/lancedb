@@ -466,7 +466,9 @@ impl TokenSource for AzureImdsSource {
 /// OAuth header provider that manages the full token lifecycle.
 ///
 /// Implements [`HeaderProvider`] to inject `Authorization: Bearer <token>`
-/// headers into every LanceDB request, with automatic token refresh.
+/// headers into every LanceDB request, with automatic token refresh. It also
+/// identifies the bearer credential as OIDC so LanceDB's SQL service selects
+/// OIDC validation instead of API-key validation.
 pub struct OAuthHeaderProvider {
     token_source: Box<dyn TokenSource>,
     token_state: Arc<RwLock<TokenState>>,
@@ -554,10 +556,10 @@ impl OAuthHeaderProvider {
 impl HeaderProvider for OAuthHeaderProvider {
     async fn get_headers(&self) -> Result<HashMap<String, String>> {
         let token = self.get_valid_token().await?;
-        Ok(HashMap::from([(
-            "authorization".to_string(),
-            format!("Bearer {token}"),
-        )]))
+        Ok(HashMap::from([
+            ("authorization".to_string(), format!("Bearer {token}")),
+            ("x-lancedb-credential-type".to_string(), "oidc".to_string()),
+        ]))
     }
 }
 

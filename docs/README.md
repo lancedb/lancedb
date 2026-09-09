@@ -47,22 +47,24 @@ pytest -vv python/tests/docs
 
 ### Checking typescript examples
 
-The `@lancedb/lancedb` package must be built before running the tests:
+The examples depend on `@lancedb/lancedb` at `file:../dist`, so the package must be
+built before running the tests. This uses pnpm; see the
+[Typescript contributing guide](../nodejs/CONTRIBUTING.md) for the toolchain setup.
 
 ```shell
 pushd nodejs
-npm ci
-npm run build
+pnpm install
+pnpm build
 popd
 ```
 
-Then you can run the examples by going to the `nodejs/examples` directory and
-running the tests like a normal npm package:
+Then you can run the examples by going to the `nodejs/examples` directory, which is a
+separate pnpm package with its own lockfile:
 
 ```shell
 pushd nodejs/examples
-npm ci
-npm test
+pnpm install
+pnpm test
 popd
 ```
 
@@ -84,6 +86,7 @@ The new files should be checked into the repository.
 
 ```shell
 pushd nodejs
-npm run docs
+# `pnpm docs` would invoke pnpm's built-in `docs` command, not the script.
+pnpm run docs
 popd
 ```

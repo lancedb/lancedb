@@ -3,6 +3,7 @@
 
 //! Namespace-based database implementation that delegates table management to lance-namespace
 
+use lance_datafusion::utils::StreamingWriteSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -23,7 +24,7 @@ use lance_namespace_impls::ConnectBuilder;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
-use crate::blob::{ensure_blob_storage_version, has_blob_columns};
+use crate::blob::ensure_blob_storage_version;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
 use crate::database::listing::{NewTableConfig, take_request_creation_overrides};
@@ -217,7 +218,6 @@ impl LanceNamespaceDatabase {
         if let Some(enable_stable_row_ids) = overrides
             .enable_stable_row_ids
             .or(self.new_table_config.enable_stable_row_ids)
-            .or(has_blob_columns(data_schema.as_ref()).then_some(true))
         {
             params.enable_stable_row_ids = enable_stable_row_ids;
         }
@@ -305,6 +305,10 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Refuse a bad declaration before the namespace records a table.
+        crate::table::computed_columns::ensure_declarations_are_planned(
+            &request.data.arrow_schema(),
+        )?;
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
         let mut existing_table = None;
@@ -539,9 +543,7 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .drop_table(drop_request)
             .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to drop table: {}", e),
-            })?;
+            .map_err(|e| map_namespace_lance_error(e, name))?;
 
         Ok(())
     }
@@ -1494,6 +1496,15 @@ mod tests {
             .await
             .expect("Failed to list tables");
         assert!(!table_names_after.contains(&"drop_test".to_string()));
+
+        let error = conn
+            .drop_table("drop_test", &["test_ns".into()])
+            .await
+            .expect_err("dropping a missing table should fail");
+        assert!(
+            matches!(error, Error::TableNotFound { ref name, .. } if name == "drop_test"),
+            "expected TableNotFound, got: {error:?}"
+        );
 
         // Verify: Cannot open dropped table
         let open_result = conn.open_table("drop_test").execute().await;

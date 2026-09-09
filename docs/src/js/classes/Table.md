@@ -676,9 +676,17 @@ List all the versions of the table
 abstract mergeInsert(on): MergeInsertBuilder
 ```
 
+Create a [MergeInsertBuilder](MergeInsertBuilder.md), which combines new data with the
+existing table in a single transaction — inserting, updating and deleting
+rows depending on how they match.
+
 #### Parameters
 
 * **on**: `string` \| `string`[]
+    The column, or columns, to match source rows against target
+    rows on. Typically a key or id column. Several columns match on the
+    composite key: a source row updates a target row only when it agrees on
+    every one of them.
 
 #### Returns
 

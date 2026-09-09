@@ -19,6 +19,7 @@ from typing import (
     Optional,
     Union,
 )
+from uuid import UUID
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -47,6 +48,9 @@ from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
 from .job import AsyncJob, Job, _typed_job
+from .sql import AsyncQuery as AsyncSqlQuery
+from .sql import Query as SqlQuery
+from .sql import QueryDescription
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
@@ -68,10 +72,11 @@ import deprecation
 
 if TYPE_CHECKING:
     import pyarrow as pa
+    from .arrow import AsyncRecordBatchReader
     from .pydantic import LanceModel
 
     from ._lancedb import Connection as LanceDbConnection
-    from ._lancedb import JobDescription, JobInfo
+    from ._lancedb import JobInfo
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from ._lancedb import Session
@@ -712,25 +717,50 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def job(self, job_id: str) -> Job:
-        """A [Job][lancedb.job.Job] handle for a server-side job by id.
+    def list_functions(self) -> List[FunctionVersion]:
+        """List every published immutable Function version.
 
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+        Results are ordered by Function name then version. Local connections
+        raise ``NotImplementedError``.
+
+        Examples
+        --------
+        List the identities available to use in Function-backed columns:
+
+        ```python
+        [(function.name, function.version) for function in db.list_functions()]
+        ```
         """
-        raise NotImplementedError("job is not supported for this connection type")
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
+
+    def drop_function(self, name: str, *, version: str) -> bool:
+        """Drop one exact immutable Function version from the remote catalog.
+
+        Returns True when the version changed to Dropped and False for an
+        idempotent replay. Local connections raise NotImplementedError.
+        """
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
+
+    def open_job(self, job_id: str) -> Job:
+        """Open a server-side job by id, returning a handle with its record
+        already populated.
+
+        The returned [Job][lancedb.job.Job] answers for its own state,
+        specification, result, failure and event history, so there is no
+        separate connection-level call for any of them.
+
+        Raises `JobNotFoundError` when the server has no such job, the way
+        `open_table` does for a missing table.
+        """
+        raise NotImplementedError("open_job is not supported for this connection type")
 
     def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
         raise NotImplementedError("list_jobs is not supported for this connection type")
-
-    def get_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Returns None when the server has no such job.
-        """
-        raise NotImplementedError("get_job is not supported for this connection type")
 
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -743,14 +773,38 @@ class DBConnection(EnforceOverrides):
             "cancel_job is not supported for this connection type"
         )
 
-    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute SQL and return a blocking Arrow reader.
 
-        Lists history across all jobs when `job_id` is None.
+        This submits through :meth:`execute_query_async` and waits until the
+        initial result stream is readable. It does not wait for the full query
+        to finish.
         """
-        raise NotImplementedError(
-            "job_history is not supported for this connection type"
-        )
+        return self.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        ).reader()
+
+    def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> SqlQuery:
+        """Start executing SQL and return its query handle.
+
+        Local connections do not support SQL.
+        """
+        raise NotImplementedError("SQL is not supported for this connection type")
+
+    def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        raise NotImplementedError("SQL is not supported for this connection type")
 
 
 class LanceDBConnection(DBConnection):
@@ -844,6 +898,7 @@ class LanceDBConnection(DBConnection):
         async def do_connect():
             return await lancedb_connect(
                 sanitize_uri(uri),
+                None,
                 None,
                 None,
                 None,
@@ -1395,14 +1450,11 @@ class LanceDBConnection(DBConnection):
         )
 
     @override
-    def job(self, job_id: str) -> Job:
-        """A [Job][lancedb.job.Job] handle for a server-side job by id.
-
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+    def open_job(self, job_id: str) -> Job:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        return Job(self._conn.job(job_id))
+        return Job(LOOP.run(self._conn.open_job(job_id)))
 
     @override
     def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
@@ -1414,17 +1466,17 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.get_function(name, version=version))
 
     @override
+    def list_functions(self) -> List[FunctionVersion]:
+        return LOOP.run(self._conn.list_functions())
+
+    @override
+    def drop_function(self, name: str, *, version: str) -> bool:
+        return LOOP.run(self._conn.drop_function(name, version=version))
+
+    @override
     def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
         return LOOP.run(self._conn.list_jobs())
-
-    @override
-    def get_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Returns None when the server has no such job.
-        """
-        return LOOP.run(self._conn.get_job(job_id))
 
     @override
     def cancel_job(self, job_id: str) -> bool:
@@ -1435,14 +1487,6 @@ class LanceDBConnection(DBConnection):
         success.
         """
         return LOOP.run(self._conn.cancel_job(job_id))
-
-    @override
-    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
-
-        Lists history across all jobs when `job_id` is None.
-        """
-        return LOOP.run(self._conn.job_history(job_id))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -2214,15 +2258,11 @@ class AsyncConnection(object):
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
 
-    def job(self, job_id: str) -> AsyncJob:
-        """An [AsyncJob][lancedb.job.AsyncJob] handle for a server-side job
-        by id.
-
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+    async def open_job(self, job_id: str) -> AsyncJob:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        return AsyncJob(self._inner.job(job_id))
+        return AsyncJob(await self._inner.open_job(job_id))
 
     async def create_function_async(
         self, definition: UdfDefinition
@@ -2243,16 +2283,24 @@ class AsyncConnection(object):
         """Open one exact immutable Function version from the remote catalog."""
         return FunctionVersion.from_json(await self._inner.get_function(name, version))
 
+    async def list_functions(self) -> List[FunctionVersion]:
+        """List every published immutable Function version.
+
+        Results are ordered by Function name then version. Local connections
+        raise ``NotImplementedError``.
+        """
+        return [
+            FunctionVersion.from_json(value)
+            for value in await self._inner.list_functions()
+        ]
+
+    async def drop_function(self, name: str, *, version: str) -> bool:
+        """Drop one exact immutable Function version from the remote catalog."""
+        return await self._inner.drop_function(name, version)
+
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
         return await self._inner.list_jobs()
-
-    async def get_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Returns None when the server has no such job.
-        """
-        return await self._inner.get_job(job_id)
 
     async def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -2263,12 +2311,46 @@ class AsyncConnection(object):
         """
         return await self._inner.cancel_job(job_id)
 
-    async def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    async def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute SQL and return an asynchronous Arrow reader.
 
-        Lists history across all jobs when `job_id` is None.
+        This submits through :meth:`execute_query_async` and waits until the
+        initial result stream is readable. It does not wait for the full query
+        to finish.
         """
-        return await self._inner.job_history(job_id)
+        submitted = await self.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        )
+        return await submitted.reader()
+
+    async def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncSqlQuery:
+        """Start executing SQL and return its query handle.
+
+        The database from ``connect_async`` is used for unqualified database
+        references. The namespace defaults to ``["public"]``. Local
+        connections raise ``NotImplementedError``.
+        """
+        return AsyncSqlQuery(
+            await self._inner.execute_query_async(
+                query,
+                default_namespace_path=default_namespace_path,
+            )
+        )
+
+    async def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

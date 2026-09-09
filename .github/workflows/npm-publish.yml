@@ -168,8 +168,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v6
         with:
-          # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
-          # in October.
+          # pnpm 11 requires Node >= 22.13.
           node-version: 24
           cache: pnpm
           cache-dependency-path: nodejs/pnpm-lock.yaml
@@ -251,7 +250,7 @@ jobs:
           run: |
             set -e
             ${{ matrix.settings.pre_build }}
-            npx napi build --platform --release \
+            node_modules/.bin/napi build --platform --release \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
@@ -271,7 +270,7 @@ jobs:
       - name: Build
         run: |
           ${{ matrix.settings.pre_build }}
-          npx napi build --platform --release \
+          node_modules/.bin/napi build --platform --release \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
@@ -339,7 +338,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-2404-8x-arm64
         node:
-          - '20'
+          - '22'
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -385,9 +384,9 @@ jobs:
       - name: Move built files
         run: cp dist/native.d.ts dist/native.js dist/*.node lancedb/
       - name: Test bindings
-        # Invoke jest directly because pnpm 11 itself requires Node 22+
-        # while the matrix tests on older Node versions.
-        run: npx jest --verbose
+        # Invoke the installed jest binary directly; the pnpm shim is set up
+        # against the install-phase Node, not the version selected above.
+        run: node_modules/.bin/jest --verbose
   publish:
     name: Publish
     runs-on: ubuntu-latest

@@ -442,13 +442,15 @@ impl Connection {
         self.get_inner()?.drop_all_tables(&ns).await.default_error()
     }
 
-    /// A `Job` handle for a server-side job by id.
+    /// Open a server-side job by id, returning a handle with its record
+    /// already populated. Rejects when the server has no such job.
     ///
-    /// The handle is constructed without a server round trip; an unknown id
-    /// surfaces when the handle is used.
-    #[napi]
-    pub fn job(&self, job_id: String) -> napi::Result<crate::job::Job> {
-        let job = self.get_inner()?.job(job_id).default_error()?;
+    /// The returned handle answers for its own state, specification, result,
+    /// failure and event history, so there is no separate connection-level
+    /// call for any of them.
+    #[napi(catch_unwind)]
+    pub async fn open_job(&self, job_id: String) -> napi::Result<crate::job::Job> {
+        let job = self.get_inner()?.open_job(&job_id).await.default_error()?;
         Ok(crate::job::Job::new(job))
     }
 
@@ -459,50 +461,11 @@ impl Connection {
         Ok(jobs.into_iter().map(Into::into).collect())
     }
 
-    /// Describe a single server-side job by id. `null` when the server has
-    /// no such job.
-    #[napi(catch_unwind)]
-    pub async fn get_job(
-        &self,
-        job_id: String,
-    ) -> napi::Result<Option<crate::job::JobDescription>> {
-        let description = self.get_inner()?.get_job(&job_id).await.default_error()?;
-        Ok(description.map(Into::into))
-    }
-
     /// Request cancellation of a server-side job by id. Returns true if the
     /// server accepted the cancellation, false if no such job exists.
     #[napi(catch_unwind)]
     pub async fn cancel_job(&self, job_id: String) -> napi::Result<bool> {
         self.get_inner()?.cancel_job(&job_id).await.default_error()
-    }
-
-    /// The lifecycle event history of a server-side job (all jobs when
-    /// `job_id` is null), as an Arrow IPC stream buffer. Empty when there is
-    /// no history.
-    #[napi(catch_unwind)]
-    pub async fn job_history(&self, job_id: Option<String>) -> napi::Result<Buffer> {
-        let batches = self
-            .get_inner()?
-            .job_history(job_id.as_deref())
-            .await
-            .default_error()?;
-        let Some(first) = batches.first() else {
-            return Ok(Buffer::from(Vec::<u8>::new()));
-        };
-        let mut out = Vec::new();
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut out, &first.schema())
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        for batch in &batches {
-            writer
-                .write(batch)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        }
-        writer
-            .finish()
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        drop(writer);
-        Ok(Buffer::from(out))
     }
 
     #[napi(catch_unwind)]

@@ -64,15 +64,23 @@ async def _blob_v2_table_async(db: AsyncConnection, name: str):
     return table
 
 
+# Legacy v1 blob columns are only writable at file version <= 2.1.
+LEGACY_BLOB_STORAGE_OPTIONS = {"new_table_data_storage_version": "2.1"}
+
+
 def _blob_table(db: DBConnection, name: str, blob_schema: str):
     if blob_schema == "v1":
-        return db.create_table(name, data=_blob_test_data())
+        return db.create_table(
+            name, data=_blob_test_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return _blob_v2_table(db, name)
 
 
 async def _blob_table_async(db: AsyncConnection, name: str, blob_schema: str):
     if blob_schema == "v1":
-        return await db.create_table(name, data=_blob_test_data())
+        return await db.create_table(
+            name, data=_blob_test_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return await _blob_v2_table_async(db, name)
 
 
@@ -147,7 +155,11 @@ def test_table_to_pandas_invalid_blob_mode_non_blob_table(tmp_db: DBConnection):
 @pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
 def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
     pytest.importorskip("lance")
-    table = tmp_db.create_table(f"test_to_pandas_blob_{blob_mode}", _blob_test_data())
+    table = tmp_db.create_table(
+        f"test_to_pandas_blob_{blob_mode}",
+        _blob_test_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
 
     df = table.to_pandas(blob_mode=blob_mode)
 
@@ -2682,6 +2694,43 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_composite_key(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table(
+            {
+                "shard": ["a", "a", "b"],
+                "id": [1, 2, 1],
+                "val": ["x", "y", "z"],
+            }
+        ),
+    )
+
+    # ("a", 1) matches an existing row and updates it. ("b", 2) agrees with an
+    # existing row on each key column separately but on neither pair, so it is
+    # an insert.
+    new_data = pa.table({"shard": ["a", "b"], "id": [1, 2], "val": ["X", "W"]})
+    res = (
+        table.merge_insert(["shard", "id"])
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+    assert res.num_updated_rows == 1
+    assert res.num_inserted_rows == 1
+
+    expected = pa.table(
+        {
+            "shard": ["a", "a", "b", "b"],
+            "id": [1, 2, 1, 2],
+            "val": ["X", "y", "z", "W"],
+        }
+    )
+    assert table.to_arrow().sort_by([("shard", "ascending"), ("id", "ascending")]) == (
+        expected
+    )
+
+
 def test_merge_insert_nullable_pandas_into_pydantic_schema(mem_db: DBConnection):
     # Regression test for https://github.com/lancedb/lancedb/issues/2366
     pd = pytest.importorskip("pandas")
@@ -4034,7 +4083,7 @@ def test_stats(mem_db: DBConnection):
     print(f"{stats=}")
     assert stats == {
         # Full on-disk size of the data file, footer and metadata included.
-        "total_bytes": 633,
+        "total_bytes": 637,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {
@@ -4197,6 +4246,29 @@ def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
     table = db.create_table("computed_mixed", [{"x": 1}])
     with pytest.raises(ValueError):
         table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
+
+
+def test_computed_column_blob_projection_inherits_semantics(tmp_path):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_column_blob", schema=schema)
+    table.add(
+        [
+            {"id": 1, "image": b"hello"},
+            {"id": 2, "image": b""},
+            {"id": 3, "image": None},
+        ]
+    )
+
+    table.add_columns(computed={"image_copy": "image", "second_copy": "image_copy"})
+    assert table.refresh_column("image_copy").rows_filled == 2
+    assert table.refresh_column("second_copy").rows_filled == 2
+    assert table.blob_columns() == ["image", "image_copy", "second_copy"]
+
+    hits = table.search().with_row_id(True).limit(10).to_arrow()
+    rows = sorted(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+    copied = table.fetch_blobs("second_copy", [row_id for _, row_id in rows])
+    assert copied.to_pylist() == [b"hello", b"", None]
 
 
 @pytest.mark.asyncio

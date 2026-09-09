@@ -67,7 +67,15 @@ from ..query import (
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
 )
-from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
+from ..table import (
+    AsyncTable,
+    BlobMode,
+    Branches,
+    IndexStatistics,
+    Query,
+    Table,
+    Tags,
+)
 from ..types import BaseTokenizerType
 
 
@@ -540,6 +548,7 @@ class RemoteTable(Table):
         LOOP.run(
             self._table.create_index(
                 column,
+                replace=replace,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -711,7 +720,7 @@ class RemoteTable(Table):
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image

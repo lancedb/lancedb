@@ -38,7 +38,7 @@ Before committing changes, run formatting for every language you touched. At min
 * Rust changes: run `cargo fmt --all`.
 * Python changes: run `ruff format .` and `ruff check .` from the repository root,
   and run targeted tests through `cd python && uv run ...`.
-* TypeScript changes: run the relevant `npm`/`pnpm` lint, format, build, and docs commands in `nodejs`.
+* TypeScript changes: run the relevant `pnpm` lint, format, build, and docs commands in `nodejs`.
 
 Before creating a PR, the exact value passed to `gh pr create --title` must follow
 Conventional Commits, such as `fix: support nested field paths in native index creation`
@@ -101,12 +101,12 @@ Python bindings changes:
 TypeScript bindings changes:
 
 1. Add napi-rs method binding on `Table` in `nodejs/src/table.rs`.
-2. Run `npm run build` to generate TypeScript definitions.
+2. Run `pnpm build` to generate TypeScript definitions.
 3. Add typescript method on abstract class `Table` in `nodejs/src/table.ts`.
 4. Add concrete method on `LocalTable` class in `nodejs/src/native_table.ts`.
     * Note: despite the name, this class is also used for remote tables.
 5. Add test in `nodejs/__test__/table.test.ts`.
-6. Run `npm run docs` to generate TypeScript documentation.
+6. Run `pnpm run docs` to generate TypeScript documentation.
 
 ## Python API reference
 

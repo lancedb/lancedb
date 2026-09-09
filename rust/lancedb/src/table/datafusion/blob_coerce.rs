@@ -5,12 +5,17 @@
 //!
 //! [`super::cast::cast_to_table_schema`] calls [`coerce_blob_expr`].
 
+use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, FieldRef, Fields};
+use arrow_array::{Array, BooleanArray, RecordBatch};
+use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
+use arrow_select::nullif::nullif;
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::ScalarValue;
 use datafusion_common::config::ConfigOptions;
+use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::ScalarFunctionExpr;
 use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::PhysicalExpr;
@@ -133,14 +138,100 @@ pub(super) fn coerce_blob_expr(
         ns_args.push(value);
     }
 
-    let expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+    let built: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
         &format!("named_struct({})", table_field.name()),
         named_struct(),
         ns_args,
         table_field.clone(),
         config.clone(),
     ));
+
+    // `named_struct` always yields a valid struct, so a null input would land
+    // as a row that set neither `data` nor `uri` -- not an absent blob but a
+    // malformed one, which Lance rejects on write.
+    let expr: Arc<dyn PhysicalExpr> = Arc::new(AbsentBlobIsNull {
+        source: input_expr,
+        built,
+        field: table_field.clone(),
+    });
     Ok((expr, table_field.clone()))
+}
+
+/// Carries the source column's nullity onto the struct built for it.
+///
+/// This is its own expression rather than a `CASE` because the projection
+/// takes its output field from `return_field`, and the generic implementation
+/// rebuilds a bare field -- which would drop the `lance.blob.v2` extension
+/// metadata and stop the column being recognised as a blob at all.
+#[derive(Debug, Clone)]
+struct AbsentBlobIsNull {
+    source: Arc<dyn PhysicalExpr>,
+    built: Arc<dyn PhysicalExpr>,
+    field: FieldRef,
+}
+
+impl fmt::Display for AbsentBlobIsNull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "absent_blob_is_null({}, {})", self.source, self.built)
+    }
+}
+
+impl PartialEq for AbsentBlobIsNull {
+    fn eq(&self, other: &Self) -> bool {
+        self.source.eq(&other.source) && self.built.eq(&other.built) && self.field == other.field
+    }
+}
+
+impl Eq for AbsentBlobIsNull {}
+
+impl Hash for AbsentBlobIsNull {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.source.hash(state);
+        self.built.hash(state);
+        self.field.hash(state);
+    }
+}
+
+impl PhysicalExpr for AbsentBlobIsNull {
+    fn return_field(&self, _input_schema: &Schema) -> datafusion_common::Result<FieldRef> {
+        Ok(self.field.clone())
+    }
+
+    fn nullable(&self, _input_schema: &Schema) -> datafusion_common::Result<bool> {
+        Ok(true)
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+        let rows = batch.num_rows();
+        let built = self.built.evaluate(batch)?.into_array(rows)?;
+        let source = self.source.evaluate(batch)?.into_array(rows)?;
+        let Some(nulls) = source.logical_nulls() else {
+            return Ok(ColumnarValue::Array(built));
+        };
+        // `nullif` nulls the rows the mask marks true, which is where the
+        // source had no value.
+        let absent = BooleanArray::new(!nulls.inner(), None);
+        Ok(ColumnarValue::Array(nullif(built.as_ref(), &absent)?))
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.source, &self.built]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+        Ok(Arc::new(Self {
+            source: children[0].clone(),
+            built: children[1].clone(),
+            field: self.field.clone(),
+        }))
+    }
+
+    fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
 }
 
 enum BlobInputShape<'a> {
@@ -313,6 +404,11 @@ mod tests {
         let data = image.column_by_name("data").unwrap();
         assert!(!data.is_null(0));
         assert!(data.is_null(1));
+        // The row itself has to be null, not merely a struct whose children
+        // are. A present-but-empty struct set neither `data` nor `uri`, which
+        // Lance rejects as malformed rather than reading as an absent blob.
+        assert!(!image.is_null(0));
+        assert!(image.is_null(1));
     }
 
     #[tokio::test]

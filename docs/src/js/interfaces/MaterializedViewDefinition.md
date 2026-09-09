@@ -50,6 +50,16 @@ projections: [string, string][];
 
 ***
 
+### sourceNamespace
+
+```ts
+sourceNamespace: string[];
+```
+
+Namespace holding the source table; empty is the root namespace.
+
+***
+
 ### sourceTable
 
 ```ts
