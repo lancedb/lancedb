@@ -18,6 +18,7 @@ import {
   Query,
   Table,
   VectorQuery,
+  blob,
   connect,
   tokenize,
 } from "../lancedb";
@@ -2399,6 +2400,121 @@ describe("when dealing with versioning", () => {
       "checkout before running restore",
     );
   });
+});
+
+describe("when dealing with blob columns", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("discovers blob columns", async () => {
+    const { table } = await openBlobTable();
+    expect(await table.blobColumns()).toEqual(["image"]);
+  });
+
+  it("preserves order, duplicates, and nulls", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [alphaId, betaId, nullId] = rowIds;
+    const bytes = await table.fetchBlobs("image", [
+      betaId,
+      alphaId,
+      betaId,
+      nullId,
+    ]);
+    expect(bytes.map((b) => (b == null ? null : b.toString()))).toEqual([
+      "beta",
+      "alpha",
+      "beta",
+      null,
+    ]);
+    const files = await table.fetchBlobFiles("image", [
+      betaId,
+      nullId,
+      alphaId,
+    ]);
+    expect(files.map((f) => f == null)).toEqual([false, true, false]);
+  });
+
+  it("reads full blob contents", async () => {
+    const { table, rowIds, alpha, beta } = await openBlobTable();
+    const bytes = await table.fetchBlobs("image", rowIds);
+    expect(bytes[0]!.equals(alpha)).toBe(true);
+    expect(bytes[1]!.equals(beta)).toBe(true);
+    const files = await table.fetchBlobFiles("image", rowIds);
+    expect(files[0]!.size()).toBe(BigInt(alpha.length));
+    expect(Buffer.from(await files[0]!.read()).toString()).toBe("alpha");
+    expect(Buffer.from(await files[1]!.read()).toString()).toBe("beta");
+  });
+
+  it("reads a half-open range", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const files = await table.fetchBlobFiles("image", rowIds);
+    expect(Buffer.from(await files[0]!.readRange(0n, 2n)).toString()).toBe(
+      "al",
+    );
+  });
+
+  it("fails when readRange end is past the blob size", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const files = await table.fetchBlobFiles("image", rowIds);
+    await expect(
+      files[0]!.readRange(0n, BigInt(alpha.length + 1)),
+    ).rejects.toThrow(/exceeds blob size/);
+  });
+
+  it("rejects fetchBlobs on a non-blob column", async () => {
+    const { table, rowIds } = await openBlobTable();
+    await expect(table.fetchBlobs("id", rowIds)).rejects.toThrow(/blob/i);
+  });
+
+  it("discovers and fetches nested blob columns", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("info", new Struct([blob("image")]), true),
+    ]);
+    const payload = Buffer.from("nested");
+    const table = await db.createTable(
+      "nested_blobs",
+      [{ id: 1n, info: { image: payload } }],
+      { schema },
+    );
+    expect(await table.blobColumns()).toEqual(["info.image"]);
+    const rows = await table.query().withRowId().toArray();
+    const bytes = await table.fetchBlobs("info.image", [
+      rows[0]._rowid as bigint,
+    ]);
+    expect(bytes[0]!.equals(payload)).toBe(true);
+  });
+
+  async function openBlobTable() {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const alpha = Buffer.from("alpha");
+    const beta = Buffer.from("beta");
+    const table = await db.createTable(
+      "blobs",
+      [
+        { id: 1n, image: alpha },
+        { id: 2n, image: beta },
+        { id: 3n, image: null },
+      ],
+      { schema },
+    );
+    const rows = await table.query().withRowId().toArray();
+    const rowIdById = new Map(
+      rows.map((r) => [Number(r.id), r._rowid as bigint]),
+    );
+    const rowIds = [1, 2, 3].map((id) => rowIdById.get(id)!);
+    return { table, rowIds, alpha, beta };
+  }
 });
 
 describe("when dealing with tags", () => {

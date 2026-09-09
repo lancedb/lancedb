@@ -26,6 +26,7 @@ import {
   AddColumnsSql,
   AddResult,
   AlterColumnsResult,
+  BlobFile,
   BranchContents,
   DeleteResult,
   DropColumnsResult,
@@ -509,6 +510,36 @@ export abstract class Table {
    * @returns A builder that can be used to parameterize the query.
    */
   abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
+
+  /**
+   * Blob v2 columns, including nested dotted paths.
+   */
+  abstract blobColumns(): Promise<string[]>;
+
+  /**
+   * Bytes for `column` at row IDs from {@link Query.withRowId}.
+   *
+   * Reads the table's current checkout. IDs from another version can fail after
+   * compaction unless stable row ids are enabled. Results keep input order and
+   * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   */
+  abstract fetchBlobs(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+  ): Promise<(Buffer | null)[]>;
+
+  /**
+   * {@link BlobFile} handles for `column` at row IDs from
+   * {@link Query.withRowId}.
+   *
+   * Same version and alignment rules as {@link Table.fetchBlobs}. Prefer this
+   * for large payloads. {@link BlobFile.readRange} fails when `end` is past
+   * the blob size.
+   */
+  abstract fetchBlobFiles(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+  ): Promise<(BlobFile | null)[]>;
 
   /**
    * Create a search query to find the nearest neighbors
@@ -1160,23 +1191,32 @@ export class LocalTable extends Table {
   }
 
   takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
-    const ids = rowIds.map((id) => {
-      if (typeof id === "bigint") {
-        return id;
-      }
-      if (!Number.isInteger(id)) {
-        throw new Error("Row id must be an integer (or bigint)");
-      }
-      if (id < 0) {
-        throw new Error("Row id cannot be negative");
-      }
-      if (!Number.isSafeInteger(id)) {
-        throw new Error("Row id is too large for number; use bigint instead");
-      }
-      return BigInt(id);
-    });
+    return new TakeQuery(this.inner.takeRowIds(rowIdsToBigInts(rowIds)));
+  }
 
-    return new TakeQuery(this.inner.takeRowIds(ids));
+  blobColumns(): Promise<string[]> {
+    return this.inner.blobColumns();
+  }
+
+  async fetchBlobs(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+  ): Promise<(Buffer | null)[]> {
+    const values = await this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds));
+    // N-API Option maps missing values to undefined. Collapse those to null.
+    return values.map((value) => value ?? null);
+  }
+
+  async fetchBlobFiles(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+  ): Promise<(BlobFile | null)[]> {
+    const files = await this.inner.fetchBlobFiles(
+      column,
+      rowIdsToBigInts(rowIds),
+    );
+    // N-API Option maps missing values to undefined. Collapse those to null.
+    return files.map((file) => file ?? null);
   }
 
   query(): Query {
@@ -1732,4 +1772,22 @@ export class Branches {
       dryRun,
     )) as unknown as CherryPickResult;
   }
+}
+
+function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
+  return rowIds.map((id) => {
+    if (typeof id === "bigint") {
+      return id;
+    }
+    if (!Number.isInteger(id)) {
+      throw new Error("Row id must be an integer (or bigint)");
+    }
+    if (id < 0) {
+      throw new Error("Row id cannot be negative");
+    }
+    if (!Number.isSafeInteger(id)) {
+      throw new Error("Row id is too large for number; use bigint instead");
+    }
+    return BigInt(id);
+  });
 }

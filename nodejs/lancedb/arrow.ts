@@ -40,6 +40,7 @@ import {
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { typedArrayToArrowType } from "./arrow_type";
+import { coerceBlobValue, isBlobField } from "./blob";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import {
   EmbeddingFunctionConfig,
@@ -480,6 +481,29 @@ function transposeData(
   path: string[] = [],
 ): Vector {
   const valuesPath = [...path, field.name];
+  if (isBlobField(field) && field.type instanceof Struct) {
+    const blobRows = data.map((datum) =>
+      coerceBlobValue(valueAtPath(datum, valuesPath)),
+    );
+    const childVectors = field.type.children.map((child) => {
+      const values = blobRows.map((row) =>
+        row == null ? null : (row[child.name as "data" | "uri"] ?? null),
+      );
+      return makeVector(values, child.type, undefined, child.nullable);
+    });
+    const nullCount = blobRows.filter((row) => row === null).length;
+    const structData = makeData({
+      type: field.type,
+      length: blobRows.length,
+      nullCount,
+      nullBitmap:
+        nullCount > 0
+          ? arrowUtil.packBools(blobRows.map((row) => row !== null))
+          : undefined,
+      children: childVectors as unknown as ArrowData<DataType>[],
+    });
+    return arrowMakeVector(structData);
+  }
   const values = data.map((datum) => valueAtPath(datum, valuesPath));
   if (field.type instanceof Struct) {
     const childFields = field.type.children;
