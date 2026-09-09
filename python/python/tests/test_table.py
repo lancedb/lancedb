@@ -4460,3 +4460,59 @@ async def test_json_writes_without_pyarrow_json_factory(
 
     assert updated == [{"id": "a", "j": '{"k":9}'}]
     assert inserted == [{"id": "c", "j": '{"k":3}'}]
+
+
+def test_coerce_json_scannable_normalizes_legacy_string_view_before_cast(
+    monkeypatch,
+):
+    import lancedb.table as table_module
+    from lancedb.scannable import to_scannable
+
+    if not hasattr(pa, "string_view"):
+        pytest.skip("requires PyArrow StringView type")
+
+    source = pa.table(
+        {
+            "j": pa.array(
+                ['{"k":1}', None, '{"k":3}'],
+                type=pa.string_view(),
+            )
+        }
+    )
+    target_schema = pa.schema(
+        [
+            pa.field(
+                "j",
+                pa.large_binary(),
+                metadata={b"ARROW:extension:name": b"lance.json"},
+            )
+        ]
+    )
+
+    monkeypatch.delattr(pa, "json_", raising=False)
+
+    original_cast = table_module._cast_to_target_schema
+
+    def assert_normalized_before_cast(reader, schema):
+        field = reader.schema.field("j")
+        assert pa.types.is_string(field.type)
+        assert field.metadata[b"ARROW:extension:name"] == b"arrow.json"
+        return original_cast(reader, schema)
+
+    monkeypatch.setattr(
+        table_module,
+        "_cast_to_target_schema",
+        assert_normalized_before_cast,
+    )
+
+    coerced = table_module._coerce_json_scannable(
+        to_scannable(source),
+        target_schema,
+    )
+    result = coerced.reader().read_all()
+
+    assert result.column("j").to_pylist() == [
+        '{"k":1}',
+        None,
+        '{"k":3}',
+    ]
