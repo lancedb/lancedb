@@ -98,24 +98,35 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
                 valid_indices.append(idx)
 
         # TODO retry, rate limit, token limit
-        try:
+        def embed_batch(texts_batch, indices_batch):
             kwargs = {
-                "input": valid_texts,
+                "input": texts_batch,
                 "model": self.name,
             }
             if self.name != "text-embedding-ada-002":
                 kwargs["dimensions"] = self.dim
 
             rs = self._openai_client.embeddings.create(**kwargs)
-            valid_embeddings = {
-                idx: v.embedding for v, idx in zip(rs.data, valid_indices)
-            }
+            return {idx: v.embedding for v, idx in zip(rs.data, indices_batch)}
+
+        def embed_one_or_log(idx, text):
+            # Retry a single rejected input
+            try:
+                return embed_batch([text], [idx])
+            except openai.BadRequestError:
+                logging.exception("Bad request for input at index %d: %r", idx, text)
+                return {}
+
+        try:
+            valid_embeddings = embed_batch(valid_texts, valid_indices)
         except openai.AuthenticationError:
             logging.error("Authentication failed: Invalid API key provided")
             raise
         except openai.BadRequestError:
-            logging.exception("Bad request: %s", texts)
-            return [None] * len(texts)
+            # Retry each input individually
+            valid_embeddings = {}
+            for idx, text in zip(valid_indices, valid_texts):
+                valid_embeddings.update(embed_one_or_log(idx, text))
         except Exception:
             logging.exception("OpenAI embeddings error")
             raise
