@@ -310,7 +310,7 @@ class FunctionVersion(_RemoteValue):
     runtime: PythonRuntimeSpec
     runtime_digest: str
     environment_digest: str
-    secret_bindings: Mapping[str, str] = {}
+    secret_env_bindings: Mapping[str, str] = {}
     created_at: str
 
     def __call__(self, **inputs: Any) -> FunctionApplication:
@@ -375,7 +375,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     """Stable remote registration envelope produced by :func:`udf`.
 
     Credential values deliberately have no field here. The only secret-shaped
-    thing a client sends is ``secret_bindings``: the name of a Secret the
+    thing a client sends is ``secret_env_bindings``: the name of a Secret the
     database already holds, which the remote service resolves at execution.
     """
 
@@ -383,7 +383,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
-    secret_bindings: Mapping[str, str] = {}
+    secret_env_bindings: Mapping[str, str] = {}
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -534,12 +534,6 @@ class RefreshColumnResult(_RemoteValue):
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _DECLARED_SECRET = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-MAX_FUNCTION_SECRET_BINDINGS = 16
-"""A Function binds at most this many Secrets.
-
-Each bound Secret is one extra read on the launch path of every fragment, so
-the count needs a bound for the same reason a credential needs a size limit.
-"""
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
 _BLOB_V2_EXTENSION_NAME = "lance.blob.v2"
@@ -1310,11 +1304,6 @@ class UdfDefinition:
                 f"Function secrets must be EnvVarSecret values, not {kinds!r}; a "
                 "credential value is never sent to this API"
             )
-        if len(bindings) > MAX_FUNCTION_SECRET_BINDINGS:
-            raise ValueError(
-                f"a Function binds at most {MAX_FUNCTION_SECRET_BINDINGS} secrets, "
-                f"not {len(bindings)}"
-            )
         variables = [binding.env_variable for binding in bindings]
         duplicates = sorted({name for name in variables if variables.count(name) > 1})
         if duplicates:
@@ -1334,7 +1323,7 @@ class UdfDefinition:
         if not bindings:
             return self._request
         resolved = {binding.env_variable: binding.secret for binding in bindings}
-        return self._request._copy(update={"secret_bindings": resolved})
+        return self._request._copy(update={"secret_env_bindings": resolved})
 
     def __call__(self, *args, **kwargs):
         return self._function(*args, **kwargs)

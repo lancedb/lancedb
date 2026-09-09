@@ -110,7 +110,7 @@ def test_function_version_identity_is_immutable_and_exact():
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.name == "embed"
     assert version.version == "fv_01K3EXACT"
-    assert dict(version.secret_bindings) == {"HF_TOKEN": "hf-prod"}
+    assert dict(version.secret_env_bindings) == {"HF_TOKEN": "hf-prod"}
 
     with pytest.raises((TypeError, ValueError)):
         version.version = "fv_changed"
@@ -299,17 +299,17 @@ def test_canonical_client_values_carry_bindings_and_no_credentials():
         json.dumps(job_result("remote_function_job.json"))
     )
     canonical = json.loads(version.to_canonical_json())
-    assert canonical["secret_bindings"] == {"HF_TOKEN": "hf-prod"}
+    assert canonical["secret_env_bindings"] == {"HF_TOKEN": "hf-prod"}
     assert_no_secret_values(canonical)
 
 
 def test_a_version_without_bindings_keeps_the_original_wire_shape():
     """Every Function registered before Secrets existed serializes unchanged."""
     value = job_result("remote_function_job.json")
-    del value["secret_bindings"]
+    del value["secret_env_bindings"]
     version = FunctionVersion.from_json(json.dumps(value))
-    assert dict(version.secret_bindings) == {}
-    assert "secret_bindings" not in json.loads(version.to_canonical_json())
+    assert dict(version.secret_env_bindings) == {}
+    assert "secret_env_bindings" not in json.loads(version.to_canonical_json())
 
 
 class _FunctionDeclarationInner:

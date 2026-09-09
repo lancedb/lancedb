@@ -21,6 +21,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
+from lancedb.background_loop import LOOP
 from lancedb.functions import (
     PythonRuntimeSpec,
     UdfDefinition,
@@ -100,7 +101,7 @@ def test_an_unbound_request_carries_no_binding_at_all():
     whether or not a credential is later bound to it.
     """
     unbound = json.loads(analyze_caption.registration_request.to_canonical_json())
-    assert "secret_bindings" not in unbound
+    assert "secret_env_bindings" not in unbound
     assert "OPENAI_API_KEY" not in json.dumps(unbound)
 
 
@@ -120,7 +121,7 @@ def test_a_function_declaring_no_secret_is_registered_exactly_as_before():
         == normalize_score.registration_request.to_canonical_json()
     )
     assert (
-        "secret_bindings"
+        "secret_env_bindings"
         not in normalize_score.registration_request.to_canonical_json()
     )
 
@@ -144,12 +145,37 @@ def test_bindings_may_not_collide_with_plain_configuration():
 
 
 def test_a_function_binds_at_most_sixteen_secrets():
+    """The cap lives in Rust, so no language surface can be talked past it.
+
+    Registering through the typed API and hand-rolling the request envelope
+    reach the same boundary, and neither reaches the wire.
+    """
     bindings = [
         EnvVarSecret(secret=f"secret-{index}", env_variable=f"TOKEN_{index}")
         for index in range(17)
     ]
-    with pytest.raises(ValueError, match="at most 16 secrets"):
-        normalize_score.bind_secrets(bindings)
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        with pytest.raises(ValueError, match="at most 16 secrets"):
+            db.create_function(normalize_score, secrets=bindings)
+
+        envelope = json.loads(normalize_score.registration_request.to_canonical_json())
+        envelope["secret_env_bindings"] = {
+            f"TOKEN_{index}": f"secret-{index}" for index in range(17)
+        }
+
+        async def submit_envelope():
+            return await db._conn._inner.create_function_async(json.dumps(envelope))
+
+        with pytest.raises(ValueError, match="at most 16 secrets"):
+            LOOP.run(submit_envelope())
+
+    assert state["requests"] == []
 
 
 def test_a_credential_value_is_rejected_in_the_binding_position():
@@ -1332,7 +1358,7 @@ def _mock_remote_function_catalog():
                     "runtime": body["runtime"],
                     "runtime_digest": "sha256:runtime",
                     "environment_digest": "sha256:environment",
-                    "secret_bindings": body.get("secret_bindings", {}),
+                    "secret_env_bindings": body.get("secret_env_bindings", {}),
                     "created_at": "2026-08-21T00:00:00Z",
                 }
                 response = {"job_id": "job-register"}
@@ -1443,10 +1469,10 @@ def test_remote_registration_sends_bindings_and_never_a_credential():
             secrets=[EnvVarSecret(secret="openai-prod", env_variable="OPENAI_API_KEY")],
         )
 
-    assert dict(created.secret_bindings) == {"OPENAI_API_KEY": "openai-prod"}
+    assert dict(created.secret_env_bindings) == {"OPENAI_API_KEY": "openai-prod"}
     path, create_request = state["requests"][0]
     assert path == "/v1/functions/create"
-    assert create_request["secret_bindings"] == {"OPENAI_API_KEY": "openai-prod"}
+    assert create_request["secret_env_bindings"] == {"OPENAI_API_KEY": "openai-prod"}
     # The request names a Secret and carries nothing that could be one.
     assert create_request == json.loads(
         analyze_caption.bind_secrets(
