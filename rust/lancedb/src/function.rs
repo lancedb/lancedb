@@ -499,6 +499,50 @@ pub struct FunctionArtifactRequest {
 /// the count needs a bound for the same reason a credential needs a size limit.
 pub const MAX_FUNCTION_SECRET_ENV_BINDINGS: usize = 16;
 
+/// Largest credential a Secret may hold, matching the limit the service
+/// enforces. Bounded because the value is destined for a process environment.
+pub const MAX_SECRET_VALUE_BYTES: usize = 64 * 1024;
+
+/// Whether `name` is a portable POSIX environment variable name.
+///
+/// Leading letter or underscore, then letters, digits, or underscores. Names
+/// reserved by the execution sandbox are deliberately not checked here: that
+/// list belongs to the runtime that owns it, and a copy in the client would
+/// drift from it silently.
+fn is_portable_env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
+/// Reject a credential the service would refuse on size alone.
+///
+/// Checked before the request body is built, so an oversized value is never
+/// serialized or uploaded.
+pub(crate) fn validate_secret_value(value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(Error::InvalidInput {
+            message: "a Secret value must not be empty".to_string(),
+        });
+    }
+    if value.contains('\0') {
+        return Err(Error::InvalidInput {
+            message: "a Secret value must not contain NUL".to_string(),
+        });
+    }
+    if value.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "a Secret value is at most {MAX_SECRET_VALUE_BYTES} bytes, not {}",
+                value.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Stable request envelope for remote immutable Function registration.
 ///
 /// Credential values deliberately have no field here. The only secret-shaped
@@ -531,6 +575,30 @@ impl FunctionRegistrationRequest {
                     self.secret_env_bindings.len()
                 ),
             });
+        }
+        for variable in self.secret_env_bindings.keys() {
+            if !is_portable_env_name(variable) {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "secret_env_bindings key '{variable}' is not a portable \
+                         environment variable name"
+                    ),
+                });
+            }
+            // `env` travels with the Function and is readable wherever its
+            // record is; a bound Secret is not. One name carrying both would
+            // resolve by delivery order, so refuse rather than pick.
+            if self
+                .runtime
+                .env()
+                .is_some_and(|env| env.contains_key(variable))
+            {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "secret_env_bindings key '{variable}' is already set by runtime.env"
+                    ),
+                });
+            }
         }
         Ok(())
     }

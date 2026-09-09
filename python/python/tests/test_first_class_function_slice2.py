@@ -179,6 +179,35 @@ def test_a_function_binds_at_most_sixteen_secrets():
     assert state["requests"] == []
 
 
+def test_binding_names_are_validated_below_the_python_api():
+    """The low-level entry point reaches the same validator the typed API does.
+
+    Registration envelopes can be hand-rolled past ``bind_secrets``, so the
+    grammar and the disjointness rule live in Rust, above the backend.
+    """
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        envelope = json.loads(analyze_caption.registration_request.to_canonical_json())
+        envelope["secret_env_bindings"] = {
+            "BAD=NAME": "openai-prod",
+            "TOKEN_0": "secret-0",
+        }
+        envelope["runtime"]["env"]["TOKEN_0"] = "public"
+
+        async def submit_envelope():
+            return await db._conn._inner.create_function_async(json.dumps(envelope))
+
+        with pytest.raises(ValueError, match="portable"):
+            LOOP.run(submit_envelope())
+
+    assert state["requests"] == []
+
+
 _SECRET_DEBUG_LOG_SOURCE = """
 import http.server
 import json
