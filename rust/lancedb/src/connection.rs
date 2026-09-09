@@ -657,9 +657,9 @@ impl Connection {
     /// consumer is a Function that binds the Secret by name. Local databases
     /// return [`Error::NotSupported`].
     pub async fn create_secret(&self, name: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
-        self.internal
-            .create_secret(name.as_ref(), value.as_ref())
-            .await
+        let value = value.as_ref();
+        crate::function::validate_secret_value(value)?;
+        self.internal.create_secret(name.as_ref(), value).await
     }
 
     /// Replace the credential behind an existing Secret.
@@ -670,9 +670,9 @@ impl Connection {
     /// version registered before it. Local databases return
     /// [`Error::NotSupported`].
     pub async fn alter_secret(&self, name: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
-        self.internal
-            .alter_secret(name.as_ref(), value.as_ref())
-            .await
+        let value = value.as_ref();
+        crate::function::validate_secret_value(value)?;
+        self.internal.alter_secret(name.as_ref(), value).await
     }
 
     /// The names of every Secret in this database.
