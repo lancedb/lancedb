@@ -24,7 +24,8 @@ pub(super) fn plan_to_sql(plan: &LogicalPlan) -> datafusion_common::Result<Strin
     validate_output_sort(&plan)?;
     let plan = ensure_output_projection(plan)?;
     let plan = preserve_join_semantics(&plan)?;
-    let plan = project_table_scans(plan)?;
+    let plan = ensure_scope_output_projections(plan)?;
+    let plan = ensure_final_output_projection(plan)?;
     Unparser::default()
         .plan_to_sql(&plan)
         .map(|statement| statement.to_string())
@@ -299,23 +300,67 @@ fn preserve_join_semantics(plan: &LogicalPlan) -> datafusion_common::Result<Logi
         .data()
 }
 
-fn project_table_scans(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
-    plan.transform_up(|plan| {
-        if !matches!(plan, LogicalPlan::TableScan(_)) {
-            return Ok(Transformed::no(plan));
+fn ensure_scope_output_projections(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
+    plan.transform_up(|plan| match plan {
+        LogicalPlan::Distinct(mut distinct) => {
+            match &mut distinct {
+                datafusion_expr::logical_plan::Distinct::All(input) => {
+                    *input = Arc::new(ensure_final_output_projection(Arc::unwrap_or_clone(
+                        input.clone(),
+                    ))?);
+                }
+                datafusion_expr::logical_plan::Distinct::On(on) => {
+                    on.input = Arc::new(ensure_final_output_projection(Arc::unwrap_or_clone(
+                        on.input.clone(),
+                    ))?);
+                }
+            }
+            Ok(Transformed::yes(LogicalPlan::Distinct(distinct)))
         }
-
-        let projection = plan
-            .schema()
-            .iter()
-            .map(|(qualifier, field)| Expr::Column(Column::new(qualifier.cloned(), field.name())))
-            .collect::<Vec<_>>();
-        LogicalPlanBuilder::from(Arc::new(plan))
-            .project(projection)?
-            .build()
-            .map(Transformed::yes)
+        LogicalPlan::Union(mut union) => {
+            for input in &mut union.inputs {
+                *input = Arc::new(ensure_final_output_projection(Arc::unwrap_or_clone(
+                    input.clone(),
+                ))?);
+            }
+            Ok(Transformed::yes(LogicalPlan::Union(union)))
+        }
+        plan => Ok(Transformed::no(plan)),
     })
     .data()
+}
+
+fn ensure_final_output_projection(plan: LogicalPlan) -> datafusion_common::Result<LogicalPlan> {
+    match plan {
+        LogicalPlan::Projection(_)
+        | LogicalPlan::Aggregate(_)
+        | LogicalPlan::Distinct(_)
+        | LogicalPlan::Union(_) => Ok(plan),
+        LogicalPlan::Limit(mut limit) => {
+            limit.input = Arc::new(ensure_final_output_projection(Arc::unwrap_or_clone(
+                limit.input,
+            ))?);
+            Ok(LogicalPlan::Limit(limit))
+        }
+        LogicalPlan::Sort(mut sort) => {
+            sort.input = Arc::new(ensure_final_output_projection(Arc::unwrap_or_clone(
+                sort.input,
+            ))?);
+            Ok(LogicalPlan::Sort(sort))
+        }
+        plan => {
+            let projection = plan
+                .schema()
+                .iter()
+                .map(|(qualifier, field)| {
+                    Expr::Column(Column::new(qualifier.cloned(), field.name()))
+                })
+                .collect::<Vec<_>>();
+            LogicalPlanBuilder::from(Arc::new(plan))
+                .project(projection)?
+                .build()
+        }
+    }
 }
 
 fn contains_aggregate(plan: &LogicalPlan) -> bool {
