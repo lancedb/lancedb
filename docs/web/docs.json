@@ -56,10 +56,6 @@
       "destination": "/basics/catalog"
     },
     {
-      "source": "/sql",
-      "destination": "/basics/apis"
-    },
-    {
       "source": "/api-reference",
       "destination": "/basics/apis"
     },
@@ -74,6 +70,14 @@
     {
       "source": "/tables/create",
       "destination": "/ingestion"
+    },
+    {
+      "source": "/tables/multimodal",
+      "destination": "/basics/data-types#blob"
+    },
+    {
+      "source": "/search/select",
+      "destination": "/sql/select"
     }
   ],
   "navigation": {
@@ -94,13 +98,7 @@
               "basics/lance",
               "basics/catalog",
               "basics/jobs",
-              {
-                "group": "Schema & Data Types",
-                "pages": [
-                  "basics/data-types",
-                  "tables/multimodal"
-                ]
-              },
+              "basics/data-types",
               "tables/consistency",
               "basics/apis",
               "basics/agentic-skills"
@@ -145,15 +143,11 @@
             "group": "Query",
             "pages": [
               "search/index",
-              "search/select",
               "search/vector-search",
               "search/multivector-search",
               "search/full-text-search",
               "search/hybrid-search",
               "search/filtering",
-              "search/explain",
-              "search/explain-analyze",
-              "sql/functions",
               {
                 "group": "Reranking",
                 "pages": [
@@ -164,6 +158,20 @@
                   "reranking/cross_encoder",
                   "reranking/custom-reranker",
                   "reranking/eval"
+                ]
+              },
+              "search/explain",
+              "search/explain-analyze",
+              {
+                "group": "SQL",
+                "pages": [
+                  "sql/index",
+                  "sql/select",
+                  "sql/aggregation",
+                  "sql/join",
+                  "sql/window",
+                  "sql/sampling",
+                  "sql/functions"
                 ]
               }
             ]
@@ -330,6 +338,13 @@
             ]
           },
           {
+            "group": "AI Agents",
+            "pages": [
+              "build-with-ai-agents",
+              "agent-branch-experiments"
+            ]
+          },
+          {
             "group": "Robotics",
             "pages": [
               "integrations/lerobotdataset"
@@ -353,18 +368,6 @@
               "demos/semantic-art",
               "demos/wikipedia-search",
               "demos/video-search"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Agentic Skills",
-        "groups": [
-          {
-            "group": "Agentic Skills",
-            "pages": [
-              "build-with-ai-agents",
-              "agent-branch-experiments"
             ]
           }
         ]

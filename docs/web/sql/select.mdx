@@ -1,0 +1,135 @@
+---
+title: "SELECT"
+sidebarTitle: "Select"
+description: "Projection, filtering, ordering, and composing queries out of other queries."
+icon: table-columns
+keywords: ["select", "where", "order by", "limit", "cte", "union", "distinct"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+```sql
+[WITH cte AS (...)]
+SELECT [ALL | DISTINCT] select_expr [, ...]
+FROM from_item [[JOIN ...] ON ...]
+[WHERE predicate]
+[GROUP BY expr [, ...]] [HAVING predicate]
+[WINDOW name AS (...)]
+[ORDER BY expr [ASC | DESC] [NULLS FIRST | LAST] [, ...]]
+[LIMIT n] [OFFSET n]
+```
+
+## Projection {#projection}
+
+<CodeGroup>
+```sql SQL
+SELECT id, title, identifier FROM documents
+```
+
+```python Python icon="python"
+tbl.search().select(["id", "title", "identifier"]).to_arrow()
+```
+
+```typescript TypeScript icon="square-js"
+await tbl.query().select(["id", "title", "identifier"]).toArrow();
+```
+</CodeGroup>
+
+Projection pushes into the scan in all three -- an unselected column is never
+read off storage. On a table of images or video that is the difference between a
+fast query and a slow one, so **prefer naming columns over `SELECT *`**.
+
+Row metadata is available as [pseudo-columns](/sql/functions#pseudo-columns)
+(`_rowid`, `_rowaddr`, `_rowoffset`) but only when named, so they stay out of
+`SELECT *`.
+
+`DISTINCT` deduplicates the projected rows.
+
+## Filtering {#filtering}
+
+<CodeGroup>
+```sql SQL
+SELECT * FROM documents
+WHERE identifier > 0 AND identifier < 1000000
+```
+
+```python Python icon="python"
+tbl.search().where("identifier > 0 AND identifier < 1000000").to_arrow()
+```
+
+```typescript TypeScript icon="square-js"
+await tbl.query().where("identifier > 0 AND identifier < 1000000").toArrow();
+```
+</CodeGroup>
+
+The SDK `where` takes the same expression language, so a predicate moves between
+them unchanged. A predicate on an indexed column becomes a `ScalarIndexQuery`
+rather than a scan -- confirm with [`explain_plan`](/search/explain). See
+[Filtering](/search/filtering) for the operators and their pushdown behaviour.
+
+## Ordering and limiting {#order-limit}
+
+```sql
+SELECT id, title FROM documents
+ORDER BY created_at DESC NULLS LAST
+LIMIT 100 OFFSET 200
+```
+
+`ORDER BY` on a large table is a sort over the whole result, so pair it with a
+`LIMIT` unless you genuinely need every row ordered.
+
+## Set operations {#set-operations}
+
+`UNION`, `UNION ALL`, `INTERSECT` and `EXCEPT` combine whole queries:
+
+```sql
+SELECT id FROM documents WHERE category = 'film'
+UNION ALL
+SELECT id FROM archived_documents WHERE category = 'film'
+```
+
+`UNION` deduplicates and `UNION ALL` does not, which makes `UNION ALL` the
+cheaper one when you already know the inputs are disjoint.
+
+## Common table expressions {#ctes}
+
+```sql
+WITH recent AS (
+    SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
+)
+SELECT category, count(*) FROM recent GROUP BY category
+```
+
+A CTE is scoped to the statement. One you want to keep is a
+[view](/management/view); one whose rows you want stored is a
+[materialized view](/management/materialized-view).
+
+## Subqueries {#subqueries}
+
+Subqueries are allowed anywhere an expression or a relation is -- in `FROM`, in
+`WHERE` with `IN` or `EXISTS`, and as a scalar in the select list:
+
+```sql
+SELECT title
+FROM documents
+WHERE category_id IN (SELECT id FROM categories WHERE active)
+```
+
+## Namespaced tables {#namespaces}
+
+A table inside a [namespace](/namespaces) is written as a dotted path:
+
+```sql
+SELECT * FROM prod.events.clicks
+```
+
+## Reading the plan {#plans}
+
+`EXPLAIN` and `EXPLAIN ANALYZE` work as DataFusion defines them, and produce the
+same operators the SDK methods do:
+
+```sql
+EXPLAIN ANALYZE SELECT * FROM documents WHERE identifier < 1000
+```
+
+See [Explain](/search/explain) and [Explain Analyze](/search/explain-analyze).

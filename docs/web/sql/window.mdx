@@ -1,0 +1,90 @@
+---
+title: "Window functions"
+sidebarTitle: "Window"
+description: "Compute over a set of rows related to the current one, without collapsing them."
+icon: chart-simple
+keywords: ["window", "over", "partition by", "row_number", "rank", "lag", "lead"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+A window function computes across a set of rows related to the current one and
+returns a value **per row**. That is the difference from
+[aggregation](/sql/aggregation), which collapses the rows it covers.
+
+```sql
+SELECT
+    title,
+    score,
+    row_number() OVER (PARTITION BY category ORDER BY score DESC) AS rank
+FROM documents
+```
+
+Every row survives; each one gains its rank within its category.
+
+## The window {#window}
+
+```sql
+OVER (
+    [PARTITION BY expr [, ...]]
+    [ORDER BY expr [, ...]]
+    [ROWS | RANGE BETWEEN frame_start AND frame_end]
+)
+```
+
+`PARTITION BY` splits the rows into independent groups. `ORDER BY` orders them
+inside each partition -- required by the ranking functions, since a rank without
+an order is meaningless. The frame clause narrows the window further, which is
+how running totals and moving averages are expressed:
+
+```sql
+SELECT
+    created_at,
+    sum(amount) OVER (ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS running_total,
+    avg(amount) OVER (ORDER BY created_at ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS trailing_7
+FROM transactions
+```
+
+A `WINDOW` clause names a definition when several functions share one:
+
+```sql
+SELECT
+    row_number() OVER w,
+    lag(score) OVER w
+FROM documents
+WINDOW w AS (PARTITION BY category ORDER BY score DESC)
+```
+
+## The functions {#functions}
+
+| Kind | Functions |
+| --- | --- |
+| Ranking | `row_number`, `rank`, `dense_rank`, `percent_rank`, `ntile`, `cume_dist` |
+| Offset | `lag`, `lead`, `first_value`, `last_value`, `nth_value` |
+| Aggregate | any [aggregate](/sql/aggregation) used with `OVER` |
+
+The full set is DataFusion's
+[window function reference](https://datafusion.apache.org/user-guide/sql/window_functions.html).
+
+## Deduplicating with a window {#dedup}
+
+The common practical use: keep one row per key, chosen by some ordering. A
+window ranks, and an outer query filters:
+
+```sql
+WITH ranked AS (
+    SELECT *, row_number() OVER (PARTITION BY doc_id ORDER BY version DESC) AS rn
+    FROM revisions
+)
+SELECT * FROM ranked WHERE rn = 1
+```
+
+The outer query is needed because a window function cannot appear in `WHERE` --
+windows are computed after filtering, so the predicate would have nothing to
+read.
+
+<Note>
+Window functions sort within each partition, so on a large table they are among
+the more expensive things you can ask for. Filter first, and check the cost with
+[Explain Analyze](/search/explain-analyze).
+</Note>
