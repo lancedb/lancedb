@@ -25,7 +25,8 @@ use crate::error::Result;
 /// Similar to `VACUUM` in PostgreSQL, it offers different options to
 /// optimize different parts of the table on disk.
 ///
-/// By default, it optimizes everything, as [`OptimizeAction::All`].
+/// By default, it optimizes everything, as [`OptimizeAction::All`], which runs
+/// operations in this order: **Compaction -> Index -> Prune**.
 #[derive(Default)]
 pub enum OptimizeAction {
     /// Run all optimizations with default values
@@ -173,6 +174,7 @@ pub(crate) async fn execute_optimize(
             // Call helper functions directly to avoid async recursion issues
             stats.compaction =
                 Some(compact_files_impl(table, CompactionOptions::default(), None).await?);
+            optimize_indices(table, &OptimizeOptions::default()).await?;
             stats.prune = Some(
                 cleanup_old_versions(
                     table,
@@ -182,7 +184,6 @@ pub(crate) async fn execute_optimize(
                 )
                 .await?,
             );
-            optimize_indices(table, &OptimizeOptions::default()).await?;
         }
         OptimizeAction::Compact {
             options,
