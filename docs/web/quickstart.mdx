@@ -382,6 +382,38 @@ Next, you can query a compact view of the new feature:
 The same workflow is used for data preparation tasks when adding derived features, cached model signals, review scores, or dataset
 quality indicators.
 
+### Declare now, compute later {#computed-columns}
+
+The call above computes every row as part of the call, which is fine for three
+rows. On a table large enough that you would rather choose *when* the work
+happens, declare the column instead and fill it separately:
+
+```python
+# Commits the column, empty. Nothing is computed yet.
+characters.add_columns(computed={"power_score": "(stats.magic + stats.strength) / 2.0"})
+
+# Fills it, and commits again.
+characters.refresh_column("power_score")
+# RefreshColumnResult(rows_filled=3, version=4)
+```
+
+A refresh only gives values to rows that have none, so appending more characters
+and refreshing again fills just the new ones -- it does not recompute the rows
+already done. That is what makes a backfill safe to retry and cheap to repeat as
+data arrives.
+
+On a deployment the same refresh runs server-side, on a cluster, as a
+[job](/basics/jobs) you can walk away from:
+
+```python
+job = characters.refresh_column_async("power_score")
+job.wait()
+```
+
+See [Computed columns](/feature-engineering/computed-columns) for expressions,
+and [Functions](/feature-engineering/functions) for filling a column with Python
+-- an embedding model, a captioner, anything you can register.
+
 ## 7\. Store multimodal data {#7-store-multimodal-data}
 
 Multimodal data is a first-class citizen in LanceDB. Binary data (image, audio, video, etc.) is
@@ -424,6 +456,44 @@ These snippets load the local image file and store the bytes in an `image` colum
 
 For more examples, see the [multimodal data](/tables/multimodal) section.
 
+## 8\. Train on the result {#8-train}
+
+The point of the previous steps is this one. The table you searched, filtered,
+and added features to is directly usable as a PyTorch
+[Dataset](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.Dataset)
+-- there is no export step, and no second copy of the data to keep in sync.
+
+```python
+import torch
+from lancedb.util import tbl_to_tensor
+
+dataloader = torch.utils.data.DataLoader(
+    characters, batch_size=1024, shuffle=True, collate_fn=tbl_to_tensor
+)
+
+for batch in dataloader:
+    ...  # train
+```
+
+Because the loader reads from the table, the feature columns you just
+materialized are read straight off storage rather than recomputed every epoch.
+That is the whole argument for doing feature engineering in the lakehouse: an
+expensive transform runs once, is versioned with the data, and every subsequent
+epoch is a read.
+
+Projection matters here. Selecting only the columns a step needs means the
+images are never read for an epoch that only wants embeddings:
+
+```python
+from lancedb.permutation import Permutation
+
+permutation = Permutation.identity(characters)
+dataloader = torch.utils.data.DataLoader(permutation)
+```
+
+See [Training](/training) for shuffling, multi-worker loading, and reading from
+a remote table.
+
 ## Code {#code}
 
 See the full code for these examples (including helper functions) in the
@@ -432,13 +502,13 @@ See the full code for these examples (including helper functions) in the
 
 
 ## Next steps {#next-steps}
-You've learned how to install LanceDB, connect, create one table for AI data, retrieve related
-examples, curate with metadata, add a derived feature, and represent multimodal records. These same
-primitives apply across the AI data lifecycle, from data preparation and feature engineering to
-retrieval, evaluation, and training.
+You've gone from a table, through search and curation, to derived features and a
+training loop -- in one table, with no export step between any two stages. That
+arc is the argument for a multimodal lakehouse, and every stage of it scales
+past this toy example without changing shape.
 
-Continue to the table and search guides to build on this example with schema options, appends,
-updates, versioning, indexing, full-text search, hybrid search, and reranking.
+Continue to the guides to build on it with schema options, versioning, indexing,
+full-text and hybrid search, reranking, and server-side feature engineering.
 
 <Columns cols={2}>
 <Card

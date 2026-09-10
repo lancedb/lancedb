@@ -1,0 +1,194 @@
+---
+title: "Database"
+sidebarTitle: "Database"
+description: "Connecting to LanceDB: the URI forms, their options, and what each one changes."
+icon: database
+keywords: ["connect", "database", "uri", "api key", "storage options", "consistency"]
+---
+
+A database is the root of a [catalog](/basics/catalog). A connection opens
+exactly one, and every other object is reached through it.
+
+Connecting is the one decision that reaches furthest: the URI you pass decides
+where queries execute, which features exist, and what a table handle actually
+is.
+
+## The three URI forms {#uris}
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+
+db = lancedb.connect("./.lancedb")                       # local directory
+db = lancedb.connect("s3://bucket/path")                 # object storage
+db = lancedb.connect("db://my-database", api_key="...")  # a deployment
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+
+const db = await lancedb.connect("./.lancedb");
+const db = await lancedb.connect("s3://bucket/path");
+const db = await lancedb.connect("db://my-database", { apiKey: "..." });
+```
+</CodeGroup>
+
+The first two are **embedded**: your process opens Lance tables directly from
+storage and does the work itself. The third talks to a **deployment**.
+
+| | Embedded | Deployment |
+| --- | --- | --- |
+| Where queries run | in your process | on the server |
+| Table handle | `LanceTable` | `RemoteTable` |
+| [SQL](/basics/apis) | -- | yes |
+| Server-side [jobs](/basics/jobs) | -- | yes |
+| [Functions](/feature-engineering/functions) | -- | yes |
+| [Authorization](/governance/authorization) | storage permissions | granted per object |
+
+![](/static/assets/images/overview/understanding-tables.png)
+
+Both handles expose the same table API -- create, open, mutate, query -- so
+application code moves between them by changing the URI. What differs is where
+resolution and execution happen, and therefore which operations exist at all.
+
+## Connecting to a deployment {#deployment}
+
+<Badge color="red">Enterprise</Badge>
+
+<CodeGroup>
+```python Python icon="python"
+db = lancedb.connect(
+    "db://my-database",
+    api_key="...",
+    region="us-east-1",
+)
+```
+
+```typescript TypeScript icon="square-js"
+const db = await lancedb.connect("db://my-database", {
+  apiKey: "...",
+  region: "us-east-1",
+});
+```
+</CodeGroup>
+
+| Option | Meaning |
+| --- | --- |
+| `api_key` / `apiKey` | authenticates the connection -- see [Authentication](/enterprise/authentication) |
+| `region` | which region hosts the database. Defaults to `us-east-1` |
+| `host_override` / `hostOverride` | point at a specific endpoint instead of the regional one |
+| `sql_host_override` | the same, for the [SQL endpoint](/search/sql). Python only |
+| `client_config` / `clientConfig` | retries, timeouts, and connection pooling |
+
+An API key belongs in the environment, not in source. `region` is easy to get
+wrong silently -- the default is `us-east-1` whether or not that is where your
+database lives, and a wrong region fails as a connection error rather than a
+helpful one.
+
+## Storage options {#storage-options}
+
+`storage_options` configures the underlying object store -- credentials,
+endpoints, and defaults for tables created through this connection:
+
+<CodeGroup>
+```python Python icon="python"
+db = lancedb.connect(
+    "s3://bucket/path",
+    storage_options={"new_table_enable_stable_row_ids": "true"},
+)
+```
+
+```typescript TypeScript icon="square-js"
+const db = await lancedb.connect("s3://bucket/path", {
+  storageOptions: { new_table_enable_stable_row_ids: "true" },
+});
+```
+</CodeGroup>
+
+<Warning>
+`new_table_enable_stable_row_ids` is worth setting deliberately. Stable row ids
+cannot be enabled after a table exists, and a
+[materialized view](/feature-engineering/materialized-views) requires its source
+to have them. A table created without them cannot later become a view's source
+without being recreated.
+</Warning>
+
+See [Storage](/storage) for the full set, including per-cloud credentials.
+
+## Read consistency {#consistency}
+
+`read_consistency_interval` controls how often a connection checks for versions
+committed by other writers.
+
+<CodeGroup>
+```python Python icon="python"
+from datetime import timedelta
+
+db = lancedb.connect(uri, read_consistency_interval=timedelta(seconds=5))
+```
+
+```typescript TypeScript icon="square-js"
+const db = await lancedb.connect(uri, { readConsistencyInterval: 5 });
+```
+</CodeGroup>
+
+The default reads a snapshot taken when the table was opened, so a long-lived
+connection **will not see other processes' writes** until it reopens the table.
+That is the right default for a batch job and the wrong one for a service.
+
+Set it when several processes write the same table and readers must observe
+those writes. The cost is a metadata check on that interval. See
+[Consistency](/tables/consistency).
+
+## Database-level operations {#operations}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| list tables | `table_names`, `list_tables` | `tableNames`, `listTables` | `SHOW TABLES` |
+| the URI it opened | `uri` | `display()` | -- |
+| drop every table | `drop_all_tables` | `dropAllTables` | -- |
+| drop the database | `drop_database` | -- | -- |
+| close | -- | `close`, `isOpen` | -- |
+
+<CodeGroup>
+```python Python icon="python"
+db.table_names()
+tbl = db.open_table("documents")
+db.drop_table("documents")
+```
+
+```typescript TypeScript icon="square-js"
+await db.tableNames();
+const tbl = await db.openTable("documents");
+await db.dropTable("documents");
+```
+
+```sql SQL
+SHOW TABLES;
+DROP TABLE documents;
+```
+</CodeGroup>
+
+Each takes a `namespace_path` to act inside a [namespace](/namespaces) rather
+than at the root.
+
+<Warning>
+`drop_database()` removes every table in the database. There is no confirmation
+and no undo -- table [versioning](/tables/versioning) does not survive the table
+being dropped.
+</Warning>
+
+## Async connections {#async}
+
+`connect_async` returns an `AsyncConnection` with the same surface as
+coroutines. The TypeScript SDK is async throughout, so its `connect` already is
+one.
+
+```python
+db = await lancedb.connect_async("db://my-database", api_key="...")
+tbl = await db.open_table("documents")
+```
+
+This is a different axis from the `_async` operations that return a
+[job](/basics/jobs): `connect_async` is about not blocking your event loop,
+while `create_index_async` is about work that outlives the call.

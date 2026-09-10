@@ -1,39 +1,108 @@
 ---
-title: "Jobs"
-sidebarTitle: "Jobs"
-description: "The handle every long-running operation returns, and how to wait on, inspect, or cancel one."
+title: "Query and job"
+sidebarTitle: "Query & Job"
+description: "Sync and async in LanceDB: two different distinctions that use the same word."
 icon: hourglass-half
-keywords: ["job", "async", "background", "create index", "refresh column"]
+keywords: ["job", "async", "sync", "query", "background", "await"]
 ---
+
+"Async" means two unrelated things in LanceDB, and conflating them is the most
+common source of confusion about how work gets done.
+
+| | What it is | What it changes |
+| --- | --- | --- |
+| **Async client** | `connect_async`, `await` | whether *your thread* blocks |
+| **Async execution** | `_async` methods returning a [job](#jobs) | whether *the work* outlives the call |
+
+They are independent. A synchronous Python call can start a job that runs for an
+hour; an `await` can wait for something that finishes instantly.
+
+## Async client: whether you block {#async-client}
+
+A concern of your language, not of LanceDB. The work is identical either way.
+
+<CodeGroup>
+```python Python icon="python"
+db = lancedb.connect("db://my-db", api_key="...")         # blocking
+tbl = db.open_table("documents")
+
+db = await lancedb.connect_async("db://my-db", api_key="...")   # coroutines
+tbl = await db.open_table("documents")
+```
+
+```typescript TypeScript icon="square-js"
+// TypeScript is async throughout; there is no blocking form.
+const db = await lancedb.connect("db://my-db", { apiKey: "..." });
+const tbl = await db.openTable("documents");
+```
+</CodeGroup>
+
+Python offers both. `AsyncConnection` exposes the same surface as coroutines, so
+choosing between them is about the program you are writing -- a service wants
+the async form, a script does not care.
+
+## Queries: reading before the query finishes {#queries}
+
+A query is not a job, but it has the same shape of choice: wait for everything,
+or take a handle and start reading.
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 1000")
+table = reader.read_all()
+
+query = db.execute_query_async("SELECT id, text FROM my_docs")
+```
+
+```sql SQL
+SELECT id, text FROM my_docs LIMIT 1000
+```
+</CodeGroup>
+
+`execute_query` returns a blocking Arrow reader **once results start arriving**
+-- it does not wait for the whole query to finish. Results stream as record
+batches, so a large result set does not have to fit in memory before you see
+its first row.
+
+`execute_query_async` returns the query handle instead, for a statement you
+would rather not sit on at all. `describe_query` reports on one by id.
+
+<Note>
+SQL requires a deployment. See [SDKs and SQL](/basics/apis).
+</Note>
+
+Query-builder searches -- vector, full-text, hybrid -- are ordinary calls that
+return results. They are fast enough not to need a handle. See
+[Query](/search).
+
+## Jobs: work that outlives the call {#jobs}
 
 Some operations take longer than a request should. Building an index over a
 large table, refreshing a computed column, registering a function -- these run
 on the server after the call that started them has returned.
 
-Each is submitted the same way and returns the same handle. Learn the handle
-once and every long-running operation behaves alike.
+Each is submitted the same way and returns the same handle.
 
-## The `_async` convention {#convention}
+### The `_async` convention {#convention}
 
-An operation that can run in the background has two forms. The plain name
-blocks until the work is done and returns its result. The `_async` /
-`Async` name submits the work and returns a **job** immediately.
+An operation that can run in the background has two forms. The plain name blocks
+until the work is done. The `_async` / `Async` name submits the work and returns
+a **job** immediately.
 
-| Blocking | Returns a job | What runs |
+| Blocking | Returns a job | SQL |
 | --- | --- | --- |
-| `create_index` | `create_index_async` | index build |
-| `refresh_column` | `refresh_column_async` | recompute a [computed column](/feature-engineering/computed-columns) |
-| `create_function` | `create_function_async` | register a [function](/feature-engineering/functions) |
-| `drop_table` | `drop_table_async` | drop a table |
-| `execute_query` | `execute_query_async` | a [SQL](/basics/apis) query |
+| `create_index` | `create_index_async` | `CREATE INDEX` |
+| `refresh_column` | `refresh_column_async` | `REFRESH COLUMN` |
+| `create_function` | `create_function_async` | `CREATE FUNCTION` |
+| `drop_table` | `drop_table_async` | `DROP TABLE` |
 
 <Note>
 The blocking form is not a different operation -- it submits the same job and
-waits. Reach for the `_async` form when you want to do something else
-meanwhile, run several at once, or survive the client going away.
+waits. Reach for the `_async` form when you want to do something else meanwhile,
+run several at once, or survive the client going away.
 </Note>
 
-## Submitting and waiting {#waiting}
+### Submitting and waiting {#waiting}
 
 <CodeGroup>
 ```python Python icon="python"
@@ -73,15 +142,15 @@ result = table.refresh_column_async("embedding").wait(timeout=timedelta(minutes=
 still running; the handle just gave up watching.
 
 <Note>
-The TypeScript `wait()` resolves to `void`. Read the outcome from `result`
-after it resolves.
+The TypeScript `wait()` resolves to `void`. Read the outcome from `result` after
+it resolves.
 </Note>
 
-## Inspecting a job {#inspecting}
+### Inspecting a job {#inspecting}
 
-Submitting an operation returns only an id, so the detail fields are empty
-until the handle fetches the record. `refresh()` does that; `status()` does it
-as a side effect.
+Submitting an operation returns only an id, so the detail fields are empty until
+the handle fetches the record. `refresh()` does that; `status()` does it as a
+side effect.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -110,7 +179,7 @@ job.failure;     // why it failed, when it did
 Printing the handle renders every field it knows, which is usually faster than
 reading them one at a time.
 
-## Events {#events}
+### Progress, from events {#events}
 
 `result` only tells you anything once the job has finished. Events are written
 as it runs, and they outlive the workers that produced them -- so a job that is
@@ -123,6 +192,10 @@ events = job.events(limit=5000, filter="state = 'claim_complete'")
 
 ```typescript TypeScript icon="square-js"
 const events = await job.events({ limit: 5000, filter: "state = 'claim_complete'" });
+```
+
+```sql SQL
+SHOW ERRORS ON my_table FOR JOB 'job-id' LIMIT 100
 ```
 </CodeGroup>
 
@@ -142,7 +215,7 @@ silently lose its tail unless you pass `limit`.
 Events are recorded server-side, so this raises for an operation that ran
 in-process.
 
-## Finding and cancelling jobs {#managing}
+### Finding and cancelling jobs {#managing}
 
 The connection lists and reopens jobs, so a handle lost to a restarted process
 is recoverable from its id.
@@ -155,9 +228,13 @@ db.cancel_job(job_id)      # ask it to stop
 ```
 
 ```typescript TypeScript icon="square-js"
-await db.listJobs();             // every job the server knows about
-const job = await db.openJob(jobId);  // reattach to one
-await db.cancelJob(jobId);       // ask it to stop
+await db.listJobs();
+const job = await db.openJob(jobId);
+await db.cancelJob(jobId);
+```
+
+```sql SQL
+SHOW JOBS
 ```
 </CodeGroup>
 
@@ -172,10 +249,10 @@ parsing it or storing it to resume the job later is not supported.
 
 ## In-process jobs {#in-process}
 
-A local connection has no server to run anything, so its operations run in your
-process. They still return a handle, so the same code works against both, but
+A local database has no server to run anything, so its operations run in your
+process. They still return a handle, so the same code works against both -- but
 one with nothing behind it: `id` is `None`, `status()` reports `"finished"`,
 `wait()` returns immediately, `cancel()` does nothing, and `events()` raises.
 
-This is the difference to expect when moving between a local database and a
-deployment -- see [Python, TypeScript, and SQL](/basics/apis).
+This is the difference to expect when moving between embedded and deployed --
+see [SDKs and SQL](/basics/apis).

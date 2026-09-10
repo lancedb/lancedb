@@ -58,6 +58,10 @@
     {
       "source": "/sql",
       "destination": "/basics/apis"
+    },
+    {
+      "source": "/api-reference",
+      "destination": "/basics/apis"
     }
   ],
   "navigation": {
@@ -75,17 +79,25 @@
           {
             "group": "Basics",
             "pages": [
+              "basics/lance",
               "basics/catalog",
-              "basics/apis",
               "basics/jobs",
-              "basics/agentic-skills",
-              "basics/lance"
+              "basics/apis",
+              {
+                "group": "REST API",
+                "expanded": true,
+                "pages": [
+                  "api-reference/rest/index"
+                ]
+              },
+              "basics/agentic-skills"
             ]
           },
           {
             "group": "Management",
             "pages": [
               "management/index",
+              "management/database",
               {
                 "group": "Namespace",
                 "pages": [
@@ -330,24 +342,6 @@
             "group": "World Models",
             "pages": [
               "integrations/stable-worldmodel"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "API Reference",
-        "groups": [
-          {
-            "group": "API Reference",
-            "pages": [
-              "api-reference/index",
-              {
-                "group": "REST API",
-                "expanded": true,
-                "pages": [
-                  "api-reference/rest/index"
-                ]
-              }
             ]
           }
         ]
