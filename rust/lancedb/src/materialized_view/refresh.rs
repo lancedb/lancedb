@@ -1165,7 +1165,7 @@ async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Resul
                         .all(|field| computed_fields.contains(field))
             }
             // What `refresh_column` commits for a SQL declaration.
-            Operation::DataReplacement { replacements } => {
+            Operation::DataReplacement { replacements, .. } => {
                 !replacements.is_empty()
                     && replacements.iter().all(|group| {
                         !group.1.fields.is_empty()
