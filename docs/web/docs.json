@@ -70,6 +70,10 @@
     {
       "source": "/feature-engineering/functions",
       "destination": "/management/function"
+    },
+    {
+      "source": "/tables/create",
+      "destination": "/ingestion"
     }
   ],
   "navigation": {
@@ -110,9 +114,10 @@
                 "group": "Table",
                 "pages": [
                   "tables/index",
-                  "tables/create",
                   "tables/schema",
-                  "tables/multimodal"
+                  "tables/multimodal",
+                  "tables/versioning",
+                  "tables/branching"
                 ]
               },
               "management/function"
@@ -126,8 +131,6 @@
               "ingestion/merge-insert",
               "ingestion/update",
               "ingestion/delete",
-              "tables/versioning",
-              "tables/branching",
               "tables/consistency"
             ]
           },
@@ -169,6 +172,7 @@
             "group": "Feature engineering",
             "pages": [
               "feature-engineering/index",
+              "feature-engineering/data-evolution",
               "feature-engineering/add-computed-column",
               "feature-engineering/refresh-column",
               "feature-engineering/materialized-views"

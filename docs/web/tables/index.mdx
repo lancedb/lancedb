@@ -267,12 +267,12 @@ reuse the existing table instead of writing the supplied rows again.
 If you want to avoid overwriting an existing table, omit the overwrite mode. For append-only
 ingestion into a table that already exists, open the table and call `add(...)` instead of
 `create_table(...)`. For repeatable setup with `exist_ok` / `existOk`, see
-[Handle existing tables](/tables/create#handle-existing-tables).
+[Handle existing tables](/ingestion#handle-existing-tables).
 </Info>
 
 For more ingestion patterns, including PyArrow tables, Python `pyarrow.dataset.Dataset` inputs,
 empty tables, and Python `LanceModel` schemas with nested fields, see
-[Ingesting data](/tables/create/).
+[Ingesting data](/ingestion).
 
 ### From Pandas DataFrames {#from-pandas-dataframes}
 <Badge color="green">Python Only</Badge>
@@ -644,7 +644,7 @@ advanced features of LanceDB. Below are some suggested next pages.
   <Card
     title="Ingesting data"
     icon="cookie"
-    href="/tables/create/"
+    href="/ingestion"
   >
     Learn the different approaches to creating and ingesting data into LanceDB tables from various sources.
   </Card>
