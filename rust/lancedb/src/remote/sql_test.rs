@@ -7,7 +7,7 @@ use arrow_array::builder::StringDictionaryBuilder;
 use arrow_array::{Array, Int64Array, StringArray, types::Int32Type};
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
-use arrow_flight::sql::{Any, CommandStatementQuery};
+use arrow_flight::sql::{Any, CommandStatementQuery, CommandStatementSubstraitPlan};
 use arrow_flight::{
     Action, ActionType, CancelFlightInfoResult, Criteria, Empty, FlightData, FlightEndpoint,
     FlightInfo, HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
@@ -19,6 +19,8 @@ use tonic::{Request, Response, Status, Streaming};
 
 use super::*;
 use crate::remote::client::HeaderProvider;
+
+type SubstraitPlans = Arc<std::sync::Mutex<Vec<(Vec<u8>, String)>>>;
 
 #[derive(Debug, Default)]
 struct DelayedHeaderProvider {
@@ -70,6 +72,7 @@ struct TestSqlService {
     first_continuation_count: Arc<AtomicUsize>,
     transient_poll_failures: Arc<AtomicUsize>,
     headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
+    substrait_plans: SubstraitPlans,
     result: RecordBatch,
     large_result: RecordBatch,
     dictionary_result: RecordBatch,
@@ -118,6 +121,7 @@ impl Default for TestSqlService {
             first_continuation_count: Arc::new(AtomicUsize::new(0)),
             transient_poll_failures: Arc::new(AtomicUsize::new(0)),
             headers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            substrait_plans: Arc::new(std::sync::Mutex::new(Vec::new())),
             result,
             large_result,
             dictionary_result,
@@ -179,9 +183,22 @@ impl FlightService for TestSqlService {
         let command = Any::decode(request.get_ref().cmd.as_ref())
             .ok()
             .and_then(|any| any.unpack::<CommandStatementQuery>().ok().flatten());
+        let substrait = Any::decode(request.get_ref().cmd.as_ref())
+            .ok()
+            .and_then(|any| any.unpack::<CommandStatementSubstraitPlan>().ok().flatten());
         let (query, stage) = if let Some(command) = command {
             self.query_count.fetch_add(1, Ordering::SeqCst);
             (command.query, 0_u8)
+        } else if let Some(command) = substrait {
+            let plan = command
+                .plan
+                .ok_or_else(|| Status::invalid_argument("missing Substrait plan"))?;
+            self.query_count.fetch_add(1, Ordering::SeqCst);
+            self.substrait_plans
+                .lock()
+                .unwrap()
+                .push((plan.plan.to_vec(), plan.version));
+            ("SUBSTRAIT".to_string(), 0_u8)
         } else {
             let continuation = std::str::from_utf8(request.get_ref().cmd.as_ref())
                 .map_err(|_| Status::invalid_argument("invalid continuation"))?;
@@ -399,6 +416,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
     let incremental_finished = service.incremental_finished.clone();
     let first_continuation_count = service.first_continuation_count.clone();
     let headers = service.headers.clone();
+    let substrait_plans = service.substrait_plans.clone();
     let expected = service.result.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(
@@ -438,6 +456,15 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
     assert_eq!(client.initialized_client_count().await, 0);
     assert!(!format!("{client:?}").contains("test-key"));
     assert!(!format!("{client:?}").contains("static-secret"));
+
+    client
+        .submit_substrait(&[1, 2, 3], "0.85.0", &["public".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(
+        substrait_plans.lock().unwrap().as_slice(),
+        &[(vec![1, 2, 3], "0.85.0".to_string())]
+    );
 
     let mut timeout_client_config = ClientConfig::default();
     timeout_client_config.timeout_config.timeout = Some(Duration::from_millis(50));
@@ -936,7 +963,7 @@ async fn submits_polls_fetches_cancels_and_reuses_client() {
     assert!(registry.get(stale_id).is_none());
 
     assert_eq!(client.initialized_client_count().await, 1);
-    assert_eq!(query_count.load(Ordering::SeqCst), 21);
+    assert_eq!(query_count.load(Ordering::SeqCst), 22);
     assert_eq!(do_get_count.load(Ordering::SeqCst), 17);
     assert_eq!(cancel_count.load(Ordering::SeqCst), 15);
     assert_eq!(first_result, vec![expected.clone()]);

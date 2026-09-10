@@ -48,15 +48,18 @@ datafusion-common = { version = "54.0.0", default-features = false }
 datafusion-execution = "54.0.0"
 datafusion-expr = "54.0.0"
 datafusion-functions = "54.0.0"
+datafusion-functions-aggregate = "54.0.0"
 datafusion-physical-plan = "54.0.0"
 datafusion-physical-expr = "54.0.0"
 datafusion-sql = "54.0.0"
+datafusion-substrait = { version = "54.0.0", default-features = false }
 env_logger = "0.11"
 half = { "version" = "2.7.1", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0.3"
 log = "0.4"
+prost = "0.14"
 metrics = "0.24"
 metrics-util = "0.19"
 moka = { version = "0.12", features = ["future"] }

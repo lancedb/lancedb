@@ -2501,6 +2501,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.branch.clone()
     }
 
+    fn is_time_travel(&self) -> bool {
+        self.freshness.lock().unwrap().pinned
+    }
+
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
         let mut request = self
             .client

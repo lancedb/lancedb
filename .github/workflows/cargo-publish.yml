@@ -31,7 +31,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y protobuf-compiler libssl-dev
+          sudo apt install -y libssl-dev
+          curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-x86_64.zip -o /tmp/protoc.zip
+          sudo unzip -o /tmp/protoc.zip -d /usr/local
+          rm /tmp/protoc.zip
+          protoc --version
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - name: Publish the package
