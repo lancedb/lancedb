@@ -4,7 +4,7 @@
 import { Field, LargeBinary, Struct, Utf8 } from "apache-arrow";
 import { BlobFile as NativeBlobFile } from "./native";
 
-export const BLOB_V2_EXTENSION_NAME = "lance.blob.v2";
+const BLOB_V2_EXTENSION_NAME = "lance.blob.v2";
 
 const INLINE_SIZE_THRESHOLD_KEY = "lance-encoding:blob-inline-size-threshold";
 const DEDICATED_SIZE_THRESHOLD_KEY =

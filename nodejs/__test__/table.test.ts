@@ -2582,6 +2582,64 @@ describe("when dealing with blob columns", () => {
     ).toEqual([beta.length, null]);
   });
 
+  it("rejects blob fields inside a fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("frames", new FixedSizeList(2, blob("frame")), true),
+    ]);
+    await expect(
+      db.createTable(
+        "fsl_blobs",
+        [{ id: 1n, frames: [Buffer.from("a"), Buffer.from("b")] }],
+        { schema },
+      ),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
+  it("rejects blob fields inside a nested fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "clip",
+        new Struct([
+          new Field("frames", new FixedSizeList(2, blob("frame")), true),
+        ]),
+        true,
+      ),
+    ]);
+    await expect(
+      db.createTable(
+        "nested_fsl_blobs",
+        [
+          {
+            id: 1n,
+            clip: { frames: [Buffer.from("a"), Buffer.from("b")] },
+          },
+        ],
+        { schema },
+      ),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
+  it("rejects an Arrow table with blob fields inside a fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("frames", new FixedSizeList(2, blob("frame")), true),
+    ]);
+    await expect(
+      db.createTable("fsl_blobs_ipc", new ArrowTable(schema)),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
   function descriptorSizes(values: unknown): (number | null)[] {
     return Array.from(
       values as Iterable<{ size?: bigint | number } | null>,

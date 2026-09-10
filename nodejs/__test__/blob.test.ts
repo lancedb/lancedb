@@ -1,32 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import {
-  Field,
-  FixedSizeList,
-  Int64,
-  List,
-  Schema,
-  Struct,
-  Utf8,
-} from "apache-arrow";
+import { Field, Int64, List, Schema, Struct, Utf8 } from "apache-arrow";
 import { makeArrowTable } from "../lancedb/arrow";
-import {
-  BLOB_V2_EXTENSION_NAME,
-  BlobFile,
-  blob,
-  coerceBlobValue,
-  isBlobField,
-} from "../lancedb/blob";
+import { BlobFile, blob, coerceBlobValue, isBlobField } from "../lancedb/blob";
 
 describe("blob()", () => {
   it("marks the field as lance.blob.v2", () => {
     const field = blob("image", { nullable: false });
     expect(field.nullable).toBe(false);
     expect(isBlobField(field)).toBe(true);
-    expect(field.metadata.get("ARROW:extension:name")).toBe(
-      BLOB_V2_EXTENSION_NAME,
-    );
+    expect(field.metadata.get("ARROW:extension:name")).toBe("lance.blob.v2");
   });
 
   it("writes encoding thresholds as field metadata", () => {
@@ -197,30 +181,5 @@ describe("makeArrowTable blob columns", () => {
     );
     expect(items[0].name).toBe("one");
     expect(Buffer.from(items[0].image.data!).toString()).toBe("alpha");
-  });
-
-  it("coerces Buffer elements inside a fixed-size list and keeps null rows", () => {
-    const schema = new Schema([
-      new Field("id", new Int64(), true),
-      new Field("frames", new FixedSizeList(2, blob("frame")), true),
-    ]);
-    const table = makeArrowTable(
-      [
-        { id: 1n, frames: [Buffer.from("a"), Buffer.from("b")] },
-        { id: 2n, frames: null },
-        { id: 3n, frames: [Buffer.from("c"), Buffer.from("d")] },
-      ],
-      { schema },
-    );
-    const frames = table.getChild("frames")!;
-    expect(frames.nullCount).toBe(1);
-    const rows = frames.toArray();
-    expect(rows[1]).toBeNull();
-    const first = Array.from(rows[0] as Iterable<{ data: Uint8Array | null }>);
-    expect(Buffer.from(first[0].data!).toString()).toBe("a");
-    expect(Buffer.from(first[1].data!).toString()).toBe("b");
-    const third = Array.from(rows[2] as Iterable<{ data: Uint8Array | null }>);
-    expect(Buffer.from(third[0].data!).toString()).toBe("c");
-    expect(Buffer.from(third[1].data!).toString()).toBe("d");
   });
 });

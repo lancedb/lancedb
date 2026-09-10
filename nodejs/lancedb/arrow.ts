@@ -431,12 +431,14 @@ export function makeArrowTable(
       throw new Error("A schema must be provided if data is empty");
     } else {
       schema = new Schema(schema.fields, schemaMetadata);
+      validateBlobSchema(schema);
       return new ArrowTable(schema);
     }
   }
 
   let inferredSchema = inferSchema(data, schema, opt);
   inferredSchema = new Schema(inferredSchema.fields, schemaMetadata);
+  validateBlobSchema(inferredSchema);
 
   const finalColumns: Record<string, Vector> = {};
   for (const field of inferredSchema.fields) {
@@ -444,6 +446,35 @@ export function makeArrowTable(
   }
 
   return new ArrowTable(inferredSchema, finalColumns);
+}
+
+function validateBlobSchema(schema: Schema): void {
+  for (const field of schema.fields) {
+    validateBlobField(field);
+  }
+}
+
+function validateBlobField(field: Field): void {
+  if (
+    isFixedSizeList(field.type) &&
+    containsBlobField(field.type.children[0])
+  ) {
+    throw new Error(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  }
+  for (const child of field.type.children ?? []) {
+    validateBlobField(child);
+  }
+}
+
+function containsBlobField(field: Field): boolean {
+  if (isBlobField(field)) {
+    return true;
+  }
+  return (field.type.children ?? []).some((child: Field) =>
+    containsBlobField(child),
+  );
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -504,10 +535,7 @@ function transposeData(
     });
     return arrowMakeVector(structData);
   }
-  if (
-    (isList(field.type) || isFixedSizeList(field.type)) &&
-    needsBlobCoercion(field.type.children[0])
-  ) {
+  if (isList(field.type) && containsBlobField(field.type.children[0])) {
     return transposeListData(data, field, valuesPath);
   }
   const values = data.map((datum) => valueAtPath(datum, valuesPath));
@@ -538,33 +566,21 @@ function transposeListData(
   field: Field,
   valuesPath: string[],
 ): Vector {
-  const listType = field.type as List | FixedSizeList;
+  const listType = field.type as List;
   const childField = listType.children[0];
   const lists = data.map((datum) => valueAtPath(datum, valuesPath));
   const flattened: Record<string, unknown>[] = [];
   const validity: boolean[] = [];
   const offsets: number[] = [0];
-  const listSize = isFixedSizeList(listType) ? listType.listSize : undefined;
 
   for (const list of lists) {
     if (list == null) {
       validity.push(false);
-      if (listSize !== undefined) {
-        // Null fixed-size lists still need child slots to preserve later positions.
-        for (let i = 0; i < listSize; i++) {
-          flattened.push({ [childField.name]: null });
-        }
-      }
       offsets.push(flattened.length);
       continue;
     }
     if (!Array.isArray(list)) {
       throw new Error(`expected an array for list field '${field.name}'`);
-    }
-    if (listSize !== undefined && list.length !== listSize) {
-      throw new Error(
-        `expected ${listSize} elements for list field '${field.name}'`,
-      );
     }
     validity.push(true);
     for (const element of list) {
@@ -575,18 +591,6 @@ function transposeListData(
 
   const childVector = transposeData(flattened, childField, []);
   const nullCount = validity.filter((valid) => !valid).length;
-  const child = childVector.data[0];
-  if (isFixedSizeList(listType)) {
-    return arrowMakeVector(
-      makeData({
-        type: listType,
-        length: lists.length,
-        nullCount,
-        nullBitmap: nullCount > 0 ? arrowUtil.packBools(validity) : undefined,
-        child,
-      }),
-    );
-  }
   return arrowMakeVector(
     makeData({
       type: listType,
@@ -594,17 +598,8 @@ function transposeListData(
       nullCount,
       nullBitmap: nullCount > 0 ? arrowUtil.packBools(validity) : undefined,
       valueOffsets: Int32Array.from(offsets),
-      child,
+      child: childVector.data[0],
     }),
-  );
-}
-
-function needsBlobCoercion(field: Field): boolean {
-  if (isBlobField(field)) {
-    return true;
-  }
-  return (field.type.children ?? []).some((child: Field) =>
-    needsBlobCoercion(child),
   );
 }
 
@@ -1057,6 +1052,7 @@ export async function fromTableToBuffer(
     schema = sanitizeSchema(schema);
   }
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  validateBlobSchema(tableWithEmbeddings.schema);
   const writer = RecordBatchFileWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
 }

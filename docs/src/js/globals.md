@@ -157,10 +157,6 @@
 - [TableLike](type-aliases/TableLike.md)
 - [TokenizeTableOptions](type-aliases/TokenizeTableOptions.md)
 
-## Variables
-
-- [BLOB\_V2\_EXTENSION\_NAME](variables/BLOB_V2_EXTENSION_NAME.md)
-
 ## Functions
 
 - [RecordBatchIterator](functions/RecordBatchIterator.md)
