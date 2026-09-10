@@ -54,6 +54,14 @@ logger = logging.getLogger(__name__)
 # distinct seeds for any practically encountered epoch count.
 _EPOCH_PRIME = 100003
 
+# Multiplier used to give each split its own in-RAM row permutation seed in
+# 2-phase mode (distinct from _EPOCH_PRIME so the two offsets can't collide).
+_SPLIT_PRIME = 1000003
+
+# Number of blocks kept in RAM per split at once for 2-phase's row-shuffle
+# window.  Fixed for now; will become a real sliding window later.
+_TWO_PHASE_WINDOW_BLOCKS = 3
+
 DEFAULT_READ_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
 
@@ -430,8 +438,8 @@ class StreamingDataset(IterableDataset):
             )
         if io_queue_depth <= 0:
             raise ValueError("io_queue_depth must be greater than 0")
-        if block_size is not None and block_size <= 0:
-            raise ValueError("block_size must be greater than 0")
+        if block_size is not None and block_size <= 1:
+            raise ValueError("block_size must be greater than 1")
         if transform_parallelism is not None and transform_parallelism <= 0:
             raise ValueError("transform_parallelism must be greater than 0")
         if pack_sequences is not None:
@@ -598,7 +606,7 @@ class StreamingDataset(IterableDataset):
             # Arrow-backed permutation table like the 1-phase row mapping.
             self._block_perm: list[int] = block_order
             self._perm_table = None
-        else:
+        else: #1-phase shuffled read
             # Build the permutation table once, deterministically.
             builder = permutation_builder(table)
             if filter is not None:
@@ -760,34 +768,112 @@ class StreamingDataset(IterableDataset):
         if not my_splits:
             return
 
-        # Set identity transform on each Permutation so __getitems__ returns
-        # the raw RecordBatch.  Stage 2 applies the real transform.
-        permutations: list[Permutation] = []
-        initial_samples: list[int] = []
-        initial_positions: list[int] = []
-        for split_idx in my_splits:
-            perm = Permutation.from_tables(
-                self._table, self._perm_table, split=split_idx
-            )
-            if self._columns is not None:
-                perm = perm.select_columns(self._columns)
-            perm = perm.with_transform(Transforms.arrow2arrow)
-            sample_count = self._resume_samples.get(split_idx, self._resume_offset)
-            # Both modes resume from absolute permutation positions. Packing
-            # stores them separately because it also checkpoints partial blocks.
-            start_pos = (
-                self._pack_consumed[split_idx]
-                if self._pack_sequences is not None
-                else self._resume_positions.get(split_idx, sample_count)
-            )
-            if start_pos > 0:
-                perm = perm.with_skip(start_pos)
-            initial_samples.append(sample_count)
-            initial_positions.append(start_pos)
-            permutations.append(perm)
+        if self._block_size is None:
+            # 1-phase: set identity transform on each Permutation so
+            # __getitems__ returns the raw RecordBatch.  Stage 2 applies the
+            # real transform.
+            permutations: list[Permutation] = []
+            initial_samples: list[int] = []
+            initial_positions: list[int] = []
+            for split_idx in my_splits:
+                perm = Permutation.from_tables(
+                    self._table, self._perm_table, split=split_idx
+                )
+                if self._columns is not None:
+                    perm = perm.select_columns(self._columns)
+                perm = perm.with_transform(Transforms.arrow2arrow)
+                sample_count = self._resume_samples.get(split_idx, self._resume_offset)
+                # Both modes resume from absolute permutation positions. Packing
+                # stores them separately because it also checkpoints partial blocks.
+                start_pos = (
+                    self._pack_consumed[split_idx]
+                    if self._pack_sequences is not None
+                    else self._resume_positions.get(split_idx, sample_count)
+                )
+                if start_pos > 0:
+                    perm = perm.with_skip(start_pos)
+                initial_samples.append(sample_count)
+                initial_positions.append(start_pos)
+                permutations.append(perm)
 
-        n = len(permutations)
-        split_sizes = [perm.num_rows for perm in permutations]
+            n = len(permutations)
+            split_sizes = [perm.num_rows for perm in permutations]
+        else:
+            # 2-phase: assign contiguous chunks of the block permutation to
+            # each split.  With b = self._num_blocks blocks and num_splits
+            # splits, split k owns
+            # self._block_perm[k * (b // num_splits) : (k + 1) * (b // num_splits)]
+            # -- the surplus b % num_splits blocks are dropped, mirroring how
+            # 1-phase drops surplus rows to keep all splits the same length.
+            blocks_per_split = self._num_blocks // self._num_splits
+            split_blocks: list[list[int]] = []
+            for split_idx in my_splits:
+                start = split_idx * blocks_per_split
+                end = start + blocks_per_split
+                split_blocks.append(self._block_perm[start:end])
+
+            block_size = self._block_size
+            num_rows = self._num_rows
+            lance_ds = self._table.to_lance()
+
+            def _read_block(block_id: int) -> pa.Table:
+                row_start = block_id * block_size
+                row_end = min(row_start + block_size, num_rows)
+                scanner = lance_ds.scanner(
+                    columns=self._columns,
+                    filter=self._filter,
+                    offset=row_start,
+                    limit=row_end - row_start,
+                )
+                return scanner.to_table()
+
+            def _fetch_and_permute_window(split_pos: int) -> pa.Table:
+                # Read this split's first _TWO_PHASE_WINDOW_BLOCKS blocks as
+                # contiguous range reads (each is one object-storage scan,
+                # not a row-id take), concatenate them into one in-RAM
+                # buffer, then shuffle its rows with a permutation unique to
+                # this split so windows in different splits don't repeat the
+                # same row order.
+                block_ids = split_blocks[split_pos][:_TWO_PHASE_WINDOW_BLOCKS]
+                window = pa.concat_tables([_read_block(b) for b in block_ids])
+
+                split_idx = my_splits[split_pos]
+                row_seed = (
+                    self._shuffle_seed
+                    + self._epoch * _EPOCH_PRIME
+                    + (split_idx + 1) * _SPLIT_PRIME
+                )
+                row_order = list(range(window.num_rows))
+                random.Random(row_seed).shuffle(row_order)
+                return window.take(row_order)
+
+            with ThreadPoolExecutor(max_workers=len(my_splits)) as window_pool:
+                windows = list(
+                    window_pool.map(_fetch_and_permute_window, range(len(my_splits)))
+                )
+
+            # No resume/skip support yet in 2-phase: every split starts fresh.
+            n = len(my_splits)
+            initial_samples = [0] * n
+            initial_positions = [0] * n
+            # NOTE: for now a split's "size" is just its first window (until
+            # the sliding window is implemented), so a split is exhausted
+            # after its first _TWO_PHASE_WINDOW_BLOCKS blocks -- epochs are
+            # temporarily truncated to that many blocks per split.
+            split_sizes = [window.num_rows for window in windows]
+
+            # Chop each split's permuted window into read_batch_size chunks,
+            # in the same (abs_start, RecordBatch) shape stage 1 normally
+            # produces, so stage 2 and the main loop's round-robin need no
+            # changes at all.
+            two_phase_initial_batches: list[list[tuple[int, pa.RecordBatch]]] = []
+            for window in windows:
+                pos = 0
+                chunks = []
+                for batch in window.to_batches(max_chunksize=self._read_batch_size):
+                    chunks.append((pos, batch))
+                    pos += batch.num_rows
+                two_phase_initial_batches.append(chunks)
         local_consumed = [0] * n
         # Permutation position each split has consumed through (absolute,
         # i.e. counted from the start of the unskipped split).  Runs ahead of
@@ -835,6 +921,16 @@ class StreamingDataset(IterableDataset):
         raw_batches = [deque() for _ in range(n)]  # (abs_start, RecordBatch)
         tx_pending = [deque() for _ in range(n)]  # Future[list[(abs_pos, row)]]
         cooked = [deque() for _ in range(n)]  # (abs_pos, row) ready to yield
+
+        if self._block_size is not None:
+            # 2-phase already fetched+permuted each split's window above;
+            # seed raw_batches with it directly and mark stage 1 "done" for
+            # now (fetch_head == split_sizes) so _fill_io/_submit_io, which
+            # only know how to read via the 1-phase `permutations` list,
+            # are never invoked in this mode.
+            for i in range(n):
+                raw_batches[i].extend(two_phase_initial_batches[i])
+                fetch_head[i] = split_sizes[i]
 
         # Limit simultaneous transforms to transform_workers across all splits.
         tx_semaphore = threading.Semaphore(transform_workers)
