@@ -1,0 +1,84 @@
+---
+title: REST API Reference
+sidebarTitle: "Overview"
+description: "API reference for LanceDB"
+
+---
+
+[Lance REST Namespace](https://lance.org/format/namespace/) spec
+is an OpenAPI protocol that enables reading, writing and managing Lance tables by connecting
+those metadata services or building a custom metadata server in a standardized way.
+
+LanceDB OSS allows you to interface with Lance tables via the REST Namespace.
+LanceDB Enterprise provides an extended REST API with
+additional endpoints for managing tables and data.
+If you have specific needs or questions about the Enterprise REST API Namespace,
+please [contact us](mailto:support@lancedb.com).
+
+## Authentication {#authentication}
+
+<Badge color="red">Enterprise</Badge>
+
+All HTTP requests to LanceDB APIs must contain an <u>x-api-key</u> header that specifies a valid API key and
+must be encoded as JSON or Arrow RPC.
+
+To authenticate to the Enterprise REST API, you need the endpoint for your deployment and a valid API key for that deployment.
+
+### Get your Enterprise credentials {#get-your-enterprise-credentials}
+
+1. Obtain the following values from your LanceDB administrator or the LanceDB team that provisioned your Enterprise deployment:
+   - an API key
+   - your Enterprise REST endpoint
+   - your database name, if your deployment uses a private endpoint or `host_override`
+
+2. Export those values in your terminal:
+
+```bash
+export LANCEDB_API_KEY="<your-api-key>"
+export LANCEDB_URI="https://your-enterprise-endpoint.com"
+export LANCEDB_DATABASE="your-database-name"
+```
+
+3. If your Enterprise deployment is private, connect through the private network endpoint provided for your deployment. For example, Azure Private Link deployments commonly use a private IP or an internal DNS name as the endpoint.
+
+### Verify authentication {#verify-authentication}
+
+4. Check that you can reach the deployment and list tables:
+
+```bash
+curl -X GET "$LANCEDB_URI/v1/tables" \
+   -H "Content-Type: application/json" \
+   -H "x-api-key: $LANCEDB_API_KEY" \
+   -H "x-lancedb-database: $LANCEDB_DATABASE"
+```
+
+If your deployment endpoint already includes the database host name, you can omit the `x-lancedb-database` header.
+
+5. Create a table to confirm write access. Let's call it `words`.
+
+```bash
+curl -X POST "$LANCEDB_URI/v1/tables/words" \
+   -H "Content-Type: application/vnd.apache.arrow.stream" \
+   -H "x-api-key: $LANCEDB_API_KEY" \
+   -H "x-lancedb-database: $LANCEDB_DATABASE"
+```
+
+6. Check that the table has been created:
+
+```bash
+curl -X GET "$LANCEDB_URI/v1/tables" \
+   -H "Content-Type: application/json" \
+   -H "x-api-key: $LANCEDB_API_KEY" \
+   -H "x-lancedb-database: $LANCEDB_DATABASE"
+```
+
+That's it -- you're connected! Now, you can start adding data and querying it.
+You can visit the tutorial section to build your own applications with LanceDB.
+
+<Card
+   title="Tutorials"
+   icon="book"
+   href="/tutorials/"
+>
+   Check out our tutorials on building various applications with LanceDB.
+</Card>

@@ -1,0 +1,113 @@
+---
+title: "Data evolution"
+sidebarTitle: "Data Evolution"
+description: "Derive new columns from data already in the table, without rewriting what is already there."
+icon: wand-magic-sparkles
+keywords: ["data evolution", "derived columns", "add_columns", "zero copy", "feature engineering"]
+---
+
+import {
+    PySchemaAddSetup as SchemaAddSetup,
+    TsSchemaAddSetup as TsSchemaAddSetup,
+    RsSchemaAddSetup as RsSchemaAddSetup,
+    PyAddColumnsCalculated as AddColumnsCalculated,
+    TsAddColumnsCalculated as TsAddColumnsCalculated,
+    RsAddColumnsCalculated as RsAddColumnsCalculated,
+    PyAddFeatureColumnsSql as AddFeatureColumnsSql,
+    TsAddFeatureColumnsSql as TsAddFeatureColumnsSql,
+    RsAddFeatureColumnsSql as RsAddFeatureColumnsSql,
+} from '/snippets/tables.mdx';
+
+Data evolution is adding **values** derived from what a table already holds.
+[Schema evolution](/tables/schema) changes the table's shape; this fills the
+shape with something new.
+
+The reason it is cheap is the format. Adding a derived column writes only that
+column -- the existing data, which is the expensive part on a multimodal table,
+is never rewritten. See [why that works](/basics/lance#evolution).
+
+## Set up the example table {#set-up-the-example-table}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaAddSetup}
+    </CodeBlock>
+</CodeGroup>
+
+## Add derived columns {#add-derived-columns}
+
+You can add new columns that are derived from existing data using SQL expressions.
+For feature engineering on large existing tables, group related derived features into
+one `add_columns` operation instead of running many separate writes. This creates one
+new table version for the schema change and computes the new columns from the existing
+rows, which avoids growing the table's version history with many small updates.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddColumnsCalculated}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsCalculated}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsCalculated}
+    </CodeBlock>
+</CodeGroup>
+
+The same call can add multiple derived columns at once. For example, if you are
+building several lightweight features from existing product fields, pass all of the
+new column expressions together:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddFeatureColumnsSql}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddFeatureColumnsSql}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddFeatureColumnsSql}
+    </CodeBlock>
+</CodeGroup>
+
+<Info>
+LanceDB `add_columns` does not currently accept Python callables, batch UDFs, or
+PyArrow `RecordBatch` iterators for populating new columns. New column values must be
+defined with SQL expressions, or added as NULL columns from an Arrow field or schema.
+If your transformation cannot be expressed in SQL, compute the values outside
+`add_columns` before writing them back through another workflow.
+</Info>
+
+## When SQL is not enough {#beyond-sql}
+
+The expressions above are evaluated once, as part of the call. Two other shapes
+exist when that does not fit:
+
+- A [computed column](/feature-engineering/add-computed-column) declares the
+  expression and leaves the column empty, so you choose when the work happens.
+  That is the right default on a large table.
+- A [function](/management/function) fills a column with Python, for values SQL
+  cannot express -- an embedding, a model call, an image decode.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Add a computed column" icon="table-columns" href="/feature-engineering/add-computed-column">
+    Declare now, fill later.
+  </Card>
+  <Card title="Schema evolution" icon="boxes-stacked" href="/tables/schema">
+    Change the table's shape instead of its contents.
+  </Card>
+</CardGroup>

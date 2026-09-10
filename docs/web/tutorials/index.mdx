@@ -1,0 +1,42 @@
+---
+title: "Use cases"
+sidebarTitle: "Overview"
+description: "Worked examples of building with LanceDB, by what you are building."
+---
+
+Every example is one page in the sidebar, grouped by what it builds. The
+documentation explains how a feature works; these show it doing something.
+
+Examples marked as notebooks live in the
+[vectordb-recipes](https://github.com/lancedb/vectordb-recipes) repository and
+are runnable in Colab; the rest are written up here.
+
+## Where to start {#start}
+
+<CardGroup cols={2}>
+  <Card title="Search" icon="magnifying-glass" href="/tutorials/search/hybrid-search-beir">
+    Vector, multi-vector, hybrid and full-text retrieval.
+  </Card>
+  <Card title="RAG" icon="robot" href="/tutorials/agents/contextual-rag">
+    Retrieval-augmented generation and agent applications.
+  </Card>
+  <Card title="Feature engineering" icon="wand-magic-sparkles" href="/tutorials/feature-engineering/feature-engineering-101">
+    Deriving columns, materialized views, experimenting on branches.
+  </Card>
+  <Card title="Training" icon="graduation-cap" href="/training/object-detection">
+    Curating data and training models directly on a table.
+  </Card>
+</CardGroup>
+
+## The features these use {#read-the-docs}
+
+| Feature | What it covers |
+|:--------|:------------|
+| [Vector search](/search/vector-search) | Similarity search, distance metrics, and tuning it. |
+| [Full-text search](/search/full-text-search) | Keyword search over text columns. |
+| [Hybrid search](/search/hybrid-search) | Keyword and vector search combined. |
+| [Multi-vector search](/search/multivector-search) | Several embeddings per document. |
+| [Reranking](/reranking) | Reordering results to improve the top-k. |
+| [Feature engineering](/feature-engineering) | Deriving columns and tables from data already stored. |
+| [Materialized views](/management/materialized-view) | A table defined by a query, refreshed incrementally. |
+| [Training](/training) | Reading a table into a data loader. |

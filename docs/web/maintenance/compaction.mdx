@@ -1,0 +1,101 @@
+---
+title: "Compaction and cleanup"
+sidebarTitle: "Compaction"
+description: "Merge small files, prune old versions, and fold new rows into existing indexes."
+icon: broom
+---
+
+Every write commits a new table version, and versions accumulate: small files
+from frequent appends, superseded files from updates and deletes, and rows added
+since an index was built. `optimize()` addresses all three.
+
+It is modelled after `VACUUM` in PostgreSQL — routine housekeeping that a table
+needs periodically rather than a repair for something broken.
+
+## What it does {#what-it-does}
+
+```python
+table.optimize()
+```
+
+Three operations, in one call:
+
+| | |
+| --- | --- |
+| **Compaction** | merges small files into larger ones |
+| **Prune** | removes versions older than the retention window |
+| **Index** | folds newly added rows into existing indexes |
+
+The third is the one people miss. An [index](/indexing) does not
+automatically cover rows appended after it was built — those rows are still
+searchable, but by scanning rather than through the index. Running `optimize()`
+is what brings them under it.
+
+## Retention {#retention}
+
+```python
+from datetime import timedelta
+
+table.optimize(cleanup_older_than=timedelta(days=30))
+```
+
+`cleanup_older_than` defaults to **7 days**. Versions older than that are
+removed, along with the files only they referenced.
+
+The latest version is never removed, whatever you pass — `timedelta(0)` prunes
+everything except it.
+
+<Warning>
+Pruning is what makes [time travel](/tables/versioning) finite. A version
+outside the retention window is gone, and a tag or branch pointing at it no
+longer resolves.
+
+If you rely on reading old versions, set the window to cover the range you need
+before running this, not after.
+</Warning>
+
+## Files from failed transactions {#unverified}
+
+A write that fails partway can leave files that look like an operation still in
+progress. `optimize()` will not remove them until they are at least seven days
+old, because it cannot tell them apart from a live write.
+
+```python
+table.optimize(delete_unverified=True)
+```
+
+<Warning>
+`delete_unverified=True` removes them regardless of age. Only set it when you
+can guarantee **no other process is writing to the table** — otherwise it can
+delete files belonging to a write that is genuinely in progress, and corrupt the
+table.
+</Warning>
+
+## Retraining indexes {#retrain}
+
+```python
+table.optimize(retrain=True)
+```
+
+Folding new rows into an index preserves the structure the index was trained on.
+When the data has shifted enough that the structure itself is a poor fit — a
+vector index whose clusters no longer reflect the distribution — `retrain=True`
+rebuilds it rather than extending it.
+
+More expensive than a normal optimize, and worth it after a large ingest that
+changed the shape of the data rather than just its volume.
+
+## When to run it {#when}
+
+There is no background compactor: `optimize()` runs when you call it.
+
+Frequent small appends are what make it necessary, because each one commits
+files. A table written in a few large batches needs it rarely; one taking
+continuous small writes needs it on a schedule.
+
+<Note>
+Compaction rewrites files, which conflicts with a concurrent
+[computed-column refresh](/feature-engineering/add-computed-column) or
+[view refresh](/feature-engineering/materialized-views) planned against the
+version it replaces. Sequence them rather than running both at once.
+</Note>

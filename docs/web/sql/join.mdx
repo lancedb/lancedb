@@ -1,0 +1,71 @@
+---
+title: "Joins"
+sidebarTitle: "Join"
+description: "Combining rows from more than one table, including across namespaces."
+icon: link
+keywords: ["join", "inner", "left", "outer", "cross", "namespace"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+Joining is the other thing the query builders cannot do. A question spanning two
+tables is a SQL question.
+
+## The join types {#types}
+
+```sql
+SELECT d.title, c.name
+FROM documents AS d
+JOIN categories AS c ON c.id = d.category_id
+```
+
+| | What it keeps |
+| --- | --- |
+| `[INNER] JOIN` | rows matching on both sides |
+| `LEFT [OUTER] JOIN` | every left row, nulls where the right has no match |
+| `RIGHT [OUTER] JOIN` | every right row |
+| `FULL [OUTER] JOIN` | every row from both |
+| `CROSS JOIN` | every combination -- the product of the two |
+
+`USING (col)` is shorthand for an equality join on a shared column name, and
+avoids repeating it in the select list.
+
+## Across namespaces {#namespaces}
+
+Tables in different [namespaces](/namespaces) join by their dotted paths -- the
+catalog is one catalog, so there is nothing to federate:
+
+```sql
+SELECT c.id, u.email
+FROM prod.events.clicks AS c
+JOIN prod.reference.users AS u ON u.id = c.user_id
+```
+
+## Joining a search result {#search}
+
+[`fts()`](/sql/functions#fts) is a table function, so its result is a relation
+and joins like any other:
+
+```sql
+SELECT c.name, count(*) AS hits
+FROM fts('my_docs', 'puppy') AS m
+JOIN categories AS c ON c.id = m.category_id
+GROUP BY c.name
+ORDER BY hits DESC
+```
+
+That composition is the reason full-text search is a relation rather than a
+predicate -- a `WHERE` clause has nowhere to put the relevance score.
+
+## Performance {#performance}
+
+A join key with a [scalar index](/indexing/scalar-index) on it lets the planner
+look rows up rather than scan for them. Check with
+[`explain_plan`](/search/explain): an indexed key shows a `ScalarIndexQuery`,
+an unindexed one shows a `LanceScan` feeding the join.
+
+<Warning>
+Avoid selecting blob or vector columns you do not need on either side of a join.
+The join multiplies rows before projection is applied in some plans, so a wide
+column can be materialized many more times than the result has rows.
+</Warning>

@@ -71,7 +71,43 @@ are wrappers around the Rust library.
 * `nodejs`: Typescript package source code
 * `node`: **Deprecated** Typescript package source code
 * `java`: Java package source code
-* `docs`: Documentation source code
+* `docs/src`: SDK reference, built with mkdocs
+* `docs/web`: the open-source pages of [docs.lancedb.com](https://docs.lancedb.com)
+* `docs/web-tests`: the tests the documentation's code examples are extracted from
+
+## Documentation
+
+The open-source pages of [docs.lancedb.com](https://docs.lancedb.com) live in
+`docs/web`, so a change to behaviour and the change to the page describing it
+belong in the same pull request.
+
+Preview them locally — this serves `docs/web` on its own, with no other checkout:
+
+```bash
+npm i -g mint      # https://mintlify.com/docs/installation
+cd docs/web && mint dev
+```
+
+Enterprise pages live in a separate private repository and are merged in when
+the published site is assembled, so links to `/enterprise/...` and the SQL and
+Geneva sections will not resolve locally. Every open-source page does.
+
+Two things to know before editing:
+
+**Code examples are not written into the pages.** They live in real tests under
+`docs/web-tests/{py,ts,rs}`, are extracted into `docs/web/snippets/`, and are
+imported by the pages. Edit the test, then regenerate:
+
+```bash
+uv run docs/web-tests/mdx_snippets_gen.py -s docs/web-tests/py
+```
+
+An example that stops compiling fails the pull request that broke it.
+
+**Every heading carries an explicit `{#anchor}`.** Those anchors are how the
+Enterprise pages attach their additions to the right section, so they are
+assigned once and never regenerated. Leave an existing anchor alone even when
+you reword the heading above it; only new headings need a new one.
 
 ## Release process
 

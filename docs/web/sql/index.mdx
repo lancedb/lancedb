@@ -1,0 +1,63 @@
+---
+title: "SQL"
+sidebarTitle: "Overview"
+description: "Analytical SQL over the lakehouse: the dialect, where it runs, and what it can reach."
+icon: table-list
+keywords: ["sql", "datafusion", "flight sql", "analytics", "dialect"]
+---
+
+<Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local database
+has no engine to plan a statement, so `execute_query` raises there -- see
+[SDKs and SQL](/basics/apis).
+
+The dialect is [Apache DataFusion's](/sql/functions), so anything its reference
+documents for that version works here unchanged. What these pages cover is the
+parts that are LanceDB's: how a query reaches the engine, how Lance columns
+appear to it, and the extensions a lakehouse over multimodal data needs.
+
+## Where a query runs {#execution}
+
+Queries execute on the server. The client sends a statement and receives Arrow
+record batches -- nothing is converted to pandas or Python objects unless you
+ask for it. A query feeding training or downstream processing therefore pays no
+serialization cost to get there.
+
+Results stream. `execute_query` hands back a reader as soon as the first batch
+is ready rather than when the query finishes, so a large result set does not
+have to fit in memory before you can start reading it. See
+[Query and job](/basics/jobs#queries).
+
+## What differs from a warehouse {#differences}
+
+Two things, and both come from the storage being Lance rather than something
+SQL-shaped:
+
+- **Columns are Arrow types**, not a SQL type system mapped onto storage. A
+  vector column is a `FixedSizeList<Float32>` and behaves like one. See
+  [Data types](/basics/data-types).
+- **Row metadata is available as columns** -- `_rowid`, `_rowaddr`,
+  `_rowoffset` -- but only when named, so they stay out of `SELECT *`.
+
+## The statements {#statements}
+
+| | |
+| --- | --- |
+| [SELECT](/sql/select) | projection, filtering, ordering, set operations, CTEs |
+| [Aggregation](/sql/aggregation) | `GROUP BY`, `HAVING`, aggregate functions |
+| [Joins](/sql/join) | inner, outer, cross, and joining across namespaces |
+| [Window functions](/sql/window) | `OVER (...)`, ranking, running totals |
+| [Sampling](/sql/sampling) | `TABLESAMPLE`, for a random subset |
+| [Functions and types](/sql/functions) | the function set, and what LanceDB adds |
+
+Beyond reading, SQL also writes (`INSERT`, `UPDATE`, `DELETE`, `COPY`), manages
+the catalog (`CREATE TABLE`, `CREATE VIEW`, `DROP`, `SHOW`) and drives feature
+engineering (`CREATE FUNCTION`, `REFRESH COLUMN`, `REFRESH MATERIALIZED VIEW`).
+Those are documented with the operation rather than here -- see
+[Management](/management) and [Feature engineering](/feature-engineering).
+
+<Note>
+Vector search has no SQL form. It is a query-builder operation -- see
+[Vector search](/search/vector-search). Full-text search does: the
+[`fts()`](/sql/functions#fts) table function and the
+[`contains_tokens`](/sql/functions#contains-tokens) predicate.
+</Note>

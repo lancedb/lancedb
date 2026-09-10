@@ -1,0 +1,134 @@
+---
+title: Building Custom Rerankers
+sidebarTitle: "Custom rerankers"
+description: Learn how to create custom rerankers in LanceDB by extending the base Reranker class.
+icon: "code"
+---
+
+You can build your own custom reranker in LanceDB by subclassing the base `Reranker` class. At a
+minimum, you need to implement `rerank_hybrid()`, which is the logic that combines vector and
+full-text search results. Beyond that, you can optionally implement `rerank_vector()` and
+`rerank_fts()` if you want your reranker to also handle pure vector or pure full-text searches.
+
+Decide up front which surfaces — hybrid, pure vector, or pure full-text — your reranker should
+cover, and only override the ones you need. The base class leaves `rerank_vector()` and
+`rerank_fts()` unimplemented, so calling `.rerank(...)` on a single-modality search you haven't
+overridden raises `NotImplementedError` rather than silently returning unsorted results. That's a
+useful guard, but worth knowing about before you wire up a query path you didn't plan for.
+
+The Python base class exposes hybrid, vector-only, and FTS-only rerank hooks. TypeScript and Rust
+currently expose the custom reranker interface for hybrid reranking. In Rust, a custom reranker must
+also satisfy the trait bounds `Debug + Send + Sync`.
+
+## Interface {#interface}
+
+The `Reranker` base interface comes with a `merge_results()` method that can be used to combine the
+results of semantic and full-text search. This is a vanilla merging algorithm that simply concatenates
+the results and removes the duplicates without taking the scores into consideration. It only keeps the
+first copy of the row encountered. This works well in cases that don't require the scores of semantic
+and full-text search to combine the results. If you want to use the scores or want to support
+`return_score="all"`, you'll need to implement your own merging algorithm. The base
+`return_score` option accepts only `"relevance"` and `"all"`.
+
+Whichever methods you override, your reranker has one job on the way out: attach a
+`_relevance_score` column with the most relevant rows at the top. LanceDB will reject the result
+if that column is missing, and downstream `.limit(...)` calls trust the order you return, so
+sort descending before handing the table back.
+
+For vector-only reranking in Python, pass a text query to `.rerank(..., query_string="...")`.
+The vector query itself may be numeric, but `rerank_vector(query, vector_results)` still receives
+a string query so your reranker can score each candidate against the user's text intent.
+
+Below, we show the pseudocode of a custom reranker that combines the results of semantic and full-text
+search using a linear combination of the scores:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.rerankers import Reranker
+import pyarrow as pa
+
+class MyReranker(Reranker):
+    def __init__(self, param1, param2, ..., return_score="relevance"):
+        super().__init__(return_score)
+        self.param1 = param1
+        self.param2 = param2
+
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table):
+        # Use the built-in merging function
+        combined_result = self.merge_results(vector_results, fts_results)
+
+        # Do something with the combined results
+        # ...
+
+        # Return the combined results
+        return combined_result
+
+    def rerank_vector(self, query: str, vector_results: pa.Table):
+        # Do something with the vector results
+        # ...
+
+        # Return the vector results
+        return vector_results
+
+    def rerank_fts(self, query: str, fts_results: pa.Table):
+        # Do something with the FTS results
+        # ...
+
+        # Return the FTS results
+        return fts_results
+```
+</CodeGroup>
+
+## Example {#example}
+
+As an example, let's build custom reranker that enhances the Cohere Reranker by accepting a filter
+query, and accepts any other `CohereReranker` params as `kwargs`.
+
+<CodeGroup>
+```python Python icon="python"
+from typing import List, Union
+import pandas as pd
+from lancedb.rerankers import CohereReranker
+
+class ModifiedCohereReranker(CohereReranker):
+    def __init__(self, filters: Union[str, List[str]], **kwargs):
+        super().__init__(**kwargs)
+        filters = filters if isinstance(filters, list) else [filters]
+        self.filters = filters
+
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table)-> pa.Table:
+        combined_result = super().rerank_hybrid(query, vector_results, fts_results)
+        df = combined_result.to_pandas()
+        for filter in self.filters:
+            df = df.query("not text.str.contains(@filter)")
+
+        return pa.Table.from_pandas(df)
+
+    def rerank_vector(self, query: str, vector_results: pa.Table)-> pa.Table:
+        vector_results = super().rerank_vector(query, vector_results)
+        df = vector_results.to_pandas()
+        for filter in self.filters:
+            df = df.query("not text.str.contains(@filter)")
+
+        return pa.Table.from_pandas(df)
+
+    def rerank_fts(self, query: str, fts_results: pa.Table)-> pa.Table:
+        fts_results = super().rerank_fts(query, fts_results)
+        df = fts_results.to_pandas()
+        for filter in self.filters:
+            df = df.query("not text.str.contains(@filter)")
+
+        return pa.Table.from_pandas(df)
+```
+</CodeGroup>
+
+<Card icon="lightbulb">
+Under the hood, `vector_results` and `fts_results` are PyArrow tables. You can learn more about
+PyArrow tables [here](https://arrow.apache.org/docs/python). The advantage of PyArrow tables is their
+interoperability -- you can easily convert them to Pandas/Polars DataFrames, `PyDict`, `PyList`, etc.
+
+The benefits are also bidirectional -- just as you can easily convert PyArrow tables _to_ Pandas
+DataFrames using the `to_pandas()` method -- you can perform DataFrame transformations
+and just as easily convert the DataFrame back to PyArrow tables using `pa.Table.from_pandas()` method
+as shown in the example above.
+</Card>

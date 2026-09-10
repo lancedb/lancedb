@@ -1,0 +1,54 @@
+---
+title: ImageBind
+sidebarTitle: ImageBind
+---
+
+import {
+  PyEmbeddingImagebindSetup,
+  PyEmbeddingImagebindImageSearch,
+  PyEmbeddingImagebindAudioSearch,
+  PyEmbeddingImagebindTextSearch,
+} from '/snippets/integrations.mdx';
+
+We have support for [imagebind](https://github.com/facebookresearch/ImageBind) model embeddings. You can download our version of the packaged model via - `pip install imagebind-packaged==0.1.2`.
+
+This function is registered as `imagebind` and supports Audio, Video and Text modalities(extending to Thermal,Depth,IMU data):
+
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| `name` | `str` | `"imagebind_huge"` | Name of the model. |
+| `device` | `str` | `"cpu"` | The device to run the model on. Can be `"cpu"` or `"gpu"`. |
+| `normalize` | `bool` | `False` | set to `True` to normalize your inputs before model ingestion. |
+
+Below is an example demonstrating how the API works:
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingImagebindSetup}
+  </CodeBlock>
+</CodeGroup>
+
+Now, we can search using any modality:
+
+#### image search {#image-search}
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingImagebindImageSearch}
+  </CodeBlock>
+</CodeGroup>
+#### audio search {#audio-search}
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingImagebindAudioSearch}
+  </CodeBlock>
+</CodeGroup>
+#### Text search {#text-search}
+You can add any input query and fetch the result as follows:
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingImagebindTextSearch}
+  </CodeBlock>
+</CodeGroup>
+
+If you have any questions about the embeddings API, supported models, or see a relevant model missing, please raise an issue [on GitHub](https://github.com/lancedb/lancedb/issues).

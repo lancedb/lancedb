@@ -1,0 +1,56 @@
+---
+title: Reciprocal Rank Fusion Reranker
+sidebarTitle: "RRF Algorithm"
+description: Learn about LanceDB's default Reciprocal Rank Fusion (RRF) reranker for hybrid search. Implements the Cormack et al. algorithm for optimal search result ranking.
+
+---
+
+import { PyRerankingRrfUsage } from '/snippets/integrations.mdx';
+
+# Reciprocal Rank Fusion Reranker
+
+**Reciprocal Rank Fusion (RRF)** is a model-free way to merge several ranked result lists into a
+single ordering. Rather than comparing raw similarity scores (which aren't directly comparable
+across, say, a vector search and a full-text search), RRF looks only at each document's *rank
+position* in each list. It scores every document with the formula `1 / (rank + K)`, sums those
+contributions across the lists, and re-sorts by the total. Documents that rank highly in more than
+one search rise to the top. Because there's no model to load or call, it's fast and cheap, which is
+why it's the default reranker for LanceDB hybrid search. The implementation follows the
+[Cormack et al. paper](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf).
+
+> **Supported query types:** hybrid search and [multi-vector reranking](/reranking#multi-vector-reranking).
+> Because RRF fuses two or more ranked lists, it can't rerank a single vector or full-text result set
+> on its own. Calling `rerank_vector` or `rerank_fts` on an `RRFReranker` raises `NotImplementedError`.
+
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingRrfUsage}
+  </CodeBlock>
+</CodeGroup>
+
+## Accepted Arguments {#accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `K` | `int` | `60` | A constant used in the RRF formula (default is 60). Experiments indicate that k = 60 was near-optimal, but that the choice is not critical. |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score`. If "all", will return all scores from the vector and FTS search along with the relevance score. |
+
+`K` must be greater than `0`. In TypeScript, construct the built-in reranker with
+`await RRFReranker.create(k)` before passing it to `.rerank(...)`.
+
+## Multi-vector reranking {#multi-vector-reranking}
+
+`RRFReranker` can also fuse the results of several vector searches with `rerank_multivector`, applying
+the same rank-fusion algorithm across more than two lists. Every input result set must include the
+`_rowid` column, so add `.with_row_id(True)` to each `table.search(...)` call before reranking,
+otherwise the call raises a `ValueError`. See [multi-vector reranking](/reranking#multi-vector-reranking)
+for a full example.
+
+## Supported Scores for each query type {#supported-scores-for-each-query-type}
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+### Hybrid Search {#hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Returned rows only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Returned rows have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`). |

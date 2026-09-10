@@ -1,0 +1,246 @@
+---
+title: "Multivector Search"
+sidebarTitle: Multivector search
+description: Learn how to perform multivector search in LanceDB to handle multiple vector embeddings per document, which is ideal for late-interaction models like ColBERT and ColPaLi.
+icon: "braille"
+---
+
+LanceDB's multivector support enables you to store and search multiple vector embeddings for a single item.
+
+This capability is particularly valuable when working with late-interaction models like ColBERT and ColPaLi, which generate multiple embeddings per document.
+
+In this tutorial, you'll create a table with multiple vector embeddings per document and learn how to perform multivector search. For more end-to-end examples, see the [VectorDB recipes repository](https://github.com/lancedb/vectordb-recipes/tree/main/examples).
+
+## Multivector Support {#multivector-support}
+
+Each item in your dataset can have a column containing multiple vectors, which LanceDB can efficiently index and search. When performing a search, you can query with either a single vector embedding or multiple vector embeddings.
+
+<Warning>
+Currently, only the `cosine` metric is supported for multivector search. The vector value type can be `float16`, `float32`, or `float64`.
+</Warning>
+
+Each query vector must match the inner vector dimension in the multivector column. This applies to both single-vector queries and multi-vector query matrices.
+
+## Computing Similarity {#computing-similarity}
+
+MaxSim (Maximum Similarity) is a key concept in late-interaction models that:
+
+- Computes the maximum similarity between each query embedding and all document embeddings
+- Sums these maximum similarities to get the final relevance score
+- Effectively captures fine-grained semantic matches between query and document tokens
+
+The MaxSim calculation can be expressed as:
+
+$$
+\text{MaxSim}(Q, D) = \sum_{i=1}^{|Q|} \max_{j=1}^{|D|} \text{sim}(q_i, d_j)
+$$
+
+Where $sim$ is the similarity function (e.g., cosine similarity).
+
+$$
+Q = \{q_1, q_2, ..., q_{|Q|}\}
+$$
+
+$Q$ represents the query embeddings, and $D = \{d_1, d_2, ..., d_{|D|}\}$ represents the document embeddings.
+
+## Using Multivector Search {#using-multivector-search}
+
+### 1\. Setup {#1-setup}
+
+Connect to LanceDB and import the required libraries.
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+import numpy as np
+import pyarrow as pa
+
+db = lancedb.connect(
+    uri="db://your-project-slug",
+    api_key="your-api-key",
+    region="your-region"
+)
+```
+</CodeGroup>
+
+### 2\. Define Schema {#2-define-schema}
+
+Define a schema that specifies a multivector field. A multivector field is a nested list structure in which each document contains multiple vectors. In this case, we'll create a schema with:
+
+1. An ID field as an integer (int64)
+2. A vector field that is a list of lists of float32 values
+   - The outer list represents multiple vectors per document
+   - Each inner list is a 256-dimensional vector
+   - Using float32 for memory efficiency while maintaining precision
+
+<CodeGroup>
+```python Python icon="python"
+db = lancedb.connect("data/multivector_demo")
+schema = pa.schema(
+    [
+        pa.field("id", pa.int64()),
+        # float16, float32, and float64 are supported
+        pa.field("vector", pa.list_(pa.list_(pa.float32(), 256))),
+    ]
+)
+```
+</CodeGroup>
+
+### 3\. Generate Multivectors {#3-generate-multivectors}
+
+Generate sample data where each document contains multiple vector embeddings, which can represent different aspects or views of the same document.
+
+In this example, we create **1024 documents** where each document has **2 random vectors** of **dimension 256**, simulating a real-world scenario where you might have multiple embeddings per item.
+
+<CodeGroup>
+```python Python icon="python"
+data = [
+    {
+        "id": i,
+        "vector": np.random.random(size=(2, 256)).tolist(),  # Each document has 2 vectors
+    }
+    for i in range(1024)
+]
+```
+</CodeGroup>
+
+### 4\. Create a Table {#4-create-a-table}
+
+Create a table with the defined schema and sample data, which will store multiple vectors per document for similarity search.
+
+<CodeGroup>
+```python Python icon="python"
+tbl = db.create_table("multivector_example", data=data, schema=schema)
+```
+</CodeGroup>
+
+### 5\. Build an Index {#5-build-an-index}
+
+Only cosine similarity is supported for multivector search operations.
+For faster search, build the standard `IVF_PQ` index over your vectors:
+
+<CodeGroup>
+```python Python icon="python"
+tbl.create_index(metric="cosine", vector_column_name="vector")
+```
+</CodeGroup>
+
+<Info>
+**Indexing matters more for multivector tables than for single-vector ones.**
+
+A brute-force scan over a multivector column has to compare every query vector to every document vector in every row, so the cost grows with both the row count and the number of vectors per row. 
+In LanceDB OSS, the query will just run, so a large unindexed multivector table can stall a process for a long time before returning results.
+
+On LanceDB Enterprise, the brute-force KNN safety check applies a stricter row threshold to multivector columns — roughly 10× lower than for single-vector columns. So an unindexed multivector table will start being rejected with a "vector search would use brute-force KNN" error well before a comparable single-vector table would. Build the index before you start hitting it from production traffic, even if the dataset is small enough that you'd skip indexing for a single-vector workload.
+</Info>
+
+### 6\. Query a Single Vector {#6-query-a-single-vector}
+
+When searching with a single query vector, it will be compared against all vectors in each document, and the similarity scores will be aggregated to find the most relevant documents.
+
+<CodeGroup>
+```python Python icon="python"
+query = np.random.random(256)
+results_single = tbl.search(query).limit(5).to_pandas()
+```
+</CodeGroup>
+
+### 7\. Query Multiple Vectors {#7-query-multiple-vectors}
+
+With multiple query vectors, LanceDB calculates similarity using late interaction, a late-interaction technique that computes relevance by finding the best-matching pairs between query and document vectors. This approach provides more nuanced matching while maintaining fast retrieval speeds.
+
+<CodeGroup>
+```python Python icon="python"
+query_multi = np.random.random(size=(2, 256))
+results_multi = tbl.search(query_multi).limit(5).to_pandas()
+```
+</CodeGroup>
+
+
+Visit the [Hugging Face embedding integration](/integrations/embedding/huggingface/) page for information on embedding models.
+
+## Simple Example: ColBERT Embeddings {#simple-example-colbert-embeddings}
+
+[ColBERT](https://arxiv.org/abs/2004.12832) is the most well-known late-interaction retrieval model that
+represents each document and query as multiple token embeddings and scores matches by taking the best
+token-to-token similarities (MaxSim) across them.
+
+Install the dependencies before running this example:
+
+```bash
+pip install pylate lancedb pandas
+```
+
+<CodeGroup>
+```python Python icon="python"
+import numpy as np
+import pyarrow as pa
+import lancedb
+from pylate import models
+
+# 1) Load a late-interaction model via PyLate
+# PyLate docs show ColBERT() + encode(..., is_query=...) :contentReference[oaicite:2]{index=2}
+model = models.ColBERT(model_name_or_path="lightonai/GTE-ModernColBERT-v1")
+
+# You can discover dim from one embedding (avoid guessing)
+dim = model.encode(["hello"], is_query=True)[0].shape[1]
+
+# 2) Create a LanceDB table with a multivector column
+db = lancedb.connect("./pylate_lancedb")
+schema = pa.schema([
+    pa.field("doc_id", pa.string()),
+    pa.field("text", pa.string()),
+    # multivector: list<list<float32, dim>> :contentReference[oaicite:3]{index=3}
+    pa.field("mv", pa.list_(pa.list_(pa.float32(), dim))),
+])
+
+docs = [
+    {"doc_id": "1", "text": "The train to Tokyo leaves at 5pm."},
+    {"doc_id": "2", "text": "That Pho restaurant in Hanoi is highly rated."},
+    {"doc_id": "3", "text": "This is a noodle bar in Osaka, Japan."},
+]
+
+# 3) Encode documents with PyLate (token vectors per doc)
+doc_texts = [d["text"] for d in docs]
+doc_embs = model.encode(doc_texts, is_query=False)  # list/array of (T, dim) per doc :contentReference[oaicite:4]{index=4}
+
+rows = []
+for d, emb in zip(docs, doc_embs):
+    emb = np.asarray(emb, dtype=np.float32)
+    rows.append({**d, "mv": emb.tolist()})
+
+tbl = db.create_table("docs", data=rows, schema=schema, mode="overwrite")
+
+# 4) Build an index + query using a query matrix.
+# Multivector brute-force scales with rows × vectors-per-row, so build the index
+# at much smaller dataset sizes than you would for single-vector search — and
+# always before exposing the table to remote traffic.
+tbl.create_index(vector_column_name="mv", metric="cosine")
+
+query = "Tell me about ramen in Japan"
+q_emb = np.asarray(model.encode([query], is_query=True)[0], dtype=np.float32)  # (Tq, dim) :contentReference[oaicite:5]{index=5}
+
+out = tbl.search(q_emb).limit(5).to_pandas()  # multivector search accepts a matrix :contentReference[oaicite:6]{index=6}
+print(out[["doc_id", "text"]])
+```
+</CodeGroup>
+
+Late-interaction model implementations evolve rapidly, so it's a good idea to check the latest popular models
+when trying multivector search.
+
+## Advanced Example: XTR Embeddings {#advanced-example-xtr-embeddings}
+
+[ConteXtualized Token Retriever (XTR)](https://arxiv.org/abs/2304.01982) is a late-interaction retrieval model that represents text as token-level vectors instead of a single embedding.
+This lets search score token-to-token matches (MaxSim), which can improve fine-grained relevance.
+
+The notebook linked below shows how to integrate XTR, which prioritizes critical document
+tokens during the initial retrieval stage and removes the gathering stage to improve performance significantly.
+By focusing on the most semantically salient tokens early in the process, XTR reduces computational complexity
+while improving recall and ensuring rapid identification of candidate documents.
+
+<Card
+    icon="book"
+    title="Multivector search with ColPali + XTR embeddings and LanceDB"
+    href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/multivector_xtr/main.ipynb"
+>
+</Card>

@@ -1,0 +1,154 @@
+---
+title: Consistency
+sidebarTitle: "Consistency"
+description: Learn about consistency settings and versioning in LanceDB tables.
+icon: "water"
+---
+import {
+    PyConsistencyStrong as ConsistencyStrong,
+    TsConsistencyStrong as TsConsistencyStrong,
+    RsConsistencyStrong as RsConsistencyStrong,
+    PyConsistencyEventual as ConsistencyEventual,
+    TsConsistencyEventual as TsConsistencyEventual,
+    RsConsistencyEventual as RsConsistencyEventual,
+    PyConsistencyCheckoutLatest as ConsistencyCheckoutLatest,
+    TsConsistencyCheckoutLatest as TsConsistencyCheckoutLatest,
+    RsConsistencyCheckoutLatest as RsConsistencyCheckoutLatest,
+    RsUpdateMakeUsersReader as RsConsistencyMakeUsersReader,
+} from '/snippets/tables.mdx';
+
+You can set `read_consistency_interval` on the connection to control how often reads check for updates from other writers.
+
+There are three possible settings for `read_consistency_interval`:
+
+1. **Unset (default)**: no automatic cross-process refresh checks.
+2. **Zero seconds**: check for updates on every read (strongest freshness).
+3. **Non-zero interval**: check for updates after the interval elapses (eventual refresh).
+
+The value you set depends on your application's consistency needs and performance requirements.
+For example, a real-time dashboard might require strong consistency, while a batch analytics job might be
+fine with eventual consistency. Stronger consistency is not free — the smaller the interval, the more
+often each read pays the cost of refreshing against object storage, which raises per-read latency and cost.
+
+This setting works for both local ([LanceTable](/tables-and-namespaces#understanding-tables)) and remote
+tables. It only affects read operations —
+write operations are always consistent.
+
+<Callout color="blue">
+**Consistency in Remote Tables**
+
+For remote tables (`db://` connections), `read_consistency_interval` is also
+respected by the client. The interval is sent to the server as a freshness bound on each read:
+
+- **Unset (default)**: no freshness header is sent; reads use the server's cached view of the table.
+- **Zero seconds**: every read asks the server for the latest committed version.
+- **Non-zero interval**: reads accept data at least as fresh as `now - interval`.
+
+In addition, after any write or after a `checkout_latest` / `restore` on a table handle, subsequent
+reads on that same handle carry a freshness floor so you read your own writes without extra
+configuration. The floor is the later of the configured interval and the moment of the last
+write or refresh, and it is shared across handles to the same table on the same connection.
+
+Each remote table handle also tracks the highest dataset version it has observed in a read
+response and sends it back with every subsequent read, so successive reads on the same handle
+never observe an older version even when a load balancer routes them to query nodes with
+differently-cached views. `checkout_latest` resets this watermark.
+
+Stronger consistency is not free — the smaller the interval, the more often each read pays the cost
+of refreshing against storage, which raises per-read latency and cost.
+
+In <Badge color="red">Enterprise</Badge> deployments, the server-side default freshness is still
+controlled by the cluster-level `weak_read_consistency_interval_seconds` parameter; the client setting
+tightens that bound on a per-connection basis.
+</Callout>
+
+## Configure Consistency Parameters {#configure-consistency-parameters}
+
+To set strong consistency, set the interval to 0:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ConsistencyStrong}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConsistencyStrong}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsConsistencyStrong}
+    </CodeBlock>
+</CodeGroup>
+
+<Expandable title="In the Rust snippets, a `make_users_reader` helper is used to build Arrow input data.">
+<CodeGroup>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsConsistencyMakeUsersReader}
+    </CodeBlock>
+</CodeGroup>
+</Expandable>
+
+For eventual consistency, use a non-zero interval:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ConsistencyEventual}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConsistencyEventual}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsConsistencyEventual}
+    </CodeBlock>
+</CodeGroup>
+
+
+With the default unset interval, tables do not auto-refresh from other writers.
+To manually check for updates, use `checkout_latest` / `checkoutLatest`:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ConsistencyCheckoutLatest}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConsistencyCheckoutLatest}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsConsistencyCheckoutLatest}
+    </CodeBlock>
+</CodeGroup>
+
+For reproducible reads, you can also pin a table to a specific snapshot with `checkout(...)` or
+a tag, restore a table to a prior version, then return to the live table with
+`checkout_latest` / `checkoutLatest`. See
+[Versioning](/tables/versioning/) for the full version and tag workflow.
+
+## Handle bad vectors {#handle-bad-vectors}
+
+<Note>
+This section is currently specific to the Python SDK.
+</Note>
+
+In LanceDB Python, you can use the `on_bad_vectors` parameter to choose how
+invalid vector values are handled. Invalid vectors are vectors that are not valid
+because:
+
+1. They are the wrong dimension
+2. They contain NaN values
+3. They are null but are on a non-nullable field
+
+By default, LanceDB will raise an error if it encounters a bad vector. You can
+also choose one of the following options:
+
+* `drop`: Ignore rows with bad vectors
+* `fill`: Replace bad values (NaNs) or missing values (too few dimensions) with
+    the fill value specified in the `fill_value` parameter. An input like
+    `[1.0, NaN, 3.0]` will be replaced with `[1.0, 0.0, 3.0]` if `fill_value=0.0`.
+* `null`: Replace bad vectors with null (only works if the column is nullable).
+    A bad vector `[1.0, NaN, 3.0]` will be replaced with `null` if the column is
+    nullable. If the vector column is non-nullable, then bad vectors will cause an
+    error

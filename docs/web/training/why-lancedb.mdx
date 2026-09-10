@@ -1,0 +1,118 @@
+---
+title: "Why LanceDB for Training"
+sidebarTitle: "Why LanceDB for training"
+description: "Use LanceDB as the multimodal data layer for model training, fine-tuning, curation, and feature engineering workflows."
+icon: fire
+---
+
+LanceDB is built for AI teams that need a practical data layer between raw multimodal datasets and model training.
+Instead of moving data through separate systems for curation, feature engineering, search, manifests, and training,
+you can keep the whole workflow attached to one versioned LanceDB table.
+
+That table can hold images, video, audio, text, annotations, metadata, embeddings, tokenized fields, model outputs,
+quality signals, and training-ready tensors. As the dataset evolves, LanceDB lets you add new columns, filter rows,
+pin versions, and read batches without rewriting the original data.
+
+![Training data lifecycle: Curation, Feature Engineering, Search and Retrieval, Training](/static/assets/images/overview/training-data-lifecycle.svg)
+
+LanceDB gives these stages one platform, so curation, feature engineering, retrieval, and training stay connected.
+
+## A connected data lifecycle {#a-connected-data-lifecycle}
+
+Training pipelines usually need more than a pile of files. They need curation, derived features, reproducible splits,
+fast random access, and a clean path into frameworks such as PyTorch. LanceDB keeps these pieces connected through
+the same table model, whether you organize a workflow as one table or several related tables.
+
+<Steps>
+  <Step title="Curate and slice the dataset">
+    Use filters, vector search, full-text search, and retrieval workflows to find the examples that matter: hard negatives,
+    long-tail failure modes, duplicate clusters, low-quality samples, or targeted fine-tuning slices.
+  </Step>
+  <Step title="Engineer features in place">
+    Add embeddings, detections, OCR output, labels, token IDs, hidden states, deduplication flags, or quality scores as
+    new columns. Lance's columnar layout and schema evolution avoid rewriting large raw media columns when you add features.
+  </Step>
+  <Step title="Create reproducible splits">
+    Build filtered splits and materialized views from the table instead of exporting CSV manifests. Data versions and tags
+    make it possible to tie a checkpoint back to the exact rows and features used for training.
+  </Step>
+  <Step title="Load batches for training">
+    Use fast random access and column projection to read only the columns a training step needs. LanceDB tables can be read
+    from local storage or object storage, and integrate with data loading patterns such as PyTorch datasets.
+  </Step>
+</Steps>
+
+## Lance as the foundation {#lance-as-the-foundation}
+
+LanceDB is built on [Lance](https://lance.org/), an open-source lakehouse format designed for multimodal AI data.
+The table below highlights the Lance features that enable the multimodal lakehouse on top.
+
+| Capability | Why it matters for training |
+|---|---|
+| **Multimodal columns** | Store raw bytes, annotations, metadata, embeddings, and features together. |
+| **Fast random access** | Support shuffled and sampled reads without reshuffling the dataset on disk. |
+| **Column projection** | Read only images, tokens, labels, embeddings, or hidden states needed by a given run. |
+| **Schema evolution** | Add new feature columns without rewriting existing media columns. |
+| **Versioning** | Reproduce experiments against the same table snapshot, even as the dataset evolves. |
+| **Search and filtering** | Find and materialize useful training slices directly from the table. |
+
+## Search inside training workflows {#search-inside-training-workflows}
+
+Search is not limited to QA systems, agents, or production retrieval apps. It is also a practical way to inspect,
+curate, and improve training data:
+
+- Find visually similar examples when debugging model failures.
+- Retrieve hard negatives or near-duplicates for contrastive training.
+- Combine vector search, full-text search, and metadata filters to build targeted fine-tuning slices.
+- Reuse the same table for both offline curation and production retrieval.
+
+In LanceDB, retrieval and training workflows can operate over the same multimodal tables instead of forcing teams to
+manage separate data systems for each stage.
+
+## Projects using LanceDB for training workflows {#projects-using-lancedb-for-training-workflows}
+
+<CardGroup cols={1}>
+  <Card
+    title="stable-worldmodel"
+    icon="github"
+    href="https://github.com/galilai-group/stable-worldmodel"
+  >
+    A platform for reproducible world-model research built on a LanceDB data layer, reporting faster data loading on Push-T workloads.
+  </Card>
+  <Card
+    title="le-wm"
+    icon="github"
+    href="https://github.com/lucas-maes/le-wm"
+  >
+    A joint-embedding predictive world model from pixels, trained on the stable-worldmodel platform and its LanceDB data layer.
+  </Card>
+  <Card
+    title="lerobot-lancedb"
+    icon="github"
+    href="https://github.com/lancedb/lerobot-lancedb"
+  >
+    A drop-in LanceDB backend for Hugging Face LeRobot datasets with faster loading across robotics datasets.
+  </Card>
+</CardGroup>
+
+In the world-model ecosystem, [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) reports
+3-4x faster data loading on Push-T versus HDF5 / MP4 at a fraction of the disk footprint. Across these projects,
+LanceDB and Lance provide the multimodal data layer that keeps raw observations, annotations, features, and training
+access patterns in one format instead of scattering them across task-specific stores.
+
+## Next steps {#next-steps}
+
+<CardGroup cols={2}>
+  <Card title="Data loading and shuffles" icon="boxes-stacked" href="/training/">
+    Learn how to use LanceDB permutations to select rows, project columns, split datasets, and shuffle training reads.
+  </Card>
+  <Card title="PyTorch integration" icon="fire" href="/training/torch">
+    Use LanceDB tables and permutations with `torch.utils.data.DataLoader`.
+  </Card>
+  <Card title="Object detection example" icon="car" href="/training/object-detection">
+    Fine-tune an AV perception model on curated failure-mode slices backed by one LanceDB table.
+  </Card>
+  <Card title="VLM fine-tuning example" icon="image" href="/training/vlm-finetuning">
+    Fine-tune a VLM on TextVQA using LanceDB and Geneva to cache expensive training features.
+  </Card>
+</CardGroup>

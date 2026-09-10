@@ -1,0 +1,78 @@
+---
+title: "Update rows"
+sidebarTitle: "Update"
+description: "Change values in rows that already exist, by predicate or SQL expression."
+icon: pen
+---
+
+These examples use the table set up in
+[Ingesting data](/ingestion), and the connection made there.
+
+import {
+    PyUpdateOperation as UpdateOperation,
+    PyUpdateUsingSql as UpdateUsingSql,
+    TsUpdateOperation,
+    TsUpdateUsingSql,
+    RsUpdateOperation,
+    RsUpdateUsingSql,
+} from '/snippets/tables.mdx';
+
+## Update rows {#update-rows}
+
+Use `update` when you already know which target rows to modify and you do not need to compare against an incoming dataset.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateOperation}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateOperation}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateOperation}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 20 |
+
+<Warning title="Warning">
+Updating nested columns is not yet supported.
+</Warning>
+
+## Update rows with SQL expressions {#update-rows-with-sql-expressions}
+
+Use `values_sql` when you want to use SQL-like expressions to update rows. This is useful for operations like incrementing a counter, or setting a column value based on another column.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateUsingSql}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateUsingSql}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateUsingSql}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 21 |
+
+<Note title="SQL syntax">
+See the [SQL queries](/search/sql/) page for more information on the supported SQL syntax.
+</Note>
+
+When rows are updated, they are moved out of any existing index. The row will still show up in search queries, but the query will not be as fast as it would be if the row was in the index. If you update a large proportion of rows, consider triggering an index rebuild afterwards.

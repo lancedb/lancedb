@@ -1,0 +1,124 @@
+---
+title: LanceDB
+sidebarTitle: "LanceDB"
+description: "Multimodal lakehouse for AI."
+icon: "/static/assets/logo/lancedb-icon-gray.svg"
+keywords: ["multimodal lakehouse", "training", "feature engineering", "search", "open source", "oss"]
+---
+
+**LanceDB** is a [multimodal lakehouse](https://lancedb.com/blog/multimodal-lakehouse/) for AI teams that need
+one data layer for curation, feature engineering, search and retrieval, and model training.
+It is built on top of [Lance](/lance), an open-source lakehouse format designed for multimodal AI data.
+
+Move from data exploration to model training on one, unified platform without needing to manage a
+fragmented stack of storage, feature, retrieval, and training systems.
+
+## Build better models, faster {#build-better-models-faster}
+
+Training data and experimentation slow down when raw data, metadata, embeddings, features, and governance
+artifacts live in separate systems. LanceDB keeps them together in one versioned multimodal table, so AI teams spend less
+time stitching infrastructure together and more time improving datasets, testing features, and keeping GPUs fed.
+
+![Training data lifecycle: Curation, Feature Engineering, Search and Retrieval, Training](/static/assets/images/overview/training-data-lifecycle.svg)
+
+Use the same table to curate training data, add derived features, retrieve examples, and feed training jobs that rely on expensive GPUs.
+Training workloads can sample, shuffle, and scan projected columns from local storage or object storage, then assemble
+GPU-ready batches from a tagged dataset version.
+
+For a deeper look at how this works in training pipelines, start with [Why LanceDB for training](/training/why-lancedb).
+
+## LanceDB suite {#lancedb-suite}
+
+The LanceDB suite includes LanceDB OSS, an open-source embedded retrieval library, and LanceDB Enterprise,
+a multimodal lakehouse platform for the full AI data lifecycle.
+OSS is easy to set up on a local machine for search and regular-scale workflows. LanceDB Enterprise is built
+for teams that need scale without building bespoke infrastructure for curation,
+feature engineering, search and retrieval, and efficient training data access.
+
+![LanceDB suite: OSS search and Enterprise multimodal lakehouse on Lance format](/static/assets/images/overview/lancedb-suite.svg)
+
+## Why teams use LanceDB {#why-teams-use-lancedb}
+
+<Steps>
+  <Step title="One table for the whole AI data loop">
+    Store images, video, audio, text, annotations, embeddings, and model-generated features together in one schema-enforced table.
+    The same table can support dataset curation, feature backfills, experiment splits, retrieval, and training.
+  </Step>
+  <Step title="High-throughput data access for training">
+    Training workloads mix fast random access with high-throughput sequential scans. LanceDB is designed for both, so
+    teams can shuffle data into GPU-ready batches more efficiently, improve input throughput, and iterate on experiments faster.
+  </Step>
+  <Step title="Fast, versatile search and retrieval">
+    Whether the end user is a human or an agent, LanceDB powers production retrieval workloads such as semantic search,
+    hybrid search, RAG, agent memory, and recommendation systems. Retrieval runs against the same LanceDB tables used
+    for curation, feature engineering, and training workflows.
+  </Step>
+</Steps>
+
+## Start with your workload {#start-with-your-workload}
+
+<CardGroup cols={2}>
+  <Card title="Train and fine-tune models" icon="fire" href="/training/why-lancedb">
+    Learn why LanceDB works well as the data layer for training workloads.
+  </Card>
+  <Card title="Load data into PyTorch" icon="boxes-stacked" href="/training/">
+    Use LanceDB tables and permutations for projected, shuffled, random-access training reads.
+  </Card>
+  <Card title="Browse ready-to-use datasets" icon="database" href="/datasets">
+    Explore Lance-formatted multimodal datasets with raw bytes, metadata, embeddings, and indices.
+  </Card>
+  <Card title="Build search and retrieval" icon="search" href="/search/">
+    Use vector search, full-text search, hybrid search, reranking, filtering, and SQL.
+  </Card>
+</CardGroup>
+
+## From local development to production scale {#from-local-development-to-production-scale}
+
+LanceDB OSS and LanceDB Enterprise share the same Lance format and table model. Start locally with the embedded OSS
+library, then move to Enterprise when your team needs distributed scale, managed infrastructure, private deployment,
+or higher-throughput curation, feature engineering, search and retrieval, and training workflows.
+
+### 1\. LanceDB OSS {#1-lancedb-oss}
+The fastest way to get started is the open-source embedded library, with client SDKs in Python, TypeScript
+and Rust. Run it locally in just a few steps, which lets you explore datasets, curate data, and run search and retrieval workloads
+for agents. Start here:
+
+<Columns cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get started with LanceDB in minutes.
+  </Card>
+  <Card
+    title="Basic Table Operations"
+    icon="table"
+    href="/tables/"
+  >
+    Create tables, evolve schemas, version data, and modify rows in LanceDB.
+  </Card>
+</Columns>
+
+### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
+
+[LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform built for
+search, curation, feature engineering, and high-throughput training data access workflows on top of the same core table
+abstraction. This eliminates the need for teams to build bespoke infrastructure to manage large multimodal datasets.
+To set up LanceDB Enterprise in your organization, reach out to us at
+[contact@lancedb.com](mailto:contact@lancedb.com).
+
+<Info>
+**Built with scale, performance, and security in mind.**
+
+LanceDB Enterprise is designed for very large-scale, high-performance, distributed workloads in
+private deployments, and can operate under strict [security requirements](/enterprise/security).
+</Info>
+
+<Card
+  title="Quickstart"
+  icon="rocket"
+  href="/quickstart"
+>
+  Get started with LanceDB in minutes, including Enterprise `db://` connections.
+</Card>

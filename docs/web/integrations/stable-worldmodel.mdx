@@ -1,0 +1,107 @@
+---
+title: "Stable World Model"
+sidebarTitle: "Stable World Model"
+description: "Use Stable World Model with LanceDB-backed datasets for reproducible world model research, fast data loading, and compact storage."
+---
+
+import {
+  PyFrameworksStableWorldmodelCollectLance,
+  PyFrameworksStableWorldmodelConvert,
+  PyFrameworksStableWorldmodelEvaluate,
+  PyFrameworksStableWorldmodelLoadLance,
+} from '/snippets/integrations.mdx';
+
+[Stable World Model](https://github.com/galilai-group/stable-worldmodel) is a research platform for collecting data, training world models, and evaluating policies with model-predictive control across standardized environments.
+
+The LanceDB integration is built into Stable World Model's data format registry. Lance is the default backend for collected datasets, so a path ending in `.lance` gives you an append-friendly LanceDB table with episode-contiguous rows and fast indexed reads.
+
+Random access speed is the bottleneck for world model training, since the loop repeatedly samples temporal windows from high-dimensional observations, actions, and rewards. The faster those windows arrive, the more GPU time goes into training rather than waiting on the data loader.
+
+## Install {#install}
+
+```bash
+pip install stable-worldmodel
+```
+
+Datasets and checkpoints are stored under `$STABLEWM_HOME`, which defaults to `~/.stable_worldmodel/`.
+
+## Collect data into Lance {#collect-data-into-lance}
+
+Stable World Model uses Lance by default when you collect to a `.lance` path.
+Replace `your_expert_policy` with the expert or scripted policy you use to collect demonstrations.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksStableWorldmodelCollectLance}
+</CodeBlock>
+
+Every writer accepts a `mode` argument such as `append`, `overwrite`, or `error`. The default is append, so re-running collection extends the existing dataset.
+
+## Load a Lance dataset for training {#load-a-lance-dataset-for-training}
+
+The dataset loader autodetects the Lance format from the path.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksStableWorldmodelLoadLance}
+</CodeBlock>
+
+Your model code stays focused on the world model objective while LanceDB handles the storage layout and read path.
+
+## Evaluate with model-predictive control {#evaluate-with-model-predictive-control}
+
+After training a world model on the Lance-backed dataset, Stable World Model can evaluate it with planning solvers such as CEM.
+Replace `world_model` with the trained model object from your training loop.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksStableWorldmodelEvaluate}
+</CodeBlock>
+
+## Convert between formats {#convert-between-formats}
+
+Stable World Model can convert between registered dataset formats. A common workflow is to collect in Lance for fast training reads, then export to the video layout for compact inspection artifacts.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksStableWorldmodelConvert}
+</CodeBlock>
+
+## Throughput {#throughput}
+
+The Stable World Model README reports the following PushT benchmark results from `scripts/benchmark/compare_h5_lance.py`:
+
+| Format | Source | Cache | samples/s | ms/step |
+|:---|:---|:---|---:|---:|
+| HDF5 | local | no-cache | 1,416.1 | 45.2 |
+| HDF5 | local | cached | 1,474.0 | 43.4 |
+| LanceDB | local | no-cache | 4,814.8 | 13.3 |
+| LanceDB | local | cached | 4,431.3 | 14.4 |
+| Video | local | - | 1,330.6 | 48.1 |
+| LanceDB | s3 | no-cache | 3,183.7 | 20.1 |
+| LanceDB | s3 | cached | 3,253.2 | 19.7 |
+| HDF5 | s3 | no-cache | 9.1 | 7,032.5 |
+| HDF5 | s3 | cached | 756.5 | 84.6 |
+
+In that benchmark, local LanceDB reached about **3.4x** the no-cache throughput of local HDF5, while S3-backed LanceDB reached about **350x** the no-cache throughput of S3-backed HDF5. Even with cache enabled, S3-backed LanceDB was about **4.3x** faster than S3-backed HDF5.
+
+These numbers come from the Stable World Model project's own benchmark setup, so they're best read as a reproducible directional baseline that may shift across environments, models, and storage configurations.
+
+## Storage {#storage}
+
+The same README reports these local storage sizes for the benchmark dataset:
+
+| Format | Local size |
+|:---|---:|
+| HDF5 | 43.12 GB |
+| LanceDB | 13.31 GB |
+| Video | 496.29 MB |
+
+LanceDB used about **69% less local storage than HDF5** in the reported benchmark, while preserving a table interface built for fast training reads and append-heavy collection.
+
+## More resources {#more-resources}
+
+<CardGroup cols={2}>
+  <Card title="Stable World Model README" href="https://github.com/galilai-group/stable-worldmodel/blob/main/README.md">
+    Installation, quick start, supported formats, benchmarks, environments, solvers, and citation.
+  </Card>
+  <Card title="Stable World Model docs" href="https://galilai-group.github.io/stable-worldmodel/">
+    Full upstream documentation with tutorials, API references, and guides.
+  </Card>
+</CardGroup>

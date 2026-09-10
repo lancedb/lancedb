@@ -1,0 +1,71 @@
+---
+title: "Multimodal Agent"
+sidebarTitle: "Multimodal agent"
+description: "Build an AI agent that understands both text and images to help users find recipes using LanceDB and PydanticAI"
+---
+
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1pxavAGoXa-KSh_4HxNpvP2AjHPcIRpbq?usp=sharing)
+
+Ever wanted to combine the power of text and images in a single AI agent? In this tutorial,
+you'll build an agent that can understand both text and images to help users discover recipes that are relevant to them. The approach shown combines LanceDB's multimodal capabilities with [Pydantic AI](https://ai.pydantic.dev/) for the agentic workflow.
+
+## Key Technologies {#key-technologies}
+
+- **LanceDB**: Embedded retrieval library and multimodal lakehouse for efficient storage and retrieval
+- **PydanticAI**: Modern AI agent framework with type safety
+- **Sentence Transformers**: Text embeddings for semantic search
+- **CLIP**: Vision-language model for image understanding
+- **Streamlit**: Interactive web application framework
+
+## Tutorial Overview {#tutorial-overview}
+
+### Option 1: Notebook {#option-1-notebook}
+The notebook shows how to work through the steps and prepare a small sample recipe dataset, generate both text and image
+embeddings, store everything efficiently in LanceDB, and then build a PydanticAI agent with custom tools to
+query it. You'll finish by testing the agent against a few example questions to see the full multimodal flow
+end to end.
+
+<Card title="Notebook" href="https://colab.research.google.com/drive/1pxavAGoXa-KSh_4HxNpvP2AjHPcIRpbq?usp=sharing">
+This simple tutorial provides a step-by-step workflow with a small demo dataset of 4 examples.
+No local setup required - just click and start learning about multimodal agents.
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1pxavAGoXa-KSh_4HxNpvP2AjHPcIRpbq?usp=sharing)
+</Card>
+
+### Option 2: Demo Application (Local Setup) {#option-2-demo-application-local-setup}
+The demo application is the full codebase: you'll download and process a real recipe dataset with thousands
+of items, run a Streamlit chat interface that supports image upload, and follow a structure that includes
+production-minded touches like error handling, logging, and monitoring. Everything you need to deploy is
+included.
+
+<Card icon="download" title="Download Tutorial Files" href="https://github.com/lancedb/vectordb-recipes/tree/main/applications/multimodal-recipe-agent">
+Download the files for the full demo application here.
+</Card>
+
+### Dataset Information {#dataset-information}
+- **Source**: [Kaggle Recipe Dataset](https://www.kaggle.com/datasets/pes12017000148/food-ingredients-and-recipe-dataset-with-images)
+- **Size**: Thousands of recipes with images
+- **Format**: CSV file with recipe data and image references
+
+### Setup {#setup}
+
+<CodeGroup>
+```bash bash icon="code"
+# 1. Extract the downloaded files to a folder
+# 2. Navigate to the folder in terminal
+cd multimodal-recipe-agent
+
+# 3. Install dependencies with uv
+uv sync
+
+# 4. Download the Kaggle dataset
+# Visit: https://www.kaggle.com/datasets/pes12017000148/food-ingredients-and-recipe-dataset-with-images
+# Extract recipes.csv to the data/ folder
+
+# 5. Import the dataset
+uv run python import.py
+
+# 6. Run the complete Streamlit chat application
+uv run streamlit run app.py
+```
+</CodeGroup>

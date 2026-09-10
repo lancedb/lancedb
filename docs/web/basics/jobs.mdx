@@ -1,0 +1,292 @@
+---
+title: "Query and job"
+sidebarTitle: "Query & Job"
+description: "Sync and async in LanceDB: two different distinctions that use the same word."
+icon: hourglass-half
+keywords: ["job", "async", "sync", "query", "background", "await"]
+---
+
+"Async" means two unrelated things in LanceDB, and conflating them is the most
+common source of confusion about how work gets done.
+
+| | What it is | What it changes |
+| --- | --- | --- |
+| **Async client** | `connect_async`, `await` | whether *your thread* blocks |
+| **Async execution** | `_async` methods returning a handle | whether *the work* outlives the call |
+
+They are independent. A synchronous Python call can start work that runs for an
+hour; an `await` can wait for something that finishes instantly.
+
+## Every `_async` method returns a handle {#handles}
+
+An `_async` method submits work and hands back a **handle** to it. Which handle
+depends on what you submitted -- `execute_query_async` returns a query,
+everything else returns a [job](#jobs) -- but they are the same idea, and they
+answer the same four questions:
+
+| | Query handle | Job handle |
+| --- | --- | --- |
+| Which one is this? | `id` | `id` |
+| How is it going? | `describe()` | `status()`, `refresh()`, `events()` |
+| Give me the result | `reader()` — streams batches as they arrive | `wait()` — blocks for the terminal result |
+| Stop it | `cancel()` | `cancel()` |
+
+The difference is in the third row, and it follows from what the work produces.
+A query produces **rows**, so its handle streams them and you can start reading
+before the query finishes. A job produces **an outcome** -- an index built, a
+column filled -- so its handle has nothing to stream and gives you the result
+once, at the end.
+
+Everything else is shared: both identify the work on the server, both report on
+it without blocking, and both can be told to stop.
+
+## Async client: whether you block {#async-client}
+
+A concern of your language, not of LanceDB. The work is identical either way.
+
+<CodeGroup>
+```python Python icon="python"
+db = lancedb.connect("db://my-db", api_key="...")         # blocking
+tbl = db.open_table("documents")
+
+db = await lancedb.connect_async("db://my-db", api_key="...")   # coroutines
+tbl = await db.open_table("documents")
+```
+
+```typescript TypeScript icon="square-js"
+// TypeScript is async throughout; there is no blocking form.
+const db = await lancedb.connect("db://my-db", { apiKey: "..." });
+const tbl = await db.openTable("documents");
+```
+</CodeGroup>
+
+Python offers both. `AsyncConnection` exposes the same surface as coroutines, so
+choosing between them is about the program you are writing -- a service wants
+the async form, a script does not care.
+
+## Queries: reading before the query finishes {#queries}
+
+A query is not a job, but it has the same shape of choice: wait for everything,
+or take a handle and start reading.
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 1000")
+table = reader.read_all()
+
+query = db.execute_query_async("SELECT id, text FROM my_docs")
+```
+
+```sql SQL
+SELECT id, text FROM my_docs LIMIT 1000
+```
+</CodeGroup>
+
+`execute_query` returns a blocking Arrow reader **once results start arriving**
+-- it does not wait for the whole query to finish. Results stream as record
+batches, so a large result set does not have to fit in memory before you see its
+first row.
+
+`execute_query_async` returns the query handle instead:
+
+```python
+query = db.execute_query_async("SELECT id, text FROM my_docs")
+
+query.id            # identifies it on the server
+query.describe()    # what it is doing, without consuming results
+reader = query.reader()   # stream the rows when you want them
+query.cancel()      # stop it
+```
+
+`describe_query(id)` reports on one from elsewhere, the way `open_job(id)` does
+for a job.
+
+<Note>
+SQL requires a deployment. See [SDKs and SQL](/basics/apis).
+</Note>
+
+Query-builder searches -- vector, full-text, hybrid -- are ordinary calls that
+return results. They are fast enough not to need a handle. See
+[Query](/search).
+
+## Jobs: work that outlives the call {#jobs}
+
+Some operations take longer than a request should. Building an index over a
+large table, refreshing a computed column, registering a function -- these run
+on the server after the call that started them has returned.
+
+Each is submitted the same way and returns the same handle.
+
+### The `_async` convention {#convention}
+
+An operation that can run in the background has two forms. The plain name blocks
+until the work is done. The `_async` / `Async` name submits the work and returns
+a **job** immediately.
+
+| Blocking | Returns a job | SQL |
+| --- | --- | --- |
+| `create_index` | `create_index_async` | `CREATE INDEX` |
+| `refresh_column` | `refresh_column_async` | `REFRESH COLUMN` |
+| `create_function` | `create_function_async` | `CREATE FUNCTION` |
+| `drop_table` | `drop_table_async` | `DROP TABLE` |
+
+<Note>
+The blocking form is not a different operation -- it submits the same job and
+waits. Reach for the `_async` form when you want to do something else meanwhile,
+run several at once, or survive the client going away.
+</Note>
+
+### Submitting and waiting {#waiting}
+
+<CodeGroup>
+```python Python icon="python"
+job = table.create_index_async("vector")
+
+print(job.id)          # the server's id for this operation
+print(job.status())    # "running" | "finished" | "failed" | "cancelled"
+
+job.wait()             # blocks until terminal; raises if it failed
+```
+
+```typescript TypeScript icon="square-js"
+const job = await table.createIndexAsync("vector");
+
+console.log(job.id);              // the server's id for this operation
+console.log(await job.status());  // "running" | "finished" | "failed" | "cancelled"
+
+await job.wait();                 // resolves when terminal; rejects if it failed
+```
+</CodeGroup>
+
+`wait` is the one call that raises on failure. `status` is a point snapshot and
+returns the failed state rather than raising, which is what you want in a
+polling loop.
+
+In Python `wait` takes an optional timeout and returns the operation's typed
+result -- a `RefreshColumnJobResult`, a `FunctionVersion`, or `None` for an
+operation that has no result:
+
+```python
+from datetime import timedelta
+
+result = table.refresh_column_async("embedding").wait(timeout=timedelta(minutes=30))
+```
+
+`TimeoutError` means the timeout elapsed, not that the job stopped. The job is
+still running; the handle just gave up watching.
+
+<Note>
+The TypeScript `wait()` resolves to `void`. Read the outcome from `result` after
+it resolves.
+</Note>
+
+### Inspecting a job {#inspecting}
+
+Submitting an operation returns only an id, so the detail fields are empty until
+the handle fetches the record. `refresh()` does that; `status()` does it as a
+side effect.
+
+<CodeGroup>
+```python Python icon="python"
+job.refresh()
+
+job.state        # last observed state, without another round trip
+job.job_type     # what kind of job, as the server names it
+job.creation_ms  # when it was created, epoch milliseconds
+job.spec         # what it was submitted with
+job.result       # its terminal result, once it succeeds
+job.failure      # why it failed, when it did
+```
+
+```typescript TypeScript icon="square-js"
+await job.refresh();
+
+job.state;       // last observed state, without another round trip
+job.jobType;     // what kind of job, as the server names it
+job.creationMs;  // when it was created, epoch milliseconds
+job.spec;        // what it was submitted with
+job.result;      // its terminal result, once it succeeds
+job.failure;     // why it failed, when it did
+```
+</CodeGroup>
+
+Printing the handle renders every field it knows, which is usually faster than
+reading them one at a time.
+
+### Progress, from events {#events}
+
+`result` only tells you anything once the job has finished. Events are written
+as it runs, and they outlive the workers that produced them -- so a job that is
+still going, or one that never finished, can still account for what it did.
+
+<CodeGroup>
+```python Python icon="python"
+events = job.events(limit=5000, filter="state = 'claim_complete'")
+```
+
+```typescript TypeScript icon="square-js"
+const events = await job.events({ limit: 5000, filter: "state = 'claim_complete'" });
+```
+
+```sql SQL
+SHOW ERRORS ON my_table FOR JOB 'job-id' LIMIT 100
+```
+</CodeGroup>
+
+A distributed job records a `claim` / `claim_complete` pair per unit of work,
+each carrying `rows_processed`. Summing `rows_processed` over the completed
+claims is how you get progress on a job that has no percentage.
+
+`filter` is a SQL-like expression over `state`, `updated_by`, `emitted_from`,
+`emitted_by`, and `claim_entity`.
+
+<Warning>
+The server returns 1000 event rows by default and 10,000 at most, and
+**truncates without telling you**. A job that emits an event per fragment will
+silently lose its tail unless you pass `limit`.
+</Warning>
+
+Events are recorded server-side, so this raises for an operation that ran
+in-process.
+
+### Finding and cancelling jobs {#managing}
+
+The connection lists and reopens jobs, so a handle lost to a restarted process
+is recoverable from its id.
+
+<CodeGroup>
+```python Python icon="python"
+db.list_jobs()             # every job the server knows about
+job = db.open_job(job_id)  # reattach to one
+db.cancel_job(job_id)      # ask it to stop
+```
+
+```typescript TypeScript icon="square-js"
+await db.listJobs();
+const job = await db.openJob(jobId);
+await db.cancelJob(jobId);
+```
+
+```sql SQL
+SHOW JOBS
+```
+</CodeGroup>
+
+Cancellation is a request, not a guarantee, and cancelling a job that already
+finished does nothing. `JobNotFoundError` means the id does not name a job the
+server still has.
+
+<Warning>
+A job id is opaque. It correlates with server logs and the calls above, but
+parsing it or storing it to resume the job later is not supported.
+</Warning>
+
+## In-process jobs {#in-process}
+
+A local database has no server to run anything, so its operations run in your
+process. They still return a handle, so the same code works against both -- but
+one with nothing behind it: `id` is `None`, `status()` reports `"finished"`,
+`wait()` returns immediately, `cancel()` does nothing, and `events()` raises.
+
+This is the difference to expect when moving between embedded and deployed --
+see [SDKs and SQL](/basics/apis).

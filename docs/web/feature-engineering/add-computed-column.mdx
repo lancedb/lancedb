@@ -1,0 +1,89 @@
+---
+title: "Add a computed column"
+sidebarTitle: "Add Computed Column"
+description: "Declare a column from a SQL expression. Nothing is evaluated until you refresh it."
+icon: table-columns
+keywords: ["computed columns", "add_columns", "transforms", "schema"]
+---
+
+A computed column is declared with an expression and starts with no values.
+Declaring it is cheap on any table size, because nothing is evaluated until
+[a refresh](/feature-engineering/refresh-column) asks for it.
+
+## Declaring one {#declare}
+
+```python
+import lancedb
+
+db = lancedb.connect("./.lancedb")
+table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
+
+table.add_columns(computed={"doubled": "x * 2"})
+# AddColumnsResult(version=2)
+```
+
+That commits a new table version with the column present and empty. It is an
+ordinary table version, so the usual [versioning](/tables/versioning) applies --
+including that you can travel back to before the column existed.
+
+## `computed` and `transforms` are different {#computed-vs-transforms}
+
+`add_columns` takes either, and the difference matters:
+
+- **`transforms`** evaluates the expression *now*, for every row, as part of the
+  call. Good for a small table, or a column you want populated immediately.
+- **`computed`** stores the expression and evaluates nothing. The column is
+  committed empty and filled later by
+  [`refresh_column`](/feature-engineering/refresh-column).
+
+They cannot be combined in one call. Reach for `computed` when the table is
+large enough that you would rather control when the work happens.
+
+## The expression {#expressions}
+
+The expression is SQL, evaluated over the row. It can reference any column in
+the table, including another computed column:
+
+```python
+table.add_columns(computed={
+    "power_score": "(stats.magic + stats.strength) / 2.0",
+    "is_strong":   "power_score > 3.0",
+})
+```
+
+Declaration order is dependency order -- a computed column may reference one
+declared earlier in the same mapping, but not one declared after it.
+
+The functions available are the ones the
+[SQL dialect](/sql/functions) documents.
+
+## Its inputs become load-bearing {#input-constraints}
+
+<Warning>
+While a computed column's declaration references another column, that column
+cannot be renamed, retyped, or dropped. The declaration is part of the schema,
+and LanceDB will not let you invalidate it out from under itself.
+</Warning>
+
+This is worth knowing before deriving a column from something you expect to
+reshape later. Dropping the computed column releases the constraint.
+
+## Filling with Python instead of SQL {#functions}
+
+<Badge color="red">Enterprise</Badge>
+
+When the value cannot be expressed in SQL -- an embedding, a model call, an
+image decode -- the column is filled by a registered
+[function](/management/function) instead of an expression. Declaring it looks
+the same; what differs is what fills it.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    Fill the rows that lack values.
+  </Card>
+  <Card title="Functions" icon="code" href="/management/function">
+    Fill a column with Python.
+  </Card>
+</CardGroup>

@@ -1,0 +1,84 @@
+---
+title: "Aggregation"
+sidebarTitle: "Aggregation"
+description: "GROUP BY, HAVING, and the aggregate function set."
+icon: layer-group
+keywords: ["group by", "having", "count", "sum", "avg", "aggregate", "approximate"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+Aggregation is one of the two main reasons to reach for SQL rather than a query
+builder -- the SDKs project, filter and search, but they do not group. The other
+is [joins](/sql/join).
+
+## Grouping {#grouping}
+
+```sql
+SELECT category, count(*) AS n, avg(score) AS mean_score
+FROM documents
+GROUP BY category
+HAVING count(*) > 10
+ORDER BY n DESC
+```
+
+`WHERE` filters rows before grouping; `HAVING` filters groups after. Putting a
+row-level predicate in `HAVING` still gives the right answer but does more work,
+because rows that could have been discarded early are grouped first.
+
+Grouping by several expressions produces one row per distinct combination:
+
+```sql
+SELECT category, source, count(*) FROM documents GROUP BY category, source
+```
+
+## Aggregate without grouping {#whole-table}
+
+Omitting `GROUP BY` aggregates the whole table into one row -- the usual way to
+ask how big something is:
+
+```sql
+SELECT count(*), min(created_at), max(created_at) FROM documents
+```
+
+`count(*)` counts rows; `count(col)` counts non-null values, which is how you
+measure how populated a [computed column](/feature-engineering/add-computed-column)
+is before deciding to refresh it again.
+
+## The function set {#functions}
+
+The aggregates are DataFusion's, and the full list is in its
+[aggregate function reference](https://datafusion.apache.org/user-guide/sql/aggregate_functions.html):
+
+| Kind | Examples |
+| --- | --- |
+| General | `count`, `sum`, `min`, `max`, `avg` |
+| Statistical | `stddev`, `var`, `corr`, `covar`, `regr_*` |
+| Approximate | `approx_distinct`, `approx_percentile_cont`, `approx_median` |
+| Collecting | `array_agg`, `string_agg`, `first_value`, `last_value` |
+
+The approximate ones are worth knowing about on a large table:
+`approx_distinct` answers "roughly how many distinct values" for a fraction of
+what `count(DISTINCT ...)` costs, which matters when the column has high
+cardinality.
+
+## Aggregating a sample {#sampling}
+
+For an estimate over a very large table, aggregate a
+[sample](/sql/sampling) rather than the whole thing:
+
+```sql
+SELECT category, count(*) * 100 AS estimated
+FROM documents TABLESAMPLE (1)
+GROUP BY category
+```
+
+Scale the result by the inverse of the sample fraction, and treat it as an
+estimate -- a 1% sample of a skewed column will miss rare categories entirely.
+
+## What aggregation does not do {#not}
+
+Aggregates run over rows the query already produced. They cannot combine with
+[vector search](/search/vector-search) in one statement, because similarity
+search has no SQL form. Run the search in an SDK and aggregate its result, or
+materialize the search output first.

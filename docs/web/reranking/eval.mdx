@@ -1,0 +1,103 @@
+---
+title: "Evaluating Hybrid Search Performance"
+sidebarTitle: "Evaluation"
+description: Learn about evaluating hybrid search performance in LanceDB.
+icon: "chart-bar"
+---
+
+Hybrid search is an often misused and/or misunderstood term. In this section, we're using
+the definition of "hybrid search" to mean using a combination of keyword-based and vector search.
+Because the vector search operates in a dense embedding space and keyword-based search operate
+in a sparse embedding space, their relevance scores cannot be directly compared.
+Combining results from multiple searches thus requires a reranking step.
+
+Before evaluating hybrid search, build an FTS index on the text column and use a table with embedding
+metadata or explicit query vectors for the vector side. Otherwise the evaluation is measuring setup
+fallbacks or errors rather than the reranker.
+
+## Reranking strategies {#reranking-strategies}
+
+There are two common approaches for reranking search results from multiple sources.
+
+- **Score-based**: Calculate final relevance scores from the individual search algorithm scores. Examples: Reciprocal Rank Fusion (the default in LanceDB), mean reciprocal rank fusion, and weighted linear combination of semantic and keyword-based search scores.
+
+- **Relevance-based**: Discards the existing scores and calculates the relevance of each search result-query pair. Example: Cross Encoder models
+
+<Info>
+If you call `.rerank()` on a hybrid query without passing a reranker, LanceDB defaults to
+`RRFReranker()` — a score-based reranker that uses Reciprocal Rank Fusion. This is the
+score-based path most readers encounter first; `LinearCombinationReranker` is an alternative
+score-based strategy you opt into explicitly.
+</Info>
+
+By default, rerankers return `_relevance_score`. Pass `return_score="all"` when a reranker
+supports it, and you also need the original vector or FTS scores for debugging.
+Evaluation code can rely on returned rows being ordered by descending `_relevance_score`. Empty
+reranked result sets still include the `_relevance_score` column.
+
+The hybrid `rerank(...)` method also accepts a `normalize` argument that controls how the raw
+vector and FTS scores are made comparable before reranking:
+
+- `normalize="score"` (the default) — normalizes the raw vector and FTS scores directly.
+- `normalize="rank"` — converts each result list to ranks first, then normalizes.
+
+This choice materially affects score-based rerankers (such as `LinearCombinationReranker`), so
+when you evaluate score-based strategies, treat `normalize` as a tunable hyperparameter
+alongside the reranker itself.
+
+For score-based evaluation, the main built-in knobs are:
+
+- `RRFReranker(K=60)`: rank fusion with a positive smoothing constant.
+- `MRRReranker(weight_vector=0.5, weight_fts=0.5)`: weighted reciprocal rank fusion where the weights must sum to `1.0`.
+- `LinearCombinationReranker(weight=0.7, fill=1.0)`: blends vector and FTS scores directly; `fill` controls how strongly to penalize a result missing from one side.
+
+Even though there are many more strategies for reranking, there are no "universally best"
+ones that work well for all cases, because reranking quality is dataset and application specific.
+Evaluating whether a reranking strategy is a good fit is also a challenge. In the next
+section, we discuss an example evaluation of different reranking strategies on a sample dataset.
+
+## Example evaluation {#example-evaluation}
+
+The table below shows our evaluation results from an experiment comparing multiple rerankers on
+~800 hybrid search queries. This is a modified version of an evaluation script by
+[LlamaIndex](https://github.com/run-llama/finetune-embedding/blob/main/evaluate.ipynb) that measures
+hit-rate \@ top-k.
+
+### Using OpenAI `text-embedding-ada-002` {#using-openai-text-embedding-ada-002}
+
+Vector Search baseline: **0.64**
+
+| Reranker | Top-3 | Top-5 | Top-10 |
+| --- | --- | --- | --- |
+| Linear Combination | `0.73` | `0.74` | `0.85` |
+| Cross Encoder | `0.71` | `0.70` | `0.77` |
+| Cohere | `0.81` | `0.81` | `0.85` |
+| ColBERT | `0.68` | `0.68` | `0.73` |
+
+<img src="https://github.com/AyushExel/assets/assets/15766192/d57b1780-ef27-414c-a5c3-73bee7808a45" />
+
+
+### Using OpenAI `text-embedding-3-small` {#using-openai-text-embedding-3-small}
+
+Vector Search baseline: **0.59**
+
+| Reranker | Top-3 | Top-5 | Top-10 |
+| --- | --- | --- | --- |
+| Linear Combination | `0.68` | `0.70` | `0.84` |
+| Cross Encoder | `0.72` | `0.72` | `0.79` |
+| Cohere | `0.79` | `0.79` | `0.84` |
+| ColBERT | `0.70` | `0.70` | `0.76` |
+
+<img src="https://github.com/AyushExel/assets/assets/15766192/259adfd2-6ec6-4df6-a77d-1456598970dd" />
+
+## Conclusion {#conclusion}
+
+The results show that the reranking methods can significantly improve the search relevance. However,
+the improvement we saw was not consistent across all rerankers. In reality, the choice of reranker
+likely depends on the dataset and the application.
+
+It's also important to note that the reranking methods are not a
+replacement for the search methods they supplement. They are complementary and it's likely that you'd
+have to tune them together to get the best results. The latency vs. recall tradeoff is also an
+important factor to consider when choosing the reranker. Hopefully this evaluation
+gives you a starting point for your own experiments with hybrid search in LanceDB!

@@ -1,0 +1,139 @@
+---
+title: "SDKs and SQL"
+sidebarTitle: "SDKs & SQL"
+description: "The ways to reach LanceDB — the language SDKs, the SQL endpoint, the REST API — and what each can do."
+icon: code-compare
+keywords: ["python", "typescript", "rust", "java", "sql", "rest", "api reference", "sdk"]
+---
+
+The same table can be reached several ways: a language SDK, SQL, or the REST
+API. They are views onto one engine, not separate products -- a table written
+from Python is queried from SQL without an export step.
+
+They are not interchangeable, though, and the differences are worth knowing
+before you pick one.
+
+## What each one can do {#matrix}
+
+| | Python | TypeScript | SQL |
+| --- | :---: | :---: | :---: |
+| Create and manage catalog objects | yes | yes | partly |
+| Insert, merge, update, delete | yes | yes | yes |
+| Filter, project, aggregate, join | yes | yes | yes |
+| Vector search | yes | yes | -- |
+| Full-text search | yes | yes | yes |
+| Feature engineering, jobs | yes | partly | yes |
+| Runs against a local database | yes | yes | **no** |
+
+Three entries in that table do most of the work of explaining the rest.
+
+## SQL needs a deployment {#sql-is-remote}
+
+<Warning>
+SQL is not available on a local database. A connection to a directory or a
+bucket has no server to plan and execute a statement, and asking it to raises
+`NotImplementedError`.
+</Warning>
+
+```python
+db = lancedb.connect("./.lancedb")        # no SQL
+db = lancedb.connect("db://my-database")  # SQL
+```
+
+This is the largest behavioural difference between the embedded and deployed
+forms, and the reason the SDKs are the portable choice: SDK code moves between
+the two by changing the URI, SQL does not.
+
+<Badge color="red">Enterprise</Badge> Queries are served over an
+[Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint, so any Flight SQL client can reach it and results arrive as Arrow
+record batches.
+
+## Vector search has no SQL form {#no-vector-sql}
+
+Similarity search is a query-builder operation. A query that needs both vector
+similarity and SQL analytics runs the search in an SDK and the analytics over
+its result. Full-text search *is* available in SQL, as the
+[`fts()`](/sql/functions#fts) table function and the
+[`contains_tokens`](/sql/functions#contains-tokens) predicate.
+
+## TypeScript has no SQL method {#ts-no-sql}
+
+The TypeScript SDK does not expose SQL, and has no methods for
+[functions](/management/function). Reach the endpoint with a Flight
+SQL client instead -- see [connecting a client](/search/sql). This is a gap in
+the SDK rather than in the endpoint: the same statements work.
+
+## Running SQL from Python {#sql-from-python}
+
+```python
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
+table = reader.read_all()
+```
+
+`execute_query` returns a blocking Arrow reader once results start arriving; it
+does not wait for the whole query. `execute_query_async` returns a handle
+instead -- see [Query and job](/basics/jobs#queries).
+
+## Choosing between them {#choosing}
+
+Reach for **the SDKs** when you are writing data, managing the catalog, running
+vector search, or building an application that should work the same embedded and
+deployed.
+
+Reach for **SQL** when the question is analytical -- joins across tables,
+aggregates, window functions -- or when the thing asking is a BI tool, a
+notebook, or a person who already thinks in SQL. It is also the only way to
+create a [view](/management/view).
+
+The two compose. A common shape is SDK code to build and maintain tables, and
+SQL for the analysis on top.
+
+## Reference {#reference}
+
+### Officially supported SDKs {#supported-sdks}
+
+Python, TypeScript and Rust are supported against both embedded and deployed
+LanceDB.
+
+| Reference | Description |
+|:--------------|-------------------|
+| <Icon icon="python" /> [Python](https://lancedb.github.io/lancedb/python/python/) | Full-featured Python client with pandas and numpy integration |
+| <Icon icon="square-js" /> [TypeScript](https://lancedb.github.io/lancedb/js/) | A TypeScript wrapper around the Rust library, built with `napi-rs` |
+| <Icon icon="rust" /> [Rust](https://docs.rs/lancedb/latest/lancedb/index.html) | Native Rust library with persistent storage and high performance |
+
+### REST API {#rest}
+
+<Badge color="red">Enterprise</Badge> A deployment implements the
+[Lance REST Namespace](/basics/lance#enterprise), so the catalog is reachable
+over HTTP by anything that speaks it -- see the
+[REST API reference](/api-reference/rest).
+
+| Reference | Description |
+|:--------------|-------------------|
+| <Icon icon="java" /> [Java](https://lancedb.github.io/lancedb/java/java/) | REST API Enterprise SDK in Java |
+
+### Community SDKs {#community-sdks}
+
+Contributed by the community rather than supported by LanceDB, so feature parity
+and release cadence vary.
+
+| Reference | Description |
+|:--------------|-------------------|
+| <Icon icon="golang" /> [Go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) | Community-contributed Go SDK |
+| <Icon icon="gem" /> [Ruby](https://github.com/scientist-labs/lancelot) | Community-contributed Ruby bindings |
+| <Icon icon="swift" /> [Swift](https://github.com/RyanLisse/LanceDbSwiftKit) | Community-contributed Swift SDK |
+| <Icon icon="R" /> [R](https://github.com/CathalByrneGit/lancedb) | Community-contributed R package |
+| <Icon icon="flutter" /> [Flutter](https://github.com/Alexcn/flutter_lancedb) | Community-contributed Flutter bindings |
+
+## What stays the same {#invariants}
+
+Whichever you pick:
+
+- **Types are Arrow types.** A vector column is a `FixedSizeList<Float32>`
+  everywhere, not a SQL type mapped onto storage. See
+  [Functions and types](/sql/functions).
+- **Reads are Arrow.** Nothing is serialized into language objects on the way out
+  unless you convert it.
+- **The catalog is one catalog.** A table created from TypeScript is visible to
+  Python and to SQL immediately -- there is no per-language namespace.

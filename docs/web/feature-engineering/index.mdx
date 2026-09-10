@@ -1,0 +1,110 @@
+---
+title: "Feature engineering"
+sidebarTitle: "Overview"
+description: "Derive columns and tables from data already in the lakehouse, without moving it somewhere else to compute."
+icon: layer-group
+keywords: ["feature engineering", "computed columns", "materialized views", "functions", "lakehouse", "jobs"]
+---
+
+Feature engineering happens where the data already is. Rather than exporting a
+table, computing somewhere else and writing the result back, you declare what a
+column or a table should contain and let LanceDB fill it.
+
+[Functions](/management/function) and
+[materialized views](/feature-engineering/materialized-views) are ordinary
+[catalog objects](/basics/catalog), alongside tables and indexes -- created,
+versioned, and refreshed like anything else, not a separate system bolted
+alongside.
+
+## The shape everything shares {#the-shape}
+
+Every mechanism here separates **declaring** from **filling**, and that
+separation is the point:
+
+- Declaring is cheap and immediate. It records intent in the schema and commits
+  a new table version, with no data written. Declaring a column on a
+  billion-row table costs what declaring one on an empty table costs.
+- Filling is a separate call you control, can retry, and -- against a deployment
+  -- can hand to the server as a [job](/basics/jobs) rather than waiting on.
+
+**Filling never revisits work it has already done.** A refresh gives values to
+rows that lack them and leaves the rest alone, so calling it twice is not twice
+the work, and appending rows means the next refresh handles only the new ones.
+
+The corollary is worth stating plainly: **a filled value is not recomputed when
+its inputs change.** If a column derives from `price` and a row's `price` is
+later updated, the derived value stays as it was computed. Recomputing means
+dropping the column and declaring it again. That is a deliberate trade -- it is
+what makes refreshes idempotent and cheap -- but it will surprise you if you
+expect a spreadsheet.
+
+## Which one to reach for {#which-one}
+
+| | What it produces | Filled by | Available |
+| --- | --- | --- | --- |
+| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | everywhere |
+| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | everywhere |
+| [Function](/management/function) | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> |
+
+**Computed columns** are the common case: a column declared with a SQL
+expression, filled by [a refresh](/feature-engineering/refresh-column).
+
+**Materialized views** derive a whole table -- a filtered, projected, or
+aggregated view of a source -- and keep it current incrementally. The result is
+an ordinary table: queryable, indexable, searchable.
+
+**Functions** run Python where the data is, for work SQL cannot express:
+embedding a column, calling a model, decoding an image. Registered once,
+versioned, then applied as a column.
+
+They compose. A materialized view can select computed columns, and a computed
+column can be filled by a registered function.
+
+## Where the work runs {#where}
+
+<Badge color="red">Enterprise</Badge>
+
+Locally, a refresh runs in your process. Against a deployment it runs across the
+cluster, and the API reflects that: `refresh_column` raises, and
+`refresh_column_async` returns a [job](/basics/jobs) handle instead.
+
+```python
+job = table.refresh_column_async("embedding")
+result = job.wait()
+result.rows_assigned
+```
+
+A backfill over a large table can therefore be started, left, and checked on
+from a different process -- the connection does not have to stay open.
+
+That relocation is the main thing to understand about Enterprise feature
+engineering. The API is the same; what changes is that the code runs somewhere
+else, which is also why a function must declare the environment it needs.
+
+## Failure is resumable {#failures}
+
+A function that raises fails the job. There is no per-row retry or skip policy
+in the function definition, so a function calling a flaky external service
+should handle that itself, inside the function body.
+
+The alternative is to let the job fail and run the refresh again. Since a
+refresh never revisits a filled row, re-running after a partial failure costs
+only the rows that did not complete -- **a failed backfill is resumed, not
+restarted.**
+
+## Where to go next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Add a computed column" icon="table-columns" href="/feature-engineering/add-computed-column">
+    Declare a column from a SQL expression.
+  </Card>
+  <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    Fill the rows that lack values, locally or as a job.
+  </Card>
+  <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/materialized-views">
+    Bring a derived table up to date with its source.
+  </Card>
+  <Card title="Functions" icon="code" href="/management/function">
+    Register Python to fill a column with.
+  </Card>
+</CardGroup>

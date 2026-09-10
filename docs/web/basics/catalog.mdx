@@ -1,0 +1,78 @@
+---
+title: "Lakehouse and catalog"
+sidebarTitle: "Lakehouse & Catalog"
+description: "What a multimodal lakehouse holds, and how the catalog organizes it."
+icon: sitemap
+keywords: ["lakehouse", "catalog", "database", "namespace", "table", "view", "function"]
+---
+
+LanceDB is a **multimodal lakehouse**: data sits in open [Lance](/basics/lance)
+tables on object storage, and a catalog gives those tables names, structure, and
+the operations that act on them.
+
+The lakehouse part is why images, embeddings, and the columns you derive from
+them live in one table rather than in a warehouse plus a vector store plus a
+feature store. The catalog part is what this page is about.
+
+## The objects {#objects}
+
+| Object | What it is |
+| --- | --- |
+| [Database](/management/database) | The root. A connection opens exactly one. |
+| [Namespace](/namespaces) | A named grouping inside a database. Can nest. |
+| [Table](/tables) | Rows and columns, versioned. What most operations act on. |
+| [Materialized view](/feature-engineering/materialized-views) | A table whose contents come from a query, computed and stored. |
+| [View](/management/view) | A saved query. Computed when read, not stored. |
+| [Function](/management/function) | Registered code, applied to produce column values. |
+
+```
+database
+└── namespace
+    ├── table
+    ├── materialized view      (a table, defined by a query)
+    ├── view                   (a query, not stored)
+    └── function
+```
+
+A namespace can contain further namespaces, so the hierarchy goes as deep as you
+need. A table is reached by its path through it.
+
+This page is about what the objects *are*. For the operations on them --
+connecting, creating, listing, dropping -- see [Management](/management).
+
+## A table is more than rows {#tables}
+
+A Lance table carries things a warehouse table does not, and most of the rest of
+these docs is about one of them:
+
+| | |
+| --- | --- |
+| **Columns** | including vectors, blobs, and columns [computed](/feature-engineering/add-computed-column) from other columns |
+| **Versions** | every write commits one, so reads can [travel back](/tables/versioning) |
+| **Indexes** | vector, full-text, and scalar, built over the columns |
+| **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
+
+That is why "add a feature column" is a normal operation here rather than a
+migration: it writes one new column and leaves the expensive data alone.
+
+## Views and materialized views are different objects {#views}
+
+The names are close enough to mislead. Both are defined by a query over other
+tables; the difference is when that query runs.
+
+- A **materialized view** stores its rows. A refresh computes them, and reads are
+  reads of stored data -- fast, and as current as the last refresh.
+- A **view** stores only the query. Every read runs it, so a view is never stale
+  and never faster than the query it wraps.
+
+Reach for a materialized view when the query is expensive and the data changes
+less often than it is read. Reach for a view when correctness matters more than
+latency, or when the query is cheap.
+
+## What is not a catalog object {#elsewhere}
+
+**Indexes** belong to a table rather than standing alone, and creating one is a
+performance decision -- see [Maintenance](/indexing).
+
+**Jobs** are not stored data at all; they are handles to work the server is
+doing. See [Query and job](/basics/jobs).

@@ -1,0 +1,299 @@
+---
+title: "Versioning and Reproducibility"
+sidebarTitle: "Versioning"
+description: "Learn how to implement versioning and ensure reproducibility in LanceDB. Includes version control, data snapshots, and audit trails."
+icon: "clock"
+---
+import {
+    PyVersioningBasicSetup as VersioningBasicSetup,
+    TsVersioningBasicSetup as TsVersioningBasicSetup,
+    RsVersioningBasicSetup as RsVersioningBasicSetup,
+    PyVersioningCheckInitialVersion as VersioningCheckInitialVersion,
+    TsVersioningCheckInitialVersion as TsVersioningCheckInitialVersion,
+    RsVersioningCheckInitialVersion as RsVersioningCheckInitialVersion,
+    PyVersioningUpdateData as VersioningUpdateData,
+    TsVersioningUpdateData as TsVersioningUpdateData,
+    RsVersioningUpdateData as RsVersioningUpdateData,
+    PyVersioningAddData as VersioningAddData,
+    TsVersioningAddData as TsVersioningAddData,
+    RsVersioningAddData as RsVersioningAddData,
+    PyVersioningCheckVersionsAfterMod as VersioningCheckVersionsAfterMod,
+    TsVersioningCheckVersionsAfterMod as TsVersioningCheckVersionsAfterMod,
+    RsVersioningCheckVersionsAfterMod as RsVersioningCheckVersionsAfterMod,
+    PyVersioningListAllVersions as VersioningListAllVersions,
+    TsVersioningListAllVersions as TsVersioningListAllVersions,
+    RsVersioningListAllVersions as RsVersioningListAllVersions,
+    PyVersioningRollback as VersioningRollback,
+    TsVersioningRollback as TsVersioningRollback,
+    RsVersioningRollback as RsVersioningRollback,
+    PyVersioningCheckoutLatest as VersioningCheckoutLatest,
+    TsVersioningCheckoutLatest as TsVersioningCheckoutLatest,
+    RsVersioningCheckoutLatest as RsVersioningCheckoutLatest,
+    PyVersioningDeleteData as VersioningDeleteData,
+    TsVersioningDeleteData as TsVersioningDeleteData,
+    RsVersioningDeleteData as RsVersioningDeleteData,
+    PyVersioningTags as VersioningTags,
+    TsVersioningTags as TsVersioningTags,
+    RsVersioningTags as RsVersioningTags,
+    RsVersioningMakeQuotesReader as RsVersioningMakeQuotesReader,
+} from '/snippets/tables.mdx';
+
+This page shows the core table-versioning APIs used in the code snippets for Python, TypeScript, and Rust.
+Each operation below maps directly to methods shown in the examples.
+
+## Basic Versioning Example {#basic-versioning-example}
+
+Let's create a table with sample data to demonstrate LanceDB's versioning capabilities:
+
+### Set Up the Table {#set-up-the-table}
+
+First, let's create a table with some sample data:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningBasicSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningBasicSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningBasicSetup}
+    </CodeBlock>
+</CodeGroup>
+
+<Expandable title="Rust helper used in this page">
+<CodeGroup>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningMakeQuotesReader}
+    </CodeBlock>
+</CodeGroup>
+</Expandable>
+
+### Check Initial Version {#check-initial-version}
+
+After creating the table, let's check the initial version information:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningCheckInitialVersion}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningCheckInitialVersion}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningCheckInitialVersion}
+    </CodeBlock>
+</CodeGroup>
+
+## Modify Data {#modify-data}
+
+When you modify data through operations like update or delete, LanceDB automatically creates new versions.
+
+### Update Existing Data {#update-existing-data}
+
+Let's update some existing records to see versioning in action:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningUpdateData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningUpdateData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningUpdateData}
+    </CodeBlock>
+</CodeGroup>
+
+### Add New Data {#add-new-data}
+
+Now let's add more records to the table:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningAddData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningAddData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningAddData}
+    </CodeBlock>
+</CodeGroup>
+
+### Check Version Changes {#check-version-changes}
+
+Let's see how the versions have changed after our modifications:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningCheckVersionsAfterMod}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningCheckVersionsAfterMod}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningCheckVersionsAfterMod}
+    </CodeBlock>
+</CodeGroup>
+
+## Rollback to Previous Versions {#rollback-to-previous-versions}
+
+LanceDB supports fast rollbacks to any previous version without data duplication.
+
+### View All Versions {#view-all-versions}
+
+First, let's see all the versions we've created:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningListAllVersions}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningListAllVersions}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningListAllVersions}
+    </CodeBlock>
+</CodeGroup>
+
+### Restore a Version Snapshot {#restore-a-version-snapshot}
+
+Now let's restore a captured version snapshot:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningRollback}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningRollback}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningRollback}
+    </CodeBlock>
+</CodeGroup>
+
+## Tag-Based Versioning {#tag-based-versioning}
+
+Numeric table versions like `v3` or `v17` are precise but hard to remember. Tags
+let you attach human-readable labels (e.g., `"prod"`, `"baseline"`,
+`"q3-evaluation"`) to specific versions and check those out by name. They are
+conceptually similar to git tags, and unlike numeric versions, **tagged versions
+are preserved when old versions are pruned** (see the cleanup note at the bottom
+of this page).
+
+The tags API supports the standard CRUD operations — create, list, update, delete —
+plus checking out by tag name.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningTags}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningTags}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningTags}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+Deleting a tag only removes the label, not the version it points to. After
+deletion, the underlying table version becomes eligible for cleanup again.
+</Note>
+
+## Branches {#branches}
+
+Beyond linear history, LanceDB also supports **branches** — isolated, writable
+lines of history forked from `main` (or a specific version). Whereas tags and
+`checkout` give you read-only views of existing versions, a branch has its own
+writable history, making it ideal for experiments, backfills, and migrations
+that you want to keep separate from production reads on `main`.
+
+Branches are covered in their own guide: see [Branches](/tables/branching).
+
+## Delete Data From the Table {#delete-data-from-the-table}
+
+Let's demonstrate how deletions also create new versions:
+
+### Go Back to Latest Version {#go-back-to-latest-version}
+
+First, let's return to the latest version:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningCheckoutLatest}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningCheckoutLatest}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningCheckoutLatest}
+    </CodeBlock>
+</CodeGroup>
+
+### Delete Data {#delete-data}
+
+Now let's delete some data to see how it affects versioning:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningDeleteData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningDeleteData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningDeleteData}
+    </CodeBlock>
+</CodeGroup>
+
+### Version History and Operations {#version-history-and-operations}
+
+On a fresh table, the snippets in this guide produce this version sequence:
+
+1. `v1`: create table (`create_table` / `createTable` / `create_table`)
+2. `v2`: update rows (`update`)
+3. `v3`: add rows (`add`)
+4. `v4`: restore snapshot (`restore`) from `version_after_mod`/`versionAfterMod`
+5. `v5`: delete rows (`delete`)
+
+Read-only and checkout operations shown here (`list_versions`/`listVersions`, `version`, `checkout`, `checkout_latest`/`checkoutLatest`) do not create new versions.
+
+The version metadata fields can differ by backend. Direct table-backed version listing exposes a
+timestamp, while namespace-backed listing may expose fields such as `manifest_path`,
+`manifest_size`, `e_tag`, and `timestamp_millis`. In deployments that use managed versioning,
+prefer the table version APIs exposed by LanceDB Enterprise or the namespace service instead of
+mixing in lower-level Lance file operations.
+
+<Note>
+**System Operations**
+
+System operations like `optimize()`, index updates, and table compaction also increment table version numbers.
+In LanceDB OSS and Enterprise, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
+which is when old-version files are removed and disk space is reclaimed.
+
+**Tagged versions are exempt from cleanup.** A version with a tag pointing at it is
+retained regardless of age, and its files are not removed by `optimize()`. To make
+a tagged version eligible for pruning, [delete the tag](#tag-based-versioning) first.
+</Note>

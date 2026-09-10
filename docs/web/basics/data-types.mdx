@@ -1,0 +1,367 @@
+---
+title: "Schema and data types"
+sidebarTitle: "Data Types"
+description: "The Arrow type system LanceDB stores, and the extension types Lance adds on top of it."
+icon: shapes
+keywords: ["schema", "data types", "arrow", "json", "blob", "bfloat16", "vector", "geospatial"]
+---
+
+import {
+    PyMultimodalImports as MultimodalImports,
+    TsMultimodalImports as TsMultimodalImports,
+    RsMultimodalImports as RsMultimodalImports,
+    PyCreateDummyData as CreateDummyData,
+    TsCreateDummyData as TsCreateDummyData,
+    RsCreateDummyData as RsCreateDummyData,
+    PyDefineSchema as DefineSchema,
+    TsDefineSchema as TsDefineSchema,
+    RsDefineSchema as RsDefineSchema,
+    PyIngestData as IngestData,
+    TsIngestData as TsIngestData,
+    RsIngestData as RsIngestData,
+    PySearchData as SearchData,
+    TsSearchData as TsSearchData,
+    RsSearchData as RsSearchData,
+    PyProcessResults as ProcessResults,
+    TsProcessResults as TsProcessResults,
+    RsProcessResults as RsProcessResults,
+    PyBlobApiSchema as BlobApiSchema,
+    TsBlobApiSchema as TsBlobApiSchema,
+    RsBlobApiSchema as RsBlobApiSchema,
+    PyBlobApiIngest as BlobApiIngest,
+    TsBlobApiIngest as TsBlobApiIngest,
+    RsBlobApiIngest as RsBlobApiIngest,
+    PyBlobApiToPandas as BlobApiToPandas,
+    PyQueryToPandasKwargs as QueryToPandasKwargs,
+} from '/snippets/multimodal.mdx';
+
+A table's schema is an **Arrow schema**. There is no separate LanceDB type
+system mapped onto storage -- a column is the same object to the query engine,
+to the format, and to any other engine reading the files.
+
+That identity is mostly invisible and occasionally load-bearing, so it is worth
+knowing what it admits.
+
+## Supported types {#supported}
+
+| Category | Types |
+| --- | --- |
+| Null | `null` |
+| Boolean | `bool` |
+| Integer | `int8`, `int16`, `int32`, `int64` and their `uint` counterparts |
+| Floating point | `float16`, `float32`, `float64` |
+| String | `utf8`, `large_utf8` |
+| Binary | `binary`, `large_binary`, `fixed_size_binary(n)` |
+| Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp` (with or without timezone), `duration` |
+| Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
+| Dictionary | `dictionary(key, value)` |
+
+Two limits are worth stating because they surface as schema errors rather than
+as documentation:
+
+- A `map` with `keys_sorted = true` is rejected. Sorted-key maps do not survive
+  the round trip through the Python bindings, so they are refused rather than
+  silently unsorted.
+- Not every type is legal as a `fixed_size_list` child. The vector case is,
+  which is what matters in practice.
+
+## Vectors are fixed-size lists {#vectors}
+
+A vector column is a `fixed_size_list<float32, dim>` -- an ordinary Arrow type,
+not a special one:
+
+```python
+import pyarrow as pa
+
+schema = pa.schema([
+    pa.field("id", pa.int64()),
+    pa.field("vector", pa.list_(pa.float32(), 1536)),
+])
+```
+
+Because it is ordinary, it is selectable, testable for nullness, and joinable
+like any other column. The consequence people trip on is the other side of that:
+arithmetic over it is **list** arithmetic, not scalar arithmetic. When the
+operation you want is a similarity comparison, use
+[vector search](/search/vector-search) rather than SQL.
+
+Without an explicit schema, Python infers a list of floats as a fixed-size
+`float32` vector from the dimension it observes in the data.
+
+## Extension types {#extensions}
+
+Lance adds a few types as **Arrow extension types** -- an underlying storage
+type plus an `ARROW:extension:name` marker. Any Arrow reader can read the
+storage; readers that know the extension get the richer behaviour.
+
+| Type | Extension name | Stored as |
+| --- | --- | --- |
+| [JSON](#json) | `lance.json` | `large_binary`, JSONB-encoded |
+| [Blob](#blob) | `lance.blob.v2` | `large_binary`, stored out of line |
+| bfloat16 | `lance.bfloat16` | `fixed_size_binary(2)` |
+
+`arrow.json` is accepted as well, for interoperability with writers that use
+Arrow's own canonical JSON extension name.
+
+### JSON {#json}
+
+A JSON column stores documents in **JSONB**, a binary encoding, rather than as
+text. Accessors read into a document without parsing the whole thing:
+
+```sql
+SELECT json_get_string(data, 'name') FROM events
+WHERE json_get_int(data, 'status') = 200
+```
+
+`json_get` returns JSON, so accessors nest for a nested document. **A JSON
+scalar index accelerates `json_get`, its typed variants, and `json_extract`** --
+the rest evaluate per row. The full function list is in
+[SQL functions](/sql/functions#json).
+
+This is the type to reach for when a column's shape varies per row. When it does
+not, ordinary `struct` columns are faster and typed.
+
+### Blob {#blob}
+
+A blob column holds large binary objects -- images, video, audio, model
+artifacts -- **out of line** from the rest of the row. That is what keeps a scan
+over the other columns fast on a table whose rows are megabytes each.
+
+A blob can be read two ways, and the choice changes the column's Arrow type:
+
+- as its **binary contents**, or
+- as a **description** -- a pointer plus metadata, without fetching the bytes.
+
+<Warning>
+The default reads blob columns as descriptions and other binary columns as
+binary. A query that selects a blob column expecting bytes gets a struct
+instead, unless the read is configured otherwise. Worth knowing before writing a
+predicate against one.
+</Warning>
+
+### Store binary data {#store-binary-data}
+
+To store binary data, define a binary Arrow field in your schema (`pa.binary()` in Python, `Binary` in TypeScript, and `DataType::Binary` in Rust).
+
+#### 1\. Setup and imports {#1-setup-and-imports}
+
+First, import the necessary libraries for LanceDB and Arrow in your SDK.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MultimodalImports}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMultimodalImports}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMultimodalImports}
+    </CodeBlock>
+</CodeGroup>
+
+#### 2\. Prepare data {#2-prepare-data}
+
+For this example, we'll create some dummy in-memory images. In a real application, you would read these from files or an API. The key is to convert your data (image, audio, etc.) into a raw `bytes` object.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateDummyData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateDummyData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateDummyData}
+    </CodeBlock>
+</CodeGroup>
+
+#### 3\. Define the schema {#3-define-the-schema}
+
+When creating the table, it is **highly recommended** to define the schema explicitly. This ensures that your binary data is correctly interpreted as a `binary` type by Arrow/LanceDB and not as a generic string or list.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DefineSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDefineSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDefineSchema}
+    </CodeBlock>
+</CodeGroup>
+
+#### 4\. Ingest data {#4-ingest-data}
+
+Now, create the table using the data and the defined schema.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {IngestData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsIngestData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsIngestData}
+    </CodeBlock>
+</CodeGroup>
+
+### Retrieve and use blobs {#retrieve-and-use-blobs}
+
+When you search your LanceDB table, you can retrieve the binary column just like any other metadata.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SearchData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSearchData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSearchData}
+    </CodeBlock>
+</CodeGroup>
+
+#### Convert bytes back to objects {#convert-bytes-back-to-objects}
+
+Once you have the bytes back from the search result, you can decode them into the original format (for example, an image object or audio buffer).
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ProcessResults}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsProcessResults}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsProcessResults}
+    </CodeBlock>
+</CodeGroup>
+
+### Large Blobs (Blob API) {#large-blobs-blob-api}
+
+For larger files like high-resolution images or videos, Lance provides a specialized **Blob API**. By using a large-binary Arrow type (`pa.large_binary()` in Python, `LargeBinary` in TypeScript, and `DataType::LargeBinary` in Rust) and specific metadata, you enable **lazy loading** and optimized encoding. This allows you to work with massive datasets without loading all binary data into memory upfront.
+
+#### 1\. Define a blob schema {#1-define-a-blob-schema}
+
+To use the Blob API, you must mark the column with `{"lance-encoding:blob": "true"}` metadata.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiSchema}
+    </CodeBlock>
+</CodeGroup>
+
+#### 2\. Ingest large blobs {#2-ingest-large-blobs}
+
+You can then ingest data normally, and Lance will handle the optimized storage.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiIngest}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiIngest}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiIngest}
+    </CodeBlock>
+</CodeGroup>
+
+<Card>
+For more advanced usage, including random access and file-like reading of blobs, see the
+Lance format's [blob API documentation](https://lance.org/guide/blob/).
+</Card>
+
+#### 3\. Convert blob tables to pandas {#3-convert-blob-tables-to-pandas}
+
+When you call `to_pandas()` on a local LanceDB table that contains Blob API columns, the `blob_mode` argument controls how those columns materialize. This is available in the Python SDK on local tables; remote tables raise `NotImplementedError`.
+
+`blob_mode` accepts:
+
+- `"lazy"` (default): returns blob columns as lazy `BlobFile` objects without eagerly materializing their payloads. Use this when you want to stream blob bytes on demand or only inspect a subset of rows. Namespace-backed local tables also use the Lance native blob-aware pandas conversion for lazy blobs; in-memory datasets fall back to the standard PyArrow `to_pandas()` path.
+- `"bytes"`: eagerly materializes each blob as `bytes`. Use this when you need the raw payload in the DataFrame, for example to decode an image or audio clip in-process.
+- `"descriptions"`: returns blob descriptors (offsets, sizes, and positions) instead of the data itself. Use this when you want to plan I/O without paying the cost of loading every blob.
+
+`"bytes"` and `"descriptions"` require a filesystem-backed Lance dataset and are not supported on in-memory tables.
+
+Extra keyword arguments are forwarded to the underlying PyArrow / Lance pandas conversion, so you can also pass options like `split_blocks` or `self_destruct`:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiToPandas}
+    </CodeBlock>
+</CodeGroup>
+
+Query builders also accept `blob_mode` on their `to_pandas()` method:
+
+- Plain scans support `"lazy"`, `"bytes"`, and `"descriptions"` with filters, projections, aliases, `limit`, and `offset`.
+- Vector, FTS, hybrid, and ordered queries can't materialize blob columns through `to_pandas()`; omit blob columns from the projection for those query shapes.
+- This works on both sync and async query builders. Extra PyArrow kwargs like `split_blocks` and `self_destruct` are still forwarded.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {QueryToPandasKwargs}
+    </CodeBlock>
+</CodeGroup>
+
+### Other modalities {#other-modalities}
+
+The `pa.binary()` and `pa.large_binary()` types are universal. You can use this same pattern for other types of multimodal data:
+
+- **Audio:** Read `.wav` or `.mp3` files as bytes.
+- **Video:** Store video transitions or full clips using the Blob API.
+- **PDFs/Documents:** Store the raw file content for document search.
+
+### bfloat16 {#bfloat16}
+
+Sixteen-bit floats in the bfloat16 layout, stored as `fixed_size_binary(2)`.
+Useful as a vector element type when halving the memory matters more than the
+precision does.
+
+## Geospatial {#geospatial}
+
+<Warning>
+Lance defines geospatial types and `st_*` functions on
+[GeoArrow](https://geoarrow.org), but they sit behind an optional build feature
+that **LanceDB does not ship**. Calling `st_intersects` and friends returns an
+error naming the missing feature rather than an unknown-function error, and the
+spatial index is gated the same way.
+</Warning>
+
+Geometry can still be stored -- it is binary, and binary columns work -- but
+nothing interprets it. Filter on a bounding box held in ordinary numeric
+columns if you need spatial predicates today.
+
+## Changing types later {#evolution}
+
+A schema is not fixed at creation. Columns can be added, renamed, retyped, made
+nullable, and dropped, usually without rewriting existing data -- see
+[Schema evolution](/tables/schema). Deriving new values from existing columns is
+[data evolution](/feature-engineering/data-evolution).
+
+Nullability is worth deciding up front: if later writes omit a non-nullable
+column, or write actual nulls into it, ingestion fails.
