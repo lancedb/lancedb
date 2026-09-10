@@ -21,6 +21,7 @@ above.
 import ctypes
 import heapq
 import logging
+import math
 import os
 import random
 import threading
@@ -396,6 +397,7 @@ class StreamingDataset(IterableDataset):
         io_queue_depth: int = DEFAULT_PREFETCH_BATCHES,
         columns: Optional[list[str]] = None,
         shuffle_clump_size: Optional[int] = None,
+        block_size: Optional[int] = None,
         filter: Optional[str] = None,
         transform: Optional[Callable] = None,
         transform_parallelism: Optional[int] = None,
@@ -428,6 +430,8 @@ class StreamingDataset(IterableDataset):
             )
         if io_queue_depth <= 0:
             raise ValueError("io_queue_depth must be greater than 0")
+        if block_size is not None and block_size <= 0:
+            raise ValueError("block_size must be greater than 0")
         if transform_parallelism is not None and transform_parallelism <= 0:
             raise ValueError("transform_parallelism must be greater than 0")
         if pack_sequences is not None:
@@ -500,6 +504,7 @@ class StreamingDataset(IterableDataset):
         self._io_queue_depth = io_queue_depth
         self._columns = columns
         self._shuffle_clump_size = shuffle_clump_size
+        self._block_size = block_size
         self._filter = filter
         self._transform = transform
         self._transform_parallelism = transform_parallelism
@@ -574,17 +579,37 @@ class StreamingDataset(IterableDataset):
         # this instance has never iterated have no entry.
         self._resume_positions: dict[int, int] = {}
 
-        # Build the permutation table once, deterministically.
-        builder = permutation_builder(table)
-        if filter is not None:
-            builder = builder.filter(filter)
-        if shuffle:
-            perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
-            self._perm_table = builder.split_random(
-                fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
-            ).execute()
+        if block_size is not None:
+            # 2-phase shuffled read: the source dataset is never given a
+            # row-level permutation.  Instead we only shuffle at the
+            # granularity of contiguous row blocks; _perm_table (and its
+            # row-by-row index mapping) is not built at all in this mode.
+            num_rows = (
+                table.count_rows(filter) if filter is not None else table.count_rows()
+            )
+            self._num_rows = num_rows
+            self._num_blocks = math.ceil(num_rows / block_size) if num_rows else 0
+            block_order = list(range(self._num_blocks))
+            if shuffle:
+                block_seed = shuffle_seed + epoch * _EPOCH_PRIME
+                random.Random(block_seed).shuffle(block_order)
+            # A block permutation is tiny (one int per block, not per row),
+            # so it is kept in RAM rather than round-tripped through an
+            # Arrow-backed permutation table like the 1-phase row mapping.
+            self._block_perm: list[int] = block_order
+            self._perm_table = None
         else:
-            self._perm_table = builder.split_sequential(fixed=num_splits).execute()
+            # Build the permutation table once, deterministically.
+            builder = permutation_builder(table)
+            if filter is not None:
+                builder = builder.filter(filter)
+            if shuffle:
+                perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
+                self._perm_table = builder.split_random(
+                    fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
+                ).execute()
+            else:
+                self._perm_table = builder.split_sequential(fixed=num_splits).execute()
 
         if self._blocks_per_epoch == "auto":
             self._blocks_per_epoch = self._estimate_blocks_per_epoch()
