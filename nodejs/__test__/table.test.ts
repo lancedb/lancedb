@@ -52,6 +52,7 @@ import {
   Operator,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
+import { LocalTable } from "../lancedb/table";
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
@@ -2518,7 +2519,7 @@ describe("when optimizing a dataset", () => {
   it("cleanups old versions", async () => {
     const stats = await table.optimize({ cleanupOlderThan: new Date() });
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
-    expect(stats.prune.oldVersionsRemoved).toBe(3);
+    expect(stats.prune.oldVersionsRemoved).toBe(2);
   });
 
   it("delete unverified", async () => {
@@ -2537,6 +2538,24 @@ describe("when optimizing a dataset", () => {
     });
     expect(stats.prune.oldVersionsRemoved).toBeGreaterThan(1);
   });
+});
+
+it("passes cleanupOlderThan to the native binding as an absolute timestamp", async () => {
+  const optimize = jest.fn().mockResolvedValue({
+    compaction: {
+      filesAdded: 0,
+      filesRemoved: 0,
+      fragmentsAdded: 0,
+      fragmentsRemoved: 0,
+    },
+    prune: { bytesRemoved: 0, oldVersionsRemoved: 0 },
+  });
+  const table = new LocalTable({ optimize } as never);
+  const cutoff = new Date("2020-01-02T03:04:05.678Z");
+
+  await table.optimize({ cleanupOlderThan: cutoff, deleteUnverified: true });
+
+  expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true);
 });
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
