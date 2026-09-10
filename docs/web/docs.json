@@ -150,11 +150,9 @@
             ]
           },
           {
-            "group": "SQL and DataFrame",
+            "group": "SQL",
             "pages": [
               "sql/index",
-              "sql/dataframe",
-              "sql/expressions",
               "sql/functions"
             ]
           },

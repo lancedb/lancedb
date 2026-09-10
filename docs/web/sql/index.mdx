@@ -1,77 +1,49 @@
 ---
-title: "SQL and DataFrame manual"
+title: "SQL manual"
 sidebarTitle: "Overview"
-description: "Two ways to express an analytical query over the lakehouse, one execution engine underneath."
+description: "Analytical SQL over the lakehouse, served through Arrow Flight SQL."
 icon: table-list
-keywords: ["sql", "dataframe", "substrait", "flight sql", "query", "analytics"]
+keywords: ["sql", "flight sql", "query", "analytics", "datafusion", "fts"]
 ---
 
-LanceDB answers analytical queries two ways. **SQL** goes over an Arrow Flight
-SQL endpoint, so any Flight SQL client can reach it. The **DataFrame API**
-builds the same kind of plan in Python, method by method, and submits it as
-[Substrait](https://substrait.io).
+LanceDB answers analytical queries in SQL, served over an
+[Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint. Any Flight SQL client can reach it, and results come back as Arrow.
 
-They are not layered on each other — neither is sugar for the other. Both
-produce a logical plan that the server executes, which is why they cost the same
-and return the same Arrow data.
-
-<Note>
-The DataFrame API is new. Until it ships, the reference below describes the
-merged surface rather than a released one; check the version you are running.
-</Note>
-
-## Choosing between them {#choosing}
-
-| | SQL | DataFrame |
-| --- | --- | --- |
-| Written as | a query string | Python method calls |
-| Reaches the server via | Arrow Flight SQL | Substrait |
-| Composable in host code | by string building | by value |
-| Available from | any Flight SQL client | the Python client |
-| Checked | at the server | partly at build time |
-
-Reach for **SQL** when the query is written by a person, pasted from a notebook,
-or produced by a tool that already speaks Flight SQL. Reach for the **DataFrame
-API** when the query is assembled by code — a filter that depends on user input,
-a projection that varies by caller — because building a plan out of values
-avoids the quoting and injection problems of building one out of strings.
+The dialect is [DataFusion's](/sql/functions), so the syntax and functions are
+the ones that reference documents. What this manual covers is the parts that are
+LanceDB's: how a query reaches the engine, how Lance columns appear to it, and
+the extensions a lakehouse over multimodal data needs.
 
 ## Where a query runs {#execution}
 
-Both forms execute on the server.
+Queries execute on the server. The client sends a statement and receives Arrow
+record batches — nothing is converted to pandas or Python objects unless you ask
+for it.
 
-A DataFrame is **lazy**: every method returns a new plan and nothing runs until
-`execute()`. A local connection can build and serialize a plan — useful for
-tests, and for inspecting what a query will do — but cannot execute one.
-`db.table(...)` on a local connection gives you a plan you can print or convert
-to Substrait; submitting it needs a remote connection.
+Because results are Arrow the whole way, a query that feeds training or
+downstream processing does not pay a serialization cost to get there.
 
-```python
-df = db.table("documents").filter(col("score") > 0.5).limit(10)
-df.to_substrait()      # works anywhere
-df.execute()           # needs a remote connection
-```
+## The dialect {#dialect}
 
-That split is worth knowing before you write tests: plan construction is
-testable locally, execution is not.
+Ordinary analytical SQL — `SELECT`, `WHERE`, `GROUP BY`, `ORDER BY`, `LIMIT`,
+joins, CTEs and window functions — over Arrow-typed columns.
 
-## Query lifecycle {#lifecycle}
+Two things differ from a warehouse you may be used to, and both come from the
+storage being Lance rather than something SQL-shaped:
 
-`execute()` returns an Arrow `RecordBatchReader` and blocks. `execute_async()`
-returns a server-side query handle instead, for queries long enough that holding
-a reader open is the wrong shape.
+- **Columns are Arrow types**, not a SQL type system mapped onto storage. A
+  vector column is a `FixedSizeList<Float32>` and behaves like one.
+- **Row metadata is available as columns** — `_rowid`, `_rowaddr` — but only
+  when asked for, so they stay out of `SELECT *`.
 
-Results are Arrow in both cases. Nothing converts to pandas or Python objects
-unless you ask.
+Both are covered in [Functions and types](/sql/functions).
 
-## LanceDB's SQL extensions {#extensions}
+## Full-text search {#fts}
 
-The dialect is [DataFusion's](/sql/functions) — `SELECT`, `WHERE`, `GROUP BY`,
-`ORDER BY`, `LIMIT`, joins, CTEs and window functions — plus what a lakehouse
-over multimodal data needs.
-
-**Full-text search** is a table function rather than a predicate, because it
-produces a relevance score alongside the matching rows:
+Full-text search is a **table function** rather than a predicate, because it
+produces relevance alongside the matching rows and a `WHERE` clause has nowhere
+to put that:
 
 ```sql
 SELECT id, text, _score
@@ -80,27 +52,19 @@ ORDER BY _score DESC
 LIMIT 5
 ```
 
-`fts()` takes a table name and a query — either a bare string or a JSON query
-object for fuzzy, phrase, boolean, boost and multi-match forms. `_score` is a
-pseudo-column carrying relevance, available for ordering and filtering like any
-other column.
+`fts()` takes a table name and a query — a bare string, or a JSON query object
+for fuzzy, phrase, boolean, boost and multi-match forms. `_score` carries
+relevance and behaves like any other column.
 
-Because it is a table function, full-text search composes with the rest of a
-query: join its results, filter them, aggregate over them.
+Being a relation is what makes it compose: join its result, filter it, aggregate
+over it.
 
 ## Reference {#reference}
 
-<CardGroup cols={3}>
-  <Card title="DataFrame operations" icon="table-list" href="/sql/dataframe">
-    Every relational operation, with signatures and semantics.
-  </Card>
-  <Card title="Expressions" icon="function" href="/sql/expressions">
-    Columns, literals, operators, and the aggregate functions.
-  </Card>
-  <Card title="Functions and types" icon="calculator" href="/sql/functions">
-    The DataFusion dialect, and what LanceDB adds to it.
-  </Card>
-</CardGroup>
+<Card title="Functions and types" icon="calculator" href="/sql/functions">
+  The DataFusion dialect and version, how Lance columns map onto it, and what
+  LanceDB adds.
+</Card>
 
 ## What this manual does not cover {#scope}
 

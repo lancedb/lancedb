@@ -115,19 +115,9 @@ A pseudo-column produced by `fts()`, carrying relevance for the row. It behaves
 like a normal column — order by it, filter on it, project it — and exists only
 in a relation that came from `fts()`.
 
-## From the DataFrame API {#from-dataframe}
+## Reaching a function LanceDB does not name {#escape-hatch}
 
-The [DataFrame API](/sql/dataframe) wraps five aggregates as Python functions —
-`sum`, `avg`, `min`, `max`, `count`. Everything else in the DataFusion reference
-is reachable through `func(name, *args)`:
-
-```python
-from lancedb import col, func
-
-df.select(func("date_trunc", "month", col("created_at")))
-df.filter(func("regexp_like", col("title"), "^intro"))
-```
-
-`func()` is not checked when you build the plan — an unknown name or a wrong
-argument count surfaces when the query runs on the server. That is the trade for
-reaching the whole function set without a wrapper per function.
+Nothing here wraps or restricts the DataFusion set — a query reaches any
+function in the reference above by writing it. If a name is not recognised,
+check it against the reference for the version this page pins rather than
+assuming it is unsupported.
