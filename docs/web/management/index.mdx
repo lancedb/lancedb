@@ -1,0 +1,152 @@
+---
+title: "Management"
+sidebarTitle: "Overview"
+description: "Create, list, and drop the objects in a catalog, from Python, TypeScript, or SQL."
+icon: folder-tree
+keywords: ["ddl", "create", "drop", "list", "catalog", "management"]
+---
+
+Every [catalog object](/basics/catalog) is created, listed, and dropped the same
+few ways. This section is the reference for those operations; the pages linked
+from it cover what each object is for.
+
+Operations that can take a while have an `_async` form returning a
+[job](/basics/jobs).
+
+## The surface at a glance {#surface}
+
+<Note>
+SQL requires a deployment -- a local database has no engine to plan a statement.
+See [Python, TypeScript, and SQL](/basics/apis).
+</Note>
+
+### Namespaces {#namespaces}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_namespace` | `createNamespace` | -- |
+| list | `list_namespaces` | `listNamespaces` | -- |
+| describe | `describe_namespace` | `describeNamespace` | -- |
+| exists | `namespace_exists` | -- | -- |
+| drop | `drop_namespace` | `dropNamespace` | -- |
+
+See [Namespaces](/namespaces).
+
+### Tables {#tables}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_table` | `createTable` | `CREATE TABLE` |
+| create empty | `create_table(schema=)` | `createEmptyTable` | `CREATE TABLE` |
+| open | `open_table` | `openTable` | -- |
+| list | `table_names`, `list_tables` | `tableNames`, `listTables` | `SHOW TABLES` |
+| exists | `table_exists` | -- | -- |
+| rename | `rename_table` | `renameTable` | -- |
+| clone | `clone_table` | `cloneTable` | -- |
+| drop | `drop_table`, `drop_table_async` | `dropTable`, `dropTableAsync` | `DROP TABLE` |
+| drop all | `drop_all_tables` | `dropAllTables` | -- |
+
+See [Tables](/tables) for creating one and shaping its schema.
+
+### Materialized views {#materialized-views}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_materialized_view` | `createMaterializedView` | -- |
+| open | `open_materialized_view` | `openMaterializedView` | -- |
+| list | `list_materialized_views` | `listMaterializedViews` | `SHOW MATERIALIZED VIEWS` |
+| refresh | `refresh` | `refresh` | `REFRESH MATERIALIZED VIEW` |
+| drop | `drop_table` | `dropTable` | `DROP TABLE` |
+
+<Note>
+`list_materialized_views` reads every table's schema to find them, so it costs
+one open per table. `SHOW MATERIALIZED VIEWS` asks the server instead.
+</Note>
+
+See [Materialized views](/feature-engineering/materialized-views).
+
+### Views {#views}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | -- | -- | `CREATE VIEW` |
+| drop | -- | -- | `DROP VIEW` |
+
+<Badge color="red">Enterprise</Badge> Views exist only in SQL -- there is no SDK
+method for them, because the thing a view stores *is* a SQL statement. See
+[Views](/management/view).
+
+### Functions {#functions}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_function`, `create_function_async` | -- | `CREATE FUNCTION` |
+| get | `get_function` | -- | -- |
+| list | `list_functions` | -- | `SHOW FUNCTIONS` |
+| drop | `drop_function` | -- | -- |
+
+<Badge color="red">Enterprise</Badge> A function runs on the server, so there is
+no local form. The TypeScript SDK has no function methods; use Python or SQL.
+See [Functions](/feature-engineering/functions).
+
+### Jobs {#jobs}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| list | `list_jobs` | `listJobs` | `SHOW JOBS` |
+| open | `open_job` | `openJob` | -- |
+| cancel | `cancel_job` | `cancelJob` | -- |
+| errors | `job.events` | `job.events` | `SHOW ERRORS` |
+
+See [Jobs](/basics/jobs).
+
+### Indexes {#indexes}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_index`, `create_index_async` | `createIndex`, `createIndexAsync` | `CREATE INDEX` |
+| list | `list_indices` | `listIndices` | -- |
+| stats | `index_stats` | `indexStats` | -- |
+| drop | `drop_index` | `dropIndex` | `DROP INDEX` |
+
+<Note>
+SQL `CREATE INDEX` covers one column and takes no user-chosen name -- the server
+names it. For a multi-column or named index, use the SDK.
+</Note>
+
+Indexes are a performance decision rather than a structural one, so they are
+covered under [Maintenance](/indexing).
+
+## Namespaces qualify everything {#namespace-paths}
+
+Most connection-level operations take a `namespace_path` (`namespacePath`) to
+act inside a namespace rather than at the database root:
+
+<CodeGroup>
+```python Python icon="python"
+db.table_names(namespace_path=["prod", "events"])
+tbl = db.open_table("clicks", namespace_path=["prod", "events"])
+```
+
+```typescript TypeScript icon="square-js"
+await db.tableNames({ namespacePath: ["prod", "events"] });
+const tbl = await db.openTable("clicks", { namespacePath: ["prod", "events"] });
+```
+
+```sql SQL
+SELECT * FROM prod.events.clicks
+```
+</CodeGroup>
+
+In SQL the path is written as dotted identifiers instead.
+
+## Dropping is not undoable {#dropping}
+
+<Warning>
+`drop_table` removes the table and every version of it. Table
+[versioning](/tables/versioning) does not survive the table being dropped, and
+neither `drop_database` nor `drop_all_tables` asks for confirmation.
+</Warning>
+
+Dropping a **view** removes only the saved query. Dropping a **materialized
+view** removes stored rows, because a materialized view is a table.

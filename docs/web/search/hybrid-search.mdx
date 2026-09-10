@@ -341,7 +341,7 @@ await table.query()
 ```
 </CodeGroup>
 
-The choice gets baked into both sub-queries, so the vector and FTS halves see the filter applied the same way. Use [`explain_plan`](/search/optimize-queries#analyzing-non-vector-queries) on a hybrid query to see whether the filter pushed into the scan or ran as a separate `FilterExec` step.
+The choice gets baked into both sub-queries, so the vector and FTS halves see the filter applied the same way. Use [`explain_plan`](/search/explain#analyzing-non-vector-queries) on a hybrid query to see whether the filter pushed into the scan or ran as a separate `FilterExec` step.
 
 ## More on Reranking {#more-on-reranking}
 

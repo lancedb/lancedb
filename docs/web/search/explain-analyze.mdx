@@ -1,155 +1,23 @@
 ---
-title: "Optimize Query Performance"
-sidebarTitle: Query optimization
-description: "Analyze and optimize query performance in LanceDB."
+title: "Explain analyze a query plan"
+sidebarTitle: Explain Analyze
+description: "Execute a query and read the runtime metrics attached to every operator."
 icon: "gauge"
 ---
 
-LanceDB provides two powerful tools for query analysis and optimization: `explain_plan` and `analyze_plan`. Let's take a better look at how they work:
+`analyze_plan` executes the query and returns the physical plan annotated with
+runtime metrics -- elapsed time, rows produced, bytes read, index comparisons.
+Where [`explain_plan`](/search/explain) tells you what a query intends to do,
+this tells you what it cost.
 
-| Method         | Purpose            | Description                                                                                                                                                                                              |
-| :------------- | :----------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `explain_plan` | Query Analysis     | Print the resolved query plan to understand how the query will be executed. Helpful for identifying slow queries or unexpected query results.                                                            |
-| `analyze_plan` | Performance Tuning | Execute the query and return a physical execution plan annotated with runtime metrics including execution time, number of rows processed, and I/O stats. Essential for performance tuning and debugging. |
+## What it measures {#analyze-a-query-plan}
 
-## Query Analysis Tools {#query-analysis-tools}
-
-### Inspect a query plan {#inspect-a-query-plan}
-
-Reveals the logical query plan before execution, helping you identify potential issues with query structure and index usage. This tool is useful for:
-
-- Verifying query optimization strategies
-- Validating index selection
-- Understanding query execution order
-- Detecting missing indices
-
-### Analyze a query plan {#analyze-a-query-plan}
 Executes the query and provides detailed runtime metrics, including:
 
 - Operation duration (`_elapsed_compute_`)
 - Data processing statistics (`_output_rows_`, `_bytes_read_`)
 - Index effectiveness (`_index_comparisons_`, `_indices_loaded_`)
 - Resource utilization (`_iops_`, `_requests_`)
-
-Together, these tools offer a comprehensive view of query performance, from planning to execution. Use `explain_plan` to verify your query structure and `analyze_plan` to measure and optimize actual performance.
-
-Metadata filters are prefiltered by default, which usually shows the filter pushed into the
-`LanceScan` or index scan. If you set `prefilter=False`, expect a separate `FilterExec` after
-search instead; that can be useful for some expensive filters, but it changes both latency and
-the number of rows available after filtering.
-
-## Reading the Execution Plan {#reading-the-execution-plan}
-
-To demonstrate query performance analysis, we'll use a table containing 1.2M rows sampled from the [Wikipedia dataset](https://huggingface.co/datasets/wikimedia/wikipedia). Initially, the table has no indices, allowing us to observe the impact of optimization.
-
-Let's examine a vector search query that:
-
-- Filters rows where `identifier` is between 0 and 1,000,000
-- Returns the top 100 matches
-- Projects specific columns: `chunk_index`, `title`, and `identifier`
-
-<CodeGroup>
-```python Python icon="python"
-# explain_plan
-query_explain_plan = (
-    table.search(query_embed)
-    .where("identifier > 0 AND identifier < 1000000")
-    .select(["chunk_index", "title", "identifier"])
-    .limit(100)
-    .explain_plan(True)
-)
-```
-
-```typescript TypeScript icon="square-js"
-// explain_plan
-const explainPlan = await table
-    .search(queryEmbed)
-    .where("identifier > 0 AND identifier < 1000000")
-    .select(["chunk_index", "title", "identifier"])
-    .limit(100)
-    .explainPlan(true);
-```
-</CodeGroup>
-
-### Execution Plan Components {#execution-plan-components}
-
-The execution plan reveals the sequence of operations performed to execute your query. Let's examine each component:
-
-```
-ProjectionExec: expr=[chunk_index@4 as chunk_index, title@5 as title, identifier@1 as identifier, _distance@3 as _distance]
-  RemoteTake: columns="vector, identifier, _rowid, _distance, chunk_index, title"
-    CoalesceBatchesExec: target_batch_size=1024
-      GlobalLimitExec: skip=0, fetch=100
-        FilterExec: _distance@3 IS NOT NULL
-          SortExec: TopK(fetch=100), expr=[_distance@3 ASC NULLS LAST], preserve_partitioning=[false]
-            KNNVectorDistance: metric=l2
-              FilterExec: identifier@1 > 0 AND identifier@1 < 1000000
-                LanceScan: uri=***, projection=[vector, identifier], row_id=true, row_addr=false, ordered=false
-```
-
-#### 1\. Base Layer (LanceScan) {#1-base-layer-lancescan}
-
-- Initial data scan loading only specified columns to minimize I/O
-- Unordered scan enabling parallel processing
-
-```
-LanceScan: 
-- projection=[vector, identifier]
-- row_id=true, row_addr=false, ordered=false
-```
-
-#### 2\. First Filter {#2-first-filter}
-
-- Apply requested filter on `identifier` column
-- Reduces the number of vectors that need KNN computation
-
-```
-FilterExec: identifier@1 > 0 AND identifier@1 < 1000000
-```
-
-#### 3\. Vector Search {#3-vector-search}
-
-- Computes L2 (Euclidean) distances between query vector and all vectors that passed the filter
-
-```
-KNNVectorDistance: metric=l2
-```
-
-#### 4\. Results Processing {#4-results-processing}
-
-- Filters out null distance results
-- Sorts by distance and takes top 100 results
-- Processes in batches of 1024 for optimal memory usage
-
-```
-SortExec: TopK(fetch=100)
-- expr=[_distance@3 ASC NULLS LAST]
-- preserve_partitioning=[false]
-FilterExec: _distance@3 IS NOT NULL
-GlobalLimitExec: skip=0, fetch=100
-CoalesceBatchesExec: target_batch_size=1024
-```
-
-#### 5\. Data Retrieval {#5-data-retrieval}
-
-- `RemoteTake` is a key component of Lance's I/O cache
-- Handles efficient data retrieval from remote storage locations
-- Fetches specific rows and columns needed for the final output
-- Optimizes network bandwidth by only retrieving required data
-
-```
-RemoteTake: columns="vector, identifier, _rowid, _distance, chunk_index, title"
-```
-
-#### 6\. Final Output {#6-final-output}
-
-- Returns only requested columns and maintains column ordering
-
-```python
-ProjectionExec: expr=[chunk_index@4 as chunk_index, title@5 as title, identifier@1 as identifier, _distance@3 as _distance]
-```
-
-This plan demonstrates a basic search without index optimizations: it performs a full scan and filter before vector search.
 
 ## Performance Analysis {#performance-analysis}
 
@@ -421,9 +289,11 @@ A well-optimized table should have `num_unindexed_rows ~ 0`.
 |                                            | Check whether the dataset has been compacted |
 | Multiple sequential filters                | Reorder filter conditions                    |
 
-!!! note "Regular Performance Analysis"
-    Regularly analyze your query plans to identify and address performance bottlenecks. 
-    The `analyze_plan` output provides detailed metrics to guide optimization efforts.
+<Note>
+Regularly analyze your query plans to identify and address performance
+bottlenecks. The `analyze_plan` output provides detailed metrics to guide
+optimization efforts.
+</Note>
 
 ### 3\. Getting Started with Optimization {#3-getting-started-with-optimization}
 
@@ -432,52 +302,9 @@ For vector search performance:
 - Create ANN index on your vector column(s) as described in the [index guide](/indexing/vector-index/)
 - If you often filter by metadata, create [scalar indices](/indexing/scalar-index/) on those columns
 
-## Analyzing non-vector queries {#analyzing-non-vector-queries}
-
-`explain_plan` and `analyze_plan` aren't vector-specific — they're available on every query builder, including FTS and hybrid. The most common reason to look at the plan for a non-vector query is to confirm whether your `where` clause pushed into the scan (good) or ran as a separate `FilterExec` step on top of the search results (often slower, and a hint that the filter column needs a scalar index).
-
-### FTS queries {#fts-queries}
-
-<CodeGroup>
-```python Python icon="python"
-plan = (
-    table.search("puppy", query_type="fts")
-    .where("category = 'animals'", prefilter=True)
-    .limit(10)
-    .explain_plan(True)
-)
-print(plan)
-```
-
-```typescript TypeScript icon="square-js"
-const plan = await table
-    .query()
-    .fullTextSearch("puppy")
-    .where("category = 'animals'")
-    .limit(10)
-    .explainPlan(true);
-```
-</CodeGroup>
-
-In an indexed FTS plan you should see a `MatchQuery` (or other FTS execution node) reading from the inverted index, with the metadata filter pushed down. If the plan shows a `LanceScan` followed by `FilterExec` over the entire text column, the FTS index either isn't covering the column or the filter isn't using a scalar index — both worth investigating.
-
 ### Hybrid queries {#hybrid-queries}
 
-For hybrid queries, `explain_plan` returns the reranker label followed by the vector and FTS sub-plans, indented for readability:
-
-<CodeGroup>
-```python Python icon="python"
-plan = (
-    table.search("flower moon", query_type="hybrid")
-    .where("category = 'film'", prefilter=True)
-    .limit(10)
-    .explain_plan(True)
-)
-print(plan)
-# RRFReranker(...)
-#   <vector sub-plan>
-#   <FTS sub-plan>
-```
-</CodeGroup>
-
-`analyze_plan` does the same, but executes both sub-queries and labels them as `Vector Search Plan:` and `FTS Search Plan:` in the output. This is the easiest way to see whether the filter pushed into both halves uniformly, and which half is dominating latency.
+For a hybrid query, `analyze_plan` executes both sub-queries and labels them
+`Vector Search Plan:` and `FTS Search Plan:` in the output. This is the easiest
+way to see whether the filter pushed into both halves uniformly, and which half
+is dominating latency.

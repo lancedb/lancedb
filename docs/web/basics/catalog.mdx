@@ -1,0 +1,134 @@
+---
+title: "The catalog"
+sidebarTitle: "Catalog"
+description: "What lives in a LanceDB catalog, how the objects nest, and how you connect to one."
+icon: sitemap
+keywords: ["catalog", "database", "namespace", "table", "view", "function"]
+---
+
+A catalog is what LanceDB knows about. Everything you create lives in one and is
+addressed through it.
+
+## The objects {#objects}
+
+| Object | What it is |
+| --- | --- |
+| Database | The root. A connection opens exactly one. |
+| [Namespace](/namespaces) | A named grouping inside a database. Can nest. |
+| [Table](/tables) | Rows and columns, versioned. What most operations act on. |
+| [Materialized view](/feature-engineering/materialized-views) | A table whose contents come from a query, computed and stored. |
+| [View](/management/view) | A saved query. Computed when read, not stored. |
+| [Function](/feature-engineering/functions) | Registered code, applied to produce column values. |
+
+```
+database
+└── namespace
+    ├── table
+    ├── materialized view      (a table, defined by a query)
+    ├── view                   (a query, not stored)
+    └── function
+```
+
+A namespace can contain further namespaces, so the hierarchy goes as deep as you
+need. A table is reached by its path through it.
+
+This page is about what the objects *are*. For the operations on them --
+creating, listing, dropping -- see [Management](/management).
+
+## Connecting {#connecting}
+
+```python
+import lancedb
+
+db = lancedb.connect("./.lancedb")                       # a local directory
+db = lancedb.connect("s3://bucket/path")                 # object storage
+db = lancedb.connect("db://my-database", api_key="...")  # a deployment
+```
+
+The URI decides what kind of database you get, and that decision reaches further
+than it looks. A local or object-store URI opens the data directly from your
+process. A `db://` URI talks to a deployment, which is what makes server-side
+execution -- [functions](/feature-engineering/functions), remote refreshes,
+[SQL](/basics/apis) -- available, and what makes a few local-only features
+unavailable.
+
+`connect_async` returns an `AsyncConnection` with the same surface as
+coroutines.
+
+### What a table handle actually is {#table-handles}
+
+The URI also decides what `open_table` hands back, which is worth knowing
+because the two behave the same but fail differently:
+
+- **`LanceTable`** -- direct access to storage (a local path, `file://`, `s3://`
+  and similar). Your process resolves and reads the table itself.
+- **`RemoteTable`** -- catalog-backed access through a deployment (`db://`).
+  Resolution and execution happen on the server.
+
+![](/static/assets/images/overview/understanding-tables.png)
+
+Both expose the same table API -- create, open, mutate, query. What differs is
+where the work happens, and therefore which operations exist at all.
+
+### Storage options {#storage-options}
+
+`storage_options` configures the underlying store -- credentials, endpoints, and
+per-table defaults for tables created through this connection:
+
+```python
+db = lancedb.connect(
+    "s3://bucket/path",
+    storage_options={"new_table_enable_stable_row_ids": "true"},
+)
+```
+
+<Warning>
+`new_table_enable_stable_row_ids` is worth setting deliberately. Stable row ids
+cannot be enabled after a table exists, and a
+[materialized view](/feature-engineering/materialized-views) requires its source
+to have them. A table created without them cannot later become a view's source
+without being recreated.
+</Warning>
+
+See [Storage](/storage) for the full set.
+
+### Read consistency {#consistency}
+
+`read_consistency_interval` controls how often a connection checks for versions
+committed by other writers. The default reads a snapshot taken when the table was
+opened, so a long-lived connection will not see other processes' writes until it
+reopens.
+
+Set it when several processes write the same table and readers must observe those
+writes:
+
+```python
+from datetime import timedelta
+
+db = lancedb.connect(uri, read_consistency_interval=timedelta(seconds=5))
+```
+
+The cost is a metadata check on that interval. See
+[Consistency](/tables/consistency).
+
+## Views and materialized views are different objects {#views}
+
+The names are close enough to mislead. Both are defined by a query over other
+tables; the difference is when that query runs.
+
+- A **materialized view** stores its rows. A refresh computes them, and reads are
+  reads of stored data -- fast, and as current as the last refresh.
+- A **view** stores only the query. Every read runs it, so a view is never stale
+  and never faster than the query it wraps.
+
+Reach for a materialized view when the query is expensive and the data changes
+less often than it is read. Reach for a view when correctness matters more than
+latency, or when the query is cheap.
+
+## What is not a catalog object {#elsewhere}
+
+**Indexes** belong to a table rather than standing alone, and creating one is a
+performance decision -- see [Maintenance](/indexing).
+
+**Jobs** are not stored data at all; they are handles to work the server is
+doing. See [Jobs](/basics/jobs).

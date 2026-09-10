@@ -25,7 +25,7 @@ filled by a registered function — but each is worth understanding on its own.
 | --- | --- | --- | --- |
 | [Computed columns](/feature-engineering/computed-columns) | a new column on an existing table | `refresh_column()` | everywhere |
 | [Materialized views](/feature-engineering/materialized-views) | a new table derived by a query | `refresh()` | local databases |
-| [Functions](/feature-engineering/functions) | a computed column filled by Python | a registered function | Cloud and Enterprise |
+| [Functions](/feature-engineering/functions) | a computed column filled by Python | a registered function | Enterprise |
 
 **Computed columns** are the common case. A column is declared with a SQL
 expression and starts empty; a refresh gives values to the rows that lack them.

@@ -1,0 +1,61 @@
+---
+title: "Agentic skills"
+sidebarTitle: "Agentic Skills"
+description: "Give a coding agent a current, maintained reference for the LanceDB APIs."
+icon: robot
+keywords: ["agents", "plugin", "claude code", "codex", "cursor", "copilot"]
+---
+
+A coding agent writing LanceDB code from memory writes whatever was in its
+training data -- often an older API, sometimes one that never existed. The
+LanceDB agent plugin fixes that by supplying the current reference at the point
+the agent needs it.
+
+## The plugin {#plugin}
+
+It ships as the `lancedb` plugin in the
+[lancedb-agent-plugins](https://github.com/lancedb/lancedb-agent-plugins)
+repository, which doubles as a plugin marketplace. It covers the Python and
+TypeScript APIs, which code is portable between a local database and a
+deployment, ingestion performance, and branch operations.
+
+<CodeGroup>
+```text Claude Code
+/plugin marketplace add lancedb/lancedb-agent-plugins
+/plugin install lancedb@lancedb
+```
+
+```bash Codex icon="terminal"
+codex plugin marketplace add lancedb/lancedb-agent-plugins
+codex plugin add lancedb@lancedb
+```
+
+```bash Other agents icon="terminal"
+npx plugins add lancedb/lancedb-agent-plugins
+```
+</CodeGroup>
+
+The cross-tool installer detects which agent CLIs are on your `PATH` -- Cursor,
+GitHub Copilot CLI, VS Code, Grok Build, Kimi Code, Claude Code, Codex -- and
+installs through each one's native plugin system.
+
+## What agents are good at here {#workflows}
+
+Two things about LanceDB make it unusually agent-friendly, and both have a
+worked tutorial.
+
+<Columns cols={2}>
+  <Card title="Build an ingestion pipeline" icon="robot" href="/build-with-ai-agents">
+    Install the plugin and have an agent build a multimodal ingestion pipeline
+    end to end.
+  </Card>
+  <Card title="Run experiments on branches" icon="flask" href="/agent-branch-experiments">
+    Isolate agent-driven experiments on a branch, evaluate them on a fixed test
+    set, and promote only the winner.
+  </Card>
+</Columns>
+
+The second is the more interesting pattern. [Branches](/tables/versioning)
+give an agent somewhere to be wrong safely: it can rewrite a schema, recompute a
+column, or try three embedding models without touching `main`, and you keep only
+what measured better.

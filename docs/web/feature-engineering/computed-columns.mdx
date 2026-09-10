@@ -75,7 +75,7 @@ declared earlier in the same mapping.
 
 ## Filling as a job {#async}
 
-<Badge color="red">Cloud and Enterprise</Badge>
+<Badge color="red">Enterprise</Badge>
 
 Against a remote database the refresh runs on the server. `refresh_column`
 raises there; use `refresh_column_async`, which returns a job you can wait on or
@@ -95,7 +95,7 @@ a long backfill can be started, left, and checked on later.
 
 ## Filling with Python instead of SQL {#functions}
 
-<Badge color="red">Cloud and Enterprise</Badge>
+<Badge color="red">Enterprise</Badge>
 
 When the value cannot be expressed in SQL — an embedding, a model call, an image
 decode — the column is filled by a registered function instead of an expression.

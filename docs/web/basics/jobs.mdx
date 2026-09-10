@@ -1,0 +1,181 @@
+---
+title: "Jobs"
+sidebarTitle: "Jobs"
+description: "The handle every long-running operation returns, and how to wait on, inspect, or cancel one."
+icon: hourglass-half
+keywords: ["job", "async", "background", "create index", "refresh column"]
+---
+
+Some operations take longer than a request should. Building an index over a
+large table, refreshing a computed column, registering a function -- these run
+on the server after the call that started them has returned.
+
+Each is submitted the same way and returns the same handle. Learn the handle
+once and every long-running operation behaves alike.
+
+## The `_async` convention {#convention}
+
+An operation that can run in the background has two forms. The plain name
+blocks until the work is done and returns its result. The `_async` /
+`Async` name submits the work and returns a **job** immediately.
+
+| Blocking | Returns a job | What runs |
+| --- | --- | --- |
+| `create_index` | `create_index_async` | index build |
+| `refresh_column` | `refresh_column_async` | recompute a [computed column](/feature-engineering/computed-columns) |
+| `create_function` | `create_function_async` | register a [function](/feature-engineering/functions) |
+| `drop_table` | `drop_table_async` | drop a table |
+| `execute_query` | `execute_query_async` | a [SQL](/basics/apis) query |
+
+<Note>
+The blocking form is not a different operation -- it submits the same job and
+waits. Reach for the `_async` form when you want to do something else
+meanwhile, run several at once, or survive the client going away.
+</Note>
+
+## Submitting and waiting {#waiting}
+
+<CodeGroup>
+```python Python icon="python"
+job = table.create_index_async("vector")
+
+print(job.id)          # the server's id for this operation
+print(job.status())    # "running" | "finished" | "failed" | "cancelled"
+
+job.wait()             # blocks until terminal; raises if it failed
+```
+
+```typescript TypeScript icon="square-js"
+const job = await table.createIndexAsync("vector");
+
+console.log(job.id);              // the server's id for this operation
+console.log(await job.status());  // "running" | "finished" | "failed" | "cancelled"
+
+await job.wait();                 // resolves when terminal; rejects if it failed
+```
+</CodeGroup>
+
+`wait` is the one call that raises on failure. `status` is a point snapshot and
+returns the failed state rather than raising, which is what you want in a
+polling loop.
+
+In Python `wait` takes an optional timeout and returns the operation's typed
+result -- a `RefreshColumnJobResult`, a `FunctionVersion`, or `None` for an
+operation that has no result:
+
+```python
+from datetime import timedelta
+
+result = table.refresh_column_async("embedding").wait(timeout=timedelta(minutes=30))
+```
+
+`TimeoutError` means the timeout elapsed, not that the job stopped. The job is
+still running; the handle just gave up watching.
+
+<Note>
+The TypeScript `wait()` resolves to `void`. Read the outcome from `result`
+after it resolves.
+</Note>
+
+## Inspecting a job {#inspecting}
+
+Submitting an operation returns only an id, so the detail fields are empty
+until the handle fetches the record. `refresh()` does that; `status()` does it
+as a side effect.
+
+<CodeGroup>
+```python Python icon="python"
+job.refresh()
+
+job.state        # last observed state, without another round trip
+job.job_type     # what kind of job, as the server names it
+job.creation_ms  # when it was created, epoch milliseconds
+job.spec         # what it was submitted with
+job.result       # its terminal result, once it succeeds
+job.failure      # why it failed, when it did
+```
+
+```typescript TypeScript icon="square-js"
+await job.refresh();
+
+job.state;       // last observed state, without another round trip
+job.jobType;     // what kind of job, as the server names it
+job.creationMs;  // when it was created, epoch milliseconds
+job.spec;        // what it was submitted with
+job.result;      // its terminal result, once it succeeds
+job.failure;     // why it failed, when it did
+```
+</CodeGroup>
+
+Printing the handle renders every field it knows, which is usually faster than
+reading them one at a time.
+
+## Events {#events}
+
+`result` only tells you anything once the job has finished. Events are written
+as it runs, and they outlive the workers that produced them -- so a job that is
+still going, or one that never finished, can still account for what it did.
+
+<CodeGroup>
+```python Python icon="python"
+events = job.events(limit=5000, filter="state = 'claim_complete'")
+```
+
+```typescript TypeScript icon="square-js"
+const events = await job.events({ limit: 5000, filter: "state = 'claim_complete'" });
+```
+</CodeGroup>
+
+A distributed job records a `claim` / `claim_complete` pair per unit of work,
+each carrying `rows_processed`. Summing `rows_processed` over the completed
+claims is how you get progress on a job that has no percentage.
+
+`filter` is a SQL-like expression over `state`, `updated_by`, `emitted_from`,
+`emitted_by`, and `claim_entity`.
+
+<Warning>
+The server returns 1000 event rows by default and 10,000 at most, and
+**truncates without telling you**. A job that emits an event per fragment will
+silently lose its tail unless you pass `limit`.
+</Warning>
+
+Events are recorded server-side, so this raises for an operation that ran
+in-process.
+
+## Finding and cancelling jobs {#managing}
+
+The connection lists and reopens jobs, so a handle lost to a restarted process
+is recoverable from its id.
+
+<CodeGroup>
+```python Python icon="python"
+db.list_jobs()             # every job the server knows about
+job = db.open_job(job_id)  # reattach to one
+db.cancel_job(job_id)      # ask it to stop
+```
+
+```typescript TypeScript icon="square-js"
+await db.listJobs();             // every job the server knows about
+const job = await db.openJob(jobId);  // reattach to one
+await db.cancelJob(jobId);       // ask it to stop
+```
+</CodeGroup>
+
+Cancellation is a request, not a guarantee, and cancelling a job that already
+finished does nothing. `JobNotFoundError` means the id does not name a job the
+server still has.
+
+<Warning>
+A job id is opaque. It correlates with server logs and the calls above, but
+parsing it or storing it to resume the job later is not supported.
+</Warning>
+
+## In-process jobs {#in-process}
+
+A local connection has no server to run anything, so its operations run in your
+process. They still return a handle, so the same code works against both, but
+one with nothing behind it: `id` is `None`, `status()` reports `"finished"`,
+`wait()` returns immediately, `cancel()` does nothing, and `events()` raises.
+
+This is the difference to expect when moving between a local database and a
+deployment -- see [Python, TypeScript, and SQL](/basics/apis).

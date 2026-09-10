@@ -1,0 +1,94 @@
+---
+title: "Python, TypeScript, and SQL"
+sidebarTitle: "Python vs SQL"
+description: "Three ways to reach the same data, what each one can do, and where each one runs."
+icon: code-compare
+keywords: ["python", "typescript", "sql", "api", "flight sql", "client"]
+---
+
+The same table can be reached three ways: the Python SDK, the TypeScript SDK,
+or SQL. They are views onto one engine, not three products -- a table written
+from Python is queried from SQL without an export step.
+
+They are not interchangeable, though, and the differences are worth knowing
+before you pick one.
+
+## What each one can do {#matrix}
+
+| | Python | TypeScript | SQL |
+| --- | :---: | :---: | :---: |
+| Create and manage catalog objects | yes | yes | partly |
+| Insert, merge, update, delete | yes | yes | -- |
+| Filter, project, aggregate, join | yes | yes | yes |
+| Vector and full-text search | yes | yes | yes |
+| Feature engineering, jobs | yes | yes | -- |
+| Runs against a local database | yes | yes | **no** |
+
+Two entries in that table do most of the work of explaining the rest.
+
+## SQL needs a deployment {#sql-is-remote}
+
+<Warning>
+SQL is not available on a local database. A connection to a directory or a
+bucket has no server to plan and execute a statement, and asking it to raises
+`NotImplementedError`.
+</Warning>
+
+```python
+db = lancedb.connect("./.lancedb")        # no SQL
+db = lancedb.connect("db://my-database")  # SQL
+```
+
+This is the single largest behavioural difference between the embedded and
+deployed forms, and the reason the SDKs are the portable choice: SDK code moves
+between the two by changing the URI, SQL does not.
+
+<Badge color="red">Enterprise</Badge> Queries are served over an
+[Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint, so any Flight SQL client can reach it and results arrive as Arrow
+record batches -- no conversion to Python objects unless you ask for one.
+
+## SQL from each language {#sql-clients}
+
+From Python, the connection runs SQL directly:
+
+```python
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
+table = reader.read_all()
+```
+
+`execute_query` returns a blocking Arrow reader once results start arriving; it
+does not wait for the whole query. `execute_query_async` returns a
+[job](/basics/jobs) instead, for a statement you would rather not block on.
+
+<Note>
+The TypeScript SDK has no SQL method. Reach the endpoint with a Flight SQL
+client instead -- see [connecting a client](/search/sql). This is a gap in the
+SDK, not in the endpoint: the same statements work.
+</Note>
+
+## Choosing between them {#choosing}
+
+Reach for **the SDKs** when you are writing data, managing the catalog, running
+feature engineering, or building an application that should work the same
+embedded and deployed. They are the complete surface.
+
+Reach for **SQL** when the question is analytical -- joins across tables,
+aggregates, window functions -- or when the thing asking is a BI tool, a
+notebook, or a person who already thinks in SQL. It is also the only way to
+create a [view](/management/view).
+
+The two compose. A common shape is SDK code to build and maintain tables, and
+SQL for the analysis on top.
+
+## What stays the same {#invariants}
+
+Whichever you pick:
+
+- **Types are Arrow types.** A vector column is a `FixedSizeList<Float32>`
+  everywhere, not a SQL type mapped onto storage. See
+  [Functions and types](/sql/functions).
+- **Reads are Arrow.** Nothing is serialized into language objects on the way
+  out unless you convert it.
+- **The catalog is one catalog.** A table created from TypeScript is visible to
+  Python and to SQL immediately -- there is no per-language namespace.

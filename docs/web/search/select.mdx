@@ -1,0 +1,176 @@
+---
+title: "SELECT syntax"
+sidebarTitle: "SELECT"
+description: "The analytical query surface: projection, filtering, grouping, joins, and how each maps onto the SDKs."
+icon: table-columns
+keywords: ["select", "sql", "join", "group by", "window", "cte", "datafusion"]
+---
+
+<Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local database
+has no engine to plan a statement -- see
+[Python, TypeScript, and SQL](/basics/apis).
+
+The dialect is [DataFusion's](/sql/functions), so `SELECT` behaves as its
+[reference](https://datafusion.apache.org/user-guide/sql/select.html) documents.
+This page is the shape of that surface and where the SDKs meet it.
+
+## The clauses {#clauses}
+
+```sql
+[WITH cte AS (...)]
+SELECT [ALL | DISTINCT] select_expr [, ...]
+FROM from_item [[JOIN ...] ON ...]
+[WHERE predicate]
+[GROUP BY expr [, ...]]
+[HAVING predicate]
+[WINDOW name AS (...)]
+[ORDER BY expr [ASC | DESC] [NULLS FIRST | LAST] [, ...]]
+[LIMIT n] [OFFSET n]
+```
+
+Set operations -- `UNION [ALL]`, `INTERSECT`, `EXCEPT` -- combine whole queries,
+and subqueries are allowed anywhere an expression or relation is.
+
+## Projection {#projection}
+
+<CodeGroup>
+```sql SQL
+SELECT id, title, identifier FROM documents
+```
+
+```python Python icon="python"
+tbl.search().select(["id", "title", "identifier"]).to_arrow()
+```
+
+```typescript TypeScript icon="square-js"
+await tbl.query().select(["id", "title", "identifier"]).toArrow();
+```
+</CodeGroup>
+
+Projection pushes into the scan in all three -- an unselected column is never
+read off storage. On a table of images or video that is the difference between a
+fast query and a slow one, so prefer naming columns over `SELECT *`.
+
+Row metadata is available as [pseudo-columns](/sql/functions#pseudo-columns)
+(`_rowid`, `_rowaddr`, `_rowoffset`) but only when named, so they stay out of
+`SELECT *`.
+
+## Filtering {#filtering}
+
+<CodeGroup>
+```sql SQL
+SELECT * FROM documents
+WHERE identifier > 0 AND identifier < 1000000
+```
+
+```python Python icon="python"
+tbl.search().where("identifier > 0 AND identifier < 1000000").to_arrow()
+```
+
+```typescript TypeScript icon="square-js"
+await tbl.query().where("identifier > 0 AND identifier < 1000000").toArrow();
+```
+</CodeGroup>
+
+The SDK `where` takes the same expression language, so a predicate moves between
+them unchanged. A predicate on an indexed column becomes a
+`ScalarIndexQuery` rather than a scan -- confirm with
+[`explain_plan`](/search/explain). See [Filtering](/search/filtering) for the
+operators and their pushdown behaviour.
+
+## Grouping and aggregation {#grouping}
+
+```sql
+SELECT category, count(*) AS n, avg(score) AS mean_score
+FROM documents
+GROUP BY category
+HAVING count(*) > 10
+ORDER BY n DESC
+```
+
+Aggregates, statistical and approximate functions come from DataFusion's
+[aggregate function set](https://datafusion.apache.org/user-guide/sql/aggregate_functions.html).
+
+<Note>
+The SDK query builders do not aggregate. Grouping, joins, and window functions
+are the reason to reach for SQL rather than a query builder -- see
+[choosing between them](/basics/apis#choosing).
+</Note>
+
+## Joins {#joins}
+
+```sql
+SELECT d.title, c.name
+FROM documents AS d
+JOIN categories AS c ON c.id = d.category_id
+```
+
+`INNER`, `LEFT`, `RIGHT`, `FULL`, and `CROSS` joins are supported. Tables in
+different [namespaces](/namespaces) are joined by their dotted paths:
+
+```sql
+SELECT * FROM prod.events.clicks AS c
+JOIN prod.reference.users AS u ON u.id = c.user_id
+```
+
+## Window functions {#windows}
+
+```sql
+SELECT
+    title,
+    score,
+    row_number() OVER (PARTITION BY category ORDER BY score DESC) AS rank
+FROM documents
+```
+
+The full set is DataFusion's
+[window functions](https://datafusion.apache.org/user-guide/sql/window_functions.html).
+
+## Common table expressions {#ctes}
+
+```sql
+WITH recent AS (
+    SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
+)
+SELECT category, count(*) FROM recent GROUP BY category
+```
+
+A CTE that you want to keep is a [view](/management/view); one whose rows you
+want stored is a
+[materialized view](/feature-engineering/materialized-views).
+
+## Search inside SELECT {#search}
+
+Full-text search is a **table function**, not a predicate, because it produces
+relevance alongside the rows and `WHERE` has nowhere to put that:
+
+```sql
+SELECT id, text, _score
+FROM fts('my_docs', 'puppy')
+ORDER BY _score DESC
+LIMIT 5
+```
+
+Because it is a relation it composes -- join it, aggregate over it, wrap it in a
+CTE. For a keyword test that needs no score, the
+[`contains_tokens`](/sql/functions#contains-tokens) predicate is
+index-accelerated and usable directly in `WHERE`.
+
+<Note>
+Vector search has no SQL form. It is a query-builder operation -- see
+[Vector search](/search/vector-search). A query that needs both vector
+similarity and SQL analytics runs the search in the SDK and the analytics over
+its result.
+</Note>
+
+## Reading the plan {#plans}
+
+`EXPLAIN` and `EXPLAIN ANALYZE` work as DataFusion defines them, and produce the
+same operators the SDK methods do:
+
+```sql
+EXPLAIN ANALYZE SELECT * FROM documents WHERE identifier < 1000
+```
+
+See [Explain](/search/explain) and [Explain Analyze](/search/explain-analyze)
+for how to read the output.

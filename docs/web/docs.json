@@ -30,6 +30,34 @@
     {
       "source": "/tables/update",
       "destination": "/ingestion/update"
+    },
+    {
+      "source": "/search/fts-examples",
+      "destination": "/search/full-text-search"
+    },
+    {
+      "source": "/search/optimize-queries",
+      "destination": "/search/explain"
+    },
+    {
+      "source": "/lance",
+      "destination": "/basics/lance"
+    },
+    {
+      "source": "/tables-and-namespaces",
+      "destination": "/basics/catalog"
+    },
+    {
+      "source": "/catalog",
+      "destination": "/basics/catalog"
+    },
+    {
+      "source": "/catalog/database",
+      "destination": "/basics/catalog"
+    },
+    {
+      "source": "/sql",
+      "destination": "/basics/apis"
     }
   ],
   "navigation": {
@@ -45,10 +73,19 @@
             ]
           },
           {
-            "group": "Catalog",
+            "group": "Basics",
             "pages": [
-              "catalog/index",
-              "catalog/database",
+              "basics/catalog",
+              "basics/apis",
+              "basics/jobs",
+              "basics/agentic-skills",
+              "basics/lance"
+            ]
+          },
+          {
+            "group": "Management",
+            "pages": [
+              "management/index",
               {
                 "group": "Namespace",
                 "pages": [
@@ -64,11 +101,7 @@
                   "tables/schema",
                   "tables/multimodal"
                 ]
-              },
-              "feature-engineering/materialized-views",
-              "feature-engineering/functions",
-              "lance",
-              "tables-and-namespaces"
+              }
             ]
           },
           {
@@ -85,16 +118,18 @@
             ]
           },
           {
-            "group": "Search",
+            "group": "Query",
             "pages": [
               "search/index",
+              "search/select",
               "search/vector-search",
               "search/multivector-search",
               "search/full-text-search",
-              "search/fts-examples",
               "search/hybrid-search",
               "search/filtering",
-              "search/optimize-queries",
+              "search/explain",
+              "search/explain-analyze",
+              "sql/functions",
               {
                 "group": "Reranking",
                 "pages": [
@@ -120,7 +155,9 @@
             "group": "Feature engineering",
             "pages": [
               "feature-engineering/index",
-              "feature-engineering/computed-columns"
+              "feature-engineering/computed-columns",
+              "feature-engineering/materialized-views",
+              "feature-engineering/functions"
             ]
           },
           {
@@ -150,13 +187,6 @@
                 ]
               },
               "performance"
-            ]
-          },
-          {
-            "group": "SQL",
-            "pages": [
-              "sql/index",
-              "sql/functions"
             ]
           },
           {

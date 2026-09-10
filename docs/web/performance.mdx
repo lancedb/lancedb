@@ -221,13 +221,13 @@ print(table.index_stats("vector_idx"))   # num_unindexed_rows should be ~0
 | `LanceScan` with high `bytes_read` / `iops` | Add a missing index, project columns with `select()`, or check that the dataset has been compacted |
 | Multiple sequential filters | Reorder filter conditions |
 
-[Optimize Query Performance](/search/optimize-queries) walks through a fully worked before/after example, including how `KNNVectorDistance` and `output_batches` change once indexes are in place.
+[Explain Analyze](/search/explain-analyze) walks through a fully worked before/after example, including how `KNNVectorDistance` and `output_batches` change once indexes are in place.
 
 ## Where to go next {#where-to-go-next}
 
 <Columns cols={2}>
-  <Card title="Optimize Query Performance" icon="gauge" href="/search/optimize-queries">
-    Read execution plans, find the bottleneck.
+  <Card title="Explain Analyze" icon="gauge" href="/search/explain-analyze">
+    Execute a query and read where the time went.
   </Card>
   <Card title="Vector Indexing" icon="layer-group" href="/indexing/vector-index">
     Index types, parameters, and tuning in depth.

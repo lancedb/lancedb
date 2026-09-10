@@ -115,6 +115,59 @@ A pseudo-column produced by `fts()`, carrying relevance for the row. It behaves
 like a normal column — order by it, filter on it, project it — and exists only
 in a relation that came from `fts()`.
 
+### `contains_tokens(column, tokens)` {#contains-tokens}
+
+A predicate rather than a relation, for when you want keyword matching inside a
+`WHERE` clause and do not need relevance:
+
+```sql
+SELECT * FROM my_docs WHERE contains_tokens(text, 'fox jumps dog')
+```
+
+It is true when the column contains **all** the tokens, which are split on
+whitespace and punctuation. Equivalent to an `fts()` match query with fuzziness
+off, `AND` semantics, and the simple tokenizer.
+
+**It is index-accelerated.** When the column has a full-text index that suits
+the query, the planner uses it instead of scanning. That is the reason to prefer
+it over `LIKE` for keyword tests.
+
+Use `fts()` when you need `_score` or the fuzzy, phrase, or boost forms; use
+`contains_tokens` when you just need a boolean.
+
+### JSON functions {#json}
+
+Lance registers a set of JSON accessors over string columns holding JSON:
+
+| Function | Returns |
+| --- | --- |
+| `json_get(col, key)` | the value at `key`, still JSON |
+| `json_get_string(col, key)` | `Utf8` |
+| `json_get_int(col, key)` | `Int64` |
+| `json_get_float(col, key)` | `Float64` |
+| `json_get_bool(col, key)` | `Boolean` |
+| `json_extract(col, path)` | `Utf8`, by path |
+| `json_extract_with_type(col, path, type)` | the requested type |
+| `json_exists(col, path)` | `Boolean` |
+| `json_array_contains(col, value)` | `Boolean` |
+| `json_array_length(col)` | length |
+
+`json_get` returns JSON, so accessors nest for a nested document:
+
+```sql
+SELECT * FROM events
+WHERE json_get_string(json_get(json_get(data, 'user'), 'profile'), 'name') = 'Alice'
+```
+
+**`json_get`, its typed variants, and `json_extract` are index-accelerated** by a
+JSON scalar index on the column. The others evaluate per row.
+
+<Note>
+Lance also defines geospatial `st_*` functions, but they are behind an optional
+build feature that LanceDB does not ship. Calling one returns an error telling
+you the feature is missing rather than an unknown-function error.
+</Note>
+
 ## Reaching a function LanceDB does not name {#escape-hatch}
 
 Nothing here wraps or restricts the DataFusion set — a query reaches any
