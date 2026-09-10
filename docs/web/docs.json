@@ -244,77 +244,72 @@
       },
       {
         "tab": "Integrations",
-        "groups": [
+        "pages": [
+          "integrations/index",
           {
-            "group": "Integrations",
+            "group": "Embedding Registry",
             "pages": [
-              "integrations/index",
-              {
-                "group": "Embedding Registry",
-                "pages": [
-                  "embedding/index",
-                  "embedding/quickstart"
-                ]
-              },
-              {
-                "group": "Embedding Providers",
-                "pages": [
-                  "integrations/embedding/huggingface",
-                  "integrations/embedding/aws",
-                  "integrations/embedding/cohere",
-                  "integrations/embedding/colpali",
-                  "integrations/embedding/gemini",
-                  "integrations/embedding/ibm",
-                  "integrations/embedding/imagebind",
-                  "integrations/embedding/instructor",
-                  "integrations/embedding/jina",
-                  "integrations/embedding/ollama",
-                  "integrations/embedding/openai",
-                  "integrations/embedding/openclip",
-                  "integrations/embedding/sentence-transformers",
-                  "integrations/embedding/voyageai",
-                  "integrations/embedding/superlinked"
-                ]
-              },
-              {
-                "group": "Rerankers",
-                "pages": [
-                  "integrations/reranking/answerdotai",
-                  "integrations/reranking/cohere",
-                  "integrations/reranking/colbert",
-                  "integrations/reranking/jina",
-                  "integrations/reranking/openai",
-                  "integrations/reranking/voyageai",
-                  "integrations/reranking/watsonx"
-                ]
-              },
-              {
-                "group": "Data Platforms & Frameworks",
-                "expanded": true,
-                "pages": [
-                  "integrations/data/pydantic",
-                  "integrations/data/duckdb",
-                  "integrations/data/pandas_and_pyarrow",
-                  "integrations/data/polars_arrow",
-                  "integrations/data/dlt",
-                  "integrations/data/voxel51"
-                ]
-              },
-              {
-                "group": "AI Platforms & Frameworks",
-                "expanded": true,
-                "pages": [
-                  "integrations/ai/agno",
-                  "integrations/ai/hermes-agent",
-                  "integrations/ai/huggingface",
-                  "integrations/ai/langchain",
-                  "integrations/ai/llamaIndex",
-                  "integrations/ai/genkit",
-                  "integrations/ai/kiln",
-                  "integrations/ai/prompttools",
-                  "integrations/ai/synthetic-data-kit"
-                ]
-              }
+              "embedding/index",
+              "embedding/quickstart"
+            ]
+          },
+          {
+            "group": "Embedding Providers",
+            "pages": [
+              "integrations/embedding/huggingface",
+              "integrations/embedding/aws",
+              "integrations/embedding/cohere",
+              "integrations/embedding/colpali",
+              "integrations/embedding/gemini",
+              "integrations/embedding/ibm",
+              "integrations/embedding/imagebind",
+              "integrations/embedding/instructor",
+              "integrations/embedding/jina",
+              "integrations/embedding/ollama",
+              "integrations/embedding/openai",
+              "integrations/embedding/openclip",
+              "integrations/embedding/sentence-transformers",
+              "integrations/embedding/voyageai",
+              "integrations/embedding/superlinked"
+            ]
+          },
+          {
+            "group": "Rerankers",
+            "pages": [
+              "integrations/reranking/answerdotai",
+              "integrations/reranking/cohere",
+              "integrations/reranking/colbert",
+              "integrations/reranking/jina",
+              "integrations/reranking/openai",
+              "integrations/reranking/voyageai",
+              "integrations/reranking/watsonx"
+            ]
+          },
+          {
+            "group": "Data Platforms & Frameworks",
+            "expanded": true,
+            "pages": [
+              "integrations/data/pydantic",
+              "integrations/data/duckdb",
+              "integrations/data/pandas_and_pyarrow",
+              "integrations/data/polars_arrow",
+              "integrations/data/dlt",
+              "integrations/data/voxel51"
+            ]
+          },
+          {
+            "group": "AI Platforms & Frameworks",
+            "expanded": true,
+            "pages": [
+              "integrations/ai/agno",
+              "integrations/ai/hermes-agent",
+              "integrations/ai/huggingface",
+              "integrations/ai/langchain",
+              "integrations/ai/llamaIndex",
+              "integrations/ai/genkit",
+              "integrations/ai/kiln",
+              "integrations/ai/prompttools",
+              "integrations/ai/synthetic-data-kit"
             ]
           }
         ]
@@ -374,16 +369,11 @@
       },
       {
         "tab": "Demos",
-        "groups": [
-          {
-            "group": "Demos",
-            "pages": [
-              "demos/index",
-              "demos/semantic-art",
-              "demos/wikipedia-search",
-              "demos/video-search"
-            ]
-          }
+        "pages": [
+          "demos/index",
+          "demos/semantic-art",
+          "demos/wikipedia-search",
+          "demos/video-search"
         ]
       }
     ]
