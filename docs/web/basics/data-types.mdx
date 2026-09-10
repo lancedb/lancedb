@@ -1,0 +1,143 @@
+---
+title: "Schema and data types"
+sidebarTitle: "Data Types"
+description: "The Arrow type system LanceDB stores, and the extension types Lance adds on top of it."
+icon: shapes
+keywords: ["schema", "data types", "arrow", "json", "blob", "bfloat16", "vector", "geospatial"]
+---
+
+A table's schema is an **Arrow schema**. There is no separate LanceDB type
+system mapped onto storage -- a column is the same object to the query engine,
+to the format, and to any other engine reading the files.
+
+That identity is mostly invisible and occasionally load-bearing, so it is worth
+knowing what it admits.
+
+## Supported types {#supported}
+
+| Category | Types |
+| --- | --- |
+| Null | `null` |
+| Boolean | `bool` |
+| Integer | `int8`, `int16`, `int32`, `int64` and their `uint` counterparts |
+| Floating point | `float16`, `float32`, `float64` |
+| String | `utf8`, `large_utf8` |
+| Binary | `binary`, `large_binary`, `fixed_size_binary(n)` |
+| Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp` (with or without timezone), `duration` |
+| Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
+| Dictionary | `dictionary(key, value)` |
+
+Two limits are worth stating because they surface as schema errors rather than
+as documentation:
+
+- A `map` with `keys_sorted = true` is rejected. Sorted-key maps do not survive
+  the round trip through the Python bindings, so they are refused rather than
+  silently unsorted.
+- Not every type is legal as a `fixed_size_list` child. The vector case is,
+  which is what matters in practice.
+
+## Vectors are fixed-size lists {#vectors}
+
+A vector column is a `fixed_size_list<float32, dim>` -- an ordinary Arrow type,
+not a special one:
+
+```python
+import pyarrow as pa
+
+schema = pa.schema([
+    pa.field("id", pa.int64()),
+    pa.field("vector", pa.list_(pa.float32(), 1536)),
+])
+```
+
+Because it is ordinary, it is selectable, testable for nullness, and joinable
+like any other column. The consequence people trip on is the other side of that:
+arithmetic over it is **list** arithmetic, not scalar arithmetic. When the
+operation you want is a similarity comparison, use
+[vector search](/search/vector-search) rather than SQL.
+
+Without an explicit schema, Python infers a list of floats as a fixed-size
+`float32` vector from the dimension it observes in the data.
+
+## Extension types {#extensions}
+
+Lance adds a few types as **Arrow extension types** -- an underlying storage
+type plus an `ARROW:extension:name` marker. Any Arrow reader can read the
+storage; readers that know the extension get the richer behaviour.
+
+| Type | Extension name | Stored as |
+| --- | --- | --- |
+| [JSON](#json) | `lance.json` | `large_binary`, JSONB-encoded |
+| [Blob](#blob) | `lance.blob.v2` | `large_binary`, stored out of line |
+| bfloat16 | `lance.bfloat16` | `fixed_size_binary(2)` |
+
+`arrow.json` is accepted as well, for interoperability with writers that use
+Arrow's own canonical JSON extension name.
+
+### JSON {#json}
+
+A JSON column stores documents in **JSONB**, a binary encoding, rather than as
+text. Accessors read into a document without parsing the whole thing:
+
+```sql
+SELECT json_get_string(data, 'name') FROM events
+WHERE json_get_int(data, 'status') = 200
+```
+
+`json_get` returns JSON, so accessors nest for a nested document. **A JSON
+scalar index accelerates `json_get`, its typed variants, and `json_extract`** --
+the rest evaluate per row. The full function list is in
+[SQL functions](/sql/functions#json).
+
+This is the type to reach for when a column's shape varies per row. When it does
+not, ordinary `struct` columns are faster and typed.
+
+### Blob {#blob}
+
+A blob column holds large binary objects -- images, video, audio, model
+artifacts -- **out of line** from the rest of the row. That is what keeps a scan
+over the other columns fast on a table whose rows are megabytes each.
+
+A blob can be read two ways, and the choice changes the column's Arrow type:
+
+- as its **binary contents**, or
+- as a **description** -- a pointer plus metadata, without fetching the bytes.
+
+<Warning>
+The default reads blob columns as descriptions and other binary columns as
+binary. A query that selects a blob column expecting bytes gets a struct
+instead, unless the read is configured otherwise. Worth knowing before writing a
+predicate against one.
+</Warning>
+
+See [Working with multimodal data](/tables/multimodal).
+
+### bfloat16 {#bfloat16}
+
+Sixteen-bit floats in the bfloat16 layout, stored as `fixed_size_binary(2)`.
+Useful as a vector element type when halving the memory matters more than the
+precision does.
+
+## Geospatial {#geospatial}
+
+<Warning>
+Lance defines geospatial types and `st_*` functions on
+[GeoArrow](https://geoarrow.org), but they sit behind an optional build feature
+that **LanceDB does not ship**. Calling `st_intersects` and friends returns an
+error naming the missing feature rather than an unknown-function error, and the
+spatial index is gated the same way.
+</Warning>
+
+Geometry can still be stored -- it is binary, and binary columns work -- but
+nothing interprets it. Filter on a bounding box held in ordinary numeric
+columns if you need spatial predicates today.
+
+## Changing types later {#evolution}
+
+A schema is not fixed at creation. Columns can be added, renamed, retyped, made
+nullable, and dropped, usually without rewriting existing data -- see
+[Schema evolution](/tables/schema). Deriving new values from existing columns is
+[data evolution](/feature-engineering/data-evolution).
+
+Nullability is worth deciding up front: if later writes omit a non-nullable
+column, or write actual nulls into it, ingestion fails.

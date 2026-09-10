@@ -12,10 +12,33 @@ common source of confusion about how work gets done.
 | | What it is | What it changes |
 | --- | --- | --- |
 | **Async client** | `connect_async`, `await` | whether *your thread* blocks |
-| **Async execution** | `_async` methods returning a [job](#jobs) | whether *the work* outlives the call |
+| **Async execution** | `_async` methods returning a handle | whether *the work* outlives the call |
 
-They are independent. A synchronous Python call can start a job that runs for an
+They are independent. A synchronous Python call can start work that runs for an
 hour; an `await` can wait for something that finishes instantly.
+
+## Every `_async` method returns a handle {#handles}
+
+An `_async` method submits work and hands back a **handle** to it. Which handle
+depends on what you submitted -- `execute_query_async` returns a query,
+everything else returns a [job](#jobs) -- but they are the same idea, and they
+answer the same four questions:
+
+| | Query handle | Job handle |
+| --- | --- | --- |
+| Which one is this? | `id` | `id` |
+| How is it going? | `describe()` | `status()`, `refresh()`, `events()` |
+| Give me the result | `reader()` — streams batches as they arrive | `wait()` — blocks for the terminal result |
+| Stop it | `cancel()` | `cancel()` |
+
+The difference is in the third row, and it follows from what the work produces.
+A query produces **rows**, so its handle streams them and you can start reading
+before the query finishes. A job produces **an outcome** -- an index built, a
+column filled -- so its handle has nothing to stream and gives you the result
+once, at the end.
+
+Everything else is shared: both identify the work on the server, both report on
+it without blocking, and both can be told to stop.
 
 ## Async client: whether you block {#async-client}
 
@@ -61,11 +84,22 @@ SELECT id, text FROM my_docs LIMIT 1000
 
 `execute_query` returns a blocking Arrow reader **once results start arriving**
 -- it does not wait for the whole query to finish. Results stream as record
-batches, so a large result set does not have to fit in memory before you see
-its first row.
+batches, so a large result set does not have to fit in memory before you see its
+first row.
 
-`execute_query_async` returns the query handle instead, for a statement you
-would rather not sit on at all. `describe_query` reports on one by id.
+`execute_query_async` returns the query handle instead:
+
+```python
+query = db.execute_query_async("SELECT id, text FROM my_docs")
+
+query.id            # identifies it on the server
+query.describe()    # what it is doing, without consuming results
+reader = query.reader()   # stream the rows when you want them
+query.cancel()      # stop it
+```
+
+`describe_query(id)` reports on one from elsewhere, the way `open_job(id)` does
+for a job.
 
 <Note>
 SQL requires a deployment. See [SDKs and SQL](/basics/apis).

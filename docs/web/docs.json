@@ -94,6 +94,14 @@
               "basics/lance",
               "basics/catalog",
               "basics/jobs",
+              {
+                "group": "Schema & Data Types",
+                "pages": [
+                  "basics/data-types",
+                  "tables/multimodal"
+                ]
+              },
+              "tables/consistency",
               "basics/apis",
               "basics/agentic-skills"
             ]
@@ -115,11 +123,11 @@
                 "pages": [
                   "tables/index",
                   "tables/schema",
-                  "tables/multimodal",
                   "tables/versioning",
                   "tables/branching"
                 ]
               },
+              "management/materialized-view",
               "management/function"
             ]
           },
@@ -130,8 +138,7 @@
               "ingestion/insert",
               "ingestion/merge-insert",
               "ingestion/update",
-              "ingestion/delete",
-              "tables/consistency"
+              "ingestion/delete"
             ]
           },
           {
@@ -157,13 +164,6 @@
                   "reranking/cross_encoder",
                   "reranking/custom-reranker",
                   "reranking/eval"
-                ]
-              },
-              {
-                "group": "Embedding",
-                "pages": [
-                  "embedding/index",
-                  "embedding/quickstart"
                 ]
               }
             ]
@@ -230,6 +230,13 @@
             "pages": [
               "integrations/index",
               {
+                "group": "Embedding Registry",
+                "pages": [
+                  "embedding/index",
+                  "embedding/quickstart"
+                ]
+              },
+              {
                 "group": "Embedding Providers",
                 "pages": [
                   "integrations/embedding/huggingface",
@@ -293,7 +300,7 @@
         ]
       },
       {
-        "tab": "Tutorials",
+        "tab": "Tutorials and Use Cases",
         "groups": [
           {
             "group": "Tutorials",
@@ -321,23 +328,7 @@
               "training/object-detection",
               "training/vlm-finetuning"
             ]
-          }
-        ]
-      },
-      {
-        "tab": "Demos",
-        "groups": [
-          {
-            "group": "Demos",
-            "pages": [
-              "demos/index"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Use Cases",
-        "groups": [
+          },
           {
             "group": "Robotics",
             "pages": [
@@ -348,6 +339,20 @@
             "group": "World Models",
             "pages": [
               "integrations/stable-worldmodel"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Demos",
+        "groups": [
+          {
+            "group": "Demos",
+            "pages": [
+              "demos/index",
+              "demos/semantic-art",
+              "demos/wikipedia-search",
+              "demos/video-search"
             ]
           }
         ]

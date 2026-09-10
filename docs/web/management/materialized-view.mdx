@@ -1,0 +1,95 @@
+---
+title: "Materialized view"
+sidebarTitle: "Materialized View"
+description: "Create, open, list and drop a table whose contents are defined by a query."
+icon: table
+keywords: ["materialized view", "create_materialized_view", "catalog", "ddl"]
+---
+
+A materialized view is a table whose contents are defined by a query over
+another table. The query is recorded in the view's schema; a refresh computes
+the rows.
+
+The result is an ordinary table -- queryable, indexable, searchable, and present
+in `table_names()`. Nothing about reading it is special.
+
+This page covers creating and managing one. Keeping it current is
+[Refresh a materialized view](/feature-engineering/materialized-views).
+
+## Creating one {#create}
+
+<CodeGroup>
+```python Python icon="python"
+view = db.create_materialized_view(
+    "recent_docs",
+    source="documents",
+    select=["id", "title", "embedding"],
+    where="created_at > '2026-01-01'",
+)
+```
+
+```typescript TypeScript icon="square-js"
+const view = await db.createMaterializedView("recent_docs", {
+  source: "documents",
+  select: ["id", "title", "embedding"],
+  where: "created_at > '2026-01-01'",
+});
+```
+</CodeGroup>
+
+`source` names the table it derives from. `select`, `where` and `limit` record
+the query -- there is no separate definition step.
+
+<Warning>
+The source table must have **stable row ids**, and they cannot be enabled after
+a table exists. A table created without them cannot become a view's source
+without being recreated.
+
+Set `new_table_enable_stable_row_ids` in
+[storage options](/management/database#storage-options) when you create the
+source, not when you create the view.
+</Warning>
+
+## Opening, listing and dropping {#manage}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_materialized_view` | `createMaterializedView` | -- |
+| open | `open_materialized_view` | `openMaterializedView` | -- |
+| list | `list_materialized_views` | `listMaterializedViews` | `SHOW MATERIALIZED VIEWS` |
+| refresh | `refresh` | `refresh` | `REFRESH MATERIALIZED VIEW` |
+| drop | `drop_table` | `dropTable` | `DROP TABLE` |
+
+<Note>
+`list_materialized_views` finds views by reading every table's schema, so it
+costs one open per table. `SHOW MATERIALIZED VIEWS` asks the server instead and
+is cheaper on a catalog with many tables.
+</Note>
+
+A view is dropped with `drop_table`, because a materialized view **is** a table.
+That also means dropping one removes stored rows -- unlike dropping a
+[view](/management/view), which removes only a saved query.
+
+## Working with the view {#working}
+
+`view.table()` returns the underlying table, for querying, indexing, or search.
+`view.definition()` returns the recorded query -- select list, predicate, limit
+-- which is how you check what a view contains without inferring it from the
+rows.
+
+## Against a deployment {#deployment}
+
+<Badge color="red">Enterprise</Badge> `create_materialized_view` works on a
+`db://` connection as well as a local one. What changes is that a refresh runs
+across the cluster rather than in your process, and SQL can drive it.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
+    Incremental refreshes, and what they cost.
+  </Card>
+  <Card title="Views" icon="eye" href="/management/view">
+    The non-materialized counterpart, defined in SQL.
+  </Card>
+</CardGroup>
