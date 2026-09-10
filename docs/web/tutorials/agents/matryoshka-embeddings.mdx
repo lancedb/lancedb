@@ -1,0 +1,23 @@
+---
+title: "Matryoshka embeddings"
+sidebarTitle: "Matryoshka Embeddings"
+description: "Nested, variable-size embeddings with LanceDB and LlamaIndex."
+---
+
+A RAG pipeline built on Matryoshka embeddings with LlamaIndex. The embeddings
+nest, so one model serves several dimensionalities -- store the full vector and
+retrieve with a truncated one when the cheaper comparison is good enough.
+
+<Note>
+This example is a runnable notebook in the
+[vectordb-recipes](https://github.com/lancedb/vectordb-recipes) repository rather than a page here.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Open in Colab" icon="google" href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/RAG-with_MatryoshkaEmbed-Llamaindex/main.ipynb">
+    Run it end to end in the browser.
+  </Card>
+  <Card title="View on GitHub" icon="github" href="https://github.com/lancedb/vectordb-recipes/tree/main/tutorials/RAG-with_MatryoshkaEmbed-Llamaindex">
+    Read the source.
+  </Card>
+</CardGroup>

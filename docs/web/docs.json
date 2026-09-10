@@ -78,6 +78,18 @@
     {
       "source": "/search/select",
       "destination": "/sql/select"
+    },
+    {
+      "source": "/tutorials/search",
+      "destination": "/tutorials/search/hybrid-search-beir"
+    },
+    {
+      "source": "/tutorials/agents",
+      "destination": "/tutorials/agents/contextual-rag"
+    },
+    {
+      "source": "/tutorials/feature-engineering",
+      "destination": "/tutorials/feature-engineering/feature-engineering-101"
     }
   ],
   "navigation": {
@@ -309,47 +321,52 @@
       },
       {
         "tab": "Use Cases",
-        "groups": [
+        "pages": [
+          "tutorials/index",
           {
             "group": "General",
             "pages": [
-              "tutorials/index",
               "build-with-ai-agents"
             ]
           },
           {
             "group": "Search",
             "pages": [
+              "tutorials/search/hybrid-search-beir",
+              "tutorials/search/multivector-xtr",
               "tutorials/search/multivector-needle-in-a-haystack",
-              "tutorials/search/index"
+              "tutorials/search/video-search",
+              "tutorials/search/vector-arithmetic",
+              "tutorials/search/ner-search",
+              "tutorials/search/reddit-summarizer"
             ]
           },
           {
             "group": "RAG",
             "pages": [
+              "tutorials/agents/contextual-rag",
               "tutorials/agents/nvidia-rag-blueprint/index",
               "tutorials/agents/time-travel-rag/index",
               "tutorials/agents/multimodal-agent/index",
-              "tutorials/agents/index"
+              "tutorials/agents/matryoshka-embeddings",
+              "tutorials/agents/hyde",
+              "tutorials/agents/late-chunking",
+              "tutorials/agents/agentic-rag"
             ]
           },
           {
             "group": "Feature Engineering",
             "pages": [
-              "agent-branch-experiments",
-              "tutorials/feature-engineering/index"
+              "tutorials/feature-engineering/feature-engineering-101",
+              "tutorials/feature-engineering/materialized-views",
+              "agent-branch-experiments"
             ]
           },
           {
             "group": "Training",
             "pages": [
               "training/object-detection",
-              "training/vlm-finetuning"
-            ]
-          },
-          {
-            "group": "World Models",
-            "pages": [
+              "training/vlm-finetuning",
               "integrations/stable-worldmodel"
             ]
           }
