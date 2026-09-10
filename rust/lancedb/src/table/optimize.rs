@@ -134,9 +134,17 @@ pub(crate) async fn cleanup_old_versions(
 ) -> Result<RemovalStats> {
     table.dataset.ensure_mutable()?;
     let dataset = table.dataset.get().await?;
-    Ok(dataset
+    let stats = dataset
         .cleanup_old_versions(older_than, delete_unverified, error_if_tagged_old_versions)
-        .await?)
+        .await?;
+    // Computed-column signature sidecars live outside lance's directories;
+    // drop the ones the surviving versions no longer reference.
+    let removed =
+        super::freshness::prune_sidecars(&dataset, delete_unverified.unwrap_or(false)).await?;
+    if removed > 0 {
+        log::debug!("removed {removed} unreferenced computed-column signature sidecars");
+    }
+    Ok(stats)
 }
 
 /// Compact files in the dataset.

@@ -1124,8 +1124,9 @@ struct RowScope {
 
 /// Whether every commit on the view after `recorded` is a fill of its
 /// computed columns: a column rewrite or data replacement touching only
-/// those fields and neither adding nor removing rows. A version whose
-/// transaction cannot be read is not proven, so it counts as drift.
+/// those fields and neither adding nor removing rows, or the freshness
+/// stamp a fill leaves on them. A version whose transaction cannot be read
+/// is not proven, so it counts as drift.
 async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Result<bool> {
     // A fill may write any field under a computed column, so the whole
     // subtree counts, not only the root.
@@ -1175,6 +1176,19 @@ async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Resul
                                 .iter()
                                 .all(|field| computed_fields.contains(&(*field as u32)))
                     })
+            }
+            // The stamp `refresh_column` writes after its fill (see
+            // `table::freshness`): field metadata on computed columns, no data.
+            Operation::UpdateConfig {
+                config_updates: None,
+                table_metadata_updates: None,
+                schema_metadata_updates: None,
+                field_metadata_updates,
+            } => {
+                !field_metadata_updates.is_empty()
+                    && field_metadata_updates
+                        .keys()
+                        .all(|field| computed_fields.contains(&(*field as u32)))
             }
             _ => false,
         };
@@ -3359,6 +3373,46 @@ mod tests {
         );
     }
 
+    /// Field metadata on `field` only, the commit shape of the freshness
+    /// stamp `refresh_column` leaves after its fill.
+    async fn commit_field_metadata(view: &MaterializedView, field: &str, key: &str) {
+        let native = view.table().as_native().unwrap();
+        native.dataset.reload().await.unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_field_metadata()
+            .update(field, [(key.to_string(), "{}".to_string())])
+            .unwrap()
+            .await
+            .unwrap();
+    }
+
+    /// The stamp is metadata on the computed column and rewrites nothing
+    /// refresh certifies, so it is not drift; the same commit shape on a
+    /// projected column is, like any other write to it.
+    #[tokio::test]
+    async fn test_a_freshness_stamp_is_not_drift() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_computed_view(&conn).await;
+
+        commit_field_metadata(
+            &view,
+            "emb",
+            crate::table::computed_columns::SOURCE_SIGNATURE_META_KEY,
+        )
+        .await;
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+
+        commit_field_metadata(&view, "id", "probe").await;
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Rebuild
+        );
+    }
+
     /// The fill job's commit rewrites only computed columns. It is the one
     /// commit on a view that is not drift: the next refresh carries on from
     /// its watermark instead of rebuilding, which would null what the fill
@@ -3524,9 +3578,9 @@ mod tests {
     }
 
     /// A SQL declaration is filled by `refresh_column` on the view, which
-    /// commits a data replacement; the next refresh continues from its
-    /// watermark and keeps what the fill wrote, and only rows the view added
-    /// since come back unfilled.
+    /// commits a data replacement and then its freshness stamp; the next
+    /// refresh continues from its watermark and keeps what the fill wrote,
+    /// and only rows the view added since come back unfilled.
     #[tokio::test]
     async fn test_a_sql_fill_is_not_drift() {
         use crate::materialized_view::tests::{people, sql_field};

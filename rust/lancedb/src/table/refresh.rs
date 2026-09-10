@@ -3,9 +3,9 @@
 
 //! Filling computed columns.
 //!
-//! A row without a value gets one; a row that has one keeps it. Refresh is
-//! therefore idempotent and does not observe input mutation -- once a row is
-//! filled, changing what the expression reads leaves the stored result alone.
+//! A row without a value gets one; a row that has one keeps it unless its
+//! fragment's inputs moved since it was computed, which `freshness` decides
+//! from the manifest and stamps after every fill.
 //!
 //! A column's computed inputs are filled first -- the dependency graph is
 //! walked once, each reachable column filled once in dependency order, each
@@ -31,6 +31,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow_array::{
     Array, ArrayRef, BooleanArray, LargeBinaryArray, RecordBatch, RecordBatchOptions, StructArray,
@@ -48,6 +49,7 @@ use lance_core::datatypes::{BlobHandling, Schema as LanceSchema};
 use serde::{Deserialize, Serialize};
 
 use super::computed_columns::{BoundExpression, ComputedColumnKind, computed_column_from_field};
+use super::freshness::{self, SignatureMap, StalenessPlan};
 use super::{BaseTable, NativeTable};
 use crate::job::Job;
 use crate::{Error, Result};
@@ -110,28 +112,81 @@ async fn execute_refresh_column_with_source(
     };
     let output_is_blob = field.is_blob_v2();
 
+    // Which fragments the null filter cannot speak for: their inputs moved
+    // since they were computed, or the definition did. Decided once, from
+    // the manifest the values are read from.
+    let inputs = freshness::fields_for_paths(dataset.schema(), &bound.inputs)?;
+    let definition = freshness::definition_version(&expression);
+    let staleness = freshness::staleness_against(&dataset, column, &definition, &inputs).await?;
+
     let mut rows_filled = 0u64;
     let mut replacements = Vec::new();
+    // Fragments this refresh computed in full, signed at the version read.
+    let mut computed = SignatureMap::new();
     for fragment in dataset.get_fragments() {
-        let gained = count_fragment_gains(&dataset, &fragment, &bound, column).await?;
-        if gained == 0 {
-            continue;
+        let fragment_id = u32::try_from(fragment.id()).map_err(|_| Error::Runtime {
+            message: format!("fragment id {} does not fit a signature map", fragment.id()),
+        })?;
+        // A recompute rewrites every live row, so it is staged without the
+        // probe and counted as it fills; a null fill probes first, since a
+        // fragment with nothing to gain is not worth a write.
+        let recompute = staleness.is_dirty(fragment_id);
+        let whole = recompute || {
+            let (gained, unfilled) =
+                count_fragment_gains(&dataset, &fragment, &bound, column).await?;
+            if gained == 0 {
+                continue;
+            }
+            rows_filled += gained;
+            unfilled == u64::try_from(fragment.count_rows(None).await?).unwrap_or(u64::MAX)
+        };
+        if whole {
+            computed.insert(
+                fragment_id,
+                freshness::fragment_input_signature(fragment.metadata(), &inputs)?,
+            );
         }
-        rows_filled += gained;
-        let values =
-            fill_stream(&dataset, &fragment, bound.clone(), column, output_is_blob).await?;
+        let gained = Arc::new(AtomicU64::new(0));
+        let values = fill_stream(
+            &dataset,
+            &fragment,
+            bound.clone(),
+            column,
+            output_is_blob,
+            recompute,
+            gained.clone(),
+        )
+        .await?;
         replacements.push(fragment.write_columns(values, &column_schema).await?);
+        if recompute {
+            rows_filled += gained.load(Ordering::Relaxed);
+        }
     }
 
     let source_version = dataset.version().version;
     if replacements.is_empty() {
+        // Nothing to fill; the stamp may still have something to record -- a
+        // column not yet enrolled, or fragments a compaction carried.
+        let mut latest = (*dataset).clone();
+        let stamped = record(
+            &mut latest,
+            (&dataset, &staleness),
+            column,
+            &definition,
+            &inputs,
+            computed,
+        )
+        .await;
+        if stamped.is_some() {
+            table.dataset.update(latest);
+        }
         return Ok(RefreshExecution {
             result: RefreshColumnResult {
                 rows_filled: 0,
-                version: source_version,
+                version: stamped.unwrap_or(source_version),
             },
             source_version,
-            published_version: None,
+            published_version: stamped,
         });
     }
 
@@ -149,7 +204,17 @@ async fn execute_refresh_column_with_source(
     )
     .await?;
 
-    let version = new_dataset.version().version;
+    let mut new_dataset = new_dataset;
+    let version = record(
+        &mut new_dataset,
+        (&dataset, &staleness),
+        column,
+        &definition,
+        &inputs,
+        computed,
+    )
+    .await
+    .unwrap_or(new_dataset.version().version);
     table.dataset.update(new_dataset);
     Ok(RefreshExecution {
         result: RefreshColumnResult {
@@ -159,6 +224,31 @@ async fn execute_refresh_column_with_source(
         source_version,
         published_version: Some(version),
     })
+}
+
+/// Stamp the input state the refresh computed from (see
+/// [`freshness::record_freshness`]); the version the stamp landed at, which
+/// is the last one the refresh wrote. Never fails the refresh: the values
+/// are committed, and a missing stamp only costs a recompute next time.
+async fn record(
+    latest: &mut Dataset,
+    pinned: (&Dataset, &StalenessPlan),
+    column: &str,
+    definition: &str,
+    inputs: &freshness::InputFields,
+    computed: SignatureMap,
+) -> Option<u64> {
+    match freshness::record_freshness(latest, Some(pinned), column, definition, inputs, computed)
+        .await
+    {
+        Ok(record) => record.version,
+        Err(error) => {
+            log::warn!(
+                "could not record the input state computed column '{column}' was refreshed from ({error}); its fragments will recompute on the next refresh"
+            );
+            None
+        }
+    }
 }
 
 /// Refuse while a computed input still has rows a refresh of it would fill:
@@ -188,7 +278,9 @@ async fn ensure_inputs_filled(
         let input_bound = super::computed_columns::bind(schema.clone(), input, expression)?;
         let mut unfilled = 0u64;
         for fragment in dataset.get_fragments() {
-            unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input).await?;
+            unfilled += count_fragment_gains(dataset, &fragment, &input_bound, input)
+                .await?
+                .0;
         }
         if unfilled > 0 {
             return Err(Error::InvalidInput {
@@ -436,32 +528,35 @@ fn blob_array_from_binary(
 /// Scans only the unfilled live rows -- deleted rows never reach the
 /// expression here, the filter having already excluded them -- and counts the
 /// non-null results. Exact, so it is both the staging decision and the
-/// fragment's contribution to `rows_filled`.
+/// fragment's contribution to `rows_filled`. Returns the gains and the rows
+/// scanned.
 async fn count_fragment_gains(
     dataset: &Dataset,
     fragment: &FileFragment,
     bound: &BoundExpression,
     column: &str,
-) -> Result<u64> {
+) -> Result<(u64, u64)> {
     let mut scanner = dataset.scan();
     scanner
         .with_fragments(vec![fragment.metadata().clone()])
         .with_row_id()
-        .filter(&format!("{} IS NULL", quote_identifier(column)))?
-        .project(&bound.roots)?;
+        .project(&bound.roots)?
+        .filter(&format!("{} IS NULL", quote_identifier(column)))?;
     configure_blob_inputs(&mut scanner, dataset.schema(), bound, None)?;
 
     let mut gained = 0u64;
+    let mut considered = 0u64;
     let mut batches = scanner.try_into_stream().await?;
     while let Some(batch) = batches.try_next().await? {
         let evaluated = evaluate(bound, &evaluation_batch(&batch, bound, None)?)?;
         gained += (batch.num_rows() - evaluated.null_count()) as u64;
+        considered += batch.num_rows() as u64;
     }
-    Ok(gained)
+    Ok((gained, considered))
 }
 
 /// Stream one fragment's column in physical order, filling the unfilled live
-/// rows and keeping every other value.
+/// rows -- every live row, for a recompute -- and keeping every other value.
 ///
 /// Deleted rows are carried through so the values line up positionally with
 /// the fragment's data files; they are never read back, but the column file
@@ -472,6 +567,8 @@ async fn fill_stream(
     bound: Arc<BoundExpression>,
     column: &str,
     output_is_blob: bool,
+    recompute: bool,
+    gained: Arc<AtomicU64>,
 ) -> Result<impl Stream<Item = lance_core::Result<RecordBatch>> + Send + use<>> {
     let mut projection: Vec<String> = bound.roots.clone();
     projection.push(column.to_string());
@@ -521,14 +618,20 @@ async fn fill_stream(
             .column_by_name(ROW_ID)
             .ok_or_else(|| missing(ROW_ID))?;
 
-        // Only an unfilled live row gains a value; a deleted row has a null
-        // row id and keeps its (null) slot.
-        let unfilled = arrow::compute::is_null(existing.as_ref())?;
+        // Only an unfilled live row gains a value, or every live row under a
+        // recompute; a deleted row has a null row id and keeps its (null) slot.
         let live = arrow::compute::is_not_null(row_ids.as_ref())?;
-        let fill = arrow::compute::and(&unfilled, &live)?;
+        let fill = if recompute {
+            live
+        } else {
+            let unfilled = arrow::compute::is_null(existing.as_ref())?;
+            arrow::compute::and(&unfilled, &live)?
+        };
         let keep = arrow::compute::not(&fill)?;
 
         let computed = evaluate(&bound, &evaluation_batch(&batch, &bound, Some(&keep))?)?;
+        let values = arrow::compute::and(&fill, &arrow::compute::is_not_null(&computed)?)?;
+        gained.fetch_add(values.true_count() as u64, Ordering::Relaxed);
         let merged = arrow_select::zip::zip(&fill, &computed, existing)?;
         let merged = if output_is_blob {
             blob_array_from_binary(&merged, projected.field(0))?
@@ -737,7 +840,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_op.rows_assigned, 0);
-        assert_eq!(no_op.source_version, 3);
+        // The fill, then the stamp recording what it computed from.
+        assert_eq!(no_op.source_version, 4);
         assert_eq!(no_op.published_version, None);
     }
 
@@ -777,8 +881,8 @@ mod tests {
     }
 
     /// A row is filled only by gaining a value, so an expression yielding null
-    /// settles at once instead of re-selecting the same rows forever. Nothing
-    /// is staged, so the version does not move either.
+    /// settles at once instead of re-selecting the same rows forever: the
+    /// second refresh finds the fragment signed and moves nothing.
     #[tokio::test]
     async fn test_refresh_converges_on_a_null_result() {
         let table = table_with("refresh_null_result", vec![1, 2, 3]).await;
@@ -792,28 +896,186 @@ mod tests {
 
         let first = table.refresh_column("maybe").await.unwrap();
         assert_eq!(first.rows_filled, 0);
-        assert_eq!(first.version, declared);
+        assert!(first.version > declared);
         assert_eq!(read(&table, "maybe").await, vec![None, None, None]);
 
         let again = table.refresh_column("maybe").await.unwrap();
         assert_eq!(again.rows_filled, 0);
-        assert_eq!(again.version, declared);
+        assert_eq!(again.version, first.version);
     }
 
-    /// The contract's boundary: a filled fragment is not revisited, so
-    /// mutating an input leaves the value computed at fill time.
+    /// A filled row whose input moved is recomputed: the update rewrites
+    /// the row into a fragment the stamp never signed, and only that one.
     #[tokio::test]
-    async fn test_refresh_does_not_observe_input_mutation() {
-        let table = table_with("refresh_mutation", vec![1]).await;
+    async fn test_refresh_recomputes_a_row_whose_input_moved() {
+        let table = table_with("refresh_mutation", vec![1, 2]).await;
+        declare_doubled(&table).await.unwrap();
+        append(&table, vec![5]).await;
+        table.refresh_column("doubled").await.unwrap();
+        assert_eq!(
+            read(&table, "doubled").await,
+            vec![Some(2), Some(4), Some(10)]
+        );
+
+        table
+            .update()
+            .column("x", "7")
+            .only_if("x = 5")
+            .execute()
+            .await
+            .unwrap();
+
+        let again = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(again.rows_filled, 1);
+        assert_eq!(
+            read(&table, "doubled").await,
+            vec![Some(2), Some(4), Some(14)]
+        );
+
+        let settled = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(settled.rows_filled, 0);
+        assert_eq!(settled.version, again.version);
+    }
+
+    /// Each stamp is a sidecar under `_computed/`; pruning old versions
+    /// removes the sidecars only they referenced, and keeps the current one.
+    #[tokio::test]
+    async fn test_pruning_drops_the_sidecars_of_pruned_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("x", Int32, [1, 2])).unwrap();
+        let table = conn
+            .create_table("sidecars", batch)
+            .execute()
+            .await
+            .unwrap();
         declare_doubled(&table).await.unwrap();
         table.refresh_column("doubled").await.unwrap();
-        assert_eq!(read(&table, "doubled").await, vec![Some(2)]);
+        append(&table, vec![5]).await;
+        table.refresh_column("doubled").await.unwrap();
+        let sidecars = || {
+            std::fs::read_dir(dir.path().join("sidecars.lance").join("_computed"))
+                .unwrap()
+                .count()
+        };
+        assert_eq!(sidecars(), 2);
 
-        table.update().column("x", "3").execute().await.unwrap();
+        table
+            .optimize(crate::table::OptimizeAction::Prune {
+                older_than: Some(chrono::Duration::zero()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(sidecars(), 1);
+        assert_eq!(
+            table.refresh_column("doubled").await.unwrap().rows_filled,
+            0
+        );
+    }
+
+    /// A deleted row is never computed and the rows that stay keep their
+    /// values: a delete recomputes nothing and stamps nothing.
+    #[tokio::test]
+    async fn test_a_delete_recomputes_nothing() {
+        let table = table_with("refresh_delete", vec![1, 2, 3]).await;
+        declare_doubled(&table).await.unwrap();
+        let filled = table.refresh_column("doubled").await.unwrap();
+
+        table.delete("x = 2").await.unwrap();
+        let deleted = table.version().await.unwrap();
 
         let again = table.refresh_column("doubled").await.unwrap();
         assert_eq!(again.rows_filled, 0);
-        assert_eq!(read(&table, "doubled").await, vec![Some(2)]);
+        assert_eq!(again.version, deleted);
+        assert!(deleted > filled.version);
+        assert_eq!(read(&table, "doubled").await, vec![Some(2), Some(6)]);
+    }
+
+    /// Compaction copies inputs unchanged, so a fragment it builds from
+    /// signed ones is fresh: the refresh recomputes nothing and only records
+    /// the new fragment.
+    #[tokio::test]
+    async fn test_a_compaction_of_signed_fragments_recomputes_nothing() {
+        let table = table_with("refresh_compact_signed", vec![1, 2]).await;
+        declare_doubled(&table).await.unwrap();
+        append(&table, vec![5]).await;
+        table.refresh_column("doubled").await.unwrap();
+
+        table
+            .optimize(crate::table::OptimizeAction::Compact {
+                options: crate::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        let compacted = table.version().await.unwrap();
+
+        let carried = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(carried.rows_filled, 0);
+        assert_eq!(carried.version, compacted + 1);
+        let settled = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(settled.version, carried.version);
+        assert_eq!(
+            read(&table, "doubled").await,
+            vec![Some(2), Some(4), Some(10)]
+        );
+    }
+
+    /// A column declared before signatures existed has no map. Its first
+    /// refresh keeps the null-fill contract and enrolls what it read from;
+    /// from then on a moved input is recomputed like any other.
+    #[tokio::test]
+    async fn test_an_unsigned_column_is_enrolled_by_its_first_refresh() {
+        let table = table_with("refresh_legacy", vec![1, 2]).await;
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+        table
+            .update()
+            .column("x", "3")
+            .only_if("x = 1")
+            .execute()
+            .await
+            .unwrap();
+
+        let native = table.as_native().unwrap();
+        let mut dataset = (*native.dataset.get().await.unwrap()).clone();
+        let declaration = dataset
+            .schema()
+            .field("doubled")
+            .unwrap()
+            .metadata
+            .iter()
+            .filter(|(key, _)| !key.starts_with("computed_refresh."))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        dataset
+            .update_field_metadata()
+            .replace("doubled", declaration)
+            .unwrap()
+            .await
+            .unwrap();
+        table.checkout_latest().await.unwrap();
+
+        // Null-fill only: the moved row keeps the value it was filled with.
+        let enrolled = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(enrolled.rows_filled, 0);
+        assert_eq!(read(&table, "doubled").await, vec![Some(2), Some(4)]);
+
+        table
+            .update()
+            .column("x", "5")
+            .only_if("x = 3")
+            .execute()
+            .await
+            .unwrap();
+        let again = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(again.rows_filled, 1);
+        assert_eq!(read(&table, "doubled").await, vec![Some(4), Some(10)]);
     }
 
     /// A row rewrite before the first refresh materializes the declared
@@ -831,11 +1093,11 @@ mod tests {
         assert_eq!(read(&table, "doubled").await, vec![Some(6)]);
     }
 
-    /// The contract holds row by row, not fragment by fragment: revisiting a
-    /// fragment to fill one row must not recompute a filled row sitting beside
-    /// it, even where the input behind it has since changed.
+    /// A fragment compacted out of one the stamp never signed cannot vouch
+    /// for any of its rows: every live row is recomputed, the moved one
+    /// included.
     #[tokio::test]
-    async fn test_refresh_does_not_recompute_a_filled_row_beside_an_unfilled_one() {
+    async fn test_a_compaction_of_an_unsigned_fragment_recomputes_it() {
         let table = table_with("refresh_mixed", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
         table.refresh_column("doubled").await.unwrap();
@@ -857,18 +1119,70 @@ mod tests {
             .unwrap();
 
         let result = table.refresh_column("doubled").await.unwrap();
-        assert_eq!(result.rows_filled, 1);
-        // 2 is the mutated row keeping the value it was filled with, not 200.
+        assert_eq!(result.rows_filled, 3);
+        assert_eq!(
+            read(&table, "doubled").await,
+            vec![Some(4), Some(10), Some(200)]
+        );
+    }
+
+    /// The gate's reproducer: a raw lance append may carry a value for the
+    /// computed column. Compaction cannot certify it, so the product is
+    /// recomputed and the supplied value replaced.
+    #[tokio::test]
+    async fn test_raw_append_values_are_not_trusted_after_compaction() {
+        use arrow_array::RecordBatchIterator;
+        use lance::Dataset;
+        use lance::dataset::{WriteMode, WriteParams};
+
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("x", Int32, [1, 2])).unwrap();
+        let table = conn
+            .create_table("raw_append", batch)
+            .execute()
+            .await
+            .unwrap();
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+
+        let batch = record_batch!(("x", Int32, [5]), ("doubled", Int32, [Some(999_i32)])).unwrap();
+        let schema = batch.schema();
+        let uri = table.uri().await.unwrap();
+        Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch)], schema),
+            &uri,
+            Some(WriteParams {
+                mode: WriteMode::Append,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        table.checkout_latest().await.unwrap();
+        table
+            .optimize(crate::table::OptimizeAction::Compact {
+                options: crate::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(result.rows_filled, 3);
         assert_eq!(
             read(&table, "doubled").await,
             vec![Some(2), Some(4), Some(10)]
         );
     }
 
-    /// Filling a fragment must not disturb the values it already holds, which
-    /// is what makes a compaction-mixed fragment safe to revisit.
+    /// An appended fragment holds no values, so compacting it into a signed
+    /// one leaves the product fresh: only the appended rows are filled.
     #[tokio::test]
-    async fn test_refresh_preserves_already_filled_rows() {
+    async fn test_a_compaction_with_an_appended_fragment_fills_only_its_rows() {
         let table = table_with("refresh_preserves", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
         table.refresh_column("doubled").await.unwrap();
@@ -995,7 +1309,8 @@ mod tests {
         assert_eq!(result.rows_failed, 0);
         assert_eq!(result.rows_remaining, 0);
         assert_eq!(result.source_version, 2);
-        assert_eq!(result.published_version, Some(3));
+        // The fill lands at 3; the stamp recording its inputs is published at 4.
+        assert_eq!(result.published_version, Some(4));
         assert_eq!(job.status().await.unwrap(), "finished");
         assert_eq!(
             read(&table, "doubled").await,
@@ -1059,31 +1374,32 @@ mod tests {
         assert_eq!(read(&table, "quotient").await, vec![Some(10)]);
     }
 
-    /// The gate's reproducer: an already-filled row's value must not be
-    /// re-evaluated either -- its input may have mutated into one the
-    /// expression chokes on.
+    /// A filled row whose input moved is re-evaluated, and a row whose
+    /// input did not move is not: the untouched fragment is never read, so
+    /// its poison input is never reached.
     #[tokio::test]
-    async fn test_a_filled_rows_value_is_never_evaluated() {
-        let table = table_with("refresh_filled_poison", vec![1, 2]).await;
+    async fn test_only_a_moved_rows_value_is_re_evaluated() {
+        let table = table_with("refresh_filled_poison", vec![1, 0]).await;
         table
             .add_columns()
-            .computed("quotient", "10 / x")
+            .computed("quotient", "10 / coalesce(nullif(x, 0), 1)")
             .execute()
             .await
             .unwrap();
         table.refresh_column("quotient").await.unwrap();
+        assert_eq!(read(&table, "quotient").await, vec![Some(10), Some(10)]);
 
+        append(&table, vec![5]).await;
         table
             .update()
-            .column("x", "0")
+            .column("x", "2")
             .only_if("x = 1")
             .execute()
             .await
             .unwrap();
-        append(&table, vec![5]).await;
 
         let result = table.refresh_column("quotient").await.unwrap();
-        assert_eq!(result.rows_filled, 1);
+        assert_eq!(result.rows_filled, 2);
         assert_eq!(
             read(&table, "quotient").await,
             vec![Some(2), Some(5), Some(10)]

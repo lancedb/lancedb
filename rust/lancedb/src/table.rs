@@ -75,6 +75,7 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod freshness;
 pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
@@ -778,7 +779,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
         })
     }
-    /// Fill a computed column's unfilled rows.
+    /// Fill a computed column's unfilled rows and recompute those whose
+    /// inputs changed.
     ///
     /// The default returns `NotSupported`; Lance-backed tables override it.
     async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
@@ -786,8 +788,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are supported only on local tables".into(),
         })
     }
-    /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
-    /// the operation.
+    /// Fill a computed column's unfilled rows and recompute those whose
+    /// inputs changed, returning a [`Job`] tracking the operation.
     async fn refresh_column_async(
         &self,
         _column: &str,
@@ -1749,9 +1751,10 @@ impl Table {
     /// Declared with
     /// [`AddColumnsBuilder::computed`](add_columns::AddColumnsBuilder::computed),
     /// a column starts empty and gets its values here. Fragments appended
-    /// since the last refresh are filled by the next one; fragments already
-    /// filled are left as they are, so the call is idempotent and does not
-    /// observe a mutated input.
+    /// since the last refresh are filled by the next one, and fragments whose
+    /// inputs changed since they were computed are recomputed (see
+    /// [`freshness`](crate::table::freshness)); everything else is left as
+    /// it is.
     ///
     /// Local tables only: a remote refresh runs as a server job, through
     /// [`Table::refresh_column_async`].

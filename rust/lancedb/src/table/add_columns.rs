@@ -60,10 +60,11 @@ impl AddColumnsBuilder {
     /// every fragment that has none -- including fragments appended since the
     /// last refresh.
     ///
-    /// Refresh does not revisit a fragment it has filled, so mutating an input
-    /// leaves the value computed at fill time; recomputing means dropping the
-    /// column and declaring it again. An input cannot be renamed, retyped or
-    /// dropped while a declaration reads it, since the expression names it.
+    /// A refresh also recomputes the rows of a fragment whose inputs changed
+    /// since it was computed (see [`freshness`](super::freshness)), so a
+    /// mutated input is reflected by the next refresh. An input cannot be
+    /// renamed, retyped or dropped while a declaration reads it, since the
+    /// expression names it.
     ///
     /// On LanceDB Cloud and Enterprise the expression is planned by the
     /// server, and the refresh runs as a server job -- see
