@@ -1,0 +1,107 @@
+---
+title: "Ingesting data"
+sidebarTitle: "Overview"
+description: "The four write operations, and the example table the rest of this section uses."
+icon: inbox
+---
+
+import {
+    PyUpdateConnectEnterprise as UpdateConnectEnterprise,
+    PyUpdateConnectLocal as UpdateConnectLocal,
+    PyUpdateExampleTableSetup as UpdateExampleTableSetup,
+    TsUpdateConnectEnterprise,
+    TsUpdateConnectLocal,
+    TsUpdateExampleTableSetup,
+    RsUpdateConnectEnterprise,
+    RsUpdateConnectLocal,
+    RsUpdateExampleTableSetup,
+    RsUpdateMakeUsersReader,
+} from '/snippets/tables.mdx';
+
+## Choose a write method {#choose-a-write-method}
+
+| Family |  Method | Use this when... |
+| --------------- | --------------- | ---------------- |
+| [`add`](/ingestion/insert) | `add(data)` | You are appending new rows and do not need to match against existing ones. |
+| `update` | `update(where=..., values=...)` | You want to edit rows that already exist, using a SQL filter. |
+| `merge_insert` | `.when_matched_update_all()` | You have incoming rows and want to update keys that already exist in the table. |
+| `merge_insert` | `.when_not_matched_insert_all()` | You have incoming rows and want to insert keys that do not exist yet. |
+| `merge_insert` | `.when_matched_update_all()` + `.when_not_matched_insert_all()` | You want both behaviors together (often called **upsert**: update existing keys **and** insert missing keys in the same operation). |
+| `merge_insert` | `.when_not_matched_by_source_delete(...)` | You want to remove target rows that are missing from the incoming source set. |
+
+Write operations return status metadata. For example, `update` reports updated row count and
+committed `version`, `delete` reports deleted row count and `version`, and `merge_insert` reports
+inserted, updated, deleted, retry-attempt, and `version` fields. Writes require a mutable table
+handle; after checking out an older version for reads, call `checkout_latest` / `checkoutLatest`
+before modifying data.
+The committed `version` advances even for writes that affect zero rows, such as a delete predicate
+that matches nothing.
+
+## Connect to LanceDB {#connect-to-lancedb}
+
+Connect to your local LanceDB instance:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateConnectLocal}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateConnectLocal}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateConnectLocal}
+    </CodeBlock>
+</CodeGroup>
+
+Or, connect to LanceDB Enterprise:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateConnectEnterprise}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateConnectEnterprise}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateConnectEnterprise}
+    </CodeBlock>
+</CodeGroup>
+
+In the Rust snippets, a `make_users_reader` helper is used  to build Arrow input data.
+
+<CodeGroup>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateMakeUsersReader}
+    </CodeBlock>
+</CodeGroup>
+
+## Create the example table {#create-the-example-table}
+
+We'll start by creating a simple table with `id`, `name`, and `login_count` columns. All examples below use the same table.
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateExampleTableSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateExampleTableSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateExampleTableSetup}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 20 |
+
+The example above shows a PyArrow schema. You can just as well create the table using other
+table creation patterns (Pandas, Polars, Pydantic, iterators, etc.) -- see [Creating a table](/tables/create) for more details.

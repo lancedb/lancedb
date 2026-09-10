@@ -1,0 +1,120 @@
+---
+title: "Insert data"
+sidebarTitle: "Insert"
+description: "Append rows to a table, including datasets too large to hold in memory."
+icon: plus
+---
+
+Rows are appended with `table.add()`. It accepts the same shapes
+[table creation](/tables/create) does — lists of objects, Arrow tables, pandas
+and polars frames, Pydantic models — and commits a new table version.
+
+These examples use the table set up in [Ingesting data](/ingestion).
+
+import {
+    PyAddFromDataset as AddFromDataset,
+    PyCreateTableFromIterator as CreateTableFromIterator,
+    TsCreateTableFromIterator as TsCreateTableFromIterator,
+    RsCreateTableFromIterator as RsCreateTableFromIterator,
+    TsAddProgress,
+} from '/snippets/tables.mdx';
+
+## Ingesting large datasets {#large-datasets}
+
+When ingesting large datasets, use `table.add()` on an existing table rather than
+passing all data to `create_table()`. The `add()` method auto-parallelizes large
+writes, while `create_table(name, data)` does not.
+
+<Tip>
+For best performance with large datasets, create an empty table first and then call
+`table.add()`. This enables automatic write parallelism for materialized data sources.
+</Tip>
+
+### From files (Parquet, CSV, etc.) {#from-files-parquet-csv-etc}
+<Badge color="green">Python Only</Badge>
+
+For file-based data, pass a `pyarrow.dataset.Dataset` to `table.add()`. This streams
+data from disk without loading the entire dataset into memory.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddFromDataset}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+`pa.dataset()` input is currently Python-only. TypeScript and Rust support for
+file-based dataset ingestion is tracked in
+[lancedb#3173](https://github.com/lancedb/lancedb/issues/3173).
+</Note>
+
+### From iterators (custom batch generation) {#from-iterators-custom-batch-generation}
+
+When you need custom batch logic — generating embeddings on the fly, transforming
+rows from an external source, etc. — use an iterator of `RecordBatch` objects.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableFromIterator}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateTableFromIterator}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateTableFromIterator}
+    </CodeBlock>
+</CodeGroup>
+
+Use this pattern when:
+
+- Your source data already arrives in Arrow batches, readers, datasets, or streams.
+- Materializing the entire ingest as one giant in-memory list or array would be too expensive.
+- You want to control chunk size explicitly during ingestion.
+
+Python can also consume iterators of other supported types like Pandas DataFrames or Python lists.
+
+### Write parallelism {#write-parallelism}
+
+<Note title="Automatic parallelism">
+For materialized data (`pa.Table`, `pd.DataFrame`, `pa.dataset()`), LanceDB
+automatically parallelizes large writes — no configuration needed. Auto-parallelism
+targets approximately 1M rows or 2GB per write partition.
+
+For streaming sources (iterators, `RecordBatchReader`), LanceDB cannot determine
+total size upfront. A `parallelism` parameter to control this manually is planned
+but not yet exposed in Python or TypeScript
+([tracking issue](https://github.com/lancedb/lancedb/issues/3173)).
+</Note>
+
+### Tracking ingestion progress {#tracking-ingestion-progress}
+<Badge color="green">TypeScript Only</Badge>
+
+For long-running writes, pass a `progress` callback to `table.add()` to surface
+per-batch progress in your UI, logs, or metrics pipeline. The callback fires
+once per batch written and once more with `done: true` when the write completes.
+
+Each invocation receives a `WriteProgress` object:
+
+| Field | Description |
+|:------|:------------|
+| `outputRows` | Rows written so far. |
+| `outputBytes` | Bytes written so far. |
+| `totalRows` | Expected total rows when the input source reports one. Always set on the final callback. |
+| `elapsedSeconds` | Wall-clock seconds since the write started. |
+| `activeTasks` | Parallel write tasks currently in flight. |
+| `totalTasks` | Total parallel write tasks (the write parallelism). |
+| `done` | `true` only for the final callback. |
+
+<CodeGroup>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddProgress}
+    </CodeBlock>
+</CodeGroup>
+
+A few things to know before you wire this up:
+
+- Back-pressures the writer: callback invocations are serialized and run inline with each batch, so a slow callback will slow the write rather than drop updates. Every batch update is delivered, and the final `done: true` callback always fires (even on error or cancellation). Keep the callback cheap — offload heavy work to a queue you drain elsewhere.
+- Errors swallowed: anything your callback throws is logged with `console.warn` and won't abort the write, so keep the callback side-effect-only and don't rely on it for control flow.
+- Row totals: `totalRows` is only populated when the input source can report it up front (for example, a materialized `arrow.Table`). For streaming sources it stays `undefined` until the final callback, where it falls back to the actual rows written.

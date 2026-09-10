@@ -1,0 +1,210 @@
+---
+title: "Merge insert"
+sidebarTitle: "Merge insert"
+description: "Reconcile incoming rows against a key: update what matches, insert what does not."
+icon: code-merge
+---
+
+These examples use the table set up in
+[Ingesting data](/ingestion), and the connection made there.
+
+import {
+    PyMergeMatchedUpdateOnly as MergeMatchedUpdateOnly,
+    PyInsertIfNotExists as InsertIfNotExists,
+    PyMergeUpdateInsert as MergeUpdateInsert,
+    PyMergeDeleteMissingBySource as MergeDeleteMissingBySource,
+    PyMergePartialColumns as MergePartialColumns,
+    TsMergeMatchedUpdateOnly,
+    TsInsertIfNotExists,
+    TsMergeUpdateInsert,
+    TsMergeDeleteMissingBySource,
+    TsMergePartialColumns,
+    RsMergeMatchedUpdateOnly,
+    RsInsertIfNotExists,
+    RsMergeUpdateInsert,
+    RsMergeDeleteMissingBySource,
+    RsMergePartialColumns,
+} from '/snippets/tables.mdx';
+
+## Merge incoming rows by key {#merge-incoming-rows-by-key}
+
+Merging is different from updating because it involves comparing incoming rows to existing rows by key, and then choosing what to do based on whether the key exists in the target table or not.
+The `merge_insert(""..."")` method lets you do this.
+
+In merge operations, rows are split into three groups:
+
+- **Matched**: key exists in both source and target.
+- **Not matched**: key exists only in source.
+- **Not matched by source**: key exists only in target.
+
+Conditional merge clauses can compare old and new values. Use the `target.` prefix for the
+existing table row and `source.` for the incoming row, for example
+`target.last_update < source.last_update`.
+
+<Tip>
+**Use scalar indexes to speed up merge insert**
+
+The merge insert command performs a join between the input data and the target table `on` the key you provide. This requires scanning that entire column, which can be expensive for large tables. To speed up this operation, create a scalar index on the join column, which will allow LanceDB to find matches without scanning the whole table.
+
+Read more about scalar indices in the [Scalar Index](/indexing/scalar-index/) guide.
+</Tip>
+
+<Info>
+If you see this HTTP 400 error from `merge_insert`: `Bad request: Merge insert cannot be performed because the number of unindexed rows exceeds the maximum of 10000`. Verify that the scalar index on the join column is up to date before retrying.
+</Info>
+
+<Note>
+**Rust: build merge predicates with DataFusion expressions**
+
+In the Rust SDK, you can pass a `datafusion_expr::Expr` directly instead of a SQL string by using
+`when_matched_update_all_expr` and `when_not_matched_by_source_delete_expr` on `MergeInsertBuilder`.
+This is useful when you are constructing predicates programmatically and want to avoid building a SQL string.
+
+These methods are only supported on local tables. Calling them against a remote table returns a
+`NotSupported` error — use the SQL string variants (`when_matched_update_all` /
+`when_not_matched_by_source_delete`) for remote tables.
+</Note>
+
+Like the create table and add APIs, the merge insert API will automatically compute embeddings based on the [embedding registry](/embedding/index#embedding-registry) if the table has an embedding definition in its schema.
+
+During `merge_insert`, if the input data doesn't contain the source column (i.e., the original field used to generate embeddings, such as text for a text embedding model or `image_uri` for an image model), or if a vector value is already provided, LanceDB skips embedding generation for that row. Embeddings are only auto-generated when that source field is present in the incoming data, **and** the vector field is empty.
+
+Primary keys in LanceDB are metadata used by operations such as `merge_insert`; they are not
+enforced as uniqueness constraints on ordinary writes. Keep using `merge_insert` or your own
+deduplication logic when you need key-based upsert semantics.
+
+### Update matched rows only {#update-matched-rows-only}
+
+This updates keys that already exist in the target table. Source rows with new keys are ignored.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeMatchedUpdateOnly}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeMatchedUpdateOnly}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeMatchedUpdateOnly}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 21 |
+
+### Insert unmatched rows only {#insert-unmatched-rows-only}
+
+This inserts only brand-new keys from the source. Existing keys are left unchanged.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {InsertIfNotExists}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsInsertIfNotExists}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsInsertIfNotExists}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 20 |
+| 3 | Charlie | 5 |
+
+### Update matched rows and insert unmatched rows {#update-matched-rows-and-insert-unmatched-rows}
+
+Use both `when_matched_update_all()` and `when_not_matched_insert_all()` when you want to update existing keys and insert missing keys in one operation.
+
+<Info>
+This is a conventional **upsert**.
+</Info>
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeUpdateInsert}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeUpdateInsert}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeUpdateInsert}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 21 |
+| 3 | Charlie | 5 |
+
+### Delete target rows that are missing from source {#delete-target-rows-that-are-missing-from-source}
+
+Use `when_not_matched_by_source_delete()` when you want to remove any target row that does not appear in the incoming source data.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeDeleteMissingBySource}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeDeleteMissingBySource}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeDeleteMissingBySource}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 2 | Bobby | 21 |
+| 3 | Charlie | 5 |
+
+In the example above, LanceDB matches rows by `id`. Rows with `id=2` and `id=3` exist in both the table and incoming data, so they are updated. Row `id=1` exists only in the target, so it is deleted.
+
+### Use partial columns in merge updates {#use-partial-columns-in-merge-updates}
+
+Merge updates do not require you to provide values for all columns. You can provide only a subset of columns in source rows. For matched rows, only the provided columns are updated.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergePartialColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergePartialColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergePartialColumns}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 20 |
+| 3 | Charlie | null |
+
+Note that in the example above, when `merge_insert` creates a new row, any missing columns are written as `null`. If a missing column is non-nullable in your schema, the insert will fail.

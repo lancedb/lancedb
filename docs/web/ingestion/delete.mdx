@@ -1,0 +1,73 @@
+---
+title: "Delete rows"
+sidebarTitle: "Delete"
+description: "Remove rows by predicate, and reclaim their space."
+icon: trash
+---
+
+These examples use the table set up in
+[Ingesting data](/ingestion), and the connection made there.
+
+import {
+    PyDeleteOperation as DeleteOperation,
+    PyUpdateOptimizeCleanup as UpdateOptimizeCleanup,
+    TsDeleteOperation,
+    TsUpdateOptimizeCleanup,
+    RsDeleteOperation,
+    RsUpdateOptimizeCleanup,
+} from '/snippets/tables.mdx';
+
+## Delete rows {#delete-rows}
+
+Delete operations **soft delete** rows that match a given condition.
+The underlying data is not immediately removed, but is marked
+for deletion (in the [deletion files](https://lance.org/format/table/#deletion-files) at the Lance format level) and excluded from query results.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DeleteOperation}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDeleteOperation}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDeleteOperation}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 20 |
+
+
+<Warning>
+**Deleting rows removes them from the index**
+
+When rows are deleted, those rows are also excluded from the index segments, so indexed queries will not return them either. If ALL the rows are deleted (i.e., the table is emptied), ensure that you recreate the index after ingesting new data.
+</Warning>
+
+To permanently remove deleted rows, you can optimize the table, which will run compaction and cleans up the soft-deleted rows, which frees up storage space.
+
+- In LanceDB OSS, compaction and cleanup are manual. Run `table.optimize()` regularly to free up disk space.
+- In LanceDB Enterprise, files aren't cleaned up by default. You can configure automatic compaction and cleanup behavior at cluster setup time to suit your organization's retention policy.
+
+By default, table cleanup removes data up to 7 days ago. If you need to reclaim space from deleted rows more aggressively, manually call `table.optimize()` use a shorter retention window as follows:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {UpdateOptimizeCleanup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsUpdateOptimizeCleanup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsUpdateOptimizeCleanup}
+    </CodeBlock>
+</CodeGroup>

@@ -117,7 +117,7 @@ You can change this behavior with two parameters that resolve the conflict in di
 
 <Note>
 `exist_ok` / `existOk` does not append the provided data to an existing table. Use
-[`table.add()`](/tables/update) for that. If you need to ensure a table exists *and*
+[`table.add()`](/ingestion/insert) for that. If you need to ensure a table exists *and*
 contains specific rows, prefer the [empty-table-then-add pattern](#create-empty-table).
 </Note>
 
@@ -398,7 +398,7 @@ that has been extended to support LanceDB specific types like `Vector`.
 </CodeGroup>
 
 Once the empty table has been created, you can append to it or modify its contents,
-as explained in the [updating and modifying tables](/tables/update) section.
+as explained in [Ingesting data](/ingestion).
 
 ## Open an existing table {#open-an-existing-table}
 

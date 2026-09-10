@@ -223,7 +223,7 @@ How you apply a validated change depends on the type of work:
 ### Upsert selected branch rows into `main` {#upsert-selected-branch-rows-into-main}
 
 If the result you want to retain is a set of inserted or updated rows, use
-[`merge_insert`](/tables/update#merge-incoming-rows-by-key) to write them to
+[`merge_insert`](/ingestion/merge-insert#merge-incoming-rows-by-key) to write them to
 `main`. Despite its name, `merge_insert` is a row-ingestion operation: it
 matches incoming rows by key and does not merge branch histories.
 
