@@ -3029,6 +3029,52 @@ async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
     assert rows == [{"id": "c", "j": '{"k":3}'}]
 
 
+@pytest.mark.skipif(
+    not hasattr(pa, "json_") or not hasattr(pa, "string_view"),
+    reason="requires PyArrow JSON and StringView types",
+)
+@pytest.mark.asyncio
+async def test_add_sanitization_normalizes_legacy_string_view(
+    mem_db_async: AsyncConnection,
+    monkeypatch,
+):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    table = await mem_db_async.create_table(
+        "json_add_legacy_string_view_sanitize",
+        schema=schema,
+    )
+    data = pa.table(
+        {
+            "id": pa.array(["c"], type=pa.string()),
+            "j": pa.array(['{"k": 3}'], type=pa.string_view()),
+        }
+    )
+
+    original_array = pa.array
+    normalized = False
+
+    def spy_array(values, *args, **kwargs):
+        nonlocal normalized
+        if (
+            isinstance(values, list)
+            and values == ['{"k": 3}']
+            and kwargs.get("type") == pa.string()
+        ):
+            normalized = True
+        return original_array(values, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.delattr(pa, "json_")
+        m.setattr(pa, "array", spy_array)
+        await table.add(data, on_bad_vectors="fill")
+
+    assert normalized
+
+    rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
+    assert rows == [{"id": "c", "j": '{"k":3}'}]
+
+
 @pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
 @pytest.mark.parametrize(
     ("input_kind", "input_type"),
@@ -3139,6 +3185,74 @@ async def test_merge_insert_coerces_string_json(mem_db_async: AsyncConnection):
 
     null_rows = await table.query().where("j IS NULL").to_list()
     assert null_rows == [{"id": "b", "j": None}]
+
+
+@pytest.mark.skipif(
+    not hasattr(pa, "json_") or not hasattr(pa, "string_view"),
+    reason="requires PyArrow JSON and StringView types",
+)
+@pytest.mark.asyncio
+async def test_merge_insert_normalizes_legacy_string_view(
+    mem_db_async: AsyncConnection,
+    monkeypatch,
+):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    json_values = pa.ExtensionArray.from_storage(
+        json_type,
+        pa.array(['{"k": 1}'], type=json_type.storage_type),
+    )
+    initial = pa.Table.from_arrays(
+        [pa.array(["a"]), json_values],
+        schema=schema,
+    )
+
+    table = await mem_db_async.create_table(
+        "json_merge_legacy_string_view",
+        schema=schema,
+    )
+    await table.add(initial)
+
+    source = pa.table(
+        {
+            "id": pa.array(["a", "c"], type=pa.string()),
+            "j": pa.array(
+                ['{"k": 5}', '{"k": 7}'],
+                type=pa.string_view(),
+            ),
+        }
+    )
+
+    original_array = pa.array
+    normalized = False
+
+    def spy_array(values, *args, **kwargs):
+        nonlocal normalized
+        if (
+            isinstance(values, list)
+            and values == ['{"k": 5}', '{"k": 7}']
+            and kwargs.get("type") == pa.string()
+        ):
+            normalized = True
+        return original_array(values, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.delattr(pa, "json_")
+        m.setattr(pa, "array", spy_array)
+        await (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(source)
+        )
+
+    assert normalized
+
+    updated = await table.query().where("json_extract(j, '$.k') = '5'").to_list()
+    inserted = await table.query().where("json_extract(j, '$.k') = '7'").to_list()
+
+    assert updated == [{"id": "a", "j": '{"k":5}'}]
+    assert inserted == [{"id": "c", "j": '{"k":7}'}]
 
 
 def test_create_with_embedding_function(mem_db: DBConnection):
@@ -4460,59 +4574,3 @@ async def test_json_writes_without_pyarrow_json_factory(
 
     assert updated == [{"id": "a", "j": '{"k":9}'}]
     assert inserted == [{"id": "c", "j": '{"k":3}'}]
-
-
-def test_coerce_json_scannable_normalizes_legacy_string_view_before_cast(
-    monkeypatch,
-):
-    import lancedb.table as table_module
-    from lancedb.scannable import to_scannable
-
-    if not hasattr(pa, "string_view"):
-        pytest.skip("requires PyArrow StringView type")
-
-    source = pa.table(
-        {
-            "j": pa.array(
-                ['{"k":1}', None, '{"k":3}'],
-                type=pa.string_view(),
-            )
-        }
-    )
-    target_schema = pa.schema(
-        [
-            pa.field(
-                "j",
-                pa.large_binary(),
-                metadata={b"ARROW:extension:name": b"lance.json"},
-            )
-        ]
-    )
-
-    monkeypatch.delattr(pa, "json_", raising=False)
-
-    original_cast = table_module._cast_to_target_schema
-
-    def assert_normalized_before_cast(reader, schema):
-        field = reader.schema.field("j")
-        assert pa.types.is_string(field.type)
-        assert field.metadata[b"ARROW:extension:name"] == b"arrow.json"
-        return original_cast(reader, schema)
-
-    monkeypatch.setattr(
-        table_module,
-        "_cast_to_target_schema",
-        assert_normalized_before_cast,
-    )
-
-    coerced = table_module._coerce_json_scannable(
-        to_scannable(source),
-        target_schema,
-    )
-    result = coerced.reader().read_all()
-
-    assert result.column("j").to_pylist() == [
-        '{"k":1}',
-        None,
-        '{"k":3}',
-    ]

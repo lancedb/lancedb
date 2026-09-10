@@ -432,6 +432,35 @@ def _cast_to_target_schema(
     def gen():
         for batch in reader:
             batch = _coerce_blob_write_columns(batch, reordered_schema)
+
+            # PyArrow 16 exposes StringView but cannot cast it directly to Utf8.
+            # Materialize legacy logical JSON columns before the common cast.
+            if not hasattr(pa, "json_") and hasattr(pa.types, "is_string_view"):
+                columns = list(batch.columns)
+                fields = list(batch.schema)
+                changed = False
+
+                for index, (field, target_field) in enumerate(
+                    zip(batch.schema, reordered_schema)
+                ):
+                    if (
+                        pa.types.is_string_view(field.type)
+                        and _field_extension_name(target_field) == "arrow.json"
+                        and pa.types.is_string(target_field.type)
+                    ):
+                        columns[index] = pa.array(
+                            columns[index].to_pylist(),
+                            type=target_field.type,
+                        )
+                        fields[index] = target_field
+                        changed = True
+
+                if changed:
+                    batch = pa.RecordBatch.from_arrays(
+                        columns,
+                        schema=pa.schema(fields, metadata=batch.schema.metadata),
+                    )
+
             # Table but not RecordBatch has cast.
             cast_batches = (
                 pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()
@@ -684,48 +713,8 @@ def _coerce_json_scannable(data: Scannable, target_schema: pa.Schema) -> Scannab
 
     schema = pa.schema(fields, metadata=data.schema.metadata)
 
-    legacy_string_view_indices = set()
-    if not hasattr(pa, "json_") and hasattr(pa.types, "is_string_view"):
-        for index, (source_field, coerced_field) in enumerate(zip(data.schema, schema)):
-            if (
-                pa.types.is_string_view(source_field.type)
-                and _field_extension_name(coerced_field) == "arrow.json"
-                and pa.types.is_string(coerced_field.type)
-            ):
-                legacy_string_view_indices.add(index)
-
     def reader() -> pa.RecordBatchReader:
-        source_reader = data.reader()
-
-        if not legacy_string_view_indices:
-            return _cast_to_target_schema(source_reader, schema)
-
-        normalized_fields = list(source_reader.schema)
-        for index in legacy_string_view_indices:
-            normalized_fields[index] = schema.field(index)
-        normalized_schema = pa.schema(
-            normalized_fields,
-            metadata=source_reader.schema.metadata,
-        )
-
-        def normalized_batches():
-            for batch in source_reader:
-                columns = list(batch.columns)
-                for index in legacy_string_view_indices:
-                    columns[index] = pa.array(
-                        columns[index].to_pylist(),
-                        type=normalized_schema.field(index).type,
-                    )
-                yield pa.RecordBatch.from_arrays(
-                    columns,
-                    schema=normalized_schema,
-                )
-
-        normalized_reader = pa.RecordBatchReader.from_batches(
-            normalized_schema,
-            normalized_batches(),
-        )
-        return _cast_to_target_schema(normalized_reader, schema)
+        return _cast_to_target_schema(data.reader(), schema)
 
     return Scannable(
         schema=schema,
