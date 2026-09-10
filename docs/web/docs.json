@@ -308,46 +308,43 @@
         ]
       },
       {
-        "tab": "Tutorials and Use Cases",
+        "tab": "Use Cases",
         "groups": [
           {
-            "group": "Tutorials",
+            "group": "General",
             "pages": [
               "tutorials/index",
-              {
-                "group": "Search",
-                "expanded": true,
-                "pages": [
-                  "tutorials/search/index",
-                  "tutorials/search/multivector-needle-in-a-haystack"
-                ]
-              },
-              {
-                "group": "RAG & Agents",
-                "expanded": true,
-                "pages": [
-                  "tutorials/agents/index",
-                  "tutorials/agents/nvidia-rag-blueprint/index",
-                  "tutorials/agents/time-travel-rag/index",
-                  "tutorials/agents/multimodal-agent/index"
-                ]
-              },
-              "tutorials/feature-engineering/index",
+              "build-with-ai-agents"
+            ]
+          },
+          {
+            "group": "Search",
+            "pages": [
+              "tutorials/search/multivector-needle-in-a-haystack",
+              "tutorials/search/index"
+            ]
+          },
+          {
+            "group": "RAG",
+            "pages": [
+              "tutorials/agents/nvidia-rag-blueprint/index",
+              "tutorials/agents/time-travel-rag/index",
+              "tutorials/agents/multimodal-agent/index",
+              "tutorials/agents/index"
+            ]
+          },
+          {
+            "group": "Feature Engineering",
+            "pages": [
+              "agent-branch-experiments",
+              "tutorials/feature-engineering/index"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
               "training/object-detection",
               "training/vlm-finetuning"
-            ]
-          },
-          {
-            "group": "AI Agents",
-            "pages": [
-              "build-with-ai-agents",
-              "agent-branch-experiments"
-            ]
-          },
-          {
-            "group": "Robotics",
-            "pages": [
-              "integrations/lerobotdataset"
             ]
           },
           {
