@@ -23,7 +23,7 @@ feature store. The catalog part is what this page is about.
 | [Table](/tables) | Rows and columns, versioned. What most operations act on. |
 | [Materialized view](/feature-engineering/materialized-views) | A table whose contents come from a query, computed and stored. |
 | [View](/management/view) | A saved query. Computed when read, not stored. |
-| [Function](/feature-engineering/functions) | Registered code, applied to produce column values. |
+| [Function](/management/function) | Registered code, applied to produce column values. |
 
 ```
 database
@@ -47,7 +47,7 @@ these docs is about one of them:
 
 | | |
 | --- | --- |
-| **Columns** | including vectors, blobs, and columns [computed](/feature-engineering/computed-columns) from other columns |
+| **Columns** | including vectors, blobs, and columns [computed](/feature-engineering/add-computed-column) from other columns |
 | **Versions** | every write commits one, so reads can [travel back](/tables/versioning) |
 | **Indexes** | vector, full-text, and scalar, built over the columns |
 | **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |

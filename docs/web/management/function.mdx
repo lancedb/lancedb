@@ -15,7 +15,7 @@ rather than pulling rows to your process.
 
 Registration is a remote operation. On a local connection `create_function`
 raises `NotImplementedError`; use a
-[computed column](/feature-engineering/computed-columns) instead.
+[computed column](/feature-engineering/refresh-column) instead.
 
 ## Define a function {#define}
 
@@ -53,6 +53,42 @@ The function runs remotely, so its dependencies are part of its definition:
 These are part of the **immutable function version**. Changing a dependency
 produces a new version rather than altering the one already registered, so a
 column filled by version 1 is unaffected by version 2.
+
+Declaring them is not optional bookkeeping. If the worker environment differs
+from the one the function was written against, the failures are among the
+hardest to diagnose in the system, because the error rarely names the cause.
+
+### Symptoms of an environment mismatch {#mismatch-symptoms}
+
+| Symptom | Likely cause |
+| --- | --- |
+| `TypeError: Enum.__new__() missing 1 required positional argument` | `attrs` version mismatch |
+| `TypeError: Can't instantiate abstract class` | package structure differs between versions |
+| `ArrowInvalid: cannot cast`, or serialization errors | NumPy 1.x against 2.x |
+| `ModuleNotFoundError` on the worker | package installed locally but not declared |
+| Model loading failures | PyTorch version mismatch |
+| Permission denied | an API key present locally but absent from `env` |
+
+The packages worth pinning explicitly, because a mismatch in them produces the
+errors above rather than a clear one: **numpy, torch, pyarrow, attrs,
+pydantic**.
+
+<Note>
+The client version defaults `python_version`, so a function registered from a
+3.11 environment runs on 3.11 unless you say otherwise. That default is usually
+right and occasionally surprising -- pin it when the function is sensitive to it.
+</Note>
+
+## Failure handling {#failures}
+
+A function that raises fails the job. There is no per-row retry or skip policy
+in the function definition: `@udf` takes no error-handling parameter, so a
+function that calls a flaky external service should handle that itself, inside
+the function body.
+
+Letting the job fail is the other option. Since
+[a refresh never revisits a filled row](/feature-engineering/refresh-column#idempotent),
+re-running after a partial failure costs only the rows that did not complete.
 
 ## What gets packaged {#packaging}
 
@@ -96,13 +132,13 @@ in the named column. A bare named-struct application expands its result fields
 as one atomic binding, with aliases from `rename(columns=...)`.
 
 Filling then works exactly as it does for any computed column — see
-[Computed columns](/feature-engineering/computed-columns) for refresh
+[Computed columns](/feature-engineering/refresh-column) for refresh
 semantics, including the rule that filled rows are never revisited.
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/computed-columns">
+  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/refresh-column">
     Refresh semantics, and the SQL alternative.
   </Card>
   <Card title="Embedding functions" icon="vector-square" href="/embedding">

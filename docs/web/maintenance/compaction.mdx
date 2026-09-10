@@ -95,7 +95,7 @@ continuous small writes needs it on a schedule.
 
 <Note>
 Compaction rewrites files, which conflicts with a concurrent
-[computed-column refresh](/feature-engineering/computed-columns) or
+[computed-column refresh](/feature-engineering/add-computed-column) or
 [view refresh](/feature-engineering/materialized-views) planned against the
 version it replaces. Sequence them rather than running both at once.
 </Note>

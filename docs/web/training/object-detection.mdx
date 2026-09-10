@@ -74,7 +74,7 @@ Ingestion streams `pa.RecordBatch`es of raw frames + annotations directly into a
 
 ## 2\. Backfill curation features with Geneva {#2-backfill-curation-features-with-geneva}
 
-Curation signals are added as columns on the same table using [computed columns](/feature-engineering/computed-columns). Backfills are incremental and checkpointed: re-running the command after new footage arrives only computes the new rows.
+Curation signals are added as columns on the same table using [computed columns](/feature-engineering/refresh-column). Backfills are incremental and checkpointed: re-running the command after new footage arrives only computes the new rows.
 
 ```py Python icon=Python
 import pyarrow as pa
@@ -117,7 +117,7 @@ with gconn.local_ray_context():
 ```
 
 <Note>
-Because the curation features are flat scalar columns on the same table, all four retrieval modes — SQL, full-text search, vector search, and SQL-filtered vector search — work directly without joins or exports. See [computed columns](/feature-engineering/computed-columns) for how a backfill fills only the rows that lack values.
+Because the curation features are flat scalar columns on the same table, all four retrieval modes — SQL, full-text search, vector search, and SQL-filtered vector search — work directly without joins or exports. See [computed columns](/feature-engineering/refresh-column) for how a backfill fills only the rows that lack values.
 </Note>
 
 ## 3\. Define training splits as materialized views {#3-define-training-splits-as-materialized-views}

@@ -62,6 +62,14 @@
     {
       "source": "/api-reference",
       "destination": "/basics/apis"
+    },
+    {
+      "source": "/feature-engineering/computed-columns",
+      "destination": "/feature-engineering/add-computed-column"
+    },
+    {
+      "source": "/feature-engineering/functions",
+      "destination": "/management/function"
     }
   ],
   "navigation": {
@@ -83,13 +91,6 @@
               "basics/catalog",
               "basics/jobs",
               "basics/apis",
-              {
-                "group": "REST API",
-                "expanded": true,
-                "pages": [
-                  "api-reference/rest/index"
-                ]
-              },
               "basics/agentic-skills"
             ]
           },
@@ -113,7 +114,8 @@
                   "tables/schema",
                   "tables/multimodal"
                 ]
-              }
+              },
+              "management/function"
             ]
           },
           {
@@ -167,9 +169,9 @@
             "group": "Feature engineering",
             "pages": [
               "feature-engineering/index",
-              "feature-engineering/computed-columns",
-              "feature-engineering/materialized-views",
-              "feature-engineering/functions"
+              "feature-engineering/add-computed-column",
+              "feature-engineering/refresh-column",
+              "feature-engineering/materialized-views"
             ]
           },
           {

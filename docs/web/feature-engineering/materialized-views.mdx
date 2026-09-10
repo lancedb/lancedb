@@ -1,6 +1,6 @@
 ---
-title: "Materialized views"
-sidebarTitle: "Materialized views"
+title: "Refresh a materialized view"
+sidebarTitle: "Refresh Materialized View"
 description: "A lakehouse object: a table defined by a query over another table, kept current incrementally."
 icon: table
 keywords: ["materialized view", "create_materialized_view", "refresh", "incremental"]
@@ -74,22 +74,27 @@ Concurrent refreshes of one view do not duplicate rows. If two plan the same
 source rows, they conflict on commit and the loser raises rather than writing
 them twice — so a retry loop around `refresh()` is safe.
 
-## Creating one against a deployment {#availability}
+## Against a deployment {#availability}
 
-<Warning>
-`create_materialized_view` on this client builds a view over a **local**
-database. Called on a remote `db://` connection it raises
-`NotImplementedError`.
+<Badge color="red">Enterprise</Badge>
 
-Views exist on Enterprise deployments too, where a refresh runs across the
-cluster rather than in your process — but they are created through the
-Enterprise feature engineering interface rather than this method. See the
-Enterprise documentation if that is where your data lives.
-</Warning>
+`create_materialized_view` works on a `db://` connection as well as a local one.
+What changes is where the refresh runs -- across the cluster rather than in your
+process -- and that SQL can drive it:
 
-The direction is the reverse of [functions](/feature-engineering/functions),
-which register only against Enterprise and raise locally. Worth
-knowing before concluding either is unavailable.
+```sql
+REFRESH MATERIALIZED VIEW chunks
+```
+
+`WITH (full = true)` recomputes every row instead of only the rows the source
+has added since the last refresh. `SHOW MATERIALIZED VIEWS` lists them, which is
+cheaper than `list_materialized_views` -- that method finds views by reading
+every table's schema, so it costs one open per table.
+
+<Note>
+`CASCADE` is accepted by the parser but not yet implemented. A view built on
+another view is refreshed by refreshing each in dependency order.
+</Note>
 
 ## Working with the view {#working-with-the-view}
 
@@ -103,7 +108,7 @@ An existing view is reopened with `db.open_materialized_view(name)`.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
-  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/computed-columns">
+  <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
     Derive a column instead of a whole table.
   </Card>
   <Card title="Versioning" icon="clock-rotate-left" href="/tables/versioning">

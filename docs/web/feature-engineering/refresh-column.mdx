@@ -1,0 +1,120 @@
+---
+title: "Refresh a column"
+sidebarTitle: "Refresh Column"
+description: "Fill the rows of a computed column that lack values — in process, or as a server-side job."
+icon: arrows-rotate
+keywords: ["refresh_column", "backfill", "job", "idempotent", "REFRESH COLUMN"]
+---
+
+A [declared column](/feature-engineering/add-computed-column) starts empty. A
+refresh gives values to the rows that lack them.
+
+<CodeGroup>
+```python Python icon="python"
+table.refresh_column("doubled")
+# RefreshColumnResult(rows_filled=2, version=3)
+
+table.to_arrow().sort_by("x").to_pandas()
+#    x  doubled
+# 0  1        2
+# 1  2        4
+```
+
+```sql SQL
+REFRESH COLUMN doubled ON my_table
+```
+</CodeGroup>
+
+The refresh commits an ordinary table version, so
+[versioning](/tables/versioning) applies to it like any other write.
+
+## It never revisits filled rows {#idempotent}
+
+A refresh fills rows that have no value and leaves the rest alone. Two
+consequences follow, and both are load-bearing.
+
+**Appending is cheap.** Rows added since the last refresh are filled by the
+next one; everything before it is skipped. Backfilling a column and then
+ingesting more data does not mean recomputing the backfill.
+
+**A filled value does not track its input.** If `doubled` derives from `x` and a
+row's `x` is later updated, `doubled` keeps the value computed when it was
+filled. Recomputing means dropping the column and declaring it again.
+
+That is what makes the call idempotent and safe to retry -- but it is the
+opposite of a spreadsheet formula, so be deliberate about which columns you
+derive this way.
+
+## Refreshing part of a table {#partial}
+
+<Badge color="red">Enterprise</Badge> In SQL a refresh can be scoped to a
+predicate, which is useful for filling a slice first and checking it before
+committing to the whole table:
+
+```sql
+REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
+```
+
+## As a job {#async}
+
+<Badge color="red">Enterprise</Badge>
+
+Against a deployment the refresh runs on the cluster. `refresh_column` raises
+there; use `refresh_column_async`, which returns a [job](/basics/jobs) you can
+wait on or poll instead of holding a connection open:
+
+```python
+job = table.refresh_column_async("doubled")
+result = job.wait()
+result.rows_assigned
+# 2
+job.status()
+# 'finished'
+```
+
+Poll with `status()`, resolve with `wait()`. `status()` is a point snapshot and
+does not raise, which is what makes it safe in a loop; `wait()` raises
+`JobFailedError`, `JobCancelledError` or `TimeoutError`.
+
+A long backfill can therefore be started, left, and checked on from a different
+process.
+
+### Resourcing the job {#resources}
+
+SQL exposes the worker budget directly, which is the lever when a backfill is
+too slow or too expensive:
+
+```sql
+REFRESH COLUMN embedding ON documents
+  WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
+```
+
+`num_workers` sets the count instead of a per-worker budget; the two are
+alternatives rather than a pair. `batch_size` controls how many rows a worker
+takes at a time, and `error_policy = 'skip'` continues past rows that fail
+rather than failing the job.
+
+## When a refresh fails {#failures}
+
+A failure is not a rollback. Rows filled before the failure keep their values,
+because each is committed as it completes.
+
+That makes recovery simple: run the refresh again. It skips everything already
+filled and costs only the rows that did not complete -- **a failed backfill is
+resumed, not restarted.**
+
+For a column filled by a [function](/management/function), the usual cause is
+the worker environment rather than the data. See
+[environment mismatches](/management/function#mismatch-symptoms) for the
+symptoms, which rarely name their cause.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Jobs" icon="hourglass-half" href="/basics/jobs">
+    Waiting on, inspecting, and cancelling server-side work.
+  </Card>
+  <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/materialized-views">
+    The same idea, for a whole derived table.
+  </Card>
+</CardGroup>
