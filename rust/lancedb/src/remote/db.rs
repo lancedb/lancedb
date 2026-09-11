@@ -688,6 +688,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
         let mut out = Vec::new();
         let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
         for page in 0..MAX_LIST_JOBS_PAGES {
             let mut body = serde_json::json!({});
             if let Some(token) = &page_token {
@@ -696,7 +697,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let req = self.client.post("/v1/jobs/list").json(&body);
             let (request_id, rsp) = self.client.send(req).await?;
             let rsp = self.client.check_response(&request_id, rsp).await?;
-            let body: RemoteListJobsResponse = rsp.json().await.err_to_http(request_id)?;
+            let status = rsp.status();
+            let body: RemoteListJobsResponse = rsp.json().await.err_to_http(request_id.clone())?;
             out.extend(body.jobs.into_iter().map(|row| JobInfo {
                 job_id: row.job_id,
                 table: row.table,
@@ -704,10 +706,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 state: job_state_to_client(&row.state),
                 created_at_millis: row.created_at_millis,
             }));
-            page_token = body.page_token;
-            if page_token.is_none() {
+            let Some(next_page_token) = body.page_token.filter(|token| !token.is_empty()) else {
                 break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(Error::Http {
+                    source: "Job listing response repeated a page_token".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
             }
+            page_token = Some(next_page_token);
             if page + 1 == MAX_LIST_JOBS_PAGES {
                 log::warn!(
                     "list_jobs truncated after {} pages ({} jobs)",
@@ -2620,6 +2629,37 @@ mod tests {
         assert_eq!(jobs[1].created_at_millis, 2000);
         assert_eq!(jobs[2].job_id, "job-3");
         assert_eq!(jobs[2].state, "failed");
+    }
+
+    #[tokio::test]
+    async fn test_list_jobs_rejects_a_page_token_cycle() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            match seen.fetch_add(1, Ordering::SeqCst) {
+                0 => assert!(body.get("page_token").is_none()),
+                _ => assert_eq!(body["page_token"], "loop"),
+            }
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"jobs": [], "page_token": "loop"}"#)
+                .unwrap()
+        });
+
+        let error = conn.list_jobs().await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                Error::Http {
+                    status_code: Some(http::StatusCode::OK),
+                    ..
+                }
+            ),
+            "got {error:?}"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
