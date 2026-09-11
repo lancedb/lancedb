@@ -26,6 +26,7 @@ import os
 import random
 import threading
 import time
+import uuid
 import warnings
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -592,11 +593,56 @@ class StreamingDataset(IterableDataset):
             # row-level permutation.  Instead we only shuffle at the
             # granularity of contiguous row blocks; _perm_table (and its
             # row-by-row index mapping) is not built at all in this mode.
-            num_rows = (
-                table.count_rows(filter) if filter is not None else table.count_rows()
-            )
+            #
+            # block_size counts LIVE rows (rows passing `filter`), not raw
+            # rows, so a block's raw span varies with local filter
+            # selectivity.  Each block therefore remembers its own raw
+            # [start, end) row range in self._block_ranges rather than being
+            # derived from block_id via fixed-size arithmetic alone.
+            if filter is None:
+                num_rows = table.count_rows()
+                num_blocks = math.ceil(num_rows / block_size) if num_rows else 0
+                block_ranges = [
+                    (i * block_size, min((i + 1) * block_size, num_rows))
+                    for i in range(num_blocks)
+                ]
+            else:
+                # One pass, computed once here and never repeated at read
+                # time: every fragment's raw and live row counts are read
+                # exactly once (count_rows(filter) touches that fragment's
+                # data once) to lay out block boundaries on fragment edges,
+                # so later block reads are plain offset/limit scans that
+                # Lance can seek to directly, instead of re-scanning from
+                # the start of the table on every read.
+                fragments = table.to_lance().get_fragments()
+                frag_raw_lens = [frag.count_rows() for frag in fragments]
+                frag_live_lens = [frag.count_rows(filter) for frag in fragments]
+                num_rows = sum(frag_live_lens)
+
+                block_ranges = []
+                raw_pos = 0
+                block_start = 0
+                block_live = 0
+                for raw_len, live_len in zip(frag_raw_lens, frag_live_lens):
+                    if block_live > 0 and block_live + live_len > block_size:
+                        block_ranges.append((block_start, raw_pos))
+                        block_start = raw_pos
+                        block_live = 0
+                    block_live += live_len
+                    raw_pos += raw_len
+                if block_live > 0:
+                    block_ranges.append((block_start, raw_pos))
+                num_blocks = len(block_ranges)
+
             self._num_rows = num_rows
-            self._num_blocks = math.ceil(num_rows / block_size) if num_rows else 0
+            self._num_blocks = num_blocks
+            self._block_ranges: list[tuple[int, int]] = block_ranges
+            if self._num_blocks < num_splits:
+                raise ValueError(
+                    f"block_size={block_size} yields only {self._num_blocks} "
+                    f"block(s) from {num_rows} row(s), fewer than num_splits "
+                    f"({num_splits}); use a smaller block_size or fewer splits"
+                )
             block_order = list(range(self._num_blocks))
             if shuffle:
                 block_seed = shuffle_seed + epoch * _EPOCH_PRIME
@@ -812,40 +858,79 @@ class StreamingDataset(IterableDataset):
                 end = start + blocks_per_split
                 split_blocks.append(self._block_perm[start:end])
 
-            block_size = self._block_size
-            num_rows = self._num_rows
             lance_ds = self._table.to_lance()
+            from . import connect as _connect
 
-            def _read_block(block_id: int) -> pa.Table:
-                row_start = block_id * block_size
-                row_end = min(row_start + block_size, num_rows)
-                scanner = lance_ds.scanner(
-                    columns=self._columns,
-                    filter=self._filter,
+            def _read_block(block_id: int) -> tuple[pa.Table, list[int]]:
+                # Plain offset/limit, no filter: unambiguous raw-position
+                # scan that Lance can seek to directly, and it pulls in
+                # dead rows right along with live ones -- that's fine, they
+                # never get selected below and cost nothing extra to fetch.
+                row_start, row_end = self._block_ranges[block_id]
+                t0 = time.perf_counter()
+                raw = lance_ds.scanner(
                     offset=row_start,
                     limit=row_end - row_start,
+                ).to_table()
+                self._bytes_loaded += raw.nbytes
+                self._fetch_time += time.perf_counter() - t0
+
+                if self._filter is None:
+                    return raw, list(range(raw.num_rows))
+
+                # Which of these already-in-RAM rows are live?  Answered
+                # without any further object-storage access: tag each row
+                # with its position, round-trip that through a throwaway
+                # in-memory Lance table, and apply the real filter engine
+                # to it locally -- guarantees the exact same filter
+                # semantics as everywhere else, with no extra I/O.
+                tagged = raw.append_column(
+                    "__pos", pa.array(range(raw.num_rows), type=pa.int64())
                 )
-                return scanner.to_table()
+                mem_table = _connect("memory://").create_table(
+                    f"block-{uuid.uuid4().hex}", tagged
+                )
+                live_positions = (
+                    mem_table.to_lance()
+                    .scanner(filter=self._filter, columns=["__pos"])
+                    .to_table()
+                    .column("__pos")
+                    .to_pylist()
+                )
+                return raw, live_positions
 
             def _fetch_and_permute_window(split_pos: int) -> pa.Table:
                 # Read this split's first _TWO_PHASE_WINDOW_BLOCKS blocks as
                 # contiguous range reads (each is one object-storage scan,
                 # not a row-id take), concatenate them into one in-RAM
-                # buffer, then shuffle its rows with a permutation unique to
-                # this split so windows in different splits don't repeat the
-                # same row order.
+                # buffer.  Dead rows ride along in that buffer as dead
+                # weight -- they are never removed from it -- and the
+                # permutation below is built only from live positions, so
+                # dead rows simply never get selected by the final take().
                 block_ids = split_blocks[split_pos][:_TWO_PHASE_WINDOW_BLOCKS]
-                window = pa.concat_tables([_read_block(b) for b in block_ids])
+                raw_tables = []
+                live_positions: list[int] = []
+                raw_offset = 0
+                for block_id in block_ids:
+                    raw, block_live = _read_block(block_id)
+                    live_positions.extend(p + raw_offset for p in block_live)
+                    raw_offset += raw.num_rows
+                    raw_tables.append(raw)
+                window = pa.concat_tables(raw_tables)
 
-                split_idx = my_splits[split_pos]
-                row_seed = (
-                    self._shuffle_seed
-                    + self._epoch * _EPOCH_PRIME
-                    + (split_idx + 1) * _SPLIT_PRIME
-                )
-                row_order = list(range(window.num_rows))
-                random.Random(row_seed).shuffle(row_order)
-                return window.take(row_order)
+                if self._shuffle:
+                    split_idx = my_splits[split_pos]
+                    row_seed = (
+                        self._shuffle_seed
+                        + self._epoch * _EPOCH_PRIME
+                        + (split_idx + 1) * _SPLIT_PRIME
+                    )
+                    random.Random(row_seed).shuffle(live_positions)
+
+                live = window.take(live_positions)
+                if self._columns is not None:
+                    live = live.select(self._columns)
+                return live
 
             with ThreadPoolExecutor(max_workers=len(my_splits)) as window_pool:
                 windows = list(
@@ -1421,9 +1506,11 @@ class StreamingDataset(IterableDataset):
             state["_table"] = _table_to_pickle_state(self._table)
         # _perm_table: always in-memory; serialise as Arrow data (mirrors
         # how Permutation.__getstate__ handles its permutation_table).
+        # None in 2-phase mode, which never builds one.
         state["_perm_table"] = (
-            self._perm_table.name,
-            self._perm_table.to_arrow(),
+            (self._perm_table.name, self._perm_table.to_arrow())
+            if self._perm_table is not None
+            else None
         )
         for key in (
             "_raw_batches_ref",
@@ -1442,17 +1529,23 @@ class StreamingDataset(IterableDataset):
 
         table_name = state.pop("_table_name")
         table_state = state.pop("_table")
-        perm_name, perm_data = state.pop("_perm_table")
+        perm_table_state = state.pop("_perm_table")
         self.__dict__.update(state)
         self._consumer_iterator_lock = threading.Lock()
         if self._connection_factory is not None:
             self._table = self._connection_factory(table_name)
         else:
             self._table = _table_from_pickle_state(table_state)
-            if table_state["kind"] == "memory":
+            if table_state["kind"] == "memory" and perm_table_state is not None:
                 # Rebuilt from Arrow, so the recorded pin cannot resolve on it.
-                perm_data = _drop_base_version(perm_data)
-        self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
+                perm_name, perm_data = perm_table_state
+                perm_table_state = (perm_name, _drop_base_version(perm_data))
+        if perm_table_state is not None:
+            perm_name, perm_data = perm_table_state
+            self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
+        else:
+            # 2-phase mode never builds a permutation table.
+            self._perm_table = None
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
