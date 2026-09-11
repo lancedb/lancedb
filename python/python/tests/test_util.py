@@ -27,7 +27,13 @@ import pandas as pd
 import polars as pl
 import pytest
 import lancedb
-from lancedb.util import flatten_columns, get_uri_scheme, join_uri, value_to_sql
+from lancedb.util import (
+    flatten_columns,
+    get_uri_location,
+    get_uri_scheme,
+    join_uri,
+    value_to_sql,
+)
 from utils import exception_output
 
 
@@ -77,6 +83,22 @@ def test_normalize_uri():
     for uri, expected_scheme in zip(uris, schemes):
         parsed_scheme = get_uri_scheme(uri)
         assert parsed_scheme == expected_scheme
+
+
+def test_get_uri_scheme_and_location_pathlib():
+    # Test pathlib.Path instances
+    abs_path = pathlib.Path("/tmp/data")
+    rel_path = pathlib.Path("relative/data")
+
+    assert get_uri_scheme(abs_path) == "file"
+    assert get_uri_scheme(rel_path) == "file"
+
+    assert get_uri_location(abs_path) == str(abs_path)
+    assert get_uri_location(rel_path) == str(rel_path)
+
+    # String URIs still behave identically
+    assert get_uri_scheme("s3://bucket/data") == "s3"
+    assert get_uri_location("s3://bucket/data") == "bucket/data"
 
 
 def test_join_uri_remote():

@@ -32,20 +32,20 @@ def safe_import_adlfs():
 adlfs = safe_import_adlfs()
 
 
-def get_uri_scheme(uri: str) -> str:
+def get_uri_scheme(uri: Union[str, pathlib.Path]) -> str:
     """
     Get the scheme of a URI. If the URI does not have a scheme, assume it is a file URI.
 
     Parameters
     ----------
-    uri : str
+    uri : str or pathlib.Path
         The URI to parse.
 
     Returns
     -------
     str: The scheme of the URI.
     """
-    parsed = urlparse(uri)
+    parsed = urlparse(str(uri))
     scheme = parsed.scheme
     if not scheme:
         scheme = "file"
@@ -59,25 +59,26 @@ def get_uri_scheme(uri: str) -> str:
     return scheme
 
 
-def get_uri_location(uri: str) -> str:
+def get_uri_location(uri: Union[str, pathlib.Path]) -> str:
     """
     Get the location of a URI. If the parameter is not a url, assumes it is just a path
 
     Parameters
     ----------
-    uri : str
+    uri : str or pathlib.Path
         The URI to parse.
 
     Returns
     -------
     str: Location part of the URL, without scheme
     """
-    parsed = urlparse(uri)
+    uri_str = str(uri)
+    parsed = urlparse(uri_str)
     if len(parsed.scheme) == 1:
         # Windows drive names are parsed as the scheme
         # e.g. "c:\path" -> ParseResult(scheme="c", netloc="", path="/path", ...)
         # So we add special handling here for schemes that are a single character
-        return uri
+        return uri_str
 
     if not parsed.netloc:
         return parsed.path
