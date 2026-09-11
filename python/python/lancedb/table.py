@@ -634,26 +634,43 @@ def _align_field_types(
     return new_fields
 
 
-def _align_list_value_field(
-    value_field: pa.Field, target_value_field: pa.Field
-) -> pa.Field:
-    # A list has exactly one child, so the inferred child name ("item") aligns
-    # positionally and adopts the table's child name; pa.Table.cast renames it.
-    return _align_field(value_field, target_value_field).with_name(
-        target_value_field.name
-    )
+def _align_container_child(child: pa.Field, target_child: pa.Field) -> pa.Field:
+    # A list has one child, a map one key and one item, so an inferred child name
+    # ("item") aligns positionally and adopts the table's; pa.Table.cast renames it.
+    return _align_field(child, target_child).with_name(target_child.name)
+
+
+def _arrow_json_storage_type(input_type: pa.DataType) -> Optional[pa.DataType]:
+    """The storage type arrow.json would use for ``input_type``.
+
+    Returns None if the type cannot hold JSON text.
+    """
+    if pa.types.is_string(input_type) or pa.types.is_string_view(input_type):
+        return pa.string()
+    if pa.types.is_large_string(input_type):
+        return pa.large_string()
+    return None
 
 
 def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
-    # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
-    # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
-    # input to that storage type here merely relabels the raw JSON bytes as
+    # LanceDB exposes stored JSON columns as lance.json (JSONB-backed LargeBinary), but
+    # casting the input to that storage type here merely relabels the raw JSON bytes as
     # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
-    if (
-        _field_extension_name(field) == "arrow.json"
-        and _field_extension_name(target_field) == "lance.json"
-    ):
-        return field
+    if _field_extension_name(target_field) == "lance.json":
+        if _field_extension_name(field) == "arrow.json":
+            return field
+        # Plain JSON text, which is what pyarrow infers for a column of `str`, only
+        # needs the arrow.json label.
+        json_storage = _arrow_json_storage_type(field.type)
+        if json_storage is not None:
+            # Labelled through metadata rather than pa.json_(), which only exists on
+            # newer PyArrow; Lance reads the extension name off the field either way.
+            return pa.field(
+                field.name,
+                json_storage,
+                field.nullable,
+                {"ARROW:extension:name": "arrow.json"},
+            )
     if pa.types.is_struct(target_field.type):
         if pa.types.is_struct(field.type):
             new_type = pa.struct(
@@ -667,7 +684,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.list_(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 )
             )
@@ -676,7 +693,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_large_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.large_list(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 )
             )
@@ -685,10 +702,25 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_fixed_size_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.list_(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 ),
                 target_field.type.list_size,
+            )
+        else:
+            new_type = target_field.type
+    elif pa.types.is_map(target_field.type):
+        if pa.types.is_map(field.type):
+            # A map has exactly one key and one item field, so like a list's child they
+            # align positionally and adopt the table's names.
+            new_type = pa.map_(
+                _align_container_child(
+                    field.type.key_field, target_field.type.key_field
+                ),
+                _align_container_child(
+                    field.type.item_field, target_field.type.item_field
+                ),
+                keys_sorted=target_field.type.keys_sorted,
             )
         else:
             new_type = target_field.type
