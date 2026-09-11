@@ -22,7 +22,6 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.background_loop import LOOP
 from lancedb.functions import (
     PythonRuntimeSpec,
     UdfDefinition,
