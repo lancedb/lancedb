@@ -16,8 +16,13 @@
 pub struct SecretInfo {
     /// The Secret's database-scoped name.
     pub name: String,
-    /// When the Secret was created, as an RFC 3339 timestamp.
-    pub created_at: String,
-    /// When the Secret's value was last rotated, as an RFC 3339 timestamp.
-    pub updated_at: String,
+    /// When the Secret was created, in milliseconds since the Unix epoch.
+    pub created_at_millis: i64,
+    /// When the Secret's value was last rotated, in milliseconds since the Unix
+    /// epoch.
+    ///
+    /// This is the only observable that a rotation landed: no API returns a
+    /// credential, so a caller confirms `alter_secret` took effect by watching
+    /// this move.
+    pub updated_at_millis: i64,
 }
