@@ -120,7 +120,13 @@ pprof = { version = "0.14", features = ["flamegraph"] }
 
 
 [features]
-default = []
+default = ["sql"]
+# The SQL statement extension seam (`lancedb::sql`): the registry a host adds
+# dialect statements through, the access vocabulary those statements declare,
+# and the write-commit observer. It pulls in no dependency that is not already
+# required, so it is on by default; the flag exists so an embedder that does
+# not want the surface can opt out of it.
+sql = []
 aws = [
     "lance/aws",
     "lance-io/aws",
