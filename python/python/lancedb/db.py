@@ -58,7 +58,12 @@ from .materialized_view import (
     SelectArg,
     normalize_select,
 )
-from .secrets import EnvVarSecret, SecretInfo, validate_secret_name
+from .secrets import (
+    EnvVarSecret,
+    SecretInfo,
+    validate_namespace_path,
+    validate_secret_name,
+)
 from .table import (
     AsyncTable,
     LanceTable,
@@ -779,7 +784,9 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def create_secret(self, name: str, value: str) -> None:
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         """Create a named Secret in this database.
 
         Fails if the name is taken, so a create never silently becomes a
@@ -791,7 +798,9 @@ class DBConnection(EnforceOverrides):
             "Secret operations are not supported for this connection type"
         )
 
-    def alter_secret(self, name: str, value: str) -> None:
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         """Replace the credential behind an existing Secret.
 
         Fails if it does not exist. Every Function bound to the Secret uses the
@@ -803,7 +812,7 @@ class DBConnection(EnforceOverrides):
             "Secret operations are not supported for this connection type"
         )
 
-    def list_secrets(self) -> List[str]:
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
         """The names of every Secret in this database.
 
         Names only. No method returns a stored credential, by construction
@@ -813,7 +822,9 @@ class DBConnection(EnforceOverrides):
             "Secret operations are not supported for this connection type"
         )
 
-    def drop_secret(self, name: str) -> None:
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         """Drop a Secret.
 
         Functions bound to it fail at their next job, naming the Secret; that
@@ -825,7 +836,9 @@ class DBConnection(EnforceOverrides):
             "Secret operations are not supported for this connection type"
         )
 
-    def describe_secret(self, name: str) -> SecretInfo:
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
         """What this database records about a Secret: name and timestamps.
 
         Never the value -- there is no code path that could return one. Local
@@ -1569,24 +1582,32 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.drop_function(name, version=version))
 
     @override
-    def create_secret(self, name: str, value: str) -> None:
-        LOOP.run(self._conn.create_secret(name, value))
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
 
     @override
-    def alter_secret(self, name: str, value: str) -> None:
-        LOOP.run(self._conn.alter_secret(name, value))
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.alter_secret(name, value, namespace_path=namespace_path))
 
     @override
-    def list_secrets(self) -> List[str]:
-        return LOOP.run(self._conn.list_secrets())
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_secrets(namespace_path=namespace_path))
 
     @override
-    def drop_secret(self, name: str) -> None:
-        LOOP.run(self._conn.drop_secret(name))
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_secret(name, namespace_path=namespace_path))
 
     @override
-    def describe_secret(self, name: str) -> SecretInfo:
-        return LOOP.run(self._conn.describe_secret(name))
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -2418,34 +2439,57 @@ class AsyncConnection(object):
         """Drop one exact immutable Function version from the remote catalog."""
         return await self._inner.drop_function(name, version)
 
-    async def create_secret(self, name: str, value: str) -> None:
+    async def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         """Create a named Secret in this database.
 
         Fails if the name is taken, so a create never silently becomes a
         rotation. Nothing reads the value back.
         """
-        await self._inner.create_secret(validate_secret_name(name), value)
+        await self._inner.create_secret(
+            validate_secret_name(name),
+            value,
+            list(validate_namespace_path(namespace_path)),
+        )
 
-    async def alter_secret(self, name: str, value: str) -> None:
+    async def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         """Replace the credential behind an existing Secret.
 
         Fails if it does not exist. Bound Functions use the new value from
         their next job, with no new Function version.
         """
-        await self._inner.alter_secret(validate_secret_name(name), value)
+        await self._inner.alter_secret(
+            validate_secret_name(name),
+            value,
+            list(validate_namespace_path(namespace_path)),
+        )
 
-    async def list_secrets(self) -> List[str]:
+    async def list_secrets(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
         """The names of every Secret in this database. Names only."""
-        return await self._inner.list_secrets()
+        return await self._inner.list_secrets(
+            list(validate_namespace_path(namespace_path))
+        )
 
-    async def drop_secret(self, name: str) -> None:
+    async def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         """Drop a Secret. Bound Functions fail at their next job."""
-        await self._inner.drop_secret(validate_secret_name(name))
+        await self._inner.drop_secret(
+            validate_secret_name(name), list(validate_namespace_path(namespace_path))
+        )
 
-    async def describe_secret(self, name: str) -> SecretInfo:
+    async def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
         """What this database records about a Secret. Never the value."""
         name, created_at_millis, updated_at_millis = await self._inner.describe_secret(
-            validate_secret_name(name)
+            validate_secret_name(name),
+            list(validate_namespace_path(namespace_path)),
         )
         return SecretInfo(
             name=name,

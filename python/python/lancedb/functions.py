@@ -227,6 +227,19 @@ class FunctionOutput(_OpenRemoteValue):
     fields: tuple[FunctionResultField, ...] = ()
 
 
+class SecretReference(_RemoteValue):
+    """Where a Secret lives, carried as its parts rather than as one string.
+
+    A joined id would need a delimiter, and a delimiter has to be excluded from
+    every name and segment forever, agreed on by both sides, and re-agreed each
+    time either grows a new way to be configured. Naming the parts settles all
+    of that: nothing here is parsed, so nothing can parse two ways.
+    """
+
+    name: str
+    namespace_path: tuple[str, ...] = ()
+
+
 class SecretBinding(_RemoteValue):
     """How a Secret reaches the Function that binds it.
 
@@ -238,7 +251,7 @@ class SecretBinding(_RemoteValue):
 
     kind: str
     variable: Optional[str] = None
-    secret_ref: Optional[str] = None
+    secret_ref: Optional[SecretReference] = None
 
 
 class FunctionSignature(_RemoteValue):
@@ -1344,7 +1357,10 @@ class UdfDefinition:
                     SecretBinding(
                         kind="env",
                         variable=binding.env_variable,
-                        secret_ref=binding.secret,
+                        secret_ref=SecretReference(
+                            name=binding.secret,
+                            namespace_path=tuple(binding.namespace_path),
+                        ),
                     )
                     for binding in bindings
                 ),

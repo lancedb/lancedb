@@ -493,6 +493,40 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
+/// Where a Secret lives, carried as its parts rather than as one string.
+///
+/// A joined id would need a delimiter, and a delimiter has to be excluded from
+/// every name and segment forever, agreed on by both sides, and re-agreed each
+/// time either grows a new way to be configured. Naming the parts costs one
+/// object and settles all of that: nothing here is parsed, so nothing can parse
+/// two ways.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SecretReference {
+    pub name: String,
+    /// The namespace holding the Secret. Empty is the root, and is omitted from
+    /// the wire so a root binding carries no trace of a feature it does not use.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespace_path: Vec<String>,
+}
+
+impl SecretReference {
+    /// A Secret in the root namespace.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            namespace_path: Vec::new(),
+        }
+    }
+
+    /// A Secret in `namespace_path`.
+    pub fn in_namespace(name: impl Into<String>, namespace_path: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            namespace_path,
+        }
+    }
+}
+
 /// How a Secret reaches the Function that binds it.
 ///
 /// One list rather than a field per delivery mode: a binding is the concept,
@@ -513,7 +547,7 @@ pub enum SecretBinding {
         /// Named `secret_ref` rather than `secret` because a Job payload is
         /// scanned server-side for credential-shaped keys, and a key called
         /// `secret` trips that guard whatever it actually holds.
-        secret_ref: String,
+        secret_ref: SecretReference,
     },
     /// A binding kind introduced by a newer server.
     Unrecognized { kind: String },
@@ -538,7 +572,7 @@ impl SecretBinding {
     }
 
     /// The Secret bound, or `None` for a kind this client cannot read.
-    pub fn secret(&self) -> Option<&str> {
+    pub fn secret(&self) -> Option<&SecretReference> {
         match self {
             Self::Env { secret_ref, .. } => Some(secret_ref),
             Self::Unrecognized { .. } => None,
@@ -549,7 +583,7 @@ impl SecretBinding {
 #[derive(Deserialize)]
 struct EnvSecretBindingWire {
     variable: String,
-    secret_ref: String,
+    secret_ref: SecretReference,
 }
 
 impl<'de> Deserialize<'de> for SecretBinding {
@@ -581,7 +615,7 @@ impl Serialize for SecretBinding {
         struct EnvBindingRef<'a> {
             kind: &'static str,
             variable: &'a str,
-            secret_ref: &'a str,
+            secret_ref: &'a SecretReference,
         }
 
         #[derive(Serialize)]

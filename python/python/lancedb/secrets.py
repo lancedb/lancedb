@@ -31,6 +31,31 @@ def validate_secret_name(name: str) -> str:
     return name
 
 
+def validate_namespace_path(namespace_path=None):
+    """Check a namespace path locally and return it as a tuple.
+
+    ``None`` and ``[]`` both mean the root namespace. Segments follow the same
+    rule as Secret names: a binding carries the path and the name as separate
+    fields, so neither is ever parsed out of the other.
+    """
+    if namespace_path is None:
+        return ()
+    if isinstance(namespace_path, str):
+        raise TypeError(
+            "namespace_path must be a list of segments, not a string; "
+            f"did you mean [{namespace_path!r}]?"
+        )
+    segments = tuple(namespace_path)
+    for segment in segments:
+        if not isinstance(segment, str):
+            raise TypeError(
+                f"namespace path segment must be a string, not {type(segment).__name__}"
+            )
+        if not _SECRET_NAME.fullmatch(segment):
+            raise ValueError(f"invalid namespace path segment: {segment!r}")
+    return segments
+
+
 def validate_env_variable(name: str) -> str:
     """Check an environment variable name locally and return it unchanged."""
     if not isinstance(name, str):
@@ -76,11 +101,12 @@ class EnvVarSecret:
     ('openai-prod', 'OPENAI_API_KEY')
     """
 
-    __slots__ = ("_secret", "_env_variable")
+    __slots__ = ("_secret", "_env_variable", "_namespace_path")
 
-    def __init__(self, secret: str, env_variable: str):
+    def __init__(self, secret: str, env_variable: str, *, namespace_path=None):
         self._secret = validate_secret_name(secret)
         self._env_variable = validate_env_variable(env_variable)
+        self._namespace_path = validate_namespace_path(namespace_path)
 
     @property
     def secret(self) -> str:
@@ -92,10 +118,20 @@ class EnvVarSecret:
         """The environment variable the value is delivered in."""
         return self._env_variable
 
+    @property
+    def namespace_path(self):
+        """The namespace path the Secret is addressed within, root when empty."""
+        return list(self._namespace_path)
+
     def __repr__(self) -> str:
+        path = (
+            f", namespace_path={list(self._namespace_path)!r}"
+            if self._namespace_path
+            else ""
+        )
         return (
             f"EnvVarSecret(secret={self._secret!r}, "
-            f"env_variable={self._env_variable!r})"
+            f"env_variable={self._env_variable!r}{path})"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -103,10 +139,13 @@ class EnvVarSecret:
             isinstance(other, EnvVarSecret)
             and other._secret == self._secret
             and other._env_variable == self._env_variable
+            and other._namespace_path == self._namespace_path
         )
 
     def __hash__(self) -> int:
-        return hash((EnvVarSecret, self._secret, self._env_variable))
+        return hash(
+            (EnvVarSecret, self._secret, self._env_variable, self._namespace_path)
+        )
 
 
 class SecretInfo:

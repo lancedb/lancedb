@@ -25,6 +25,7 @@ import lancedb
 from lancedb.functions import (
     PythonRuntimeSpec,
     SecretBinding,
+    SecretReference,
     UdfDefinition,
     _canonical_arrow_type,
     _GRAMMAR_PRIMITIVES,
@@ -92,6 +93,67 @@ def test_secret_bound_udf_matches_its_shared_registration_golden():
         .read_text()
         .strip()
     )
+
+
+def test_a_namespaced_binding_records_the_path_and_the_name():
+    """A binding names the parts, so nothing has to be parsed back out.
+
+    A root binding carries no path at all, which is what keeps its wire shape
+    identical to one written before namespaces existed.
+    """
+    root = EnvVarSecret(secret="openai-prod", env_variable="OPENAI_API_KEY")
+    assert root.namespace_path == []
+
+    nested = EnvVarSecret(
+        secret="openai-prod",
+        env_variable="OPENAI_API_KEY",
+        namespace_path=["prod", "vision"],
+    )
+    assert nested.namespace_path == ["prod", "vision"]
+    assert nested != root
+
+    bound = analyze_caption.bind_secrets([nested])
+    assert list(bound.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(
+                name="openai-prod", namespace_path=("prod", "vision")
+            ),
+        )
+    ]
+
+    at_root = analyze_caption.bind_secrets([root])
+    assert list(at_root.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(name="openai-prod"),
+        )
+    ]
+    # A root binding carries no path at all on the wire.
+    canonical = json.loads(at_root.to_canonical_json())
+    assert canonical["secret_bindings"] == [
+        {
+            "kind": "env",
+            "variable": "OPENAI_API_KEY",
+            "secret_ref": {"name": "openai-prod"},
+        }
+    ]
+
+
+def test_a_namespace_path_is_validated_locally():
+    # The charset is the service's, not a delimiter's: a reference is never
+    # joined, so a segment cannot make anything parse two ways.
+    with pytest.raises(ValueError):
+        EnvVarSecret(
+            secret="openai-prod", env_variable="K", namespace_path=["with$delim"]
+        )
+    with pytest.raises(ValueError):
+        EnvVarSecret(secret="openai-prod", env_variable="K", namespace_path=["a/b"])
+    # A bare string is a plausible mistake with the wrong meaning.
+    with pytest.raises(TypeError):
+        EnvVarSecret(secret="openai-prod", env_variable="K", namespace_path="prod")
 
 
 def test_an_unbound_request_carries_no_binding_at_all():
@@ -168,9 +230,11 @@ def test_a_binding_envelope_reaches_the_service_for_it_to_judge():
 
     sent = state["requests"][0][1]
     assert len(sent["secret_bindings"]) == 17
-    assert {"kind": "env", "variable": "TOKEN_0", "secret_ref": "secret-0"} in sent[
-        "secret_bindings"
-    ]
+    assert {
+        "kind": "env",
+        "variable": "TOKEN_0",
+        "secret_ref": {"name": "secret-0"},
+    } in sent["secret_bindings"]
 
 
 _SECRET_DEBUG_LOG_SOURCE = """
@@ -270,6 +334,24 @@ def test_a_secret_name_admits_what_a_namespace_name_does():
     for name in ["", "with/slash", "with$delimiter", "a" * 256]:
         with pytest.raises(ValueError, match="invalid Secret name"):
             EnvVarSecret(secret=name, env_variable="OPENAI_API_KEY")
+
+    # A namespace segment follows the same rule, and LanceDB already admits
+    # these shapes as namespace names -- so a Secret is addressable inside one.
+    for segment in [".hidden", "_internal", "-lead", "trailing."]:
+        binding = EnvVarSecret(
+            secret="openai-prod",
+            env_variable="OPENAI_API_KEY",
+            namespace_path=[segment],
+        )
+        assert binding.namespace_path == [segment]
+
+    for segment in ["", "with/slash", "with$delimiter"]:
+        with pytest.raises(ValueError, match="invalid namespace path segment"):
+            EnvVarSecret(
+                secret="openai-prod",
+                env_variable="OPENAI_API_KEY",
+                namespace_path=[segment],
+            )
 
 
 def _main_udf_source(
@@ -1545,12 +1627,20 @@ def test_remote_registration_sends_bindings_and_never_a_credential():
         )
 
     assert list(created.secret_bindings) == [
-        SecretBinding(kind="env", variable="OPENAI_API_KEY", secret_ref="openai-prod")
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(name="openai-prod"),
+        )
     ]
     path, create_request = state["requests"][0]
     assert path == "/v1/functions/create"
     assert create_request["secret_bindings"] == [
-        {"kind": "env", "variable": "OPENAI_API_KEY", "secret_ref": "openai-prod"}
+        {
+            "kind": "env",
+            "variable": "OPENAI_API_KEY",
+            "secret_ref": {"name": "openai-prod"},
+        }
     ]
     # The request names a Secret and carries nothing that could be one.
     assert create_request == json.loads(

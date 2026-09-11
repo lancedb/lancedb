@@ -326,30 +326,40 @@ pub trait Database:
     }
     /// Create a named Secret in this database. Fails if the name is taken, so
     /// a create can never silently become a rotation.
-    async fn create_secret(&self, _name: &str, _value: &str) -> Result<()> {
+    async fn create_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
         secret_catalog_not_supported()
     }
     /// Replace the credential behind an existing Secret. Fails if it does not
     /// exist. Every Function bound to it resolves the new value from its next
     /// execution, with no new Function version.
-    async fn alter_secret(&self, _name: &str, _value: &str) -> Result<()> {
+    async fn alter_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
         secret_catalog_not_supported()
     }
     /// The names of every Secret in this database.
     ///
     /// Names only. No API path returns a stored credential, by construction
     /// rather than by policy.
-    async fn list_secrets(&self) -> Result<Vec<String>> {
+    async fn list_secrets(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
         secret_catalog_not_supported()
     }
     /// Drop a Secret. Functions bound to it fail at their next job, which is
     /// the revocation path.
-    async fn drop_secret(&self, _name: &str) -> Result<()> {
+    async fn drop_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
         secret_catalog_not_supported()
     }
     /// What the database records about one Secret: its name and timestamps,
     /// never its value.
-    async fn describe_secret(&self, _name: &str) -> Result<SecretInfo> {
+    async fn describe_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<SecretInfo> {
         secret_catalog_not_supported()
     }
     /// Open a job by id, returning a handle with its record already
