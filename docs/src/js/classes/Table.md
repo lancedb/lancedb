@@ -137,6 +137,20 @@ containing the new version number of the table after altering the columns.
 
 ***
 
+### blobColumns()
+
+```ts
+abstract blobColumns(): Promise<string[]>
+```
+
+Blob v2 columns, including nested dotted paths.
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
+
+***
+
 ### branches()
 
 ```ts
@@ -496,6 +510,54 @@ Drop an index from the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### fetchBlobFiles()
+
+```ts
+abstract fetchBlobFiles(column, rowIds): Promise<(null | BlobFile)[]>
+```
+
+Opens lazy blob handles for `column` at the given row IDs using the
+table's current checkout.
+
+Preserves input order, duplicates, and nulls. Use this for large payloads.
+See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+
+#### Parameters
+
+* **column**: `string`
+
+* **rowIds**: readonly (`number` \| `bigint`)[]
+
+#### Returns
+
+`Promise`&lt;(`null` \| [`BlobFile`](BlobFile.md))[]&gt;
+
+***
+
+### fetchBlobs()
+
+```ts
+abstract fetchBlobs(column, rowIds): Promise<(null | Buffer)[]>
+```
+
+Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
+
+Reads the table's current checkout. IDs from another version can fail after
+compaction unless stable row ids are enabled. Results keep input order and
+duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+
+#### Parameters
+
+* **column**: `string`
+
+* **rowIds**: readonly (`number` \| `bigint`)[]
+
+#### Returns
+
+`Promise`&lt;(`null` \| `Buffer`)[]&gt;
 
 ***
 
