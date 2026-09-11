@@ -228,6 +228,20 @@ class FunctionOutput(_OpenRemoteValue):
     fields: tuple[FunctionResultField, ...] = ()
 
 
+class SecretBinding(_RemoteValue):
+    """How a Secret reaches the Function that binds it.
+
+    One list rather than a field per delivery mode: a binding is the concept,
+    and how it arrives is a property of one. ``kind`` is open, so a binding a
+    newer service introduces decodes here instead of failing the whole
+    FunctionVersion.
+    """
+
+    kind: str
+    variable: Optional[str] = None
+    secret_ref: Optional[str] = None
+
+
 class FunctionSignature(_RemoteValue):
     inputs: tuple[FunctionParameter, ...]
     output: FunctionOutput
@@ -327,7 +341,7 @@ class FunctionVersion(_RemoteValue):
     version: _ObjectVersion
     image: FunctionImage
     signature: FunctionSignature
-    secret_env_bindings: Mapping[str, str] = {}
+    secret_bindings: tuple[SecretBinding, ...] = ()
     created_at: str
     metadata: Mapping[str, str]
     disabled: bool
@@ -400,7 +414,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     """Stable remote registration envelope produced by :func:`udf`.
 
     Credential values deliberately have no field here. The only secret-shaped
-    thing a client sends is ``secret_env_bindings``: the name of a Secret the
+    thing a client sends is ``secret_bindings``: the name of a Secret the
     database already holds, which the remote service resolves at execution.
     """
 
@@ -408,7 +422,7 @@ class FunctionRegistrationRequest(_RemoteValue):
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
-    secret_env_bindings: Mapping[str, str] = {}
+    secret_bindings: tuple[SecretBinding, ...] = ()
 
 
 class FunctionVersionRef(_OpenRemoteValue):
@@ -1350,8 +1364,22 @@ class UdfDefinition:
             )
         if not bindings:
             return self._request
-        resolved = {binding.env_variable: binding.secret for binding in bindings}
-        return self._request._copy(update={"secret_env_bindings": resolved})
+        # Sorted, because the list is carried in the FunctionVersion hash and a
+        # caller's argument order is not part of what a Function is.
+        resolved = tuple(
+            sorted(
+                (
+                    SecretBinding(
+                        kind="env",
+                        variable=binding.env_variable,
+                        secret_ref=binding.secret_name,
+                    )
+                    for binding in bindings
+                ),
+                key=lambda binding: (binding.kind, binding.variable or ""),
+            )
+        )
+        return self._request._copy(update={"secret_bindings": resolved})
 
     def __call__(self, *args, **kwargs):
         return self._function(*args, **kwargs)

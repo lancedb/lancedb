@@ -773,7 +773,9 @@ class DBConnection(EnforceOverrides):
         db.create_function(
             analyze_caption,
             secrets=[
-                EnvVarSecret(secret="openai-prod", env_variable="OPENAI_API_KEY")
+                EnvVarSecret(
+                    secret_name="openai-prod", env_variable="OPENAI_API_KEY"
+                )
             ],
         )
         ```
