@@ -195,6 +195,7 @@ pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod rerankers;
+pub mod secrets;
 pub mod sql;
 pub mod table;
 #[cfg(test)]

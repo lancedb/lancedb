@@ -28,6 +28,7 @@ use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
 use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
+use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 
 use super::client::{
@@ -352,6 +353,24 @@ impl RemoteDatabase {
 }
 
 impl<S: HttpSend> RemoteDatabase<S> {
+    /// Post a request whose body carries a credential.
+    ///
+    /// Shared by the create and alter verbs, which declare their own request
+    /// types: the two mean different things to the service and are free to
+    /// diverge, so what they share is the posting and not the shape.
+    ///
+    /// The value is a request field and never a path segment or query
+    /// parameter, which keeps it out of access logs and proxy traces.
+    async fn post_secret_write<T: serde::Serialize>(&self, route: &str, body: &T) -> Result<()> {
+        let req = self.client.post(route).json(body);
+        // This call is what says the body is a credential. Nothing downstream
+        // can tell from the bytes, and a route list in the transport would have
+        // to be kept in step with endpoints declared here.
+        let (request_id, response) = self.client.send_suppressing_body(req).await?;
+        self.client.check_response(&request_id, response).await?;
+        Ok(())
+    }
+
     async fn submit_drop_table(
         &self,
         name: &str,
@@ -570,6 +589,49 @@ struct RemoteDropFunctionResponse {
     dropped: bool,
 }
 
+/// Create a Secret under a name the database does not yet hold.
+///
+/// Declared separately from the alter request although the two are identical
+/// today: they are different operations to the service -- one refuses an
+/// existing name, the other requires it -- and either may grow a field the
+/// other has no meaning for.
+#[derive(serde::Serialize)]
+struct RemoteCreateSecretRequest<'a> {
+    name: &'a str,
+    value: &'a str,
+}
+
+/// Replace the credential behind a Secret the database already holds.
+#[derive(serde::Serialize)]
+struct RemoteAlterSecretRequest<'a> {
+    name: &'a str,
+    value: &'a str,
+}
+
+/// One page of a Secret listing. A struct rather than an inline object so the
+/// request and the response are declared the same way -- a reader of one finds
+/// the other.
+#[derive(serde::Serialize)]
+struct RemoteListSecretsRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListSecretsResponse {
+    #[serde(default)]
+    secrets: Vec<RemoteListedSecret>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
+/// An object rather than a bare name so a later listing can carry a Secret's
+/// type or last-updated time without breaking this one.
+#[derive(serde::Deserialize)]
+struct RemoteListedSecret {
+    name: String,
+}
+
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -669,6 +731,73 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let response = self.client.check_response(&request_id, response).await?;
         let response: RemoteDropFunctionResponse = response.json().await.err_to_http(request_id)?;
         Ok(response.dropped)
+    }
+
+    async fn create_secret(&self, name: &str, value: &str) -> Result<()> {
+        self.post_secret_write(
+            "/v1/secrets/create",
+            &RemoteCreateSecretRequest { name, value },
+        )
+        .await
+    }
+
+    async fn alter_secret(&self, name: &str, value: &str) -> Result<()> {
+        self.post_secret_write(
+            "/v1/secrets/alter",
+            &RemoteAlterSecretRequest { name, value },
+        )
+        .await
+    }
+
+    async fn list_secrets(&self) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let body = RemoteListSecretsRequest {
+                page_token: page_token.clone(),
+            };
+            let req = self.client.post("/v1/secrets/list").json(&body);
+            let (request_id, response) = self.client.send(req).await?;
+            let response = self.client.check_response(&request_id, response).await?;
+            let status = response.status();
+            let response: RemoteListSecretsResponse =
+                response.json().await.err_to_http(request_id.clone())?;
+            names.extend(response.secrets.into_iter().map(|secret| secret.name));
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(Error::Http {
+                    source: "Secret listing response repeated a page_token".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(names)
+    }
+
+    async fn drop_secret(&self, name: &str) -> Result<()> {
+        let req = self
+            .client
+            .post("/v1/secrets/drop")
+            .json(&serde_json::json!({ "name": name }));
+        let (request_id, response) = self.client.send(req).await?;
+        self.client.check_response(&request_id, response).await?;
+        Ok(())
+    }
+
+    async fn describe_secret(&self, name: &str) -> Result<SecretInfo> {
+        let req = self
+            .client
+            .post("/v1/secrets/describe")
+            .json(&serde_json::json!({ "name": name }));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
     }
 
     async fn open_job(&self, job_id: &str) -> Result<Job> {
@@ -2779,6 +2908,82 @@ mod tests {
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 0);
         assert_eq!(batches[0].schema(), schema);
+    }
+
+    #[tokio::test]
+    async fn test_create_and_alter_secret_send_the_value_in_the_request_body() {
+        for (route, call) in [("/v1/secrets/create", true), ("/v1/secrets/alter", false)] {
+            let conn = Connection::new_with_handler(move |request| {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                assert_eq!(request.url().path(), route);
+                // Never a path segment or query parameter, which is what keeps
+                // it out of access logs and proxy traces.
+                assert!(request.url().query().is_none(), "{:?}", request.url());
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["name"], "openai-prod");
+                assert_eq!(body["value"], "sk-live-0001");
+                http::Response::builder().status(200).body("{}").unwrap()
+            });
+            if call {
+                conn.create_secret("openai-prod", "sk-live-0001")
+                    .await
+                    .unwrap();
+            } else {
+                conn.alter_secret("openai-prod", "sk-live-0001")
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_secrets_walks_pages_and_returns_names_only() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/secrets/list");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let page = body.get("page_token").and_then(|token| token.as_str());
+            let body = match page {
+                None => r#"{"secrets":[{"name":"openai-prod"}],"page_token":"p2"}"#,
+                Some("p2") => r#"{"secrets":[{"name":"hf-prod"}]}"#,
+                Some(other) => panic!("unexpected page token: {other}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        assert_eq!(
+            conn.list_secrets().await.unwrap(),
+            vec!["openai-prod".to_string(), "hf-prod".to_string()]
+        );
+    }
+
+    /// A server that keeps handing back the same token would otherwise spin
+    /// forever.
+    #[tokio::test]
+    async fn test_list_secrets_rejects_a_repeated_page_token() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"secrets":[{"name":"openai-prod"}],"page_token":"same"}"#)
+                .unwrap()
+        });
+        let error = conn.list_secrets().await.unwrap_err();
+        assert!(
+            error.to_string().contains("repeated a page_token"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_secret_posts_the_name_alone() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/secrets/drop");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body, serde_json::json!({"name": "openai-prod"}));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_secret("openai-prod").await.unwrap();
     }
 
     #[tokio::test]

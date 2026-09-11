@@ -5,7 +5,7 @@
 //! backend-neutral terminal result of a computed-column refresh.
 //!
 //! This module contains client/wire values only. Catalog persistence,
-//! environment bake, and execution are owned by Sophon.
+//! environment bake, secret resolution, and execution are owned by Sophon.
 
 use std::collections::BTreeMap;
 
@@ -409,6 +409,8 @@ pub struct FunctionVersion {
     runtime: PythonRuntimeSpec,
     runtime_digest: String,
     environment_digest: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    secret_bindings: Vec<SecretBinding>,
     created_at: String,
 }
 
@@ -439,6 +441,16 @@ impl FunctionVersion {
 
     pub fn environment_digest(&self) -> &str {
         &self.environment_digest
+    }
+
+    /// Declared environment variable name to the Secret each one resolves.
+    ///
+    /// Bindings are part of this version's identity; the credentials behind
+    /// them are not, and resolve at execution. Rotating a bound Secret
+    /// therefore changes what the same version runs with, and no value has a
+    /// field in this model.
+    pub fn secret_bindings(&self) -> &[SecretBinding] {
+        &self.secret_bindings
     }
 
     pub fn created_at(&self) -> &str {
@@ -481,13 +493,133 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
+/// How a Secret reaches the Function that binds it.
+///
+/// One list rather than a field per delivery mode: a binding is the concept,
+/// and how it arrives is a property of one. A mode added later is a variant
+/// here, and the rules that are per-Function -- how many Secrets a Function may
+/// bind, which ones it needs -- stay answerable from one place.
+///
+/// Unknown kinds decode rather than failing the whole FunctionVersion, as
+/// [`PythonRuntimeSpec`] does for runtimes. The payload is intentionally not
+/// retained: the client does not proxy catalog values.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum SecretBinding {
+    /// Delivered as an environment variable, which the UDF's library already
+    /// reads. The variable is the delivery target; the Secret is what fills it.
+    Env {
+        variable: String,
+        /// Named `secret_ref` rather than `secret` because a Job payload is
+        /// scanned server-side for credential-shaped keys, and a key called
+        /// `secret` trips that guard whatever it actually holds.
+        secret_ref: String,
+    },
+    /// A binding kind introduced by a newer server.
+    Unrecognized { kind: String },
+}
+
+impl SecretBinding {
+    /// The wire discriminator reported by Sophon.
+    pub fn kind(&self) -> &str {
+        match self {
+            Self::Env { .. } => "env",
+            Self::Unrecognized { kind } => kind,
+        }
+    }
+
+    /// The environment variable this binding fills, or `None` for a kind that
+    /// does not deliver through one.
+    pub fn variable(&self) -> Option<&str> {
+        match self {
+            Self::Env { variable, .. } => Some(variable),
+            Self::Unrecognized { .. } => None,
+        }
+    }
+
+    /// The Secret bound, or `None` for a kind this client cannot read.
+    pub fn secret(&self) -> Option<&str> {
+        match self {
+            Self::Env { secret_ref, .. } => Some(secret_ref),
+            Self::Unrecognized { .. } => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct EnvSecretBindingWire {
+    variable: String,
+    secret_ref: String,
+}
+
+impl<'de> Deserialize<'de> for SecretBinding {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let kind = value
+            .get("kind")
+            .ok_or_else(|| de::Error::missing_field("kind"))?
+            .as_str()
+            .ok_or_else(|| de::Error::custom("secret binding kind must be a string"))?
+            .to_string();
+        match kind.as_str() {
+            "env" => {
+                let wire: EnvSecretBindingWire =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                Ok(Self::Env {
+                    variable: wire.variable,
+                    secret_ref: wire.secret_ref,
+                })
+            }
+            _ => Ok(Self::Unrecognized { kind }),
+        }
+    }
+}
+
+impl Serialize for SecretBinding {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct EnvBindingRef<'a> {
+            kind: &'static str,
+            variable: &'a str,
+            secret_ref: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct UnrecognizedBindingRef<'a> {
+            kind: &'a str,
+        }
+
+        match self {
+            Self::Env {
+                variable,
+                secret_ref,
+            } => EnvBindingRef {
+                kind: "env",
+                variable,
+                secret_ref,
+            }
+            .serialize(serializer),
+            Self::Unrecognized { kind } => UnrecognizedBindingRef { kind }.serialize(serializer),
+        }
+    }
+}
+
 /// Stable request envelope for remote immutable Function registration.
+///
+/// Credential values deliberately have no field here. The only secret-shaped
+/// thing a client sends is `secret_bindings`: the name of a Secret the
+/// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
     pub name: String,
     pub artifact: FunctionArtifactRequest,
     pub signature: FunctionSignature,
     pub runtime: PythonRuntimeSpec,
+    /// Declared environment variable name to the Secret it binds. A binding is
+    /// a reference: whether the Secret exists is answered when a column is
+    /// declared against this version, not here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_bindings: Vec<SecretBinding>,
 }
 
 impl_json!(FunctionRegistrationRequest);
@@ -747,5 +879,82 @@ mod conda_environment_tests {
                 r#"{"kind":"python_v3"}"#
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Canonical form is what the FunctionVersion hash is taken over, so key
+    /// order must come from the keys and not from however serde happened to
+    /// emit them. Nesting is included because the sort is recursive.
+    #[test]
+    fn canonical_json_sorts_keys_at_every_depth() {
+        let value = serde_json::json!({
+            "runtime": {"kind": "python", "env": {"B": "2", "A": "1"}},
+            "artifact": {"digest": "sha256:x"},
+            "name": "embed",
+        });
+        let mut out = String::new();
+        write_canonical_json(&value, &mut out).expect("canonical JSON");
+
+        assert_eq!(
+            out,
+            r#"{"artifact":{"digest":"sha256:x"},"name":"embed","runtime":{"env":{"A":"1","B":"2"},"kind":"python"}}"#
+        );
+    }
+
+    /// Arrays are ordered by the caller, so canonicalization must leave them
+    /// alone -- sorting them would change what a signature means.
+    #[test]
+    fn canonical_json_preserves_array_order() {
+        let value = serde_json::json!({"inputs": ["b", "a", "c"]});
+        let mut out = String::new();
+        write_canonical_json(&value, &mut out).expect("canonical JSON");
+
+        assert_eq!(out, r#"{"inputs":["b","a","c"]}"#);
+    }
+
+    /// A float has no single canonical spelling, so two clients could hash the
+    /// same literal differently. Rejected at any depth rather than rounded.
+    #[test]
+    fn validate_literal_rejects_floats_at_any_depth() {
+        for value in [
+            serde_json::json!(1.5),
+            serde_json::json!([1, [2, 3.5]]),
+            serde_json::json!({"a": {"b": 0.25}}),
+        ] {
+            let error = validate_literal(&value).expect_err("floats are not canonical");
+            assert!(
+                error.to_string().contains("floating-point"),
+                "unexpected error: {error}"
+            );
+        }
+
+        for value in [
+            serde_json::json!(1),
+            serde_json::json!("1.5"),
+            serde_json::json!([1, {"a": true}]),
+            serde_json::json!(null),
+        ] {
+            validate_literal(&value).expect("non-float literals are canonical");
+        }
+    }
+
+    /// Unknown keys are how a newer server's payload reaches an older client,
+    /// so the check has to be exact about which level it is looking at.
+    #[test]
+    fn has_unknown_keys_only_inspects_the_level_it_is_given() {
+        let value = serde_json::json!({"name": "embed", "version": "fv_1"});
+        assert!(!has_unknown_keys(&value, &["name", "version"]));
+        assert!(has_unknown_keys(&value, &["name"]));
+
+        // A nested unknown is not this level's business.
+        let nested = serde_json::json!({"name": {"unexpected": 1}});
+        assert!(!has_unknown_keys(&nested, &["name"]));
+
+        // A non-object has no keys to be unknown.
+        assert!(!has_unknown_keys(&serde_json::json!("embed"), &["name"]));
     }
 }

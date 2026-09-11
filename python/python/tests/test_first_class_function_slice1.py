@@ -13,6 +13,7 @@ from lancedb.functions import (
     FunctionBinding,
     FunctionVersion,
     PythonRuntimeSpec,
+    SecretBinding,
     RefreshColumnResult,
 )
 from lancedb.table import AsyncTable
@@ -35,6 +36,22 @@ def fixture(name: str) -> str:
 
 def job_result(name: str) -> dict:
     return json.loads(fixture(name))["result"]
+
+
+def assert_no_secret_values(value):
+    """No client value models a resolved credential, at any nesting depth."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            assert key not in {
+                "secret_value",
+                "secret_values",
+                "resolved_secret",
+                "resolved_secrets",
+            }
+            assert_no_secret_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            assert_no_secret_values(child)
 
 
 def test_public_function_values_are_in_api_reference():
@@ -94,6 +111,9 @@ def test_function_version_identity_is_immutable_and_exact():
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.name == "embed"
     assert version.version == "fv_01K3EXACT"
+    assert list(version.secret_bindings) == [
+        SecretBinding(kind="env", variable="HF_TOKEN", secret_ref="hf-prod")
+    ]
 
     with pytest.raises((TypeError, ValueError)):
         version.version = "fv_changed"
@@ -274,6 +294,27 @@ def test_refresh_result_rejects_non_u64_values(field):
     value[field] = "1"
     with pytest.raises(ValueError):
         RefreshColumnResult.from_json(json.dumps(value))
+
+
+def test_canonical_client_values_carry_bindings_and_no_credentials():
+    """A binding names a Secret; the credential behind it has no client field."""
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+    canonical = json.loads(version.to_canonical_json())
+    assert canonical["secret_bindings"] == [
+        {"kind": "env", "variable": "HF_TOKEN", "secret_ref": "hf-prod"}
+    ]
+    assert_no_secret_values(canonical)
+
+
+def test_a_version_without_bindings_keeps_the_original_wire_shape():
+    """Every Function registered before Secrets existed serializes unchanged."""
+    value = job_result("remote_function_job.json")
+    del value["secret_bindings"]
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert list(version.secret_bindings) == []
+    assert "secret_bindings" not in json.loads(version.to_canonical_json())
 
 
 class _FunctionDeclarationInner:
