@@ -2444,8 +2444,13 @@ class AsyncConnection(object):
 
     async def describe_secret(self, name: str) -> SecretInfo:
         """What this database records about a Secret. Never the value."""
-        return SecretInfo.from_json(
-            await self._inner.describe_secret(validate_secret_name(name))
+        name, created_at_millis, updated_at_millis = await self._inner.describe_secret(
+            validate_secret_name(name)
+        )
+        return SecretInfo(
+            name=name,
+            created_at_millis=created_at_millis,
+            updated_at_millis=updated_at_millis,
         )
 
     async def list_jobs(self) -> List[JobInfo]:

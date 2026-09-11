@@ -740,17 +740,14 @@ impl Connection {
         })
     }
 
-    /// Name and timestamps as a plain mapping. `SecretInfo` carries no value,
-    /// so there is none to filter out here.
+    /// Name and timestamps as a plain tuple. `SecretInfo` carries no value, so
+    /// there is none to filter out here. Timestamps stay integers rather than
+    /// going through a string, so the caller can compare two without parsing.
     pub fn describe_secret(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let info = inner.describe_secret(name).await.infer_error()?;
-            Ok(HashMap::from([
-                ("name".to_string(), info.name),
-                ("created_at".to_string(), info.created_at),
-                ("updated_at".to_string(), info.updated_at),
-            ]))
+            Ok((info.name, info.created_at_millis, info.updated_at_millis))
         })
     }
 

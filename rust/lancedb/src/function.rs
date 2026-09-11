@@ -770,3 +770,80 @@ mod conda_environment_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Canonical form is what the FunctionVersion hash is taken over, so key
+    /// order must come from the keys and not from however serde happened to
+    /// emit them. Nesting is included because the sort is recursive.
+    #[test]
+    fn canonical_json_sorts_keys_at_every_depth() {
+        let value = serde_json::json!({
+            "runtime": {"kind": "python", "env": {"B": "2", "A": "1"}},
+            "artifact": {"digest": "sha256:x"},
+            "name": "embed",
+        });
+        let mut out = String::new();
+        write_canonical_json(&value, &mut out).expect("canonical JSON");
+
+        assert_eq!(
+            out,
+            r#"{"artifact":{"digest":"sha256:x"},"name":"embed","runtime":{"env":{"A":"1","B":"2"},"kind":"python"}}"#
+        );
+    }
+
+    /// Arrays are ordered by the caller, so canonicalization must leave them
+    /// alone -- sorting them would change what a signature means.
+    #[test]
+    fn canonical_json_preserves_array_order() {
+        let value = serde_json::json!({"inputs": ["b", "a", "c"]});
+        let mut out = String::new();
+        write_canonical_json(&value, &mut out).expect("canonical JSON");
+
+        assert_eq!(out, r#"{"inputs":["b","a","c"]}"#);
+    }
+
+    /// A float has no single canonical spelling, so two clients could hash the
+    /// same literal differently. Rejected at any depth rather than rounded.
+    #[test]
+    fn validate_literal_rejects_floats_at_any_depth() {
+        for value in [
+            serde_json::json!(1.5),
+            serde_json::json!([1, [2, 3.5]]),
+            serde_json::json!({"a": {"b": 0.25}}),
+        ] {
+            let error = validate_literal(&value).expect_err("floats are not canonical");
+            assert!(
+                error.to_string().contains("floating-point"),
+                "unexpected error: {error}"
+            );
+        }
+
+        for value in [
+            serde_json::json!(1),
+            serde_json::json!("1.5"),
+            serde_json::json!([1, {"a": true}]),
+            serde_json::json!(null),
+        ] {
+            validate_literal(&value).expect("non-float literals are canonical");
+        }
+    }
+
+    /// Unknown keys are how a newer server's payload reaches an older client,
+    /// so the check has to be exact about which level it is looking at.
+    #[test]
+    fn has_unknown_keys_only_inspects_the_level_it_is_given() {
+        let value = serde_json::json!({"name": "embed", "version": "fv_1"});
+        assert!(!has_unknown_keys(&value, &["name", "version"]));
+        assert!(has_unknown_keys(&value, &["name"]));
+
+        // A nested unknown is not this level's business.
+        let nested = serde_json::json!({"name": {"unexpected": 1}});
+        assert!(!has_unknown_keys(&nested, &["name"]));
+
+        // A non-object has no keys to be unknown.
+        assert!(!has_unknown_keys(&serde_json::json!("embed"), &["name"]));
+    }
+}

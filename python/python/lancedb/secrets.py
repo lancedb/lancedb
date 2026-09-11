@@ -116,12 +116,12 @@ class SecretInfo:
     [DBConnection.describe_secret][lancedb.db.DBConnection.describe_secret].
     """
 
-    __slots__ = ("_name", "_created_at", "_updated_at")
+    __slots__ = ("_name", "_created_at_millis", "_updated_at_millis")
 
-    def __init__(self, name: str, created_at: str, updated_at: str):
+    def __init__(self, name: str, created_at_millis: int, updated_at_millis: int):
         self._name = name
-        self._created_at = created_at
-        self._updated_at = updated_at
+        self._created_at_millis = created_at_millis
+        self._updated_at_millis = updated_at_millis
 
     @property
     def name(self) -> str:
@@ -129,35 +129,40 @@ class SecretInfo:
         return self._name
 
     @property
-    def created_at(self) -> str:
-        """When the Secret was created, as an RFC 3339 timestamp."""
-        return self._created_at
+    def created_at_millis(self) -> int:
+        """When the Secret was created, in milliseconds since the Unix epoch."""
+        return self._created_at_millis
 
     @property
-    def updated_at(self) -> str:
-        """When the Secret's value was last rotated, as an RFC 3339 timestamp."""
-        return self._updated_at
+    def updated_at_millis(self) -> int:
+        """When the Secret's value was last rotated, in epoch milliseconds.
+
+        The only observable that a rotation landed: no API returns a credential,
+        so a caller confirms ``alter_secret`` took effect by watching this move.
+        """
+        return self._updated_at_millis
 
     @classmethod
     def from_json(cls, value: dict) -> "SecretInfo":
         return cls(
             name=value["name"],
-            created_at=value["created_at"],
-            updated_at=value["updated_at"],
+            created_at_millis=value["created_at_millis"],
+            updated_at_millis=value["updated_at_millis"],
         )
 
     def __repr__(self) -> str:
         return (
-            f"SecretInfo(name={self._name!r}, created_at={self._created_at!r}, "
-            f"updated_at={self._updated_at!r})"
+            f"SecretInfo(name={self._name!r}, "
+            f"created_at_millis={self._created_at_millis!r}, "
+            f"updated_at_millis={self._updated_at_millis!r})"
         )
 
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, SecretInfo)
             and other._name == self._name
-            and other._created_at == self._created_at
-            and other._updated_at == self._updated_at
+            and other._created_at_millis == self._created_at_millis
+            and other._updated_at_millis == self._updated_at_millis
         )
 
 

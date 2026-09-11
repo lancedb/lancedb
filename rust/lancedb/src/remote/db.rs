@@ -588,6 +588,15 @@ struct RemoteDropFunctionResponse {
     dropped: bool,
 }
 
+/// One page of a Secret listing. A struct rather than an inline object so the
+/// request and the response are declared the same way -- a reader of one finds
+/// the other.
+#[derive(serde::Serialize)]
+struct RemoteListSecretsRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_token: Option<String>,
+}
+
 #[derive(serde::Deserialize)]
 struct RemoteListSecretsResponse {
     #[serde(default)]
@@ -717,10 +726,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let mut page_token: Option<String> = None;
         let mut seen_page_tokens = HashSet::new();
         loop {
-            let mut body = serde_json::json!({});
-            if let Some(token) = &page_token {
-                body["page_token"] = serde_json::Value::String(token.clone());
-            }
+            let body = RemoteListSecretsRequest {
+                page_token: page_token.clone(),
+            };
             let req = self.client.post("/v1/secrets/list").json(&body);
             let (request_id, response) = self.client.send(req).await?;
             let response = self.client.check_response(&request_id, response).await?;
