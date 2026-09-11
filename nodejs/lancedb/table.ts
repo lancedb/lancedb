@@ -542,10 +542,10 @@ export abstract class Table {
    * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
    * large table as on an empty one.
    *
-   * A refresh does not revisit rows it has already filled, so mutating an
-   * input leaves the value computed at fill time; recomputing means dropping
-   * the column and declaring it again. While a declaration reads a column,
-   * that column cannot be renamed, retyped or dropped.
+   * A refresh also recomputes the rows whose inputs changed since they were
+   * computed, so a mutated input is reflected by the next refresh. While a
+   * declaration reads a column, that column cannot be renamed, retyped or
+   * dropped.
    *
    * On LanceDB Cloud and Enterprise the expression is planned by the
    * server, and the refresh runs as a server job -- see
@@ -576,10 +576,10 @@ export abstract class Table {
   /**
    * Fill the rows of a computed column that hold no value yet.
    *
-   * Rows appended since the last refresh are filled by the next one; rows
-   * already filled are left as they are, so the call is idempotent and does
-   * not observe a mutated input. Local tables only: a remote refresh runs
-   * as a server job, through {@link Table#refreshColumnAsync}.
+   * Rows appended since the last refresh are filled by the next one, and
+   * rows whose inputs changed since they were computed are recomputed;
+   * everything else is left as it is. Local tables only: a remote refresh
+   * runs as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.

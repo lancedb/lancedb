@@ -4183,13 +4183,14 @@ def test_refresh_column_async_returns_job(tmp_path):
     assert result.rows_failed == 0
     assert result.rows_remaining == 0
     assert result.source_version == 2
-    assert result.published_version == 3
+    # The fill lands at 3; the stamp recording its inputs is published at 4.
+    assert result.published_version == 4
     assert job.status() == "finished"
     assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
 
     no_op = table.refresh_column_async("doubled").wait()
     assert no_op.rows_assigned == 0
-    assert no_op.source_version == 3
+    assert no_op.source_version == 4
     assert no_op.published_version is None
 
     # Bad input raises at the call, not through the job.
@@ -4208,6 +4209,6 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     assert isinstance(result, lancedb.RefreshColumnResult)
     assert result.rows_assigned == 1
     assert result.source_version == 2
-    assert result.published_version == 3
+    assert result.published_version == 4
     assert await job.status() == "finished"
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
