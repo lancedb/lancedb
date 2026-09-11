@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use http::StatusCode;
 use lance_io::object_store::StorageOptions;
@@ -19,6 +20,7 @@ use lance_namespace::models::{
 };
 
 use crate::Error;
+use crate::data::scannable::Scannable;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, JobInfo,
     OpenTableRequest, ReadConsistency, TableNamesRequest,
@@ -28,7 +30,7 @@ use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
 use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
-use crate::table::BaseTable;
+use crate::table::{AddDataBuilder, BaseTable};
 
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
@@ -838,7 +840,19 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let body = stream_as_body(request.data.scan_as_stream())?;
+        // The create endpoint limits the size of the complete request even though
+        // its body is streamed. Sources without a row-count hint (notably Python
+        // generators / RecordBatchReader) can therefore exceed that limit after
+        // many individually small batches. Create the schema first and feed the
+        // unknown-length source through the multipart insert path instead.
+        let stage_initial_data = request.data.num_rows().is_none();
+        let schema = request.data.schema();
+        let body = if stage_initial_data {
+            let mut empty = RecordBatch::new_empty(schema.clone());
+            stream_as_body(empty.scan_as_stream())?
+        } else {
+            stream_as_body(request.data.scan_as_stream())?
+        };
 
         let identifier = build_table_identifier(
             &request.name,
@@ -909,6 +923,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             table_identifier,
             version,
         ));
+        table.seed_schema_ref(schema);
+
+        if stage_initial_data {
+            let base_table: Arc<dyn BaseTable> = table.clone();
+            AddDataBuilder::new(base_table, request.data, None)
+                .write_options(request.write_options)
+                .execute()
+                .await?;
+        }
+
         self.table_cache.insert(cache_key, table.clone()).await;
 
         Ok(table)
@@ -1266,7 +1290,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
 
-    use arrow_array::{Int32Array, RecordBatch};
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
     use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
 
@@ -1625,6 +1649,88 @@ mod tests {
         .unwrap();
         let table = conn.create_table("table1", data).execute().await.unwrap();
         assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_create_table_streaming_reader_uses_multipart_insert() {
+        let create_count = Arc::new(AtomicUsize::new(0));
+        let multipart_create_count = Arc::new(AtomicUsize::new(0));
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let complete_count = Arc::new(AtomicUsize::new(0));
+
+        let create_count_c = create_count.clone();
+        let multipart_create_count_c = multipart_create_count.clone();
+        let insert_count_c = insert_count.clone();
+        let complete_count_c = complete_count.clone();
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                let path = request.url().path();
+                let query = request.url().query().unwrap_or("");
+                match path {
+                    "/v1/table/table1/create/" => {
+                        create_count_c.fetch_add(1, Ordering::SeqCst);
+                        http::Response::builder()
+                            .status(200)
+                            .header("phalanx-version", "0.4.0")
+                            .body(String::new())
+                            .unwrap()
+                    }
+                    "/v1/table/table1/multipart_write/create" => {
+                        multipart_create_count_c.fetch_add(1, Ordering::SeqCst);
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"upload_id":"streaming-create"}"#.to_string())
+                            .unwrap()
+                    }
+                    "/v1/table/table1/insert/" => {
+                        assert!(query.contains("upload_id=streaming-create"));
+                        assert!(query.contains("upload_part_id="));
+                        insert_count_c.fetch_add(1, Ordering::SeqCst);
+                        http::Response::builder()
+                            .status(200)
+                            .body(String::new())
+                            .unwrap()
+                    }
+                    "/v1/table/table1/multipart_write/complete" => {
+                        assert!(query.contains("upload_id=streaming-create"));
+                        complete_count_c.fetch_add(1, Ordering::SeqCst);
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version":2}"#.to_string())
+                            .unwrap()
+                    }
+                    path => panic!("unexpected path: {path}"),
+                }
+            },
+            ClientConfig {
+                max_bytes_per_request: Some(1),
+                ..Default::default()
+            },
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batches = vec![
+            Ok(RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap()),
+            Ok(RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![4, 5, 6]))],
+            )
+            .unwrap()),
+        ];
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(batches, schema));
+
+        let table = conn.create_table("table1", reader).execute().await.unwrap();
+
+        assert_eq!(table.name(), "table1");
+        assert_eq!(create_count.load(Ordering::SeqCst), 1);
+        assert_eq!(multipart_create_count.load(Ordering::SeqCst), 1);
+        assert!(insert_count.load(Ordering::SeqCst) >= 1);
+        assert_eq!(complete_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
