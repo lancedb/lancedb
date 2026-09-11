@@ -780,6 +780,17 @@ impl Table {
         })
     }
 
+    pub fn to_dataframe(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .to_df()
+                .await
+                .map(crate::dataframe::NativeDataFrame::new)
+                .infer_error()
+        })
+    }
+
     #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,

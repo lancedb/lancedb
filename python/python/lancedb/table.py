@@ -56,6 +56,7 @@ import pyarrow.fs as pa_fs
 import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .dataframe import AsyncDataFrame, DataFrame
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .index import (
     BTree,
@@ -969,6 +970,14 @@ class Table(ABC):
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
         of this Table
 
+        """
+        raise NotImplementedError
+
+    def to_df(self) -> DataFrame:
+        """Create a lazy DataFrame that scans this table.
+
+        On remote connections, execution uses the SQL service and does not inherit
+        this handle's read-consistency interval or read-your-write freshness fence.
         """
         raise NotImplementedError
 
@@ -2655,6 +2664,14 @@ class LanceTable(Table):
         pa.Schema
             A PyArrow schema object."""
         return LOOP.run(self._table.schema())
+
+    def to_df(self) -> DataFrame:
+        """Create a lazy DataFrame that scans this table.
+
+        On remote connections, execution uses the SQL service and does not inherit
+        this handle's read-consistency interval or read-your-write freshness fence.
+        """
+        return DataFrame(LOOP.run(self._table.to_df())._inner)
 
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
@@ -5183,6 +5200,14 @@ class AsyncTable:
 
         """
         return await self._inner.schema()
+
+    async def to_df(self) -> AsyncDataFrame:
+        """Create a lazy DataFrame that scans this table.
+
+        On remote connections, execution uses the SQL service and does not inherit
+        this handle's read-consistency interval or read-your-write freshness fence.
+        """
+        return AsyncDataFrame(await self._inner.to_dataframe())
 
     async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """

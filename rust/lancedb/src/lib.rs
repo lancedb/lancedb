@@ -177,6 +177,7 @@ pub mod blob;
 pub mod connection;
 pub mod data;
 pub mod database;
+pub mod dataframe;
 pub mod dataloader;
 pub mod embeddings;
 pub mod error;

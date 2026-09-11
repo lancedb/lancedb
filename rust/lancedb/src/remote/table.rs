@@ -2062,6 +2062,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let snapshot = self.with_branch(self.branch.clone());
         *snapshot.version.write().await = Some(version);
         *snapshot.location.write().await = location;
+        snapshot.reset_freshness(None, true);
         snapshot.schema_cache.seed(schema);
         Ok(Arc::new(snapshot))
     }
@@ -2080,6 +2081,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let snapshot = self.with_branch(self.branch.clone());
         *snapshot.version.write().await = Some(version);
         *snapshot.location.write().await = location;
+        snapshot.reset_freshness(None, true);
         snapshot.schema_cache.seed(schema);
         Ok(Arc::new(snapshot))
     }
@@ -2499,6 +2501,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     fn current_branch(&self) -> Option<String> {
         self.branch.clone()
+    }
+
+    fn is_time_travel(&self) -> bool {
+        self.freshness.lock().unwrap().pinned
     }
 
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
@@ -9766,6 +9772,10 @@ mod tests {
         });
 
         let snapshot = table.checkout_current().await.unwrap();
+        assert!(matches!(
+            snapshot.to_df().await,
+            Err(Error::NotSupported { .. })
+        ));
         assert_eq!(snapshot.schema().await.unwrap().fields().len(), 1);
         assert_eq!(describe_calls.load(Ordering::SeqCst), 1);
     }

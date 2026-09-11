@@ -48,6 +48,7 @@ datafusion-common = { version = "54.0.0", default-features = false }
 datafusion-execution = "54.0.0"
 datafusion-expr = "54.0.0"
 datafusion-functions = "54.0.0"
+datafusion-functions-aggregate = "54.0.0"
 datafusion-physical-plan = "54.0.0"
 datafusion-physical-expr = "54.0.0"
 datafusion-sql = "54.0.0"
