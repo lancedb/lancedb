@@ -409,8 +409,8 @@ pub struct FunctionVersion {
     runtime: PythonRuntimeSpec,
     runtime_digest: String,
     environment_digest: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    secret_env_bindings: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    secret_bindings: Vec<SecretBinding>,
     created_at: String,
 }
 
@@ -449,8 +449,8 @@ impl FunctionVersion {
     /// them are not, and resolve at execution. Rotating a bound Secret
     /// therefore changes what the same version runs with, and no value has a
     /// field in this model.
-    pub fn secret_env_bindings(&self) -> &BTreeMap<String, String> {
-        &self.secret_env_bindings
+    pub fn secret_bindings(&self) -> &[SecretBinding] {
+        &self.secret_bindings
     }
 
     pub fn created_at(&self) -> &str {
@@ -493,10 +493,121 @@ pub struct FunctionArtifactRequest {
     pub adapter: PythonAdapterSpec,
 }
 
+/// How a Secret reaches the Function that binds it.
+///
+/// One list rather than a field per delivery mode: a binding is the concept,
+/// and how it arrives is a property of one. A mode added later is a variant
+/// here, and the rules that are per-Function -- how many Secrets a Function may
+/// bind, which ones it needs -- stay answerable from one place.
+///
+/// Unknown kinds decode rather than failing the whole FunctionVersion, as
+/// [`PythonRuntimeSpec`] does for runtimes. The payload is intentionally not
+/// retained: the client does not proxy catalog values.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum SecretBinding {
+    /// Delivered as an environment variable, which the UDF's library already
+    /// reads. The variable is the delivery target; the Secret is what fills it.
+    Env {
+        variable: String,
+        /// Named `secret_ref` rather than `secret` because a Job payload is
+        /// scanned server-side for credential-shaped keys, and a key called
+        /// `secret` trips that guard whatever it actually holds.
+        secret_ref: String,
+    },
+    /// A binding kind introduced by a newer server.
+    Unrecognized { kind: String },
+}
+
+impl SecretBinding {
+    /// The wire discriminator reported by Sophon.
+    pub fn kind(&self) -> &str {
+        match self {
+            Self::Env { .. } => "env",
+            Self::Unrecognized { kind } => kind,
+        }
+    }
+
+    /// The environment variable this binding fills, or `None` for a kind that
+    /// does not deliver through one.
+    pub fn variable(&self) -> Option<&str> {
+        match self {
+            Self::Env { variable, .. } => Some(variable),
+            Self::Unrecognized { .. } => None,
+        }
+    }
+
+    /// The Secret bound, or `None` for a kind this client cannot read.
+    pub fn secret(&self) -> Option<&str> {
+        match self {
+            Self::Env { secret_ref, .. } => Some(secret_ref),
+            Self::Unrecognized { .. } => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct EnvSecretBindingWire {
+    variable: String,
+    secret_ref: String,
+}
+
+impl<'de> Deserialize<'de> for SecretBinding {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let kind = value
+            .get("kind")
+            .ok_or_else(|| de::Error::missing_field("kind"))?
+            .as_str()
+            .ok_or_else(|| de::Error::custom("secret binding kind must be a string"))?
+            .to_string();
+        match kind.as_str() {
+            "env" => {
+                let wire: EnvSecretBindingWire =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                Ok(Self::Env {
+                    variable: wire.variable,
+                    secret_ref: wire.secret_ref,
+                })
+            }
+            _ => Ok(Self::Unrecognized { kind }),
+        }
+    }
+}
+
+impl Serialize for SecretBinding {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct EnvBindingRef<'a> {
+            kind: &'static str,
+            variable: &'a str,
+            secret_ref: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct UnrecognizedBindingRef<'a> {
+            kind: &'a str,
+        }
+
+        match self {
+            Self::Env {
+                variable,
+                secret_ref,
+            } => EnvBindingRef {
+                kind: "env",
+                variable,
+                secret_ref,
+            }
+            .serialize(serializer),
+            Self::Unrecognized { kind } => UnrecognizedBindingRef { kind }.serialize(serializer),
+        }
+    }
+}
+
 /// Stable request envelope for remote immutable Function registration.
 ///
 /// Credential values deliberately have no field here. The only secret-shaped
-/// thing a client sends is `secret_env_bindings`: the name of a Secret the
+/// thing a client sends is `secret_bindings`: the name of a Secret the
 /// database already holds, which Sophon resolves inside the remote runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRegistrationRequest {
@@ -507,8 +618,8 @@ pub struct FunctionRegistrationRequest {
     /// Declared environment variable name to the Secret it binds. A binding is
     /// a reference: whether the Secret exists is answered when a column is
     /// declared against this version, not here.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub secret_env_bindings: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_bindings: Vec<SecretBinding>,
 }
 
 impl_json!(FunctionRegistrationRequest);

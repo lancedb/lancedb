@@ -353,15 +353,16 @@ impl RemoteDatabase {
 }
 
 impl<S: HttpSend> RemoteDatabase<S> {
-    /// `create` and `alter` differ only in which name state the server
-    /// requires, so they share one request shape. The value is a request field
-    /// and never a path segment or query parameter, which keeps it out of
-    /// access logs and proxy traces.
-    async fn write_secret(&self, route: &str, name: &str, value: &str) -> Result<()> {
-        let req = self.client.post(route).json(&serde_json::json!({
-            "name": name,
-            "value": value,
-        }));
+    /// Post a request whose body carries a credential.
+    ///
+    /// Shared by the create and alter verbs, which declare their own request
+    /// types: the two mean different things to the service and are free to
+    /// diverge, so what they share is the posting and not the shape.
+    ///
+    /// The value is a request field and never a path segment or query
+    /// parameter, which keeps it out of access logs and proxy traces.
+    async fn post_secret_write<T: serde::Serialize>(&self, route: &str, body: &T) -> Result<()> {
+        let req = self.client.post(route).json(body);
         // This call is what says the body is a credential. Nothing downstream
         // can tell from the bytes, and a route list in the transport would have
         // to be kept in step with endpoints declared here.
@@ -588,6 +589,25 @@ struct RemoteDropFunctionResponse {
     dropped: bool,
 }
 
+/// Create a Secret under a name the database does not yet hold.
+///
+/// Declared separately from the alter request although the two are identical
+/// today: they are different operations to the service -- one refuses an
+/// existing name, the other requires it -- and either may grow a field the
+/// other has no meaning for.
+#[derive(serde::Serialize)]
+struct RemoteCreateSecretRequest<'a> {
+    name: &'a str,
+    value: &'a str,
+}
+
+/// Replace the credential behind a Secret the database already holds.
+#[derive(serde::Serialize)]
+struct RemoteAlterSecretRequest<'a> {
+    name: &'a str,
+    value: &'a str,
+}
+
 /// One page of a Secret listing. A struct rather than an inline object so the
 /// request and the response are declared the same way -- a reader of one finds
 /// the other.
@@ -714,11 +734,19 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_secret(&self, name: &str, value: &str) -> Result<()> {
-        self.write_secret("/v1/secrets/create", name, value).await
+        self.post_secret_write(
+            "/v1/secrets/create",
+            &RemoteCreateSecretRequest { name, value },
+        )
+        .await
     }
 
     async fn alter_secret(&self, name: &str, value: &str) -> Result<()> {
-        self.write_secret("/v1/secrets/alter", name, value).await
+        self.post_secret_write(
+            "/v1/secrets/alter",
+            &RemoteAlterSecretRequest { name, value },
+        )
+        .await
     }
 
     async fn list_secrets(&self) -> Result<Vec<String>> {

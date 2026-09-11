@@ -63,7 +63,7 @@ class EnvVarSecret:
 
     Parameters
     ----------
-    secret : str
+    secret_name : str
         The Secret's database-scoped name.
     env_variable : str
         The environment variable the Function reads it from.
@@ -71,21 +71,23 @@ class EnvVarSecret:
     Examples
     --------
     >>> from lancedb import EnvVarSecret
-    >>> binding = EnvVarSecret(secret="openai-prod", env_variable="OPENAI_API_KEY")
-    >>> binding.secret, binding.env_variable
+    >>> binding = EnvVarSecret(
+    ...     secret_name="openai-prod", env_variable="OPENAI_API_KEY"
+    ... )
+    >>> binding.secret_name, binding.env_variable
     ('openai-prod', 'OPENAI_API_KEY')
     """
 
-    __slots__ = ("_secret", "_env_variable")
+    __slots__ = ("_secret_name", "_env_variable")
 
-    def __init__(self, secret: str, env_variable: str):
-        self._secret = validate_secret_name(secret)
+    def __init__(self, secret_name: str, env_variable: str):
+        self._secret_name = validate_secret_name(secret_name)
         self._env_variable = validate_env_variable(env_variable)
 
     @property
-    def secret(self) -> str:
+    def secret_name(self) -> str:
         """The Secret's database-scoped name."""
-        return self._secret
+        return self._secret_name
 
     @property
     def env_variable(self) -> str:
@@ -94,19 +96,19 @@ class EnvVarSecret:
 
     def __repr__(self) -> str:
         return (
-            f"EnvVarSecret(secret={self._secret!r}, "
+            f"EnvVarSecret(secret_name={self._secret_name!r}, "
             f"env_variable={self._env_variable!r})"
         )
 
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, EnvVarSecret)
-            and other._secret == self._secret
+            and other._secret_name == self._secret_name
             and other._env_variable == self._env_variable
         )
 
     def __hash__(self) -> int:
-        return hash((EnvVarSecret, self._secret, self._env_variable))
+        return hash((EnvVarSecret, self._secret_name, self._env_variable))
 
 
 class SecretInfo:
