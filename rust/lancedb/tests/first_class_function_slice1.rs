@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
 use lancedb::function::{
-    FunctionApplication, FunctionBinding, FunctionVersion, RefreshColumnResult,
+    FunctionApplication, FunctionBinding, FunctionVersion, RefreshColumnResult, SecretBinding,
 };
 use serde_json::Value;
 
@@ -50,8 +49,11 @@ fn function_version_job_result_matches_shared_canonical_golden() {
     assert_eq!(version.version(), "fv_01K3EXACT");
     assert_eq!(version.runtime_digest(), "sha256:runtime");
     assert_eq!(
-        version.secret_env_bindings(),
-        &BTreeMap::from([("HF_TOKEN".to_string(), "hf-prod".to_string())])
+        version.secret_bindings(),
+        [SecretBinding::Env {
+            variable: "HF_TOKEN".to_string(),
+            secret_ref: "hf-prod".to_string(),
+        }]
     );
     assert_eq!(
         version.to_canonical_json().expect("canonical JSON"),
@@ -180,10 +182,44 @@ fn canonical_client_values_carry_bindings_and_no_credentials() {
     .expect("canonical JSON");
 
     assert_eq!(
-        canonical["secret_env_bindings"],
-        serde_json::json!({"HF_TOKEN": "hf-prod"})
+        canonical["secret_bindings"],
+        serde_json::json!([{"kind": "env", "variable": "HF_TOKEN", "secret_ref": "hf-prod"}])
     );
     assert_no_secret_values(&canonical);
+}
+
+/// A binding kind a newer server introduces must not fail the whole version.
+///
+/// This is the cost the union pays for being one field: an unknown variant is
+/// a decode error unless it is caught, so it is caught -- and the payload is
+/// dropped rather than retained, as `PythonRuntimeSpec` does, because the
+/// client does not proxy catalog values.
+#[test]
+fn an_unknown_binding_kind_is_forward_decodable() {
+    let mut result = job_result("remote_function_job.json");
+    result["secret_bindings"] = serde_json::json!([
+        {"kind": "env", "variable": "HF_TOKEN", "secret_ref": "hf-prod"},
+        {"kind": "file", "path": "/run/secrets/tok", "secret_ref": "hf-prod"},
+    ]);
+
+    let version = FunctionVersion::from_json(&result.to_string()).expect("future binding kind");
+
+    let kinds = version
+        .secret_bindings()
+        .iter()
+        .map(|binding| binding.kind())
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, ["env", "file"]);
+    assert_eq!(version.secret_bindings()[1].variable(), None);
+    assert_eq!(version.secret_bindings()[1].secret(), None);
+
+    // The unknown kind round-trips as its discriminator and nothing more.
+    let canonical: Value =
+        serde_json::from_str(&version.to_canonical_json().expect("canonical")).expect("JSON");
+    assert_eq!(
+        canonical["secret_bindings"][1],
+        serde_json::json!({"kind": "file"})
+    );
 }
 
 /// Every Function registered before Secrets existed serializes unchanged.
@@ -193,14 +229,14 @@ fn a_version_without_bindings_keeps_the_original_wire_shape() {
     result
         .as_object_mut()
         .expect("Function version object")
-        .remove("secret_env_bindings");
+        .remove("secret_bindings");
     let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
 
-    assert!(version.secret_env_bindings().is_empty());
+    assert!(version.secret_bindings().is_empty());
     assert!(
         !version
             .to_canonical_json()
             .expect("canonical FunctionVersion")
-            .contains("secret_env_bindings")
+            .contains("secret_bindings")
     );
 }

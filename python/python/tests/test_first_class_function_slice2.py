@@ -24,6 +24,7 @@ import pytest
 import lancedb
 from lancedb.functions import (
     PythonRuntimeSpec,
+    SecretBinding,
     UdfDefinition,
     _canonical_arrow_type,
     _GRAMMAR_PRIMITIVES,
@@ -101,7 +102,7 @@ def test_an_unbound_request_carries_no_binding_at_all():
     whether or not a credential is later bound to it.
     """
     unbound = json.loads(analyze_caption.registration_request.to_canonical_json())
-    assert "secret_env_bindings" not in unbound
+    assert "secret_bindings" not in unbound
     assert "OPENAI_API_KEY" not in json.dumps(unbound)
 
 
@@ -121,7 +122,7 @@ def test_a_function_declaring_no_secret_is_registered_exactly_as_before():
         == normalize_score.registration_request.to_canonical_json()
     )
     assert (
-        "secret_env_bindings"
+        "secret_bindings"
         not in normalize_score.registration_request.to_canonical_json()
     )
 
@@ -166,8 +167,10 @@ def test_a_binding_envelope_reaches_the_service_for_it_to_judge():
         db.create_function(normalize_score, secrets=bindings)
 
     sent = state["requests"][0][1]
-    assert len(sent["secret_env_bindings"]) == 17
-    assert sent["secret_env_bindings"]["TOKEN_0"] == "secret-0"
+    assert len(sent["secret_bindings"]) == 17
+    assert {"kind": "env", "variable": "TOKEN_0", "secret_ref": "secret-0"} in sent[
+        "secret_bindings"
+    ]
 
 
 _SECRET_DEBUG_LOG_SOURCE = """
@@ -1430,7 +1433,7 @@ def _mock_remote_function_catalog():
                     "runtime": body["runtime"],
                     "runtime_digest": "sha256:runtime",
                     "environment_digest": "sha256:environment",
-                    "secret_env_bindings": body.get("secret_env_bindings", {}),
+                    "secret_bindings": body.get("secret_bindings", []),
                     "created_at": "2026-08-21T00:00:00Z",
                 }
                 response = {"job_id": "job-register"}
@@ -1541,10 +1544,14 @@ def test_remote_registration_sends_bindings_and_never_a_credential():
             secrets=[EnvVarSecret(secret="openai-prod", env_variable="OPENAI_API_KEY")],
         )
 
-    assert dict(created.secret_env_bindings) == {"OPENAI_API_KEY": "openai-prod"}
+    assert list(created.secret_bindings) == [
+        SecretBinding(kind="env", variable="OPENAI_API_KEY", secret_ref="openai-prod")
+    ]
     path, create_request = state["requests"][0]
     assert path == "/v1/functions/create"
-    assert create_request["secret_env_bindings"] == {"OPENAI_API_KEY": "openai-prod"}
+    assert create_request["secret_bindings"] == [
+        {"kind": "env", "variable": "OPENAI_API_KEY", "secret_ref": "openai-prod"}
+    ]
     # The request names a Secret and carries nothing that could be one.
     assert create_request == json.loads(
         analyze_caption.bind_secrets(
