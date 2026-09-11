@@ -560,6 +560,9 @@ postfilter(): VectorQuery
 If this is called then filtering will happen after the vector search instead of
 before.
 
+This method is only available for vector search queries. Full-text search
+filters are always applied before the search.
+
 By default filtering will be performed before the vector search.  This is how
 filtering is typically understood to work.  This prefilter step does add some
 additional latency.  Creating a scalar index on the filter column(s) can
@@ -790,7 +793,17 @@ where(predicate): this
 
 A filter statement to be applied to this query.
 
-The filter should be supplied as an SQL query string.  For example:
+Filters are applied before full-text and vector searches by default; no
+separate prefilter call is needed. For vector searches only, use
+[VectorQuery#postfilter](VectorQuery.md#postfilter) to apply the filter after the search.
+
+The filter should be supplied as an SQL query string.
+
+Filtering performance can often be improved by creating a scalar index
+on the filter column(s).
+
+Calling this multiple times combines the filters with a logical AND rather
+than replacing the previous filter.
 
 #### Parameters
 
@@ -800,18 +813,20 @@ The filter should be supplied as an SQL query string.  For example:
 
 `this`
 
-#### Example
+#### Examples
 
 ```ts
-x > 10
-y > 0 AND y < 100
-x > 5 OR y = 'test'
+const results = await table
+  .search("puppy", "fts")
+  .where("meta = 'foo'")
+  .limit(10)
+  .toArray();
+```
 
-Filtering performance can often be improved by creating a scalar index
-on the filter column(s).
-
-Calling this multiple times combines the filters with a logical AND rather
-than replacing the previous filter.
+```ts
+query.where("x > 10");
+query.where("y > 0 AND y < 100");
+query.where("x > 5 OR y = 'test'");
 ```
 
 #### Inherited from
