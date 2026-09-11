@@ -21,13 +21,14 @@ use lance_namespace::models::{
 use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, JobInfo,
-    OpenTableRequest, ReadConsistency, SecretInfo, TableNamesRequest,
+    OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
 use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
+use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 
 use super::client::{

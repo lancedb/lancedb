@@ -24,7 +24,7 @@ use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, ReadConsistency,
-    SecretInfo, TableNamesRequest,
+    TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -36,6 +36,7 @@ use crate::remote::{
         OPT_REMOTE_SQL_HOST_OVERRIDE,
     },
 };
+use crate::secrets::SecretInfo;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
 #[cfg(feature = "remote")]
@@ -587,14 +588,10 @@ impl Connection {
     /// returned typed job yields the durable [`crate::function::FunctionVersion`].
     /// Local databases return [`Error::NotSupported`].
     ///
-    /// The request's binding shape is validated here rather than in any one
-    /// language binding, so every client surface rejects the same envelopes
-    /// before one reaches the wire.
     pub async fn create_function_async(
         &self,
         request: crate::function::FunctionRegistrationRequest,
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
-        request.validate()?;
         self.internal.create_function_async(request).await
     }
 
@@ -657,9 +654,9 @@ impl Connection {
     /// consumer is a Function that binds the Secret by name. Local databases
     /// return [`Error::NotSupported`].
     pub async fn create_secret(&self, name: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
-        let value = value.as_ref();
-        crate::function::validate_secret_value(value)?;
-        self.internal.create_secret(name.as_ref(), value).await
+        self.internal
+            .create_secret(name.as_ref(), value.as_ref())
+            .await
     }
 
     /// Replace the credential behind an existing Secret.
@@ -670,9 +667,9 @@ impl Connection {
     /// version registered before it. Local databases return
     /// [`Error::NotSupported`].
     pub async fn alter_secret(&self, name: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
-        let value = value.as_ref();
-        crate::function::validate_secret_value(value)?;
-        self.internal.alter_secret(name.as_ref(), value).await
+        self.internal
+            .alter_secret(name.as_ref(), value.as_ref())
+            .await
     }
 
     /// The names of every Secret in this database.

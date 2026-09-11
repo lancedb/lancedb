@@ -28,6 +28,7 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::secrets::SecretInfo;
 use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
@@ -258,20 +259,6 @@ fn secret_catalog_not_supported<T>() -> Result<T> {
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
-/// What a database records about a Secret. Never its value.
-///
-/// Returned by [`crate::connection::Connection::describe_secret`]. There is no
-/// field for the credential and no method that could produce one.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct SecretInfo {
-    /// The Secret's database-scoped name.
-    pub name: String,
-    /// When the Secret was created, as an RFC 3339 timestamp.
-    pub created_at: String,
-    /// When the Secret's value was last rotated, as an RFC 3339 timestamp.
-    pub updated_at: String,
-}
-
 #[async_trait::async_trait]
 pub trait Database:
     Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static

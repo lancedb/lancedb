@@ -145,45 +145,13 @@ def test_bindings_may_not_collide_with_plain_configuration():
         )
 
 
-def test_a_function_binds_at_most_sixteen_secrets():
-    """The cap lives in Rust, so no language surface can be talked past it.
+def test_a_binding_envelope_reaches_the_service_for_it_to_judge():
+    """Binding rules are the service's: it owns the runtime the names land in.
 
-    Registering through the typed API and hand-rolling the request envelope
-    reach the same boundary, and neither reaches the wire.
-    """
-    bindings = [
-        EnvVarSecret(secret=f"secret-{index}", env_variable=f"TOKEN_{index}")
-        for index in range(17)
-    ]
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        with pytest.raises(ValueError, match="at most 16 secrets"):
-            db.create_function(normalize_score, secrets=bindings)
-
-        envelope = json.loads(normalize_score.registration_request.to_canonical_json())
-        envelope["secret_env_bindings"] = {
-            f"TOKEN_{index}": f"secret-{index}" for index in range(17)
-        }
-
-        async def submit_envelope():
-            return await db._conn._inner.create_function_async(json.dumps(envelope))
-
-        with pytest.raises(ValueError, match="at most 16 secrets"):
-            LOOP.run(submit_envelope())
-
-    assert state["requests"] == []
-
-
-def test_binding_names_are_validated_below_the_python_api():
-    """The low-level entry point reaches the same validator the typed API does.
-
-    Registration envelopes can be hand-rolled past ``bind_secrets``, so the
-    grammar and the disjointness rule live in Rust, above the backend.
+    The client sends what it was given, so a rule it duplicated could disagree
+    with the service's without either side noticing. What is checked here is
+    that the envelope arrives intact -- the shape the service judges is the
+    shape the caller wrote.
     """
     with _mock_remote_function_catalog() as (host, state):
         db = lancedb.connect(
@@ -192,20 +160,15 @@ def test_binding_names_are_validated_below_the_python_api():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        envelope = json.loads(analyze_caption.registration_request.to_canonical_json())
-        envelope["secret_env_bindings"] = {
-            "BAD=NAME": "openai-prod",
-            "TOKEN_0": "secret-0",
-        }
-        envelope["runtime"]["env"]["TOKEN_0"] = "public"
+        bindings = [
+            EnvVarSecret(secret=f"secret-{index}", env_variable=f"TOKEN_{index}")
+            for index in range(17)
+        ]
+        db.create_function(normalize_score, secrets=bindings)
 
-        async def submit_envelope():
-            return await db._conn._inner.create_function_async(json.dumps(envelope))
-
-        with pytest.raises(ValueError, match="portable"):
-            LOOP.run(submit_envelope())
-
-    assert state["requests"] == []
+    sent = state["requests"][0][1]
+    assert len(sent["secret_env_bindings"]) == 17
+    assert sent["secret_env_bindings"]["TOKEN_0"] == "secret-0"
 
 
 _SECRET_DEBUG_LOG_SOURCE = """
