@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use lancedb::Error;
-use lancedb::function::FunctionRegistrationRequest;
+use lancedb::function::{FunctionRegistrationRequest, SecretBinding};
 use serde_json::Value;
 
 fn fixture(name: &str) -> String {
@@ -44,8 +44,8 @@ fn registration_request_matches_shared_canonical_golden() {
     assert_eq!(request.name, "normalize_score");
     assert_eq!(request.artifact.adapter.kind, "scalar_to_arrow_batch");
     // The unchanged path: a Function that binds nothing serializes today's
-    // bytes, with no `secret_env_bindings` key at all.
-    assert!(request.secret_env_bindings.is_empty());
+    // bytes, with no `secret_bindings` key at all.
+    assert!(request.secret_bindings.is_empty());
     assert_eq!(
         request.to_canonical_json().expect("canonical request"),
         fixture("remote_function_registration_request.canonical.json").trim()
@@ -67,11 +67,11 @@ fn secret_bound_registration_request_matches_shared_canonical_golden() {
     .expect("registration request");
     assert_eq!(request.name, "analyze_caption");
     assert_eq!(
-        request.secret_env_bindings,
-        std::collections::BTreeMap::from([(
-            "OPENAI_API_KEY".to_string(),
-            "openai-prod".to_string()
-        )])
+        request.secret_bindings,
+        [SecretBinding::Env {
+            variable: "OPENAI_API_KEY".to_string(),
+            secret_ref: "openai-prod".to_string(),
+        }]
     );
     assert_eq!(
         request.to_canonical_json().expect("canonical request"),
