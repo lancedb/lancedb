@@ -20,6 +20,7 @@ import {
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
+  makeJsonField,
 } from "../lancedb/arrow";
 import {
   EmbeddingFunction,
@@ -27,6 +28,21 @@ import {
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
 import { sanitizeTable } from "../lancedb/sanitize";
+
+it("creates a nullable JSON field with the Arrow extension metadata", () => {
+  const field = makeJsonField("metadata");
+
+  expect(field.name).toBe("metadata");
+  expect(field.type).toEqual(new arrow15.Utf8());
+  expect(field.nullable).toBe(true);
+  expect(field.metadata).toEqual(
+    new Map([["ARROW:extension:name", "arrow.json"]]),
+  );
+});
+
+it("allows JSON fields to be non-nullable", () => {
+  expect(makeJsonField("metadata", false).nullable).toBe(false);
+});
 
 // biome-ignore lint/suspicious/noExplicitAny: skip
 function sampleRecords(): Array<Record<string, any>> {
