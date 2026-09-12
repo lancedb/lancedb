@@ -7,6 +7,7 @@ import base64
 import contextlib
 import functools
 import importlib.util
+import inspect
 import types
 from datetime import date
 import http.server
@@ -15,6 +16,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import typing
 from typing import Optional
 
 import pyarrow as pa
@@ -149,6 +151,33 @@ def _run_packaged(definition, *args):
     namespace: dict = {}
     exec(compile(source, "<udf>", "exec"), namespace)
     return namespace[definition.registration_request.artifact.entrypoint](*args)
+
+
+def _execute_registered_array_udf_v1(request: dict, batch: pa.RecordBatch) -> pa.Array:
+    """Exercise adapter-v1 annotation dispatch over a registered artifact."""
+    assert request["artifact"]["adapter"] == {
+        "kind": "scalar_to_arrow_batch",
+        "version": 1,
+    }
+    source = base64.b64decode(request["artifact"]["content"]["data"])
+    namespace = {
+        "pa": pa,
+        "pyarrow": pa,
+        "Array": pa.Array,
+        "RecordBatch": pa.RecordBatch,
+        "typing": typing,
+    }
+    exec(compile(source, "<registered-udf>", "exec"), namespace)
+    function = namespace[request["artifact"]["entrypoint"]]
+    parameters = tuple(inspect.signature(function).parameters.values())
+    annotations = typing.get_type_hints(function)
+    assert parameters and all(
+        annotations.get(parameter.name) is pa.Array for parameter in parameters
+    )
+    assert annotations.get("return") is pa.Array
+    result = function(*(batch.column(parameter.name) for parameter in parameters))
+    assert isinstance(result, pa.Array)
+    return result
 
 
 def test_udf_conda_environment():
@@ -829,6 +858,57 @@ def test_blob_signature_rejects_collection_below_a_struct():
             return len(value["images"])
 
 
+def test_blob_fields_support_vectorized_pyarrow_arrays():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("result", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return pa.array(
+            [value.as_py() if value.is_valid else b"" for value in image],
+            type=pa.large_binary(),
+        )
+
+    values = pa.array([b"large blob", b"", None], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    batch = pa.RecordBatch.from_arrays([values], names=["image"])
+    result = _execute_registered_array_udf_v1(request, batch)
+    assert isinstance(result, pa.LargeBinaryArray)
+    assert result.to_pylist() == [b"large blob", b"", b""]
+
+    signature = copy_blobs.registration_request.signature
+    assert signature.inputs[0].arrow_type == "blob_v2"
+    assert signature.inputs[0].nullable is True
+    assert signature.output.arrow_type == "blob_v2"
+    assert signature.output.nullable is False
+    assert copy_blobs.registration_request.artifact.adapter.kind == (
+        "scalar_to_arrow_batch"
+    )
+    assert copy_blobs.registration_request.artifact.adapter.version == 1
+
+    source = base64.b64decode(
+        copy_blobs.registration_request.artifact.content.data
+    ).decode("utf-8")
+    assert "def copy_blobs(image: pa.Array) -> pa.Array:" in source
+
+
+def test_documented_blob_array_identity_executes_packaged_artifact():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=lancedb.blob("copy", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return image
+
+    values = pa.array([b"large blob", b""], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    result = _execute_registered_array_udf_v1(
+        request,
+        pa.RecordBatch.from_arrays([values], names=["image"]),
+    )
+    assert result.equals(values)
+
+
 def test_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -1310,6 +1390,92 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
     assert create_request == json.loads(
         normalize_score.registration_request.to_canonical_json()
     )
+
+
+def test_registered_vectorized_blob_udf_hydrates_executes_and_publishes(tmp_path):
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("copy", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        assert isinstance(image, pa.LargeBinaryArray)
+        return pa.array(
+            [
+                b"missing" if value.as_py() is None else b"copy:" + value.as_py()
+                for value in image
+            ],
+            type=pa.large_binary(),
+        )
+
+    with _mock_remote_function_catalog() as (host, state):
+        remote = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        remote.create_function(copy_blobs)
+        registration = state["requests"][0][1]
+
+    definition = json.loads(copy_blobs.registration_request.to_canonical_json())
+    assert registration["artifact"] == definition["artifact"]
+    assert registration["signature"] == definition["signature"]
+
+    local = lancedb.connect(tmp_path)
+    source = local.create_table(
+        "blob_input",
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), lancedb.blob("image", nullable=True)]
+        ),
+    )
+    source.add(
+        pa.Table.from_arrays(
+            [
+                pa.array([0, 1, 2], type=pa.int64()),
+                pa.array([b"large blob", b"", None], type=pa.large_binary()),
+            ],
+            names=["id", "image"],
+        )
+    )
+    input_hits = (
+        source.search()
+        .with_row_id(True)
+        .limit(3)
+        .to_arrow()
+        .sort_by([("id", "ascending")])
+    )
+    hydrated = source.fetch_blobs("image", input_hits)
+    assert isinstance(hydrated, pa.LargeBinaryArray)
+    result = _execute_registered_array_udf_v1(
+        registration,
+        pa.RecordBatch.from_arrays([hydrated], names=["image"]),
+    )
+    assert result.to_pylist() == [b"copy:large blob", b"copy:", b"missing"]
+
+    published = local.create_table(
+        "blob_output",
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), lancedb.blob("copy", nullable=False)]
+        ),
+    )
+    published.add(
+        pa.Table.from_arrays(
+            [pa.array(range(len(result)), type=pa.int64()), result],
+            names=["id", "copy"],
+        )
+    )
+    output_hits = (
+        published.search()
+        .with_row_id(True)
+        .limit(3)
+        .to_arrow()
+        .sort_by([("id", "ascending")])
+    )
+    assert published.fetch_blobs("copy", output_hits).to_pylist() == [
+        b"copy:large blob",
+        b"copy:",
+        b"missing",
+    ]
 
 
 def test_blocking_remote_registration_returns_function_version():
