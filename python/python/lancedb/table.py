@@ -1132,7 +1132,7 @@ class Table(ABC):
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
-        replace: bool = True,
+        replace: bool = False,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         *,
@@ -1166,7 +1166,7 @@ class Table(ABC):
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
             BTree, Bitmap, LabelList, Fm, FTS.
-        replace : bool, default True
+        replace : bool, default False
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
             Timeout to wait for async indexing to complete.
@@ -1198,7 +1198,7 @@ class Table(ABC):
         column: str,
         *,
         config: IndexConfigType,
-        replace: Optional[bool] = None,
+        replace: bool = False,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
@@ -1260,7 +1260,7 @@ class Table(ABC):
         self,
         column: str,
         *,
-        replace: bool = True,
+        replace: bool = False,
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
@@ -1272,7 +1272,7 @@ class Table(ABC):
         column : str
             The column to be indexed.  Must be a boolean, integer, float,
             or string column.
-        replace : bool, default True
+        replace : bool, default False
             Replace the existing index if it exists.
         index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"], default "BTREE"
             The type of index to create.
@@ -2997,7 +2997,7 @@ class LanceTable(Table):
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
-        replace: bool = True,
+        replace: bool = False,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
@@ -3039,7 +3039,7 @@ class LanceTable(Table):
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
             BTree, Bitmap, LabelList, Fm, FTS.
-        replace : bool, default True
+        replace : bool, default False
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
             Timeout to wait for async indexing to complete.
@@ -3178,7 +3178,7 @@ class LanceTable(Table):
         column: str,
         *,
         config: IndexConfigType,
-        replace: Optional[bool] = None,
+        replace: bool = False,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
@@ -3433,7 +3433,7 @@ class LanceTable(Table):
         self,
         column: str,
         *,
-        replace: bool = True,
+        replace: bool = False,
         index_type: ScalarIndexType = "BTREE",
         name: Optional[str] = None,
     ):
@@ -5322,7 +5322,7 @@ class AsyncTable:
         self,
         column: str,
         *,
-        replace: Optional[bool] = None,
+        replace: bool = False,
         config: Optional[
             Union[
                 IvfFlat,
@@ -5353,14 +5353,14 @@ class AsyncTable:
         ----------
         column: str
             The column to index.
-        replace: bool, default True
+        replace: bool, default False
             Whether to replace the existing index
 
             If this is false, and another index already exists on the same columns
             and the same name, then an error will be returned.  This is true even if
             that index is out of date.
 
-            The default is True
+            The default is False
         config: default None
             For advanced configuration you can specify the type of index you would
             like to create.   You can also specify index-specific parameters when
@@ -5418,7 +5418,7 @@ class AsyncTable:
         self,
         column: str,
         *,
-        replace: Optional[bool] = None,
+        replace: bool = False,
         config: Optional[
             Union[
                 IvfFlat,

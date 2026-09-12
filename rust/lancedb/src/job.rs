@@ -86,6 +86,7 @@ impl TerminalResult {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn remote(value: Option<Value>, request_id: String) -> Self {
         Self {
             value,
@@ -93,30 +94,46 @@ impl TerminalResult {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn value(&self) -> Option<&Value> {
         self.value.as_ref()
     }
 
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
-        let value = self.value.ok_or_else(|| match &self.request_id {
-            Some(request_id) => Error::Http {
-                source: "successful typed job response did not contain a result".into(),
-                request_id: request_id.clone(),
-                status_code: None,
-            },
-            None => Error::Runtime {
+        let value = self.value.ok_or_else(|| {
+            #[cfg(feature = "remote")]
+            if let Some(request_id) = &self.request_id {
+                return Error::Http {
+                    source: "successful typed job response did not contain a result".into(),
+                    request_id: request_id.clone(),
+                    status_code: None,
+                };
+            }
+            Error::Runtime {
                 message: "successful typed job did not contain a result".to_string(),
-            },
+            }
         })?;
-        serde_json::from_value(value).map_err(|error| match self.request_id {
-            Some(request_id) => Error::Http {
-                source: format!("failed to parse typed job result: {error}").into(),
-                request_id,
-                status_code: None,
-            },
-            None => Error::Runtime {
-                message: format!("failed to parse typed job result: {error}"),
-            },
+        serde_json::from_value(value).map_err(|error| {
+            #[cfg(feature = "remote")]
+            {
+                match self.request_id {
+                    Some(request_id) => Error::Http {
+                        source: format!("failed to parse typed job result: {error}").into(),
+                        request_id,
+                        status_code: None,
+                    },
+                    None => Error::Runtime {
+                        message: format!("failed to parse typed job result: {error}"),
+                    },
+                }
+            }
+            #[cfg(not(feature = "remote"))]
+            {
+                let _ = self.request_id;
+                Error::Runtime {
+                    message: format!("failed to parse typed job result: {error}"),
+                }
+            }
         })
     }
 }
@@ -203,6 +220,7 @@ impl Job<()> {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn new(handle: Box<dyn JobHandle>) -> Self {
         Self {
             inner: JobInner::Handle {
