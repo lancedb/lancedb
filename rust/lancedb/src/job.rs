@@ -97,26 +97,34 @@ impl TerminalResult {
         self.value.as_ref()
     }
 
-    fn decode<T: DeserializeOwned>(self) -> Result<T> {
-        let value = self.value.ok_or_else(|| match &self.request_id {
-            Some(request_id) => Error::Http {
-                source: "successful typed job response did not contain a result".into(),
-                request_id: request_id.clone(),
-                status_code: None,
-            },
-            None => Error::Runtime {
-                message: "successful typed job did not contain a result".to_string(),
-            },
-        })?;
-        serde_json::from_value(value).map_err(|error| match self.request_id {
-            Some(request_id) => Error::Http {
-                source: format!("failed to parse typed job result: {error}").into(),
+    fn decode_error(message: String, request_id: Option<String>) -> Error {
+        #[cfg(feature = "remote")]
+        if let Some(request_id) = request_id {
+            return Error::Http {
+                source: message.into(),
                 request_id,
                 status_code: None,
-            },
-            None => Error::Runtime {
-                message: format!("failed to parse typed job result: {error}"),
-            },
+            };
+        }
+
+        let _ = request_id;
+        Error::Runtime { message }
+    }
+
+    fn decode<T: DeserializeOwned>(self) -> Result<T> {
+        let value = self.value.ok_or_else(|| {
+            let message = if self.request_id.is_some() {
+                "successful typed job response did not contain a result"
+            } else {
+                "successful typed job did not contain a result"
+            };
+            Self::decode_error(message.to_string(), self.request_id.clone())
+        })?;
+        serde_json::from_value(value).map_err(|error| {
+            Self::decode_error(
+                format!("failed to parse typed job result: {error}"),
+                self.request_id,
+            )
         })
     }
 }
@@ -566,6 +574,14 @@ mod tests {
     use std::future::pending;
 
     use super::*;
+
+    #[test]
+    fn local_typed_result_decode_errors_are_runtime_errors() {
+        assert!(matches!(
+            TerminalResult::local(Value::Null).decode::<u64>(),
+            Err(Error::Runtime { .. })
+        ));
+    }
 
     #[tokio::test]
     async fn mapped_spawned_job_reuses_outcome() {
