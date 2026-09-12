@@ -98,6 +98,8 @@ semver = { workspace = true }
 
 [dev-dependencies]
 anyhow = "1"
+# `test-util` adds the per-request records that the `assert_io_*` macros print.
+lance-io = { workspace = true, features = ["test-util"] }
 lance-testing = { workspace = true }
 tempfile = { workspace = true }
 random_word = { version = "0.4.3", features = ["en"] }
