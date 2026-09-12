@@ -58,7 +58,11 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y protobuf-compiler libssl-dev
+        sudo apt install -y libssl-dev
+        curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-x86_64.zip -o /tmp/protoc.zip
+        sudo unzip -o /tmp/protoc.zip -d /usr/local
+        rm /tmp/protoc.zip
+        protoc --version
     - uses: Swatinem/rust-cache@v2
       with:
         # Restore everywhere, but only save from main. Per-PR saves are
@@ -115,7 +119,11 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y protobuf-compiler libssl-dev
+        sudo apt install -y libssl-dev
+        curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-x86_64.zip -o /tmp/protoc.zip
+        sudo unzip -o /tmp/protoc.zip -d /usr/local
+        rm /tmp/protoc.zip
+        protoc --version
     - name: Build
       run: |
         pnpm install --frozen-lockfile

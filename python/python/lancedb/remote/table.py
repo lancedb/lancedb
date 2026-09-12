@@ -36,6 +36,7 @@ from lancedb._lancedb import (
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
+from lancedb.dataframe import DataFrame
 from lancedb.expr import Expr
 from lancedb.index import (
     FTS,
@@ -179,6 +180,10 @@ class RemoteTable(Table):
 
         """
         return LOOP.run(self._table.schema())
+
+    def to_df(self) -> DataFrame:
+        """Create a lazy DataFrame that scans this table."""
+        return DataFrame(LOOP.run(self._table.to_df())._inner)
 
     @property
     def version(self) -> int:
