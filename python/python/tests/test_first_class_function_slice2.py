@@ -1269,7 +1269,7 @@ def _mock_remote_function_catalog():
                 for key, values in urllib.parse.parse_qs(url.query).items()
             }
             state["requests"].append((url.path, query))
-            if url.path != "/v1/function/":
+            if url.path != "/v1/namespace/$/function/list":
                 self._write_response(404, {"error": "not found"})
                 return
             assert query["include_definition"] == "true"
@@ -1355,9 +1355,9 @@ def test_remote_list_functions_paginates_and_returns_typed_versions():
 
     assert functions == [created]
     assert state["requests"] == [
-        ("/v1/function/", {"include_definition": "true"}),
+        ("/v1/namespace/$/function/list", {"include_definition": "true"}),
         (
-            "/v1/function/",
+            "/v1/namespace/$/function/list",
             {"include_definition": "true", "page_token": "next"},
         ),
     ]
@@ -1379,8 +1379,8 @@ async def test_async_remote_list_functions_returns_typed_versions():
 
     assert functions == [created]
     assert [path for path, _ in state["requests"]] == [
-        "/v1/function/",
-        "/v1/function/",
+        "/v1/namespace/$/function/list",
+        "/v1/namespace/$/function/list",
     ]
 
 
