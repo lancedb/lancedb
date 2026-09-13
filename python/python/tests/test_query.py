@@ -989,7 +989,7 @@ def test_invalid_nprobes_sync(table):
         )
     with pytest.raises(
         ValueError,
-        match="minimum_nprobes must be less than or equal to maximum_nprobes",
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
         (
             LanceVectorQueryBuilder(table, [0, 0], "vector")
@@ -1031,7 +1031,7 @@ async def test_invalid_nprobes_async(table_async: AsyncTable):
         )
     with pytest.raises(
         ValueError,
-        match="minimum_nprobes must be less than or equal to maximum_nprobes",
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
         await (
             table_async.vector_search([0, 0])
