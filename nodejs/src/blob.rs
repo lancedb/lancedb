@@ -60,7 +60,7 @@ fn bigint_range(start: BigInt, end: BigInt) -> napi::Result<Range<u64>> {
     Ok(start..end)
 }
 
-pub(crate) fn parse_u64(value: BigInt, name: &str) -> napi::Result<u64> {
+fn parse_u64(value: BigInt, name: &str) -> napi::Result<u64> {
     let (negative, value, lossless) = value.get_u64();
     if negative {
         return Err(napi::Error::from_reason(format!(
@@ -75,14 +75,14 @@ pub(crate) fn parse_u64(value: BigInt, name: &str) -> napi::Result<u64> {
     Ok(value)
 }
 
-pub(crate) fn parse_row_ids(row_ids: Vec<BigInt>) -> napi::Result<Vec<u64>> {
+pub fn parse_row_ids(row_ids: Vec<BigInt>) -> napi::Result<Vec<u64>> {
     row_ids
         .into_iter()
         .map(|id| parse_u64(id, "row id"))
         .collect()
 }
 
-pub(crate) fn copy_blob_buffers(array: LargeBinaryArray) -> Vec<Option<Buffer>> {
+pub fn copy_blob_buffers(array: LargeBinaryArray) -> Vec<Option<Buffer>> {
     (0..array.len())
         .map(|i| {
             if array.is_null(i) {
