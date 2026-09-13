@@ -544,8 +544,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    *
    * Increasing this value will increase the recall of your query but will
    * also increase the latency of your query. If this method is not called,
-   * search starts with one partition and may search additional partitions as
-   * needed to satisfy the query limit.
+   * Lance's adaptive probe defaults are used.
    *
    * For best results we recommend tuning this parameter with a benchmark against
    * your actual data to find the smallest possible value that will still give

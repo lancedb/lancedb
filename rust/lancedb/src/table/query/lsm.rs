@@ -723,8 +723,10 @@ async fn vector_plan(
     let mut scanner = base_scanner(dataset, query, pk_columns, snapshots, in_memory)?
         .with_overfetch_factor(LSM_OVERFETCH_FACTOR)
         .nearest(&column, query_vector.as_ref(), k)?
-        .nprobes(query.minimum_nprobes)
         .distance_metric(distance_type.into());
+    if let Some(minimum_nprobes) = query.minimum_nprobes {
+        scanner = scanner.nprobes(minimum_nprobes);
+    }
     if let Some(refine_factor) = query.refine_factor {
         scanner = scanner.refine(refine_factor);
     }
