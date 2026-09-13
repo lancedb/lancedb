@@ -2801,7 +2801,7 @@ mod tests {
         let mut expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         expected.as_object_mut().unwrap().remove("name");
         let conn = Connection::new_with_handler(move |request| match request.url().path() {
-            "/v1/function/embed/create" => {
+            "/v1/function/normalize_score/create" => {
                 assert_eq!(request.method(), &reqwest::Method::POST);
                 let body: serde_json::Value =
                     serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
