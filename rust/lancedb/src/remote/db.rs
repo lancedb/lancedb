@@ -629,13 +629,15 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn list_functions(&self) -> Result<Vec<FunctionVersion>> {
+        let namespace_id = build_namespace_identifier(&[], &self.client.id_delimiter);
+        let path = format!("/v1/namespace/{namespace_id}/function/list");
         let mut functions = Vec::new();
         let mut page_token: Option<String> = None;
         let mut seen_page_tokens = HashSet::new();
         loop {
             let mut req = self
                 .client
-                .get("/v1/function/")
+                .get(&path)
                 .query(&[("include_definition", true)]);
             if let Some(token) = &page_token {
                 req = req.query(&[("page_token", token)]);
@@ -2852,7 +2854,7 @@ mod tests {
         let page = Arc::new(AtomicUsize::new(0));
         let conn = Connection::new_with_handler(move |request| {
             assert_eq!(request.method(), &reqwest::Method::GET);
-            assert_eq!(request.url().path(), "/v1/function/");
+            assert_eq!(request.url().path(), "/v1/namespace/$/function/list");
             let query = request.url().query_pairs().collect::<HashMap<_, _>>();
             assert_eq!(query.get("include_definition").unwrap(), "true");
             match page.fetch_add(1, Ordering::SeqCst) {
@@ -2894,7 +2896,7 @@ mod tests {
         let conn = Connection::new_with_handler(move |request| {
             seen.fetch_add(1, Ordering::SeqCst);
             assert_eq!(request.method(), &reqwest::Method::GET);
-            assert_eq!(request.url().path(), "/v1/function/");
+            assert_eq!(request.url().path(), "/v1/namespace/$/function/list");
             let query = request.url().query_pairs().collect::<HashMap<_, _>>();
             assert_eq!(query.get("include_definition").unwrap(), "true");
             assert!(!query.contains_key("page_token"));
@@ -2915,7 +2917,7 @@ mod tests {
         let requests = page.clone();
         let conn = Connection::new_with_handler(move |request| {
             assert_eq!(request.method(), &reqwest::Method::GET);
-            assert_eq!(request.url().path(), "/v1/function/");
+            assert_eq!(request.url().path(), "/v1/namespace/$/function/list");
             let query = request.url().query_pairs().collect::<HashMap<_, _>>();
             assert_eq!(query.get("include_definition").unwrap(), "true");
             let next_page_token = match page.fetch_add(1, Ordering::SeqCst) {
