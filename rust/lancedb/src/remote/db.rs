@@ -591,7 +591,15 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         &self,
         request: FunctionRegistrationRequest,
     ) -> Result<Job<FunctionVersion>> {
-        let req = self.client.post("/v1/functions/create").json(&request);
+        let function_id = urlencoding::encode(&request.name);
+        let req = self
+            .client
+            .post(&format!("/v1/function/{function_id}/create"))
+            .json(&serde_json::json!({
+                "artifact": request.artifact,
+                "signature": request.signature,
+                "runtime": request.runtime,
+            }));
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         let status = response.status();
@@ -608,11 +616,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
+        let function_id = urlencoding::encode(name);
         let req = self
             .client
-            .post("/v1/functions/describe")
+            .post(&format!("/v1/function/{function_id}/describe"))
             .json(&serde_json::json!({
-                "name": name,
                 "version": version,
             }));
         let (request_id, response) = self.client.send(req).await?;
@@ -625,11 +633,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let mut page_token: Option<String> = None;
         let mut seen_page_tokens = HashSet::new();
         loop {
-            let mut body = serde_json::json!({ "include_definition": true });
+            let mut req = self
+                .client
+                .get("/v1/function/")
+                .query(&[("include_definition", true)]);
             if let Some(token) = &page_token {
-                body["page_token"] = serde_json::Value::String(token.clone());
+                req = req.query(&[("page_token", token)]);
             }
-            let req = self.client.post("/v1/functions/list").json(&body);
             let (request_id, response) = self.client.send(req).await?;
             let response = self.client.check_response(&request_id, response).await?;
             let status = response.status();
@@ -658,11 +668,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
+        let function_id = urlencoding::encode(name);
         let req = self
             .client
-            .post("/v1/functions/drop")
+            .post(&format!("/v1/function/{function_id}/drop"))
             .json(&serde_json::json!({
-                "name": name,
                 "version": version,
             }));
         let (request_id, response) = self.client.send(req).await?;
@@ -2788,9 +2798,10 @@ mod tests {
         );
         const FUNCTION_JOB: &str =
             include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
-        let expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        let mut expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        expected.as_object_mut().unwrap().remove("name");
         let conn = Connection::new_with_handler(move |request| match request.url().path() {
-            "/v1/functions/create" => {
+            "/v1/function/embed/create" => {
                 assert_eq!(request.method(), &reqwest::Method::POST);
                 let body: serde_json::Value =
                     serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
@@ -2821,13 +2832,10 @@ mod tests {
         );
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/functions/describe");
+            assert_eq!(request.url().path(), "/v1/function/embed/describe");
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
-            );
+            assert_eq!(body, serde_json::json!({"version": "fv_01K3EXACT"}));
             http::Response::builder().status(200).body(VERSION).unwrap()
         });
         let version = conn.get_function("embed", "fv_01K3EXACT").await.unwrap();
@@ -2843,21 +2851,20 @@ mod tests {
         let version: serde_json::Value = serde_json::from_str(VERSION).unwrap();
         let page = Arc::new(AtomicUsize::new(0));
         let conn = Connection::new_with_handler(move |request| {
-            assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/functions/list");
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(body["include_definition"], true);
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/function/");
+            let query = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(query.get("include_definition").unwrap(), "true");
             match page.fetch_add(1, Ordering::SeqCst) {
                 0 => {
-                    assert!(body.get("page_token").is_none());
+                    assert!(!query.contains_key("page_token"));
                     http::Response::builder()
                         .status(200)
                         .body(r#"{"functions": [], "page_token": "next"}"#.to_string())
                         .unwrap()
                 }
                 _ => {
-                    assert_eq!(body["page_token"], "next");
+                    assert_eq!(query.get("page_token").unwrap(), "next");
                     http::Response::builder()
                         .status(200)
                         .body(
@@ -2886,9 +2893,11 @@ mod tests {
         let seen = requests.clone();
         let conn = Connection::new_with_handler(move |request| {
             seen.fetch_add(1, Ordering::SeqCst);
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert!(body.get("page_token").is_none());
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/function/");
+            let query = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(query.get("include_definition").unwrap(), "true");
+            assert!(!query.contains_key("page_token"));
             http::Response::builder()
                 .status(200)
                 .body(r#"{"functions": [], "page_token": ""}"#)
@@ -2905,19 +2914,21 @@ mod tests {
         let page = Arc::new(AtomicUsize::new(0));
         let requests = page.clone();
         let conn = Connection::new_with_handler(move |request| {
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/function/");
+            let query = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(query.get("include_definition").unwrap(), "true");
             let next_page_token = match page.fetch_add(1, Ordering::SeqCst) {
                 0 => {
-                    assert!(body.get("page_token").is_none());
+                    assert!(!query.contains_key("page_token"));
                     "one"
                 }
                 1 => {
-                    assert_eq!(body["page_token"], "one");
+                    assert_eq!(query.get("page_token").unwrap(), "one");
                     "two"
                 }
                 2 => {
-                    assert_eq!(body["page_token"], "two");
+                    assert_eq!(query.get("page_token").unwrap(), "two");
                     "one"
                 }
                 page => panic!("unexpected page: {page}"),
@@ -2952,13 +2963,10 @@ mod tests {
     async fn test_drop_function_sends_exact_version_and_decodes_replay() {
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/functions/drop");
+            assert_eq!(request.url().path(), "/v1/function/embed/drop");
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
-            );
+            assert_eq!(body, serde_json::json!({"version": "fv_01K3EXACT"}));
             http::Response::builder()
                 .status(200)
                 .body(r#"{"dropped":false}"#)

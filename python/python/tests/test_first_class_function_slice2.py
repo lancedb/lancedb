@@ -15,6 +15,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import urllib.parse
 from typing import Optional
 
 import pyarrow as pa
@@ -1213,14 +1214,22 @@ def _mock_remote_function_catalog():
         def log_message(self, *args):
             pass
 
+        def _write_response(self, status, response):
+            encoded = json.dumps(response).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length) or b"{}")
             state["requests"].append((self.path, body))
             status = 200
-            if self.path == "/v1/functions/create":
+            if self.path == "/v1/function/normalize_score/create":
                 state["version"] = {
-                    "name": body["name"],
+                    "name": "normalize_score",
                     "version": "fv_exact",
                     "artifact": {
                         key: body["artifact"][key]
@@ -1242,43 +1251,43 @@ def _mock_remote_function_catalog():
                     "job_state": "DONE",
                     "result": state["version"],
                 }
-            elif self.path == "/v1/functions/describe":
-                assert body == {
-                    "name": "normalize_score",
-                    "version": "fv_exact",
-                }
+            elif self.path == "/v1/function/normalize_score/describe":
+                assert body == {"version": "fv_exact"}
                 response = state["version"]
-            elif self.path == "/v1/functions/list":
-                assert body["include_definition"] is True
-                if "page_token" not in body:
-                    response = {
-                        "functions": [
-                            {
-                                "name": "normalize_score",
-                                "version": "fv_exact",
-                                "definition": state["version"],
-                            }
-                        ],
-                        "page_token": "next",
-                    }
-                else:
-                    assert body["page_token"] == "next"
-                    response = {"functions": []}
-            elif self.path == "/v1/functions/drop":
-                assert body == {
-                    "name": "normalize_score",
-                    "version": "fv_exact",
-                }
+            elif self.path == "/v1/function/normalize_score/drop":
+                assert body == {"version": "fv_exact"}
                 response = {"dropped": True}
             else:
                 status = 404
                 response = {"error": "not found"}
-            encoded = json.dumps(response).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
+            self._write_response(status, response)
+
+        def do_GET(self):
+            url = urllib.parse.urlsplit(self.path)
+            query = {
+                key: values[-1]
+                for key, values in urllib.parse.parse_qs(url.query).items()
+            }
+            state["requests"].append((url.path, query))
+            if url.path != "/v1/function/":
+                self._write_response(404, {"error": "not found"})
+                return
+            assert query["include_definition"] == "true"
+            if "page_token" not in query:
+                response = {
+                    "functions": [
+                        {
+                            "name": "normalize_score",
+                            "version": "fv_exact",
+                            "definition": state["version"],
+                        }
+                    ],
+                    "page_token": "next",
+                }
+            else:
+                assert query["page_token"] == "next"
+                response = {"functions": []}
+            self._write_response(200, response)
 
     with http.server.HTTPServer(("localhost", 0), Handler) as server:
         thread = threading.Thread(target=server.serve_forever)
@@ -1307,9 +1316,11 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
     assert reopened.name == "normalize_score"
     assert reopened.version == "fv_exact"
     create_request = state["requests"][0][1]
-    assert create_request == json.loads(
+    expected_request = json.loads(
         normalize_score.registration_request.to_canonical_json()
     )
+    expected_request.pop("name")
+    assert create_request == expected_request
 
 
 def test_blocking_remote_registration_returns_function_version():
@@ -1325,7 +1336,7 @@ def test_blocking_remote_registration_returns_function_version():
     assert created.name == "normalize_score"
     assert created.version == "fv_exact"
     assert [path for path, _ in state["requests"]] == [
-        "/v1/functions/create",
+        "/v1/function/normalize_score/create",
         "/v1/jobs/describe",
     ]
 
@@ -1344,10 +1355,10 @@ def test_remote_list_functions_paginates_and_returns_typed_versions():
 
     assert functions == [created]
     assert state["requests"] == [
-        ("/v1/functions/list", {"include_definition": True}),
+        ("/v1/function/", {"include_definition": "true"}),
         (
-            "/v1/functions/list",
-            {"include_definition": True, "page_token": "next"},
+            "/v1/function/",
+            {"include_definition": "true", "page_token": "next"},
         ),
     ]
 
@@ -1368,8 +1379,8 @@ async def test_async_remote_list_functions_returns_typed_versions():
 
     assert functions == [created]
     assert [path for path, _ in state["requests"]] == [
-        "/v1/functions/list",
-        "/v1/functions/list",
+        "/v1/function/",
+        "/v1/function/",
     ]
 
 
@@ -1385,8 +1396,8 @@ def test_remote_drop_function_sends_exact_version():
 
     assert state["requests"] == [
         (
-            "/v1/functions/drop",
-            {"name": "normalize_score", "version": "fv_exact"},
+            "/v1/function/normalize_score/drop",
+            {"version": "fv_exact"},
         )
     ]
 
@@ -1404,7 +1415,7 @@ async def test_async_remote_drop_function_sends_exact_version():
 
     assert state["requests"] == [
         (
-            "/v1/functions/drop",
-            {"name": "normalize_score", "version": "fv_exact"},
+            "/v1/function/normalize_score/drop",
+            {"version": "fv_exact"},
         )
     ]
