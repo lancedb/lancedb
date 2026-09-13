@@ -2164,9 +2164,6 @@ def test_query_sync_minimal():
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "vector_column": "vector",
-            "nprobes": 1,
-            "minimum_nprobes": 1,
-            "maximum_nprobes": 0,
             "version": None,
         }
 
@@ -2478,7 +2475,6 @@ def test_query_sync_minimum_nprobes_only():
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 5,
             "minimum_nprobes": 5,
-            "maximum_nprobes": 0,
             "version": None,
         }
 
@@ -2642,9 +2638,6 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "vector_column": "vector",
-                "nprobes": 1,
-                "minimum_nprobes": 1,
-                "maximum_nprobes": 0,
                 "lower_bound": None,
                 "upper_bound": None,
                 "ef": None,

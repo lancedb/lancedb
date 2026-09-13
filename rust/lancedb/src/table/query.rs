@@ -296,7 +296,9 @@ pub async fn create_plan(
             scanner.approx_mode(approx_mode.into());
         }
 
-        scanner.minimum_nprobes(query.minimum_nprobes);
+        if let Some(minimum_nprobes) = query.minimum_nprobes {
+            scanner.minimum_nprobes(minimum_nprobes);
+        }
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             scanner.maximum_nprobes(maximum_nprobes);
         }
@@ -630,7 +632,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 columns,
                 offset: vq.base.offset.map(|o| o as i32),
                 distance_type: vq.distance_type.map(|dt| dt.to_string()),
-                nprobes: Some(vq.minimum_nprobes as i32),
+                nprobes: vq.minimum_nprobes.map(|nprobes| nprobes as i32),
                 ef: vq.ef.map(|e| e as i32),
                 refine_factor: vq.refine_factor.map(|r| r as i32),
                 lower_bound: vq.lower_bound,
@@ -919,7 +921,6 @@ mod tests {
             column: Some("vector".to_string()),
             // We cast here to satisfy the struct definition
             query_vector: vec![query_vector as Arc<dyn Array>],
-            minimum_nprobes: 20,
             distance_type: Some(crate::DistanceType::L2),
             ..Default::default()
         };
@@ -940,6 +941,7 @@ mod tests {
         );
         assert_eq!(ns_request.vector_column, Some("vector".to_string()));
         assert_eq!(ns_request.distance_type, Some("l2".to_string()));
+        assert_eq!(ns_request.nprobes, None);
 
         // Verify the vector data was extracted correctly
         assert!(ns_request.vector.single_vector.is_some());
