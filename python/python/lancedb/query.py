@@ -776,14 +776,12 @@ class Query(pydantic.BaseModel):
 
     # minimum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
+    # If None then the default value (1) will be used.
     minimum_nprobes: Optional[int] = None
 
     # maximum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
-    #
-    # If 0 then no limit will be applied and all partitions could be searched
+    # If None or 0 then no limit will be applied and all partitions could be searched
     # if needed to satisfy the limit.
     maximum_nprobes: Optional[int] = None
 
@@ -3618,9 +3616,9 @@ class AsyncVectorQueryBase:
         partitions should be searched.
 
         Increasing this value will increase the recall of your query but will
-        also increase the latency of your query.  The default value is 20.  This
-        default is good for many cases but the best value to use will depend on
-        your data and the recall that you need to achieve.
+        also increase the latency of your query. If this method is not called,
+        search starts with one partition and may search additional partitions as
+        needed to satisfy the query limit.
 
         For best results we recommend tuning this parameter with a benchmark against
         your actual data to find the smallest possible value that will still give

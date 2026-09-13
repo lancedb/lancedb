@@ -334,8 +334,8 @@ pub struct PyQueryRequest {
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
     pub minimum_nprobes: Option<usize>,
-    // None means user did not set it and default should be used (currently 20)
-    // Some(0) means user set it to None and there is no limit
+    // None means this is not a vector query
+    // Some(0) means there is no maximum
     pub maximum_nprobes: Option<usize>,
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,

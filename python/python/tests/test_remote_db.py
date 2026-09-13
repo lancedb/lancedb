@@ -1423,9 +1423,9 @@ def test_query_sync_minimal():
             "upper_bound": None,
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
-            "nprobes": 20,
-            "minimum_nprobes": 20,
-            "maximum_nprobes": 20,
+            "nprobes": 1,
+            "minimum_nprobes": 1,
+            "maximum_nprobes": 0,
             "version": None,
         }
 
@@ -1545,7 +1545,7 @@ def test_query_sync_nprobes():
         )
 
 
-def test_query_sync_no_max_nprobes():
+def test_query_sync_minimum_nprobes_only():
     def handler(body):
         assert body == {
             "k": 10,
@@ -1569,7 +1569,6 @@ def test_query_sync_no_max_nprobes():
         (
             table.search([1, 2, 3], vector_column_name="vector2", fast_search=True)
             .minimum_nprobes(5)
-            .maximum_nprobes(0)
             .to_list()
         )
 
@@ -1717,9 +1716,9 @@ def test_query_sync_hybrid():
                 "prefilter": True,
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
+                "nprobes": 1,
+                "minimum_nprobes": 1,
+                "maximum_nprobes": 0,
                 "lower_bound": None,
                 "upper_bound": None,
                 "ef": None,
