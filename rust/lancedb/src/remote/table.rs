@@ -1152,6 +1152,7 @@ impl<S: HttpSend> RemoteTable<S> {
         // New client / old server: old server will only see nprobes, make sure to set both
         //                          nprobes and minimum_nprobes
         // New client / new server: since minimum_nprobes is present, server can ignore nprobes
+        // A maximum_nprobes value of 0 represents no upper bound on the wire.
         body["nprobes"] = query.minimum_nprobes.into();
         body["minimum_nprobes"] = query.minimum_nprobes.into();
         if let Some(maximum_nprobes) = query.maximum_nprobes {
@@ -6090,9 +6091,9 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
+                "nprobes": 1,
+                "minimum_nprobes": 1,
+                "maximum_nprobes": 0,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "k": 10,
@@ -6124,7 +6125,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_vector_approx_mode_sent_when_set() {
+    async fn test_query_vector_minimum_only_and_approx_mode() {
         let expected_data = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
@@ -6144,9 +6145,9 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
+                "nprobes": 5,
+                "minimum_nprobes": 5,
+                "maximum_nprobes": 0,
                 "approx_mode": "accurate",
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
@@ -6169,6 +6170,8 @@ mod tests {
         let data = table
             .query()
             .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .minimum_nprobes(5)
             .unwrap()
             .approx_mode(crate::ApproxMode::Accurate)
             .execute()
@@ -6347,9 +6350,9 @@ mod tests {
                 "vector_column": "image.embedding",
                 "prefilter": true,
                 "k": 10,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
+                "nprobes": 1,
+                "minimum_nprobes": 1,
+                "maximum_nprobes": 0,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,

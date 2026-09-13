@@ -171,8 +171,7 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     // than just recall, so error instead of silently ignoring them: distance_range
     // would return rows outside the bound, and use_index(false) asks for a
     // brute-force search the index-only base arm can't do. (ef / approx_mode /
-    // maximum_nprobes are recall/speed knobs and are left to no-op — and
-    // maximum_nprobes defaults to Some, so it cannot be rejected on presence.)
+    // maximum_nprobes are recall/speed knobs and are left to no-op.)
     if !query.query_vector.is_empty() {
         if query.lower_bound.is_some() || query.upper_bound.is_some() {
             return unsupported("distance_range on vector search");
