@@ -432,8 +432,16 @@ impl<S: HttpSend> RemoteDatabase<S> {
     /// would need escaping, and a `/v1/secret/prod$openai/drop` that reads like
     /// the table and Function routes beside it is worth more than encoding
     /// against a charset that does not exist yet.
-    fn secret_id(&self, name: &str, namespace_path: &[String]) -> String {
-        build_secret_identifier(name, namespace_path, &self.client.id_delimiter)
+    fn secret_id(&self, name: &str, namespace_path: &[String]) -> Result<String> {
+        let identifier = build_secret_identifier(name, namespace_path, &self.client.id_delimiter);
+        if !secret_identifier_is_addressable(&identifier) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Secret identifier {identifier:?} cannot be addressed: a path segment of                      only dots is resolved as a relative path and never reaches the Secret                      route"
+                ),
+            });
+        }
+        Ok(identifier)
     }
 
     async fn post_secret_write<T: serde::Serialize>(&self, route: &str, body: &T) -> Result<()> {
@@ -593,14 +601,70 @@ fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> 
     }
 }
 
-/// A Secret's path identifier: its namespace path and name joined the way every
-/// other object's is.
+/// A Secret's path identifier: its namespace path and name, each percent-encoded,
+/// joined by the delimiter.
 ///
-/// Secrets are not tables, but the identifier grammar belongs to the namespace
-/// spec rather than to any one object type, and having two would mean a caller
-/// had to know which kind of name it was holding.
+/// The grammar is the namespace spec's, shared with tables and Functions. What
+/// differs is that the components are encoded before they are joined, rather
+/// than the joined string being encoded or nothing being encoded at all.
+///
+/// Encoding per component is what keeps a component from becoming two. The
+/// delimiter is joined raw, so it stays a delimiter; anything inside a
+/// component that would otherwise end the path segment does not survive to do
+/// it. `..` and `/` in a name are the cases that matter: unencoded they leave
+/// `/v1/secret/` entirely and carry the request body -- a credential, on the
+/// write verbs -- to whatever route the normalized path lands on.
+///
+/// This is not name validation, which belongs to the service. Every character
+/// a Secret name and a namespace segment may hold is already unreserved, so an
+/// identifier the service would accept passes through byte-identical and reads
+/// like the table and Function identifiers beside it. One the service would
+/// refuse is merely made to arrive, so that it can be refused.
 fn build_secret_identifier(name: &str, namespace: &[String], delimiter: &str) -> String {
-    build_table_identifier(name, namespace, delimiter)
+    namespace
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(name))
+        .map(encode_identifier_component)
+        .collect::<Vec<_>>()
+        .join(delimiter)
+}
+
+/// One component of an identifier, escaped for a path segment.
+fn encode_identifier_component(component: &str) -> String {
+    urlencoding::encode(component).into_owned()
+}
+
+/// Refuse an identifier that cannot be a path segment at all.
+///
+/// Percent-encoding handles every character that would end the segment early,
+/// but it cannot help with `.` and `..`. Those are unreserved, so nothing in
+/// them needs escaping character by character, and URL parsing resolves them as
+/// relative path segments *after* decoding -- `%2E%2E` is a double-dot segment
+/// as surely as `..` is. There is no spelling of a dot-only segment that
+/// survives to reach a route.
+///
+/// So this is not name validation, which is the service's: it is the client
+/// reporting that it cannot express the request. The alternative is a URL that
+/// silently resolves to a different route and delivers the body -- on a write
+/// verb, a credential -- to whatever handler is left there.
+fn secret_identifier_is_addressable(identifier: &str) -> bool {
+    let decoded = identifier.replace("%2E", ".").replace("%2e", ".");
+    !decoded.chars().all(|character| character == '.')
+}
+
+/// The namespace a Secret listing is scoped to, encoded the same way.
+///
+/// The root is the bare delimiter, as it is for every other object's listing.
+fn build_secret_namespace_identifier(namespace: &[String], delimiter: &str) -> String {
+    if namespace.is_empty() {
+        return delimiter.to_string();
+    }
+    namespace
+        .iter()
+        .map(|segment| encode_identifier_component(segment))
+        .collect::<Vec<_>>()
+        .join(delimiter)
 }
 
 fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> String {
@@ -966,7 +1030,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         value: &str,
         namespace_path: &[String],
     ) -> Result<()> {
-        let secret_id = self.secret_id(name, namespace_path);
+        let secret_id = self.secret_id(name, namespace_path)?;
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/create"),
             &RemoteCreateSecretRequest { value },
@@ -975,7 +1039,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = self.secret_id(name, namespace_path);
+        let secret_id = self.secret_id(name, namespace_path)?;
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/alter"),
             &RemoteAlterSecretRequest { value },
@@ -984,7 +1048,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        let namespace_id = build_namespace_identifier(namespace_path, &self.client.id_delimiter);
+        let namespace_id =
+            build_secret_namespace_identifier(namespace_path, &self.client.id_delimiter);
         let path = format!("/v1/namespace/{namespace_id}/secret/list");
         let mut names = Vec::new();
         let mut page_token: Option<String> = None;
@@ -1017,7 +1082,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = self.secret_id(name, namespace_path);
+        let secret_id = self.secret_id(name, namespace_path)?;
         let req = self.client.post(&format!("/v1/secret/{secret_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
         self.client.check_response(&request_id, response).await?;
@@ -1025,7 +1090,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
-        let secret_id = self.secret_id(name, namespace_path);
+        let secret_id = self.secret_id(name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/secret/{secret_id}/describe"));
@@ -3291,6 +3356,99 @@ mod tests {
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 0);
         assert_eq!(batches[0].schema(), schema);
+    }
+
+    /// A name the service would refuse must still arrive at the Secret route
+    /// for it to refuse. Unencoded, `../jobs` is normalized away by the URL
+    /// builder and the create body -- which holds a credential -- is delivered
+    /// to whatever route is left, with none of the body suppression this one
+    /// has.
+    #[tokio::test]
+    async fn test_a_name_cannot_route_a_request_out_of_the_secret_surface() {
+        use std::sync::{Arc, Mutex};
+        for name in ["../jobs", "a/b", "with space", "q?x", "a#b", "a%2Fb"] {
+            let seen = Arc::new(Mutex::new(String::new()));
+            let captured = seen.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                *captured.lock().unwrap() = request.url().path().to_string();
+                http::Response::builder().status(200).body("{}").unwrap()
+            });
+            let _ = conn.create_secret(name, "sk-live-0001", &[]).await;
+            let path = seen.lock().unwrap().clone();
+            assert!(
+                path.starts_with("/v1/secret/") && path.ends_with("/create"),
+                "name {name:?} left the Secret route: {path}"
+            );
+        }
+    }
+
+    /// A dot-only identifier cannot be a path segment under any encoding, so the
+    /// client says so rather than sending a request that resolves elsewhere.
+    #[tokio::test]
+    async fn test_a_dot_only_identifier_is_refused_before_a_request_is_built() {
+        use std::sync::{Arc, Mutex};
+        for name in [".", "..", "..."] {
+            let reached = Arc::new(Mutex::new(false));
+            let flag = reached.clone();
+            let conn = Connection::new_with_handler(move |_| {
+                *flag.lock().unwrap() = true;
+                http::Response::builder().status(200).body("{}").unwrap()
+            });
+            let error = conn
+                .create_secret(name, "sk-live-0001", &[])
+                .await
+                .expect_err("dot-only name must not be addressable");
+            assert!(error.to_string().contains("cannot be addressed"), "{error}");
+            assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
+        }
+    }
+
+    /// Two different Secrets must not share one URL. Encoding the components
+    /// rather than the joined string is what keeps a segment containing the
+    /// delimiter from reading as two segments.
+    #[tokio::test]
+    async fn test_distinct_secret_identities_produce_distinct_routes() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            captured
+                .lock()
+                .unwrap()
+                .push(request.url().path().to_string());
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_secret("openai", &["prod$vision".to_string()])
+            .await
+            .unwrap();
+        conn.drop_secret("openai", &["prod".to_string(), "vision".to_string()])
+            .await
+            .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_ne!(seen[0], seen[1], "distinct identities collided: {seen:?}");
+    }
+
+    /// An identifier the service would accept is untouched by the encoding, so
+    /// the ordinary route reads like the table and Function routes beside it.
+    #[tokio::test]
+    async fn test_an_admissible_name_is_not_encoded() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(String::new()));
+        let captured = seen.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            *captured.lock().unwrap() = request.url().path().to_string();
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_secret(
+            "openai-prod.v1",
+            &["prod".to_string(), "vision_2".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            "/v1/secret/prod$vision_2$openai-prod.v1/drop"
+        );
     }
 
     #[tokio::test]
