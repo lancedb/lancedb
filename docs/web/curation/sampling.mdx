@@ -1,0 +1,98 @@
+---
+title: "Sampling a dataset"
+sidebarTitle: "Sampling"
+description: "Drawing a subset you can afford to work with, and fixing it when it has to be reproducible."
+icon: dice
+keywords: ["sampling", "tablesample", "subset", "eval set", "reproducible", "shuffle"]
+---
+
+Most curation starts with a subset. A question you can answer in ten seconds on
+1% of the data is worth asking twenty times; the same question on the whole
+table is worth asking once.
+
+## A quick look {#quick}
+
+<Badge color="red">Enterprise</Badge>
+
+```sql
+SELECT * FROM images TABLESAMPLE (1)       -- 1 percent
+SELECT * FROM images TABLESAMPLE (500 ROWS) -- 500 rows
+```
+
+A bare number is a percentage; add `ROWS` for a count. Use it while you are
+exploring — the cost of the query drops with the sample, and so does the cost
+of being wrong about what you wanted to ask.
+
+## Rows or fragments {#methods}
+
+```sql
+SELECT * FROM images TABLESAMPLE BERNOULLI (10)   -- rows
+SELECT * FROM images TABLESAMPLE SYSTEM (10)      -- fragments
+```
+
+`BERNOULLI` considers each row independently and reads across the whole table.
+`SYSTEM` picks whole Lance fragments and takes the rows in them — far less I/O,
+because it skips files rather than rows.
+
+The trade is uniformity. A fragment sample is only as representative as your
+write order. If rows arrived grouped by source, by date, or by label — which is
+usual — then a fragment sample inherits that grouping.
+
+<Note>
+Reach for `SYSTEM` when you want a cheap look, and `BERNOULLI` when the number
+you compute has to be defensible. Omitting the method gives `BERNOULLI`.
+</Note>
+
+## A fixed evaluation set {#fixed}
+
+Without a seed, every execution resamples. That is fine for exploring and wrong
+for evaluation — a metric computed on different rows each run is not comparable
+with itself.
+
+```sql
+SELECT * FROM images TABLESAMPLE (10) REPEATABLE (42)
+```
+
+The same seed against the same data gives the same rows, which is what makes a
+sample usable as a held-out set. If the underlying data changes, so does the
+draw — when you need the set frozen against that too, materialize it:
+
+```sql
+CREATE TABLE eval_set AS
+SELECT * FROM images TABLESAMPLE (10) REPEATABLE (42)
+```
+
+A [materialized view](/management/materialized-view) is the other option when
+you want it to track the source on a refresh rather than stay frozen.
+
+## Sampling both sides of a join {#joins}
+
+```sql
+SELECT * FROM a TABLESAMPLE (10) JOIN b TABLESAMPLE (10) ON a.id = b.id
+```
+
+Each side samples independently, so a row survives only if both of its sides
+were drawn. Sampling 10% of each side does **not** give 10% of the join — it
+gives roughly 1%. Sample once, after the join, unless you specifically want the
+smaller result.
+
+## Shuffling for training {#training}
+
+For a training loop rather than a query, the SDKs read a table in a shuffled
+order without SQL at all:
+
+```python
+from lancedb.permutation import Permutation
+
+permutation = Permutation.identity(table)
+dataloader = torch.utils.data.DataLoader(permutation)
+```
+
+This is the right tool for epoch-level shuffling, where you want every row
+eventually and only the order varies. `TABLESAMPLE` is for when you want fewer
+rows. See [Training](/training).
+
+## Reference {#reference}
+
+The full clause, its options and what it refuses are in
+[Sampling](/sql/sampling).

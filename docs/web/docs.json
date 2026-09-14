@@ -163,31 +163,10 @@
             ]
           },
           {
-            "group": "Management",
-            "pages": [
-              "management/index",
-              "management/database",
-              "management/namespace",
-              "management/table",
-              "tables/multimodal",
-              "tables/branching",
-              "management/materialized-view",
-              "management/function",
-              {
-                "group": "Indexing",
-                "pages": [
-                  "indexing/index",
-                  "indexing/vector-index",
-                  "indexing/fts-index",
-                  "indexing/scalar-index"
-                ]
-              }
-            ]
-          },
-          {
             "group": "Ingestion",
             "pages": [
               "ingestion/index",
+              "ingestion/create-table",
               "ingestion/insert",
               "ingestion/merge-insert",
               "ingestion/update",
@@ -204,6 +183,16 @@
               "search/filtering",
               "reranking/index",
               "search/explain"
+            ]
+          },
+          {
+            "group": "Data Curation",
+            "pages": [
+              "curation/index",
+              "curation/aggregate",
+              "curation/sampling",
+              "curation/join",
+              "curation/windowing"
             ]
           },
           {
@@ -225,9 +214,31 @@
             ]
           },
           {
+            "group": "Management",
+            "pages": [
+              "management/index",
+              "management/database",
+              "management/namespace",
+              "management/table",
+              "tables/multimodal",
+              "tables/branching",
+              "management/materialized-view",
+              "management/function"
+            ]
+          },
+          {
             "group": "Operations",
             "pages": [
-              "indexing/reindexing",
+              {
+                "group": "Indexing",
+                "pages": [
+                  "indexing/index",
+                  "indexing/vector-index",
+                  "indexing/fts-index",
+                  "indexing/scalar-index",
+                  "indexing/reindexing"
+                ]
+              },
               "maintenance/compaction",
               {
                 "group": "Storage",

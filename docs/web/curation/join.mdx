@@ -1,0 +1,91 @@
+---
+title: "Joining datasets"
+sidebarTitle: "Join"
+description: "Bringing labels, metadata and scores together with the rows they describe."
+icon: link
+keywords: ["join", "labels", "metadata", "enrichment", "namespace"]
+---
+
+<Badge color="red">Enterprise</Badge> Joins are SQL, and
+[SQL needs a deployment](/basics/apis).
+
+Curation usually means combining things that were produced separately — images
+in one table, human labels in another, model scores in a third. A join is how
+they become one dataset.
+
+## Attaching labels {#labels}
+
+```sql
+SELECT i.id, i.embedding, l.label
+FROM images AS i
+JOIN labels AS l ON l.image_id = i.id
+```
+
+An inner join keeps only rows that matched, which for curation is often exactly
+what you want: unlabelled rows are not training data.
+
+When you need to *see* what did not match, use a left join and filter:
+
+```sql
+SELECT i.id
+FROM images AS i
+LEFT JOIN labels AS l ON l.image_id = i.id
+WHERE l.image_id IS NULL
+```
+
+That is your unlabelled backlog, which is the thing worth counting before you
+plan an annotation round.
+
+## Across namespaces {#namespaces}
+
+Tables in different [namespaces](/management/namespace) join by their dotted
+paths — the catalog is one catalog, so there is nothing to federate:
+
+```sql
+SELECT i.id, u.team
+FROM prod.media.images AS i
+JOIN prod.reference.uploaders AS u ON u.id = i.uploader_id
+```
+
+## Joining a search result {#search}
+
+Full-text search is a table function, so its result is a relation and joins like
+any other. This is how you ask which categories a query matches, rather than
+just which rows:
+
+```sql
+SELECT c.name, count(*) AS hits
+FROM fts('documents', 'puppy') AS m
+JOIN categories AS c ON c.id = m.category_id
+GROUP BY c.name
+ORDER BY hits DESC
+```
+
+<Note>
+Vector search has no SQL form, so a similarity result cannot be joined this way.
+Run the search in an SDK, then join over its output — or write the result to a
+table first.
+</Note>
+
+## Making it fast {#performance}
+
+Two things dominate join cost on a lakehouse table.
+
+**Index the join key.** A [scalar index](/indexing/scalar-index) on the key lets
+the planner look rows up instead of scanning for them. Check with
+[`EXPLAIN`](/sql/explain): an indexed key shows a `ScalarIndexQuery`, an
+unindexed one shows a `LanceScan` feeding the join.
+
+**Do not carry wide columns through.** Select the columns you need before
+joining, not after. Embeddings and blobs are the expensive part of a multimodal
+table, and a join can materialize them many more times than the result has rows.
+
+```sql
+SELECT i.id, l.label
+FROM (SELECT id, uploader_id FROM images) AS i
+JOIN labels AS l ON l.image_id = i.id
+```
+
+## Reference {#reference}
+
+The join types and their semantics are in [Joins](/sql/join).
