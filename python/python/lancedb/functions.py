@@ -587,7 +587,6 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
-_DECLARED_SECRET = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
