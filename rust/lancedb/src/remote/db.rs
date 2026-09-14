@@ -434,14 +434,14 @@ impl<S: HttpSend> RemoteDatabase<S> {
     /// against a charset that does not exist yet.
     fn secret_id(&self, name: &str, namespace_path: &[String]) -> Result<String> {
         let identifier = build_secret_identifier(name, namespace_path, &self.client.id_delimiter);
-        if !secret_identifier_is_addressable(&identifier) {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "Secret identifier {identifier:?} cannot be addressed: a path segment of                      only dots is resolved as a relative path and never reaches the Secret                      route"
-                ),
-            });
-        }
-        Ok(identifier)
+        require_addressable(identifier)
+    }
+
+    fn secret_namespace_id(&self, namespace_path: &[String]) -> Result<String> {
+        require_addressable(build_secret_namespace_identifier(
+            namespace_path,
+            &self.client.id_delimiter,
+        ))
     }
 
     async fn post_secret_write<T: serde::Serialize>(&self, route: &str, body: &T) -> Result<()> {
@@ -625,14 +625,39 @@ fn build_secret_identifier(name: &str, namespace: &[String], delimiter: &str) ->
         .iter()
         .map(String::as_str)
         .chain(std::iter::once(name))
-        .map(encode_identifier_component)
+        .map(|component| encode_identifier_component(component, delimiter))
         .collect::<Vec<_>>()
         .join(delimiter)
 }
 
-/// One component of an identifier, escaped for a path segment.
-fn encode_identifier_component(component: &str) -> String {
-    urlencoding::encode(component).into_owned()
+/// One component of an identifier, escaped for a path segment and for the
+/// delimiter that will join it to the others.
+///
+/// Percent-encoding alone is not enough to make the join reversible. It leaves
+/// the unreserved characters untouched, and `.`, `-` and `_` are both
+/// unreserved and plausible delimiters -- so under `id_delimiter="."` the
+/// component `prod.vision` would join to the same string as the two components
+/// `prod` and `vision`, and the two distinct Secrets would share one route.
+/// Escaping the delimiter inside the component is what keeps the boundaries
+/// the caller drew.
+///
+/// The default `$` needs no special handling: it is not unreserved, so it is
+/// already escaped inside a component and only ever appears raw as the
+/// separator. Nothing on that path changes shape.
+fn encode_identifier_component(component: &str, delimiter: &str) -> String {
+    let encoded = urlencoding::encode(component).into_owned();
+    if delimiter.is_empty() || !encoded.contains(delimiter) {
+        return encoded;
+    }
+    encoded.replace(delimiter, &percent_encode_every_byte(delimiter))
+}
+
+/// Percent-encode every byte, whether or not it needs it.
+///
+/// Used for the delimiter, which has to be escaped inside a component precisely
+/// when `urlencoding` would leave it alone.
+fn percent_encode_every_byte(value: &str) -> String {
+    value.bytes().map(|byte| format!("%{byte:02X}")).collect()
 }
 
 /// Refuse an identifier that cannot be a path segment at all.
@@ -648,9 +673,17 @@ fn encode_identifier_component(component: &str) -> String {
 /// reporting that it cannot express the request. The alternative is a URL that
 /// silently resolves to a different route and delivers the body -- on a write
 /// verb, a credential -- to whatever handler is left there.
-fn secret_identifier_is_addressable(identifier: &str) -> bool {
+fn require_addressable(identifier: String) -> Result<String> {
     let decoded = identifier.replace("%2E", ".").replace("%2e", ".");
-    !decoded.chars().all(|character| character == '.')
+    if !decoded.is_empty() && decoded.chars().all(|character| character == '.') {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "identifier {identifier:?} cannot be addressed: a path segment of only dots is \
+                 resolved as a relative path and never reaches the route it was built for"
+            ),
+        });
+    }
+    Ok(identifier)
 }
 
 /// The namespace a Secret listing is scoped to, encoded the same way.
@@ -662,7 +695,7 @@ fn build_secret_namespace_identifier(namespace: &[String], delimiter: &str) -> S
     }
     namespace
         .iter()
-        .map(|segment| encode_identifier_component(segment))
+        .map(|segment| encode_identifier_component(segment, delimiter))
         .collect::<Vec<_>>()
         .join(delimiter)
 }
@@ -1048,8 +1081,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        let namespace_id =
-            build_secret_namespace_identifier(namespace_path, &self.client.id_delimiter);
+        let namespace_id = self.secret_namespace_id(namespace_path)?;
         let path = format!("/v1/namespace/{namespace_id}/secret/list");
         let mut names = Vec::new();
         let mut page_token: Option<String> = None;
@@ -3400,6 +3432,65 @@ mod tests {
                 .expect_err("dot-only name must not be addressable");
             assert!(error.to_string().contains("cannot be addressed"), "{error}");
             assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
+        }
+    }
+
+    /// A delimiter that is an unreserved character survives percent-encoding, so
+    /// it has to be escaped inside a component or two different identities join
+    /// to the same string.
+    #[tokio::test]
+    async fn test_a_configured_delimiter_cannot_alias_two_identities() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(request.url().path().to_string());
+                http::Response::builder().status(200).body("{}").unwrap()
+            },
+            ClientConfig {
+                id_delimiter: Some(".".to_string()),
+                ..Default::default()
+            },
+        );
+        conn.drop_secret("openai", &["prod.vision".to_string()])
+            .await
+            .unwrap();
+        conn.drop_secret("openai", &["prod".to_string(), "vision".to_string()])
+            .await
+            .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_ne!(seen[0], seen[1], "identities collided: {seen:?}");
+    }
+
+    /// Listing is addressed by a namespace identifier and needs the same
+    /// admission the Secret identifier gets: a dot-only namespace resolves away
+    /// and leaves the listing route entirely.
+    #[tokio::test]
+    async fn test_a_dot_only_namespace_cannot_leave_the_listing_route() {
+        use std::sync::{Arc, Mutex};
+        for namespace in [".", "..", "..."] {
+            let reached = Arc::new(Mutex::new(false));
+            let flag = reached.clone();
+            let conn = Connection::new_with_handler(move |_| {
+                *flag.lock().unwrap() = true;
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"secrets":[]}"#)
+                    .unwrap()
+            });
+            let error = conn
+                .list_secrets(&[namespace.to_string()])
+                .await
+                .expect_err("a dot-only namespace must not be addressable");
+            assert!(error.to_string().contains("cannot be addressed"), "{error}");
+            assert!(
+                !*reached.lock().unwrap(),
+                "{namespace:?} reached the transport"
+            );
         }
     }
 
