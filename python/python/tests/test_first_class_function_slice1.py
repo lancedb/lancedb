@@ -15,6 +15,7 @@ from lancedb.functions import (
     PythonRuntimeSpec,
     SecretBinding,
     RefreshColumnResult,
+    SecretReference,
 )
 from lancedb.table import AsyncTable
 
@@ -114,7 +115,9 @@ def test_function_version_identity_is_immutable_and_exact():
     assert version.image.manifest_digest.startswith("sha256:")
     assert version.version != version.image.manifest_digest
     assert list(version.secret_bindings) == [
-        SecretBinding(kind="env", variable="HF_TOKEN", secret_ref="hf-prod")
+        SecretBinding(
+            kind="env", variable="HF_TOKEN", secret_ref=SecretReference(name="hf-prod")
+        )
     ]
 
     with pytest.raises((TypeError, ValueError)):
@@ -309,7 +312,7 @@ def test_canonical_client_values_carry_bindings_and_no_credentials():
     )
     canonical = json.loads(version.to_canonical_json())
     assert canonical["secret_bindings"] == [
-        {"kind": "env", "variable": "HF_TOKEN", "secret_ref": "hf-prod"}
+        {"kind": "env", "variable": "HF_TOKEN", "secret_ref": {"name": "hf-prod"}}
     ]
     assert_no_secret_values(canonical)
 

@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use lancedb::Error;
-use lancedb::function::{FunctionRegistrationRequest, SecretBinding};
+use lancedb::function::{FunctionRegistrationRequest, SecretBinding, SecretReference};
 use serde_json::Value;
 
 fn fixture(name: &str) -> String {
@@ -70,7 +70,7 @@ fn secret_bound_registration_request_matches_shared_canonical_golden() {
         request.secret_bindings,
         [SecretBinding::Env {
             variable: "OPENAI_API_KEY".to_string(),
-            secret_ref: "openai-prod".to_string(),
+            secret_ref: SecretReference::new("openai-prod"),
         }]
     );
     assert_eq!(
