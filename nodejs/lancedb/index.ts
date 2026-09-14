@@ -77,6 +77,9 @@ export {
   VectorColumnOptions,
 } from "./arrow";
 
+export { blob, isBlobField, BlobFile } from "./blob";
+export type { BlobOptions } from "./blob";
+
 export {
   Connection,
   CreateTableOptions,
@@ -94,13 +97,9 @@ export {
   RenameTableOptions,
 } from "./connection";
 
-export {
-  Job,
-  JobDescription,
-  JobFailureInfo,
-  JobInfo,
-  Session,
-} from "./native.js";
+export { JobFailureInfo, JobInfo, Session } from "./native.js";
+
+export { Job, JobEventsOptions } from "./job";
 
 export {
   AutoQuery,

@@ -203,6 +203,93 @@ async def test_async_hybrid_query_default_limit(table: AsyncTable):
     assert texts.count("a") == 1
 
 
+@pytest.mark.asyncio
+async def test_async_hybrid_query_offset(table: AsyncTable):
+    # The offset window of a hybrid query must be a suffix of the same query
+    # run without an offset. Skipping the first rows of each sub-query instead
+    # of the first rows of the fused result silently changes which rows land in
+    # the window.
+    full = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .limit(4)
+        .with_row_id()
+        .to_arrow()
+    )
+    assert len(full) == 4
+
+    second_page = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .offset(2)
+        .limit(2)
+        .with_row_id()
+        .to_arrow()
+    )
+    assert second_page["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
+
+    first_page = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .limit(2)
+        .with_row_id()
+        .to_arrow()
+    )
+    # Paging through the result must visit every row exactly once: no row
+    # repeated from the previous page and none dropped between the two.
+    paged = first_page["_rowid"].to_pylist() + second_page["_rowid"].to_pylist()
+    assert sorted(paged) == sorted(full["_rowid"].to_pylist())
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_fts_first_default_limit(table: AsyncTable):
+    # nearest_to() and nearest_to_text() build their new sibling sub-query from
+    # scratch, and that is the sub-query the default limit ends up on. So the
+    # side that carries the limit depends on the order the hybrid query was
+    # built in, and looking at only one side loses the limit for half the ways
+    # a hybrid query can be written. Without a limit the combined results are
+    # not truncated at all and the whole union of both candidate lists is
+    # returned.
+    await table.add([{"text": "dog", "vector": [50.0 + i, 50.0]} for i in range(10)])
+
+    result = await (
+        table.query().nearest_to_text("dog").nearest_to([0.1, 0.1]).to_arrow()
+    )
+    assert len(result) == 10
+
+    offset_result = await (
+        table.query().nearest_to_text("dog").nearest_to([0.1, 0.1]).offset(2).to_arrow()
+    )
+    assert len(offset_result) == 10
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_explain_plan_matches_execution(table: AsyncTable):
+    # Paging rewrites the sub-queries: each one fetches limit + offset rows with
+    # no offset of its own, and the window is sliced out after fusion. The plans
+    # have to be built from those rewritten sub-queries, otherwise explain_plan
+    # and analyze_plan describe a query that is never run.
+    query = (
+        table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").offset(2).limit(2)
+    )
+    await query.to_arrow()
+
+    plan = await query.explain_plan()
+    assert [
+        line.strip() for line in plan.splitlines() if "GlobalLimitExec" in line
+    ] == [
+        "GlobalLimitExec: skip=0, fetch=4",
+        "GlobalLimitExec: skip=0, fetch=4",
+    ]
+
+    analyzed = await query.analyze_plan()
+    assert analyzed.count("skip=0, fetch=4") == 2
+    assert "skip=2" not in analyzed
+
+
 def test_hybrid_query_offset(sync_table: Table):
     # The offset window of a hybrid query must be a suffix of the same query
     # run without an offset -- it must not be silently ignored.
