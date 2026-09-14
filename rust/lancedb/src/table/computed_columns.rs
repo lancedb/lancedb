@@ -71,6 +71,22 @@ pub const FUNCTION_BINDINGS_META_KEY: &str = "lancedb::function_bindings";
 /// Version of the schema-level Function binding envelope.
 pub const FUNCTION_BINDINGS_VERSION: u32 = 1;
 
+/// Field metadata key holding `{fragment id -> input signature}` as JSON,
+/// recorded by the refresh that last computed each fragment. Outside the
+/// declaration namespace on purpose: a declaration is immutable through
+/// metadata edits, this is rewritten by every refresh. Seeded empty at
+/// declaration, so a column is tracked from birth; a column without it was
+/// declared before signatures existed.
+pub const SOURCE_SIGNATURE_META_KEY: &str = "computed_refresh.source_signature";
+
+/// Field metadata key holding the definition digest a column was last
+/// computed under. A change to it makes every row stale.
+pub const DEFINITION_VERSION_META_KEY: &str = "computed_refresh.definition_version";
+
+/// Field metadata key holding the table version the signature map describes:
+/// where a refresh starts following compactions to carry freshness forward.
+pub const RECORDED_AT_VERSION_META_KEY: &str = "computed_refresh.recorded_at_version";
+
 /// Value of [`KIND_META_KEY`] for a column defined by a SQL expression.
 pub const SQL_KIND: &str = "sql";
 
@@ -139,6 +155,7 @@ fn computed_column_metadata(expression: &str, inputs: &[String]) -> HashMap<Stri
             INPUTS_META_KEY.to_string(),
             serde_json::to_string(inputs).unwrap_or_else(|_| "[]".to_string()),
         ),
+        (SOURCE_SIGNATURE_META_KEY.to_string(), "{}".to_string()),
     ])
 }
 
@@ -163,6 +180,7 @@ pub fn function_computed_column_metadata(
             INPUTS_META_KEY.to_string(),
             serde_json::to_string(inputs).unwrap_or_else(|_| "[]".to_string()),
         ),
+        (SOURCE_SIGNATURE_META_KEY.to_string(), "{}".to_string()),
     ])
 }
 
@@ -1295,7 +1313,8 @@ pub(crate) fn ensure_not_an_input(schema: &SchemaRef, paths: &[&str]) -> Result<
 }
 
 /// Reject a write that supplies values for a computed column directly:
-/// only refresh materializes one, and refresh never revisits a filled row.
+/// only refresh materializes one, and only refresh decides what it
+/// recomputes.
 pub(crate) fn ensure_not_written<'a>(
     schema: &ArrowSchema,
     written: impl IntoIterator<Item = &'a str>,
@@ -1470,7 +1489,9 @@ fn ensure_no_foreign_declaration(field: &ArrowField) -> Result<()> {
 /// kind, the expression, the inputs -- would bypass that validation or move
 /// a binding out from under a refresh. Drop the column and declare it again.
 pub(crate) fn is_declaration_key(key: &str) -> bool {
-    key == COMPUTED_COLUMN_META_KEY || key.starts_with("computed_column.")
+    key == COMPUTED_COLUMN_META_KEY
+        || key.starts_with("computed_column.")
+        || key.starts_with("computed_refresh.")
 }
 
 /// Reject retyping a computed column itself.
