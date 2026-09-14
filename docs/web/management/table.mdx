@@ -1,0 +1,159 @@
+---
+title: "Tables"
+sidebarTitle: "Table"
+description: "The object most operations act on: creating, opening, renaming, cloning and dropping one."
+icon: table
+keywords: ["table", "create_table", "open_table", "clone", "rename", "drop"]
+---
+
+A table is rows and columns, versioned. It is what searches read, what writes
+commit to, and what indexes and branches belong to.
+
+This page covers the table as a catalog object. Getting data into one is
+[Ingest](/ingestion); changing its shape is
+[Schema evolution](/tables/schema).
+
+## What a table carries {#carries}
+
+| | |
+| --- | --- |
+| **Columns** | including vectors, blobs, and [computed](/feature-engineering/add-computed-column) columns |
+| **Versions** | every write commits one, so reads can [travel back](/tables/versioning) |
+| **Indexes** | vector, full-text and scalar, built over its columns |
+| **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
+
+## Creating {#create}
+
+<CodeGroup>
+```python Python icon="python"
+tbl = db.create_table("documents", data)
+tbl = db.create_table("documents", schema=schema)     # empty, typed
+```
+
+```typescript TypeScript icon="square-js"
+const tbl = await db.createTable("documents", data);
+const tbl = await db.createEmptyTable("documents", schema);
+```
+
+```sql SQL
+CREATE TABLE documents (id BIGINT, title VARCHAR)
+```
+</CodeGroup>
+
+`data` can be a list of objects, an Arrow table or reader, a pandas or polars
+frame, or Pydantic models. [Ingesting data](/ingestion) covers each, plus
+`exist_ok` and `mode="overwrite"` for re-runnable scripts.
+
+<Warning>
+An explicit schema is where nullability is decided, and where you opt into
+**stable row ids** -- which cannot be enabled later and are required for a
+[materialized view](/management/materialized-view) source. See
+[Limits](/basics/limits#schema).
+</Warning>
+
+## Opening and listing {#open}
+
+<CodeGroup>
+```python Python icon="python"
+tbl = db.open_table("documents")
+db.table_names()
+db.table_exists("documents")
+```
+
+```typescript TypeScript icon="square-js"
+const tbl = await db.openTable("documents");
+await db.tableNames();
+```
+
+```sql SQL
+SHOW TABLES
+```
+</CodeGroup>
+
+Each accepts `namespace_path` to act inside a [namespace](/management/namespace)
+rather than at the database root. TypeScript has no `tableExists`.
+
+## Renaming and cloning {#rename-clone}
+
+```python
+db.rename_table("documents", "docs")
+
+db.clone_table(
+    "docs_snapshot",
+    source_uri="s3://bucket/db/documents.lance",
+    source_version=42,       # or source_tag="release-1"
+    is_shallow=True,
+)
+```
+
+A **shallow** clone -- the default -- references the source's data files rather
+than copying them, so it is fast and cheap regardless of table size. It is the
+practical way to branch an experiment off a known version, or to pin a training
+set to the exact version a model saw.
+
+<Warning>
+A shallow clone depends on the source's files continuing to exist. If the source
+is [compacted](/maintenance/compaction) past the retention window, the version
+the clone points at can be pruned. Use a deep clone (`is_shallow=False`) when
+the copy has to outlive the source's history.
+</Warning>
+
+## Dropping {#drop}
+
+<CodeGroup>
+```python Python icon="python"
+db.drop_table("documents")
+job = db.drop_table_async("documents")
+db.drop_all_tables()
+```
+
+```typescript TypeScript icon="square-js"
+await db.dropTable("documents");
+const job = await db.dropTableAsync("documents");
+await db.dropAllTables();
+```
+
+```sql SQL
+DROP TABLE documents
+```
+</CodeGroup>
+
+<Warning>
+Dropping removes the table and **every version of it**.
+[Versioning](/tables/versioning) does not survive a drop, and neither
+`drop_all_tables` nor `drop_database` asks for confirmation.
+</Warning>
+
+On a large table the drop can take a while, so `drop_table_async` returns a
+[job](/basics/jobs) rather than blocking.
+
+## The full surface {#surface}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_table` | `createTable` | `CREATE TABLE` |
+| create empty | `create_table(schema=)` | `createEmptyTable` | `CREATE TABLE` |
+| open | `open_table` | `openTable` | -- |
+| list | `table_names`, `list_tables` | `tableNames`, `listTables` | `SHOW TABLES` |
+| exists | `table_exists` | -- | -- |
+| rename | `rename_table` | `renameTable` | -- |
+| clone | `clone_table` | `cloneTable` | -- |
+| drop | `drop_table`, `drop_table_async` | `dropTable`, `dropTableAsync` | `DROP TABLE` |
+| drop all | `drop_all_tables` | `dropAllTables` | -- |
+
+## Where to go next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Ingesting data" icon="inbox" href="/ingestion">
+    Creating a table from data, and writing to one that exists.
+  </Card>
+  <Card title="Schema evolution" icon="boxes-stacked" href="/tables/schema">
+    Adding, altering and dropping columns.
+  </Card>
+  <Card title="Versioning" icon="clock-rotate-left" href="/tables/versioning">
+    Every write commits a version; reads can go back.
+  </Card>
+  <Card title="Branching" icon="code-branch" href="/tables/branching">
+    Isolated lines of change, merged or discarded.
+  </Card>
+</CardGroup>

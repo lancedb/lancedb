@@ -90,6 +90,18 @@
     {
       "source": "/tutorials/feature-engineering",
       "destination": "/tutorials/feature-engineering/feature-engineering-101"
+    },
+    {
+      "source": "/tables",
+      "destination": "/management/table"
+    },
+    {
+      "source": "/namespaces",
+      "destination": "/management/namespace"
+    },
+    {
+      "source": "/namespaces/usage",
+      "destination": "/management/namespace"
     }
   ],
   "navigation": {
@@ -124,22 +136,11 @@
             "pages": [
               "management/index",
               "management/database",
-              {
-                "group": "Namespace",
-                "pages": [
-                  "namespaces/index",
-                  "namespaces/usage"
-                ]
-              },
-              {
-                "group": "Table",
-                "pages": [
-                  "tables/index",
-                  "tables/schema",
-                  "tables/versioning",
-                  "tables/branching"
-                ]
-              },
+              "management/namespace",
+              "management/table",
+              "tables/schema",
+              "tables/versioning",
+              "tables/branching",
               "management/materialized-view",
               "management/function"
             ]
