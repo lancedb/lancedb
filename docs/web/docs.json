@@ -73,7 +73,7 @@
     },
     {
       "source": "/tables/multimodal",
-      "destination": "/basics/data-types#blob"
+      "destination": "/management/table#multimodal"
     },
     {
       "source": "/search/select",
@@ -220,7 +220,6 @@
               "management/database",
               "management/namespace",
               "management/table",
-              "tables/multimodal",
               "tables/branching",
               "management/materialized-view",
               "management/function"

@@ -30,7 +30,7 @@ For example, a real-time dashboard might require strong consistency, while a bat
 fine with eventual consistency. Stronger consistency is not free — the smaller the interval, the more
 often each read pays the cost of refreshing against object storage, which raises per-read latency and cost.
 
-This setting works for both local ([LanceTable](/tables-and-namespaces#understanding-tables)) and remote
+This setting works for both local ([LanceTable](/management/database#uris)) and remote
 tables. It only affects read operations —
 write operations are always consistent.
 

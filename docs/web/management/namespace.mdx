@@ -159,7 +159,7 @@ println!("Created table: {}", table.name());
 
 The example above showed local directory-based namespaces. LanceDB also supports namespaces backed by remote object stores and external catalogs, via the REST namespace implementation.
 
-For remote object stores with central metadata/catalog services (either commercial or open source),
+For remote object stores with central metadata/basics/catalog services (either commercial or open source),
 use the REST namespace implementation. It is backed by REST routes
 (for example `POST /v1/namespace/{id}/create` and `GET /v1/namespace/{id}/list`) and server-provided table locations.
 

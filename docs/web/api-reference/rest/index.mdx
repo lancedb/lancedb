@@ -46,7 +46,7 @@ export LANCEDB_DATABASE="your-database-name"
 4. Check that you can reach the deployment and list tables:
 
 ```bash
-curl -X GET "$LANCEDB_URI/v1/tables" \
+curl -X GET "$LANCEDB_URI/v1/management/table" \
    -H "Content-Type: application/json" \
    -H "x-api-key: $LANCEDB_API_KEY" \
    -H "x-lancedb-database: $LANCEDB_DATABASE"
@@ -66,7 +66,7 @@ curl -X POST "$LANCEDB_URI/v1/tables/words" \
 6. Check that the table has been created:
 
 ```bash
-curl -X GET "$LANCEDB_URI/v1/tables" \
+curl -X GET "$LANCEDB_URI/v1/management/table" \
    -H "Content-Type: application/json" \
    -H "x-api-key: $LANCEDB_API_KEY" \
    -H "x-lancedb-database: $LANCEDB_DATABASE"
