@@ -139,8 +139,6 @@ listing a storage directory.
 
 ::: lancedb.functions.PythonRuntimeSpec
 
-::: lancedb.functions.FunctionImage
-
 ::: lancedb.functions.FunctionVersionRef
 
 ::: lancedb.functions.ApplicationInput
