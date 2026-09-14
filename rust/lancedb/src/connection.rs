@@ -827,7 +827,7 @@ impl Connection {
 pub struct ConnectRequest {
     /// Database URI
     ///
-    /// ### Accpeted URI formats
+    /// ### Accepted URI formats
     ///
     /// - `/path/to/database` - local database on file system.
     /// - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store

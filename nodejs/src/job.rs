@@ -127,7 +127,7 @@ impl Job {
 }
 
 /// Serialise Arrow batches as a single IPC stream for the TypeScript layer.
-pub(crate) fn batches_to_ipc_buffer(batches: &[RecordBatch]) -> napi::Result<Buffer> {
+fn batches_to_ipc_buffer(batches: &[RecordBatch]) -> napi::Result<Buffer> {
     let Some(first) = batches.first() else {
         return Ok(Buffer::from(Vec::<u8>::new()));
     };

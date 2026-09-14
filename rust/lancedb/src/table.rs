@@ -240,7 +240,7 @@ enum BadVectorHandling {
     /// An error is returned
     #[default]
     Error,
-    /// The offending row is droppped
+    /// The offending row is dropped
     Drop,
     /// The invalid/missing items are replaced by fill_value
     Fill(f32),
@@ -1326,7 +1326,7 @@ impl Table {
     /// Note: if your condition is something like "some_id_column == 7" and
     /// you are updating many rows (with different ids) then you will get
     /// better performance with a single [`merge_insert`] call instead of
-    /// repeatedly calilng this method.
+    /// repeatedly calling this method.
     pub fn update(&self) -> UpdateBuilder {
         UpdateBuilder::new(self.inner.clone())
     }
@@ -2804,7 +2804,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
+        let batches = computed_columns::admit_create_source(batches)?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2904,6 +2904,7 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
+        let batches = computed_columns::admit_create_source(batches)?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
@@ -5677,7 +5678,7 @@ mod tests {
             TableStatistics {
                 num_rows: 250,
                 num_indices: 0,
-                total_bytes: 8925,
+                total_bytes: 8969,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
