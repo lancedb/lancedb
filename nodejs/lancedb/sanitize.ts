@@ -3,7 +3,7 @@
 
 // The utilities in this file help sanitize data from the user's arrow
 // library into the types expected by vectordb's arrow library.  Node
-// generally allows for mulitple versions of the same library (and sometimes
+// generally allows for multiple versions of the same library (and sometimes
 // even multiple copies of the same version) to be installed at the same
 // time.  However, arrow-js uses instanceof which expected that the input
 // comes from the exact same library instance.  This is not always the case

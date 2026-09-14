@@ -1628,7 +1628,7 @@ class Table(ABC):
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
@@ -3850,7 +3850,7 @@ class LanceTable(Table):
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
@@ -5647,7 +5647,7 @@ class AsyncTable:
         if fill_value is None:
             fill_value = 0.0
 
-        # _santitize_data is an old code path, but we will use it until the
+        # _sanitize_data is an old code path, but we will use it until the
         # new code path is ready.
         if mode == "overwrite":
             # For overwrite, apply the same preprocessing as create_table
@@ -5823,7 +5823,7 @@ class AsyncTable:
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image

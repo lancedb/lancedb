@@ -77,6 +77,9 @@ export {
   VectorColumnOptions,
 } from "./arrow";
 
+export { blob, isBlobField, BlobFile } from "./blob";
+export type { BlobOptions } from "./blob";
+
 export {
   Connection,
   CreateTableOptions,

@@ -9,6 +9,15 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("name", ["JobInfo", "JobDescription", "JobFailureInfo"])
+def test_job_metadata_types_have_resolvable_modules(name):
+    """Documentation tools resolve re-exports through each type's module."""
+    public_type = getattr(importlib.import_module("lancedb.job"), name)
+    defining_module = importlib.import_module(public_type.__module__)
+
+    assert getattr(defining_module, public_type.__name__, None) is public_type
+
+
 def test_pyo3_abi_matches_minimum_supported_python():
     project_dir = Path(__file__).parents[2]
     pyproject = (project_dir / "pyproject.toml").read_text()

@@ -3,6 +3,7 @@
 
 //! Namespace-based database implementation that delegates table management to lance-namespace
 
+use lance_datafusion::utils::StreamingWriteSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -250,11 +251,11 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
-        if let Some(read_consistency_inverval) = self.read_consistency_interval {
-            if read_consistency_inverval.is_zero() {
+        if let Some(interval) = self.read_consistency_interval {
+            if interval.is_zero() {
                 Ok(ReadConsistency::Strong)
             } else {
-                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+                Ok(ReadConsistency::Eventual(interval))
             }
         } else {
             Ok(ReadConsistency::Manual)
@@ -304,6 +305,10 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Refuse a bad declaration before the namespace records a table.
+        crate::table::computed_columns::ensure_declarations_are_planned(
+            &request.data.arrow_schema(),
+        )?;
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
         let mut existing_table = None;
