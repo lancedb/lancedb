@@ -966,7 +966,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
         let secret_id = self.secret_id(name, namespace_path);
-        let req = self.client.post(&format!("/v1/secret/{secret_id}/describe"));
+        let req = self
+            .client
+            .post(&format!("/v1/secret/{secret_id}/describe"));
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         response.json().await.err_to_http(request_id)
