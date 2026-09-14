@@ -93,12 +93,13 @@ def test_function_version_identity_is_immutable_and_exact():
     value = job_result("remote_function_job.json")
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.name == "embed"
-    assert version.version == "fv_01K3EXACT"
+    assert version.version == version.image.manifest_digest
+    assert version.version.startswith("sha256:")
 
     with pytest.raises((TypeError, ValueError)):
         version.version = "fv_changed"
     with pytest.raises(TypeError, match="immutable"):
-        version.runtime.env["TOKENIZERS_PARALLELISM"] = "true"
+        version.image.descriptor["format_version"] = "changed"
 
     changed = dict(value)
     changed["version"] = "fv_changed"
@@ -182,14 +183,14 @@ def test_function_version_keeps_named_struct_outputs_in_one_application():
 def test_unknown_fields_and_discriminators_are_forward_decodable():
     value = job_result("remote_function_job.json")
     value["future_version_metadata"] = {"retention_class": "catalog"}
-    value["runtime"] = {"kind": "wasm", "module_digest": "sha256:wasm"}
+    value["image"]["descriptor"]["future_interface"] = {"kind": "wasm"}
     value["signature"]["output"]["kind"] = "future_output_shape"
 
     version = FunctionVersion.from_json(json.dumps(value))
-    assert version.runtime.kind == "wasm"
-    assert version.runtime.python_version is None
-    assert version.runtime.environment is None
-    assert json.loads(version.to_canonical_json())["runtime"] == {"kind": "wasm"}
+    assert version.image.descriptor["future_interface"] == {"kind": "wasm"}
+    assert json.loads(version.to_canonical_json())["image"]["descriptor"][
+        "future_interface"
+    ] == {"kind": "wasm"}
     assert version.signature.output.kind == "future_output_shape"
 
 

@@ -295,20 +295,21 @@ class PythonRuntimeSpec(_RemoteValue):
         return self
 
 
-class FunctionVersion(_RemoteValue):
-    """An exact immutable Function version returned by Enterprise.
+class FunctionImage(_RemoteValue):
+    """A complete OCI Function image identified by its exact manifest digest."""
 
-    The GPU execution requirement is part of this identity. CPU and memory sizing,
-    priority, concurrency, and retry policy belong to the execution platform.
-    """
+    manifest_digest: str
+    descriptor: Mapping[str, Any]
+    source: bool
+
+
+class FunctionVersion(_RemoteValue):
+    """An immutable catalog name bound to a concrete OCI Function image."""
 
     name: str
     version: str
-    artifact: FunctionArtifact
+    image: FunctionImage
     signature: FunctionSignature
-    runtime: PythonRuntimeSpec
-    runtime_digest: str
-    environment_digest: str
     created_at: str
 
     def __call__(self, **inputs: Any) -> FunctionApplication:
@@ -1402,6 +1403,7 @@ __all__ = [
     "FunctionRegistrationRequest",
     "FunctionResultField",
     "FunctionSignature",
+    "FunctionImage",
     "FunctionVersion",
     "FunctionVersionRef",
     "InputBinding",

@@ -26,8 +26,11 @@ fn function_version_job_result_matches_shared_canonical_golden() {
     let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
 
     assert_eq!(version.name(), "embed");
-    assert_eq!(version.version(), "fv_01K3EXACT");
-    assert_eq!(version.runtime_digest(), "sha256:runtime");
+    assert_eq!(
+        version.version(),
+        "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
+    );
+    assert_eq!(version.image().manifest_digest, version.version());
     assert_eq!(
         version.to_canonical_json().expect("canonical JSON"),
         fixture("remote_function_version.canonical.json").trim()
@@ -113,22 +116,18 @@ fn refresh_job_result_matches_shared_canonical_golden() {
 fn unknown_fields_and_discriminators_are_forward_decodable() {
     let mut result = job_result("remote_function_job.json");
     result["future_version_metadata"] = serde_json::json!({"retention_class": "catalog"});
-    result["runtime"] = serde_json::json!({
-        "kind": "wasm",
-        "module_digest": "sha256:wasm"
-    });
+    result["image"]["descriptor"]["future_interface"] = serde_json::json!({"version": 2});
     result["signature"]["output"]["kind"] = Value::String("future_output_shape".to_string());
 
     let version = FunctionVersion::from_json(&result.to_string()).expect("future remote value");
-    assert_eq!(version.runtime().kind(), "wasm");
-    assert_eq!(version.runtime().python_version(), None);
+    assert_eq!(version.image().descriptor["future_interface"]["version"], 2);
     assert_eq!(version.signature().output.kind, "future_output_shape");
     assert_eq!(
         serde_json::from_str::<Value>(
             &version.to_canonical_json().expect("canonical future value")
         )
-        .expect("canonical JSON")["runtime"],
-        serde_json::json!({"kind": "wasm"})
+        .expect("canonical JSON")["image"]["descriptor"]["future_interface"],
+        serde_json::json!({"version": 2})
     );
 }
 
@@ -136,9 +135,7 @@ fn unknown_fields_and_discriminators_are_forward_decodable() {
 fn floating_point_application_literals_are_rejected_consistently() {
     let error = FunctionApplication::from_json(&fixture("remote_function_application_float.json"))
         .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("floating-point Function literals")
-    );
+    assert!(error
+        .to_string()
+        .contains("floating-point Function literals"));
 }

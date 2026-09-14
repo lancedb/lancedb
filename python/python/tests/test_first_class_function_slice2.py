@@ -45,6 +45,11 @@ FIXTURES = (
 )
 
 
+IMAGE_VERSION = json.loads(
+    (FIXTURES / "remote_function_version.canonical.json").read_text()
+)["version"]
+
+
 @udf(
     pip=["numpy>=2"],
     env={"MODE": "test"},
@@ -1199,11 +1204,11 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.create_function_async(normalize_score)
     with pytest.raises(NotImplementedError, match=message):
-        db.get_function("normalize_score", version="fv_exact")
+        db.get_function("normalize_score", version=IMAGE_VERSION)
     with pytest.raises(NotImplementedError, match=message):
         db.list_functions()
     with pytest.raises(NotImplementedError, match=message):
-        db.drop_function("normalize_score", version="fv_exact")
+        db.drop_function("normalize_score", version=IMAGE_VERSION)
 
 
 @contextlib.contextmanager
@@ -1230,15 +1235,13 @@ def _mock_remote_function_catalog():
             if self.path == "/v1/function/normalize_score/create":
                 state["version"] = {
                     "name": "normalize_score",
-                    "version": "fv_exact",
-                    "artifact": {
-                        key: body["artifact"][key]
-                        for key in ("kind", "digest", "entrypoint")
-                    },
+                    "version": IMAGE_VERSION,
+                    "image": json.loads(
+                        (
+                            FIXTURES / "remote_function_version.canonical.json"
+                        ).read_text()
+                    )["image"],
                     "signature": body["signature"],
-                    "runtime": body["runtime"],
-                    "runtime_digest": "sha256:runtime",
-                    "environment_digest": "sha256:environment",
                     "created_at": "2026-08-21T00:00:00Z",
                 }
                 response = {"job_id": "job-register"}
@@ -1252,10 +1255,10 @@ def _mock_remote_function_catalog():
                     "result": state["version"],
                 }
             elif self.path == "/v1/function/normalize_score/describe":
-                assert body == {"version": "fv_exact"}
+                assert body == {"version": IMAGE_VERSION}
                 response = state["version"]
             elif self.path == "/v1/function/normalize_score/drop":
-                assert body == {"version": "fv_exact"}
+                assert body == {"version": IMAGE_VERSION}
                 response = {"dropped": True}
             else:
                 status = 404
@@ -1278,7 +1281,7 @@ def _mock_remote_function_catalog():
                     "functions": [
                         {
                             "name": "normalize_score",
-                            "version": "fv_exact",
+                            "version": IMAGE_VERSION,
                             "definition": state["version"],
                         }
                     ],
@@ -1314,7 +1317,7 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
 
     assert created == reopened
     assert reopened.name == "normalize_score"
-    assert reopened.version == "fv_exact"
+    assert reopened.version == IMAGE_VERSION
     create_request = state["requests"][0][1]
     expected_request = json.loads(
         normalize_score.registration_request.to_canonical_json()
@@ -1334,7 +1337,7 @@ def test_blocking_remote_registration_returns_function_version():
         created = db.create_function(normalize_score)
 
     assert created.name == "normalize_score"
-    assert created.version == "fv_exact"
+    assert created.version == IMAGE_VERSION
     assert [path for path, _ in state["requests"]] == [
         "/v1/function/normalize_score/create",
         "/v1/jobs/describe",
@@ -1392,12 +1395,12 @@ def test_remote_drop_function_sends_exact_version():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert db.drop_function("normalize_score", version="fv_exact") is True
+        assert db.drop_function("normalize_score", version=IMAGE_VERSION) is True
 
     assert state["requests"] == [
         (
             "/v1/function/normalize_score/drop",
-            {"version": "fv_exact"},
+            {"version": IMAGE_VERSION},
         )
     ]
 
@@ -1411,11 +1414,11 @@ async def test_async_remote_drop_function_sends_exact_version():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert await db.drop_function("normalize_score", version="fv_exact") is True
+        assert await db.drop_function("normalize_score", version=IMAGE_VERSION) is True
 
     assert state["requests"] == [
         (
             "/v1/function/normalize_score/drop",
-            {"version": "fv_exact"},
+            {"version": IMAGE_VERSION},
         )
     ]

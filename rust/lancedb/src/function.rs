@@ -396,19 +396,21 @@ impl Serialize for PythonRuntimeSpec {
     }
 }
 
-/// Immutable Function version returned by the Enterprise catalog.
-///
-/// The GPU execution requirement is part of this identity. CPU and memory sizing,
-/// priority, concurrency, and retry policy belong to the execution platform.
+/// A complete OCI Function image. Its digest is independent of catalog names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionImage {
+    pub manifest_digest: String,
+    pub descriptor: Value,
+    pub source: bool,
+}
+
+/// An immutable catalog name bound to a concrete OCI manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
     version: String,
-    artifact: FunctionArtifact,
+    image: FunctionImage,
     signature: FunctionSignature,
-    runtime: PythonRuntimeSpec,
-    runtime_digest: String,
-    environment_digest: String,
     created_at: String,
 }
 
@@ -416,31 +418,15 @@ impl FunctionVersion {
     pub fn name(&self) -> &str {
         &self.name
     }
-
     pub fn version(&self) -> &str {
         &self.version
     }
-
-    pub fn artifact(&self) -> &FunctionArtifact {
-        &self.artifact
+    pub fn image(&self) -> &FunctionImage {
+        &self.image
     }
-
     pub fn signature(&self) -> &FunctionSignature {
         &self.signature
     }
-
-    pub fn runtime(&self) -> &PythonRuntimeSpec {
-        &self.runtime
-    }
-
-    pub fn runtime_digest(&self) -> &str {
-        &self.runtime_digest
-    }
-
-    pub fn environment_digest(&self) -> &str {
-        &self.environment_digest
-    }
-
     pub fn created_at(&self) -> &str {
         &self.created_at
     }
@@ -697,11 +683,9 @@ mod conda_environment_tests {
         )
         .unwrap();
         assert_eq!(conda.channels, ["conda-forge"]);
-        assert!(
-            serde_json::to_string(&conda)
-                .unwrap()
-                .contains(r#""channels":["conda-forge"]"#)
-        );
+        assert!(serde_json::to_string(&conda)
+            .unwrap()
+            .contains(r#""channels":["conda-forge"]"#));
 
         let pip: PythonEnvironmentSpec =
             serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
