@@ -1299,7 +1299,7 @@ impl VectorQuery {
     /// This can be useful when there is a narrow filter to allow these queries to
     /// spend more time searching and avoid potential false negatives.
     ///
-    /// Set to None to search all partitions, if needed, to satsify the limit
+    /// Set to None to search all partitions, if needed, to satisfy the limit
     pub fn maximum_nprobes(mut self, maximum_nprobes: Option<usize>) -> Result<Self> {
         if let Some(maximum_nprobes) = maximum_nprobes {
             if maximum_nprobes == 0 {

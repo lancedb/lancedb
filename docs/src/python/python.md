@@ -157,6 +157,12 @@ listing a storage directory.
 
 ::: lancedb.job.AsyncJob
 
+::: lancedb.job.JobInfo
+
+::: lancedb.job.JobDescription
+
+::: lancedb.job.JobFailureInfo
+
 ::: lancedb.sql.Query
 
 ::: lancedb.sql.AsyncQuery
@@ -309,6 +315,12 @@ still work. Queries return descriptors. Call
 ::: lancedb.exceptions.MissingValueError
 
 ::: lancedb.exceptions.MissingColumnError
+
+::: lancedb.exceptions.JobNotFoundError
+
+::: lancedb.exceptions.JobFailedError
+
+::: lancedb.exceptions.JobCancelledError
 
 ## Integrations
 
