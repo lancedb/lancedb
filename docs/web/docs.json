@@ -163,7 +163,7 @@
             ]
           },
           {
-            "group": "Ingestion",
+            "group": "Data Ingestion",
             "pages": [
               "ingestion/index",
               "ingestion/create-table",
