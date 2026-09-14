@@ -557,20 +557,24 @@ impl ResolvedRedirect {
             });
         }
 
-        let host = parsed.host_str().ok_or(Error::InvalidInput {
-            message: "OAuth redirect_uri must include a loopback host".to_string(),
-        })?;
-        let ip = if host.eq_ignore_ascii_case("localhost") {
-            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-        } else {
-            host.parse::<IpAddr>()
-                .ok()
-                .filter(IpAddr::is_loopback)
-                .ok_or(Error::InvalidInput {
+        let ip = match parsed.host() {
+            Some(url::Host::Domain(host)) if host.eq_ignore_ascii_case("localhost") => {
+                IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            }
+            Some(url::Host::Ipv4(ip)) if ip.is_loopback() => IpAddr::V4(ip),
+            Some(url::Host::Ipv6(ip)) if ip.is_loopback() => IpAddr::V6(ip),
+            Some(_) => {
+                return Err(Error::InvalidInput {
                     message: "OAuth redirect_uri must use a loopback host".to_string(),
-                })?
+                });
+            }
+            None => {
+                return Err(Error::InvalidInput {
+                    message: "OAuth redirect_uri must include a loopback host".to_string(),
+                });
+            }
         };
-        let port = parsed.port_or_known_default().ok_or(Error::InvalidInput {
+        let port = parsed.port().ok_or(Error::InvalidInput {
             message: "OAuth redirect_uri must include a port".to_string(),
         })?;
         if port == 0 {
@@ -685,27 +689,37 @@ impl AuthorizationCodeSource {
         listener: &TcpListener,
         expected_state: &str,
     ) -> Result<String> {
-        let accepted = tokio::time::timeout(
-            Duration::from_secs(AUTHORIZATION_CALLBACK_TIMEOUT_SECS),
-            listener.accept(),
-        )
-        .await
-        .map_err(|_| Error::Runtime {
-            message: "Timed out waiting for the OAuth authorization callback".to_string(),
-        })?
-        .map_err(|e| Error::Runtime {
-            message: format!("Failed to accept OAuth callback connection: {e}"),
-        })?;
-        let (mut stream, _) = accepted;
-        let callback =
-            read_authorization_callback(&mut stream, &self.redirect.callback_path, expected_state)
-                .await;
-        let success = matches!(&callback, Ok(AuthorizationCallback::Code(_)));
-        write_callback_response(&mut stream, success).await;
-
-        match callback? {
-            AuthorizationCallback::Code(code) => Ok(code),
-            AuthorizationCallback::ProviderError(message) => Err(Error::Runtime { message }),
+        let deadline =
+            TokioInstant::now() + Duration::from_secs(AUTHORIZATION_CALLBACK_TIMEOUT_SECS);
+        loop {
+            let (mut stream, _) = tokio::time::timeout_at(deadline, listener.accept())
+                .await
+                .map_err(|_| Error::Runtime {
+                    message: "Timed out waiting for the OAuth authorization callback".to_string(),
+                })?
+                .map_err(|e| Error::Runtime {
+                    message: format!("Failed to accept OAuth callback connection: {e}"),
+                })?;
+            match read_authorization_callback(
+                &mut stream,
+                &self.redirect.callback_path,
+                expected_state,
+            )
+            .await
+            {
+                Ok(AuthorizationCallback::Code(code)) => {
+                    write_callback_response(&mut stream, true).await;
+                    return Ok(code);
+                }
+                Ok(AuthorizationCallback::ProviderError(message)) => {
+                    write_callback_response(&mut stream, false).await;
+                    return Err(Error::Runtime { message });
+                }
+                Err(error) => {
+                    debug!("Ignoring unrelated OAuth callback connection: {error}");
+                    write_callback_response(&mut stream, false).await;
+                }
+            }
         }
     }
 
@@ -966,16 +980,35 @@ async fn read_authorization_callback(
     expected_path: &str,
     expected_state: &str,
 ) -> Result<AuthorizationCallback> {
-    let mut buffer = vec![0; 16 * 1024];
-    let count = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer))
-        .await
-        .map_err(|_| Error::Runtime {
-            message: "Timed out reading the OAuth authorization callback".to_string(),
-        })?
-        .map_err(|e| Error::Runtime {
-            message: format!("Failed to read OAuth authorization callback: {e}"),
-        })?;
-    let request = std::str::from_utf8(&buffer[..count]).map_err(|e| Error::Runtime {
+    const MAX_CALLBACK_REQUEST_BYTES: usize = 16 * 1024;
+    let deadline = TokioInstant::now() + Duration::from_secs(10);
+    let mut request = Vec::with_capacity(1024);
+    loop {
+        let mut buffer = [0; 1024];
+        let count = tokio::time::timeout_at(deadline, stream.read(&mut buffer))
+            .await
+            .map_err(|_| Error::Runtime {
+                message: "Timed out reading the OAuth authorization callback".to_string(),
+            })?
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to read OAuth authorization callback: {e}"),
+            })?;
+        if count == 0 {
+            return Err(Error::Runtime {
+                message: "OAuth authorization callback closed before sending a request".to_string(),
+            });
+        }
+        request.extend_from_slice(&buffer[..count]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if request.len() >= MAX_CALLBACK_REQUEST_BYTES {
+            return Err(Error::Runtime {
+                message: "OAuth authorization callback request was too large".to_string(),
+            });
+        }
+    }
+    let request = std::str::from_utf8(&request).map_err(|e| Error::Runtime {
         message: format!("OAuth authorization callback was not valid UTF-8: {e}"),
     })?;
     parse_authorization_callback(request, expected_path, expected_state)
@@ -1232,9 +1265,17 @@ impl OAuthHeaderProvider {
         let refresh_token = state.refresh_token.clone();
         let resp = if let Some(refresh_token) = refresh_token.as_deref() {
             debug!("Refreshing OAuth access token via {:?}", self.token_source);
-            match self.token_source.refresh_token(refresh_token).await? {
-                Some(response) => response,
-                None => self.token_source.fetch_token().await?,
+            match self.token_source.refresh_token(refresh_token).await {
+                Ok(Some(response)) => response,
+                Ok(None) => self.token_source.fetch_token().await?,
+                Err(error) => {
+                    warn!(
+                        "OAuth refresh failed; acquiring a new token via {:?}: {error}",
+                        self.token_source
+                    );
+                    state.refresh_token = None;
+                    self.token_source.fetch_token().await?
+                }
             }
         } else {
             debug!("Acquiring new OAuth token via {:?}", self.token_source);
@@ -1410,6 +1451,29 @@ mod tests {
     }
 
     #[test]
+    fn test_authorization_redirect_requires_explicit_port() {
+        let options = AuthorizationCodeOptions::new().redirect_uri("http://127.0.0.1/callback");
+
+        let err = ResolvedRedirect::new(&options).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message == "OAuth redirect_uri must include a port"
+        ));
+    }
+
+    #[test]
+    fn test_authorization_redirect_accepts_ipv6_loopback() {
+        let options = AuthorizationCodeOptions::new().redirect_uri("http://[::1]:8400/callback");
+
+        let redirect = ResolvedRedirect::new(&options).unwrap();
+        assert_eq!(
+            redirect.bind_addr,
+            "[::1]:8400".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
     fn test_authorization_callback_parsing() {
         let callback = parse_authorization_callback(
             "GET /callback?code=abc%20123&state=expected HTTP/1.1\r\nHost: localhost\r\n",
@@ -1452,6 +1516,56 @@ mod tests {
                 "OAuth authorization failed: user cancelled".to_string()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn test_authorization_callback_ignores_unrelated_connection_and_partial_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let source = AuthorizationCodeSource::new(
+            "http://127.0.0.1:1".to_string(),
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+            AuthorizationCodeOptions::new()
+                .redirect_uri(format!("http://127.0.0.1:{port}/callback")),
+        )
+        .unwrap();
+
+        let browser = tokio::spawn(async move {
+            let mut unrelated = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            unrelated
+                .write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            unrelated.read_to_end(&mut response).await.unwrap();
+            assert!(
+                String::from_utf8(response)
+                    .unwrap()
+                    .starts_with("HTTP/1.1 400")
+            );
+
+            let mut callback = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            callback
+                .write_all(b"GET /callback?code=auth")
+                .await
+                .unwrap();
+            tokio::task::yield_now().await;
+            callback
+                .write_all(b"-code&state=expected HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        assert_eq!(
+            source
+                .wait_for_callback(&listener, "expected")
+                .await
+                .unwrap(),
+            "auth-code"
+        );
+        browser.await.unwrap();
     }
 
     #[tokio::test]
@@ -1530,7 +1644,7 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn test_device_authorization_polls_until_success() {
         let (issuer_url, token_requests, server) = spawn_device_server().await;
         let source = DeviceCodeSource::new(
@@ -1547,6 +1661,69 @@ mod tests {
         assert_eq!(response.access_token, "device-token");
         assert_eq!(response.refresh_token.as_deref(), Some("device-refresh"));
         assert_eq!(token_requests.load(Ordering::SeqCst), 3);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_device_authorization_reports_access_denied() {
+        let (issuer_url, server) = spawn_device_error_server("access_denied").await;
+        let source = DeviceCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+        )
+        .unwrap();
+        let device = test_device_authorization_response(60, 1);
+
+        let err = source.poll_for_token(&device).await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Runtime { message }
+                if message == "Device authorization was denied by the user"
+        ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_device_authorization_reports_provider_expiry() {
+        let (issuer_url, server) = spawn_device_error_server("expired_token").await;
+        let source = DeviceCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+        )
+        .unwrap();
+        let device = test_device_authorization_response(60, 1);
+
+        let err = source.poll_for_token(&device).await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Runtime { message }
+                if message == "Device authorization expired before authentication completed"
+        ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_device_authorization_stops_at_local_deadline() {
+        let (issuer_url, server) = spawn_discovery_server(1).await;
+        let source = DeviceCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+        )
+        .unwrap();
+        let device = test_device_authorization_response(1, 5);
+
+        let err = source.poll_for_token(&device).await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Runtime { message }
+                if message == "Device authorization expired before authentication completed"
+        ));
         server.await.unwrap();
     }
 
@@ -1602,6 +1779,59 @@ mod tests {
         assert_eq!(
             provider.token_state.read().await.refresh_token.as_deref(),
             Some("refresh")
+        );
+    }
+
+    #[derive(Debug)]
+    struct FailedRefreshTokenSource {
+        fetches: Arc<AtomicUsize>,
+        refreshes: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TokenSource for FailedRefreshTokenSource {
+        async fn fetch_token(&self) -> Result<TokenResponse> {
+            self.fetches.fetch_add(1, Ordering::SeqCst);
+            Ok(TokenResponse {
+                access_token: "reauthenticated".to_string(),
+                refresh_token: Some("new-refresh".to_string()),
+                expires_in: Some(3600),
+                token_type: Some("Bearer".to_string()),
+            })
+        }
+
+        async fn refresh_token(&self, refresh_token: &str) -> Result<Option<TokenResponse>> {
+            assert_eq!(refresh_token, "revoked-refresh");
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Err(Error::Runtime {
+                message: "invalid_grant".to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_header_provider_reauthenticates_after_refresh_failure() {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let provider = OAuthHeaderProvider {
+            token_source: Box::new(FailedRefreshTokenSource {
+                fetches: Arc::clone(&fetches),
+                refreshes: Arc::clone(&refreshes),
+            }),
+            token_state: Arc::new(RwLock::new(TokenState {
+                access_token: Some("expired".to_string()),
+                refresh_token: Some("revoked-refresh".to_string()),
+                expires_at: Some(Instant::now() - Duration::from_secs(1)),
+            })),
+            refresh_buffer: Duration::ZERO,
+        };
+
+        assert_eq!(provider.get_valid_token().await.unwrap(), "reauthenticated");
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.token_state.read().await.refresh_token.as_deref(),
+            Some("new-refresh")
         );
     }
 
@@ -1887,6 +2117,48 @@ mod tests {
         });
 
         (issuer_url, token_requests, server)
+    }
+
+    fn test_device_authorization_response(
+        expires_in: u64,
+        interval: u64,
+    ) -> DeviceAuthorizationResponse {
+        DeviceAuthorizationResponse {
+            device_code: "device-code".to_string(),
+            user_code: "ABCD-EFGH".to_string(),
+            verification_uri: "http://127.0.0.1/verify".to_string(),
+            verification_uri_complete: None,
+            expires_in,
+            interval: Some(interval),
+        }
+    }
+
+    async fn spawn_device_error_server(error: &'static str) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_line, _) = read_http_request(&mut stream).await;
+                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                    let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
+                    write_json_response(&mut stream, "200 OK", &discovery).await;
+                } else if request_line.starts_with("POST /token ") {
+                    write_json_response(
+                        &mut stream,
+                        "400 Bad Request",
+                        &format!(r#"{{"error":"{error}"}}"#),
+                    )
+                    .await;
+                } else {
+                    write_json_response(&mut stream, "404 Not Found", "{}").await;
+                }
+            }
+        });
+
+        (issuer_url, server)
     }
 
     async fn spawn_oauth_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
