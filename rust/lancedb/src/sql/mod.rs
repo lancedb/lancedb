@@ -1,7 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Handles to SQL queries running on a remote database.
+//! SQL: handles to queries running on a remote database, and the seam an
+//! embedder extends the dialect through.
+//!
+//! The extension seam is behind the default-on `sql` feature. It lets a host
+//! add statements to the dialect from outside this crate: a statement brings
+//! its own grammar ([`CustomSqlHandler`]), and declares its audit label and
+//! the access it needs ([`SqlStatement`]), so the host's authorization and
+//! auditing do not have to know each statement by name.
+
+#[cfg(feature = "sql")]
+mod dml;
+#[cfg(feature = "sql")]
+mod observer;
+#[cfg(feature = "sql")]
+mod parser;
+#[cfg(feature = "sql")]
+mod statement;
+
+#[cfg(feature = "sql")]
+pub use dml::{DmlOperation, DmlResult, dml_result_schema};
+#[cfg(feature = "sql")]
+pub use observer::{CommittedWrite, DmlEventKind, WriteObserver, observe_write};
+#[cfg(feature = "sql")]
+pub use parser::route_custom_sql;
+#[cfg(feature = "sql")]
+pub use statement::{
+    AccessRequirement, CreateKind, CustomSqlHandler, DatabaseScope, RelationKind,
+    RequirementContext, SqlStatement, StatementRegistry, SystemScope, WriteMode,
+};
 
 use std::{fmt, sync::Arc};
 
