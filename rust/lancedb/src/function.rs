@@ -535,9 +535,13 @@ impl SecretReference {
 /// here, and the rules that are per-Function -- how many Secrets a Function may
 /// bind, which ones it needs -- stay answerable from one place.
 ///
-/// Unknown kinds decode rather than failing the whole FunctionVersion, as
-/// [`PythonRuntimeSpec`] does for runtimes. The payload is intentionally not
-/// retained: the client does not proxy catalog values.
+/// A mode this client does not know decodes rather than failing the whole
+/// FunctionVersion, the way [`PythonRuntimeSpec`] handles a runtime it does not
+/// know. That takes both halves: [`SecretBinding::Unrecognized`] gives the wire
+/// somewhere to land, and `#[non_exhaustive]` denies callers an exhaustive
+/// match, so a mode added later arrives as a case they were already required to
+/// handle rather than as a break. The payload is deliberately dropped: the
+/// client does not proxy catalog values.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum SecretBinding {
