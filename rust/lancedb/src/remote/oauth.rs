@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -297,9 +298,16 @@ impl TokenState {
 trait TokenSource: Send + Sync + std::fmt::Debug {
     async fn fetch_token(&self) -> Result<TokenResponse>;
 
-    async fn refresh_token(&self, _refresh_token: &str) -> Result<Option<TokenResponse>> {
-        Ok(None)
+    async fn refresh_token(&self, _refresh_token: &str) -> Result<RefreshResult> {
+        Ok(RefreshResult::Unsupported)
     }
+}
+
+#[derive(Debug)]
+enum RefreshResult {
+    Refreshed(TokenResponse),
+    Reauthenticate,
+    Unsupported,
 }
 
 struct OidcClient {
@@ -465,7 +473,7 @@ impl OidcClient {
         })
     }
 
-    async fn refresh_token(&self, refresh_token: &str) -> Result<TokenResponse> {
+    async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
         let endpoint = self.get_token_endpoint().await?;
         let mut params = vec![
             ("grant_type".to_string(), "refresh_token".to_string()),
@@ -475,7 +483,39 @@ impl OidcClient {
         if let Some(secret) = self.client_secret.as_ref() {
             params.push(("client_secret".to_string(), secret.clone()));
         }
-        self.post_token_request(&endpoint, &params).await
+        let response = self
+            .http_client
+            .post(&endpoint)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Refresh token request to {endpoint} failed: {e}"),
+            })?;
+        if response.status().is_success() {
+            return response
+                .json()
+                .await
+                .map(RefreshResult::Refreshed)
+                .map_err(|e| Error::Runtime {
+                    message: format!("Failed to parse refresh token response: {e}"),
+                });
+        }
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let error_code = serde_json::from_str::<OAuthErrorResponse>(&body)
+            .ok()
+            .map(|error| error.error);
+        if matches!(
+            error_code.as_deref(),
+            Some("invalid_grant" | "invalid_token")
+        ) {
+            return Ok(RefreshResult::Reauthenticate);
+        }
+        Err(Error::Runtime {
+            message: format!("Refresh token request failed with status {status}: {body}"),
+        })
     }
 }
 
@@ -764,8 +804,8 @@ impl TokenSource for AuthorizationCodeSource {
             .await
     }
 
-    async fn refresh_token(&self, refresh_token: &str) -> Result<Option<TokenResponse>> {
-        self.oidc.refresh_token(refresh_token).await.map(Some)
+    async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
+        self.oidc.refresh_token(refresh_token).await
     }
 }
 
@@ -885,16 +925,20 @@ impl DeviceCodeSource {
                 params.push(("client_secret".to_string(), secret.clone()));
             }
 
-            let response = self
+            let response = match self
                 .oidc
                 .http_client
                 .post(&endpoint)
                 .form(&params)
                 .send()
                 .await
-                .map_err(|e| Error::Runtime {
-                    message: format!("Device token request to {endpoint} failed: {e}"),
-                })?;
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    warn!("Device token request to {endpoint} failed; retrying: {error}");
+                    continue;
+                }
+            };
             if response.status().is_success() {
                 return response.json().await.map_err(|e| Error::Runtime {
                     message: format!("Failed to parse device token response: {e}"),
@@ -910,6 +954,7 @@ impl DeviceCodeSource {
                     interval += Duration::from_secs(5);
                     continue;
                 }
+                Some("temporarily_unavailable") => continue,
                 Some("access_denied") => {
                     return Err(Error::Runtime {
                         message: "Device authorization was denied by the user".to_string(),
@@ -920,6 +965,12 @@ impl DeviceCodeSource {
                         message: "Device authorization expired before authentication completed"
                             .to_string(),
                     });
+                }
+                _ if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status.is_server_error() =>
+                {
+                    warn!("Device token endpoint returned {status}; retrying");
+                    continue;
                 }
                 _ => {
                     let detail = oauth_error
@@ -954,8 +1005,8 @@ impl TokenSource for DeviceCodeSource {
         self.poll_for_token(&device).await
     }
 
-    async fn refresh_token(&self, refresh_token: &str) -> Result<Option<TokenResponse>> {
-        self.oidc.refresh_token(refresh_token).await.map(Some)
+    async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
+        self.oidc.refresh_token(refresh_token).await
     }
 }
 
@@ -969,7 +1020,12 @@ fn random_urlsafe_string(length: usize) -> String {
 
 fn launch_browser(url: Url) {
     drop(tokio::task::spawn_blocking(move || {
-        if let Err(error) = webbrowser::open(url.as_str()) {
+        let result = if let Some(browser) = std::env::var_os("LANCEDB_OAUTH_BROWSER") {
+            Command::new(browser).arg(url.as_str()).status().map(drop)
+        } else {
+            webbrowser::open(url.as_str())
+        };
+        if let Err(error) = result {
             warn!("Could not open an OAuth browser automatically: {error}");
         }
     }));
@@ -1265,12 +1321,12 @@ impl OAuthHeaderProvider {
         let refresh_token = state.refresh_token.clone();
         let resp = if let Some(refresh_token) = refresh_token.as_deref() {
             debug!("Refreshing OAuth access token via {:?}", self.token_source);
-            match self.token_source.refresh_token(refresh_token).await {
-                Ok(Some(response)) => response,
-                Ok(None) => self.token_source.fetch_token().await?,
-                Err(error) => {
+            match self.token_source.refresh_token(refresh_token).await? {
+                RefreshResult::Refreshed(response) => response,
+                RefreshResult::Unsupported => self.token_source.fetch_token().await?,
+                RefreshResult::Reauthenticate => {
                     warn!(
-                        "OAuth refresh failed; acquiring a new token via {:?}: {error}",
+                        "OAuth refresh token was rejected; acquiring a new token via {:?}",
                         self.token_source
                     );
                     state.refresh_token = None;
@@ -1645,6 +1701,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_refresh_invalid_grant_requires_reauthentication() {
+        let (issuer_url, server) =
+            spawn_refresh_error_server("400 Bad Request", r#"{"error":"invalid_grant"}"#).await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            source.oidc.refresh_token("revoked").await.unwrap(),
+            RefreshResult::Reauthenticate
+        ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_refresh_transient_failure_remains_retryable() {
+        let (issuer_url, server) = spawn_refresh_error_server(
+            "503 Service Unavailable",
+            r#"{"error":"temporarily_unavailable"}"#,
+        )
+        .await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        let err = source.oidc.refresh_token("still-valid").await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Runtime { message }
+                if message.contains("503 Service Unavailable")
+        ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_device_authorization_polls_until_success() {
         let (issuer_url, token_requests, server) = spawn_device_server().await;
         let source = DeviceCodeSource::new(
@@ -1661,6 +1762,25 @@ mod tests {
         assert_eq!(response.access_token, "device-token");
         assert_eq!(response.refresh_token.as_deref(), Some("device-refresh"));
         assert_eq!(token_requests.load(Ordering::SeqCst), 3);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_device_authorization_retries_transient_failures() {
+        let (issuer_url, token_requests, server) = spawn_device_transient_server().await;
+        let source = DeviceCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+        )
+        .unwrap();
+        let device = test_device_authorization_response(10, 1);
+
+        let response = source.poll_for_token(&device).await.unwrap();
+
+        assert_eq!(response.access_token, "device-token");
+        assert_eq!(token_requests.load(Ordering::SeqCst), 4);
         server.await.unwrap();
     }
 
@@ -1745,10 +1865,10 @@ mod tests {
             })
         }
 
-        async fn refresh_token(&self, refresh_token: &str) -> Result<Option<TokenResponse>> {
+        async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
             assert_eq!(refresh_token, "refresh");
             self.refreshes.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(TokenResponse {
+            Ok(RefreshResult::Refreshed(TokenResponse {
                 access_token: "refreshed".to_string(),
                 refresh_token: None,
                 expires_in: Some(3600),
@@ -1800,12 +1920,10 @@ mod tests {
             })
         }
 
-        async fn refresh_token(&self, refresh_token: &str) -> Result<Option<TokenResponse>> {
+        async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
             assert_eq!(refresh_token, "revoked-refresh");
             self.refreshes.fetch_add(1, Ordering::SeqCst);
-            Err(Error::Runtime {
-                message: "invalid_grant".to_string(),
-            })
+            Ok(RefreshResult::Reauthenticate)
         }
     }
 
@@ -1832,6 +1950,54 @@ mod tests {
         assert_eq!(
             provider.token_state.read().await.refresh_token.as_deref(),
             Some("new-refresh")
+        );
+    }
+
+    #[derive(Debug)]
+    struct TransientRefreshFailureSource {
+        fetches: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TokenSource for TransientRefreshFailureSource {
+        async fn fetch_token(&self) -> Result<TokenResponse> {
+            self.fetches.fetch_add(1, Ordering::SeqCst);
+            unreachable!("a transient refresh failure must not start an interactive flow")
+        }
+
+        async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
+            assert_eq!(refresh_token, "valid-refresh");
+            Err(Error::Runtime {
+                message: "token endpoint temporarily unavailable".to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_header_provider_preserves_refresh_token_after_transient_failure() {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let provider = OAuthHeaderProvider {
+            token_source: Box::new(TransientRefreshFailureSource {
+                fetches: Arc::clone(&fetches),
+            }),
+            token_state: Arc::new(RwLock::new(TokenState {
+                access_token: Some("expired".to_string()),
+                refresh_token: Some("valid-refresh".to_string()),
+                expires_at: Some(Instant::now() - Duration::from_secs(1)),
+            })),
+            refresh_buffer: Duration::ZERO,
+        };
+
+        let err = provider.get_valid_token().await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Runtime { message }
+                if message == "token endpoint temporarily unavailable"
+        ));
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            provider.token_state.read().await.refresh_token.as_deref(),
+            Some("valid-refresh")
         );
     }
 
@@ -2053,6 +2219,34 @@ mod tests {
         (issuer_url, request_body, server)
     }
 
+    async fn spawn_refresh_error_server(
+        status: &'static str,
+        response_body: &'static str,
+    ) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_line, body) = read_http_request(&mut stream).await;
+                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                    let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
+                    write_json_response(&mut stream, "200 OK", &discovery).await;
+                } else if request_line.starts_with("POST /token ") {
+                    assert!(body.contains("grant_type=refresh_token"));
+                    assert!(body.contains("refresh_token="));
+                    write_json_response(&mut stream, status, response_body).await;
+                } else {
+                    write_json_response(&mut stream, "404 Not Found", "{}").await;
+                }
+            }
+        });
+
+        (issuer_url, server)
+    }
+
     async fn spawn_device_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2112,6 +2306,57 @@ mod tests {
                     }
                 } else {
                     write_json_response(&mut stream, "404 Not Found", "{}").await;
+                }
+            }
+        });
+
+        (issuer_url, token_requests, server)
+    }
+
+    async fn spawn_device_transient_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let server_token_requests = Arc::clone(&token_requests);
+
+        let server = tokio::spawn(async move {
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_line, _) = read_http_request(&mut stream).await;
+                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                    let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
+                    write_json_response(&mut stream, "200 OK", &discovery).await;
+                    continue;
+                }
+
+                assert!(request_line.starts_with("POST /token "));
+                match server_token_requests.fetch_add(1, Ordering::SeqCst) {
+                    0 => drop(stream),
+                    1 => {
+                        write_json_response(
+                            &mut stream,
+                            "503 Service Unavailable",
+                            r#"{"error":"server_error"}"#,
+                        )
+                        .await;
+                    }
+                    2 => {
+                        write_json_response(
+                            &mut stream,
+                            "400 Bad Request",
+                            r#"{"error":"temporarily_unavailable"}"#,
+                        )
+                        .await;
+                    }
+                    _ => {
+                        write_json_response(
+                            &mut stream,
+                            "200 OK",
+                            r#"{"access_token":"device-token","expires_in":3600}"#,
+                        )
+                        .await;
+                    }
                 }
             }
         });
