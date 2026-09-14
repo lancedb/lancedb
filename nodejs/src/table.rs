@@ -15,6 +15,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
+use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
@@ -327,6 +328,44 @@ impl Table {
                     .collect::<Result<Vec<_>>>()?,
             ),
         ))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn blob_columns(&self) -> napi::Result<Vec<String>> {
+        self.inner_ref()?.blob_columns().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn fetch_blobs(
+        &self,
+        column: String,
+        row_ids: Vec<BigInt>,
+    ) -> napi::Result<Vec<Option<Buffer>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let array = self
+            .inner_ref()?
+            .fetch_blobs(column.as_str(), &row_ids)
+            .await
+            .default_error()?;
+        Ok(copy_blob_buffers(array))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn fetch_blob_files(
+        &self,
+        column: String,
+        row_ids: Vec<BigInt>,
+    ) -> napi::Result<Vec<Option<BlobFile>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let files = self
+            .inner_ref()?
+            .fetch_blob_files(column.as_str(), &row_ids)
+            .await
+            .default_error()?;
+        Ok(files
+            .into_iter()
+            .map(|file| file.map(BlobFile::new))
+            .collect())
     }
 
     #[napi(catch_unwind)]

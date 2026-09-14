@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use env_logger::Env;
 use napi_derive::*;
 
+mod blob;
 mod connection;
 mod error;
 mod header;
