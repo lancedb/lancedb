@@ -13,10 +13,23 @@
 //! by an [`AtomicPtr`] to a tokio runtime that we own.  A `pthread_atfork`
 //! child handler nulls the pointer; the next `spawn` rebuilds the runtime in
 //! the child.  This mirrors the pattern used in the Lance Python bindings.
+//!
+//! Normal (non-fork) process exit has no equivalent handling: nothing ever
+//! tells this runtime to shut down, so its worker threads are simply still
+//! running, uncoordinated with the interpreter, right up until the process
+//! ends. If one of them is mid-task exactly as `Py_Finalize` starts tearing
+//! down interpreter state, it can panic on state that's already gone -- and
+//! since that happens on a background thread with no PyO3-wrapped call frame
+//! to catch it (or, worse, while another unwind is already in progress),
+//! Rust aborts the whole process rather than failing that one call. See
+//! [`shutdown`], registered as a Python `atexit` callback, which closes that
+//! gap by giving the runtime a coordinated, bounded exit while the
+//! interpreter is still fully valid.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::time::Duration;
 
 use pyo3::{Bound, PyAny, PyResult, Python, conversion::IntoPyObject};
 use pyo3_async_runtimes::{
@@ -63,6 +76,37 @@ fn get_runtime() -> &'static runtime::Runtime {
 /// own worker threads.
 pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     get_runtime().block_on(fut)
+}
+
+/// Gracefully quiesce the owned runtime, meant to run at normal process exit.
+///
+/// Takes the runtime through the same atomic slot `get_runtime()` uses, so a
+/// caller that races with this either gets the runtime before it is swapped
+/// out, or transparently builds a fresh one after (safe, if pointless, this
+/// late in the program's life) -- never a dangling reference.
+///
+/// `shutdown_timeout` rather than a bare `drop`: dropping a tokio `Runtime`
+/// waits (in the worst case indefinitely) for its worker threads to join,
+/// which is exactly what the fork handler above avoids by leaking instead.
+/// A bounded timeout gives genuinely in-flight work -- a connection pool's
+/// keep-alive, a graceful close -- a real chance to finish, then forcibly
+/// abandons whatever has not, so this can never hang process exit.
+///
+/// Must reset `RUNTIME_INSTALLING` alongside `RUNTIME`, exactly as
+/// `atfork_child` does: that flag only ever transitions false -> true, for
+/// whichever thread wins the race to build the current runtime, and nothing
+/// else ever clears it back to false again. `get_runtime()` relies on it
+/// being false precisely when `RUNTIME` is null; leaving it true after
+/// nulling `RUNTIME` here would strand every later call in its wait loop
+/// forever, since no thread could ever again win that false -> true edge to
+/// build a replacement.
+pub fn shutdown(timeout: Duration) {
+    let ptr = RUNTIME.swap(std::ptr::null_mut(), Ordering::SeqCst);
+    if !ptr.is_null() {
+        let runtime = unsafe { Box::from_raw(ptr) };
+        runtime.shutdown_timeout(timeout);
+    }
+    RUNTIME_INSTALLING.store(false, Ordering::SeqCst);
 }
 
 /// Runs in async-signal context after `fork()` in the child.  We can only
@@ -148,4 +192,38 @@ where
     T: for<'py> IntoPyObject<'py> + Send + 'static,
 {
     pyo3_async_runtimes::generic::future_into_py::<LanceRuntime, _, T>(py, fut)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // One test, not several: RUNTIME/RUNTIME_INSTALLING are process-wide
+    // statics, and Rust runs tests in parallel by default, so separate test
+    // functions touching them would race each other. Exercising the whole
+    // create -> shutdown -> lazily-rebuild -> shutdown-again sequence in one
+    // function keeps it self-contained instead of pulling in a
+    // test-serialization dependency for a single file.
+    #[test]
+    fn test_shutdown_stops_and_the_runtime_rebuilds_lazily_after() {
+        // No runtime created yet in this process: shutdown must be a no-op,
+        // not a null-pointer dereference.
+        shutdown(Duration::from_secs(1));
+
+        // Force the runtime into existence, then shut it down. Bounded by
+        // the timeout, so a hang here means shutdown itself is broken, not
+        // that the test is slow.
+        assert_eq!(block_on(async { 1 + 1 }), 2);
+        shutdown(Duration::from_secs(5));
+
+        // A caller after shutdown -- e.g. a stray call racing with the
+        // atexit callback -- must get a fresh, working runtime rather than
+        // a dangling reference into the one just torn down.
+        assert_eq!(block_on(async { 2 + 2 }), 4);
+
+        // Shutting down twice in a row (e.g. atexit firing more than once)
+        // must not panic or double-free.
+        shutdown(Duration::from_secs(5));
+        shutdown(Duration::from_secs(5));
+    }
 }
