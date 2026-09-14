@@ -71,7 +71,6 @@ use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
-use serde_json::Number;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
@@ -1119,15 +1118,15 @@ impl<S: HttpSend> RemoteTable<S> {
         }
         // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
         // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
-        // New client / old server: old server will only see nprobes, make sure to set both
-        //                          nprobes and minimum_nprobes
+        // New client / old server: old server will only see nprobes, so send it whenever
+        //                          minimum_nprobes is explicitly configured
         // New client / new server: since minimum_nprobes is present, server can ignore nprobes
-        body["nprobes"] = query.minimum_nprobes.into();
-        body["minimum_nprobes"] = query.minimum_nprobes.into();
+        if let Some(minimum_nprobes) = query.minimum_nprobes {
+            body["nprobes"] = minimum_nprobes.into();
+            body["minimum_nprobes"] = minimum_nprobes.into();
+        }
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             body["maximum_nprobes"] = maximum_nprobes.into();
-        } else {
-            body["maximum_nprobes"] = serde_json::Value::Number(Number::from_u128(0).unwrap())
         }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
@@ -5394,9 +5393,6 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "k": 10,
@@ -5428,7 +5424,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_vector_approx_mode_sent_when_set() {
+    async fn test_query_vector_minimum_only_and_approx_mode() {
         let expected_data = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
@@ -5448,9 +5444,8 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
+                "nprobes": 5,
+                "minimum_nprobes": 5,
                 "approx_mode": "accurate",
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
@@ -5473,6 +5468,8 @@ mod tests {
         let data = table
             .query()
             .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .minimum_nprobes(5)
             .unwrap()
             .approx_mode(crate::ApproxMode::Accurate)
             .execute()
@@ -5634,9 +5631,6 @@ mod tests {
                 "vector_column": "image.embedding",
                 "prefilter": true,
                 "k": 10,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,

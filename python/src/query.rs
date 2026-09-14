@@ -334,8 +334,6 @@ pub struct PyQueryRequest {
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
     pub minimum_nprobes: Option<usize>,
-    // None means user did not set it and default should be used (currently 20)
-    // Some(0) means user set it to None and there is no limit
     pub maximum_nprobes: Option<usize>,
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,
@@ -393,11 +391,8 @@ impl From<AnyQuery> for PyQueryRequest {
                 use_lsm: vector_query.base.use_lsm,
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
-                minimum_nprobes: Some(vector_query.minimum_nprobes),
-                maximum_nprobes: match vector_query.maximum_nprobes {
-                    None => Some(0),
-                    Some(value) => Some(value),
-                },
+                minimum_nprobes: vector_query.minimum_nprobes,
+                maximum_nprobes: vector_query.maximum_nprobes,
                 lower_bound: vector_query.lower_bound,
                 upper_bound: vector_query.upper_bound,
                 ef: vector_query.ef,

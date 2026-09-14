@@ -171,8 +171,7 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     // than just recall, so error instead of silently ignoring them: distance_range
     // would return rows outside the bound, and use_index(false) asks for a
     // brute-force search the index-only base arm can't do. (ef / approx_mode /
-    // maximum_nprobes are recall/speed knobs and are left to no-op — and
-    // maximum_nprobes defaults to Some, so it cannot be rejected on presence.)
+    // maximum_nprobes are recall/speed knobs and are left to no-op.)
     if !query.query_vector.is_empty() {
         if query.lower_bound.is_some() || query.upper_bound.is_some() {
             return unsupported("distance_range on vector search");
@@ -724,8 +723,10 @@ async fn vector_plan(
     let mut scanner = base_scanner(dataset, query, pk_columns, snapshots, in_memory)?
         .with_overfetch_factor(LSM_OVERFETCH_FACTOR)
         .nearest(&column, query_vector.as_ref(), k)?
-        .nprobes(query.minimum_nprobes)
         .distance_metric(distance_type.into());
+    if let Some(minimum_nprobes) = query.minimum_nprobes {
+        scanner = scanner.nprobes(minimum_nprobes);
+    }
     if let Some(refine_factor) = query.refine_factor {
         scanner = scanner.refine(refine_factor);
     }

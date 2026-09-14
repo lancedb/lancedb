@@ -543,9 +543,8 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * partitions should be searched.
    *
    * Increasing this value will increase the recall of your query but will
-   * also increase the latency of your query.  The default value is 20.  This
-   * default is good for many cases but the best value to use will depend on
-   * your data and the recall that you need to achieve.
+   * also increase the latency of your query. If this method is not called,
+   * Lance's adaptive probe defaults are used.
    *
    * For best results we recommend tuning this parameter with a benchmark against
    * your actual data to find the smallest possible value that will still give
