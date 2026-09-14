@@ -285,7 +285,10 @@ mod tests {
     async fn typed_remote_job_fixtures_decode_terminal_results() {
         let function = Job::<FunctionVersion>::new_typed(Box::new(FixtureRemoteJob(FUNCTION_JOB)));
         let result = function.wait().await.expect("typed FunctionVersion result");
-        assert_eq!(result.version(), "fv_01K3EXACT");
+        assert_eq!(
+            result.version(),
+            "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
+        );
 
         let refresh =
             Job::<RefreshColumnResult>::new_typed(Box::new(FixtureRemoteJob(REFRESH_JOB)));
