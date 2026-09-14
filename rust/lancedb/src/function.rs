@@ -503,8 +503,9 @@ pub struct FunctionArtifactRequest {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SecretReference {
     pub name: String,
-    /// The namespace holding the Secret. Empty is the root, and is omitted from
-    /// the wire so a root binding carries no trace of a feature it does not use.
+    /// The namespace holding the Secret. Empty is the root, and is absent from
+    /// the wire rather than sent empty: a binding states a namespace only when
+    /// it has one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub namespace_path: Vec<String>,
 }

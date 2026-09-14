@@ -617,18 +617,16 @@ struct RemoteDropFunctionResponse {
 /// The create body: every field of [`FunctionRegistrationRequest`] except the
 /// name, which is the path identifier.
 ///
-/// A struct rather than a `json!` literal naming fields one by one. The literal
-/// is why `secret_bindings` silently stopped reaching the service when the
-/// route moved -- a field added to the request type does not have to be added
-/// here to compile, it just stops being sent. This shape fails to build
-/// instead.
+/// A struct rather than a literal listing the fields, so that the compiler
+/// decides what reaches the service. A field the registration request grows is
+/// a build error here until it is handled; a literal would simply not send it.
 #[derive(serde::Serialize)]
 struct RemoteCreateFunctionRequest<'a> {
     artifact: &'a FunctionArtifactRequest,
     signature: &'a FunctionSignature,
     runtime: &'a PythonRuntimeSpec,
-    /// Omitted when the Function binds nothing, so a request from a client that
-    /// predates Secrets is byte-identical to one that does not use them.
+    /// Absent when the Function binds nothing, so the body carries a binding
+    /// list only when there is one to carry.
     #[serde(skip_serializing_if = "<[SecretBinding]>::is_empty")]
     secret_bindings: &'a [SecretBinding],
 }
