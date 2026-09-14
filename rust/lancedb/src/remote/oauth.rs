@@ -744,6 +744,7 @@ impl AuthorizationCodeSource {
                 &mut stream,
                 &self.redirect.callback_path,
                 expected_state,
+                deadline,
             )
             .await
             {
@@ -756,6 +757,12 @@ impl AuthorizationCodeSource {
                     return Err(Error::Runtime { message });
                 }
                 Err(error) => {
+                    if TokioInstant::now() >= deadline {
+                        return Err(Error::Runtime {
+                            message: "Timed out waiting for the OAuth authorization callback"
+                                .to_string(),
+                        });
+                    }
                     debug!("Ignoring unrelated OAuth callback connection: {error}");
                     write_callback_response(&mut stream, false).await;
                 }
@@ -1035,9 +1042,13 @@ async fn read_authorization_callback(
     stream: &mut TcpStream,
     expected_path: &str,
     expected_state: &str,
+    overall_deadline: TokioInstant,
 ) -> Result<AuthorizationCallback> {
     const MAX_CALLBACK_REQUEST_BYTES: usize = 16 * 1024;
-    let deadline = TokioInstant::now() + Duration::from_secs(10);
+    let deadline = std::cmp::min(
+        overall_deadline,
+        TokioInstant::now() + Duration::from_secs(10),
+    );
     let mut request = Vec::with_capacity(1024);
     loop {
         let mut buffer = [0; 1024];
@@ -1622,6 +1633,33 @@ mod tests {
             "auth-code"
         );
         browser.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_authorization_callback_read_respects_overall_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = tokio::spawn(async move {
+            let _stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let (mut stream, _) = listener.accept().await.unwrap();
+
+        let err = read_authorization_callback(
+            &mut stream,
+            "/callback",
+            "expected",
+            TokioInstant::now() + Duration::from_millis(20),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::Runtime { message }
+                if message == "Timed out reading the OAuth authorization callback"
+        ));
+        client.abort();
     }
 
     #[tokio::test]
