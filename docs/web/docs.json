@@ -98,26 +98,29 @@
         "tab": "Documentation",
         "groups": [
           {
-            "group": "Introduction",
+            "group": "Get started",
             "pages": [
               "index",
-              "quickstart"
+              "quickstart",
+              "architecture"
             ]
           },
           {
-            "group": "Basics",
+            "group": "Concepts",
             "pages": [
               "basics/lance",
               "basics/catalog",
               "basics/jobs",
               "basics/data-types",
               "tables/consistency",
+              "basics/guarantees",
+              "basics/limits",
               "basics/apis",
               "basics/agentic-skills"
             ]
           },
           {
-            "group": "Management",
+            "group": "Manage",
             "pages": [
               "management/index",
               "management/database",
@@ -142,7 +145,7 @@
             ]
           },
           {
-            "group": "Ingestion",
+            "group": "Ingest",
             "pages": [
               "ingestion/index",
               "ingestion/insert",
@@ -172,20 +175,18 @@
                   "reranking/eval"
                 ]
               },
-              "search/explain",
-              "search/explain-analyze",
               {
-                "group": "SQL",
+                "group": "Indexing",
                 "pages": [
-                  "sql/index",
-                  "sql/select",
-                  "sql/aggregation",
-                  "sql/join",
-                  "sql/window",
-                  "sql/sampling",
-                  "sql/functions"
+                  "indexing/index",
+                  "indexing/vector-index",
+                  "indexing/fts-index",
+                  "indexing/scalar-index",
+                  "indexing/quantization"
                 ]
-              }
+              },
+              "search/explain",
+              "search/explain-analyze"
             ]
           },
           {
@@ -199,7 +200,7 @@
             ]
           },
           {
-            "group": "Training",
+            "group": "Train",
             "pages": [
               "training/why-lancedb",
               "training/index",
@@ -207,13 +208,8 @@
             ]
           },
           {
-            "group": "Maintenance",
+            "group": "Operate",
             "pages": [
-              "indexing/index",
-              "indexing/vector-index",
-              "indexing/fts-index",
-              "indexing/scalar-index",
-              "indexing/quantization",
               "indexing/reindexing",
               "maintenance/compaction",
               {
@@ -225,6 +221,26 @@
                 ]
               },
               "performance"
+            ]
+          },
+          {
+            "group": "SQL reference",
+            "pages": [
+              "sql/index",
+              "sql/data-types",
+              "sql/select",
+              "sql/subqueries",
+              "sql/join",
+              "sql/aggregation",
+              "sql/window",
+              "sql/sampling",
+              "sql/ddl",
+              "sql/dml",
+              "sql/refresh",
+              "sql/show",
+              "sql/explain",
+              "sql/operators",
+              "sql/functions"
             ]
           },
           {

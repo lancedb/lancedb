@@ -1,63 +1,85 @@
 ---
-title: "SQL"
+title: "SQL reference"
 sidebarTitle: "Overview"
-description: "Analytical SQL over the lakehouse: the dialect, where it runs, and what it can reach."
+description: "The SQL surface: dialect, where a query runs, and a page per construct."
 icon: table-list
-keywords: ["sql", "datafusion", "flight sql", "analytics", "dialect"]
+keywords: ["sql", "datafusion", "flight sql", "reference", "dialect"]
 ---
 
 <Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local database
 has no engine to plan a statement, so `execute_query` raises there -- see
 [SDKs and SQL](/basics/apis).
 
-The dialect is [Apache DataFusion's](/sql/functions), so anything its reference
-documents for that version works here unchanged. What these pages cover is the
-parts that are LanceDB's: how a query reaches the engine, how Lance columns
-appear to it, and the extensions a lakehouse over multimodal data needs.
+This is a reference rather than a guide: one page per construct, syntax first.
+The guides elsewhere in these docs show the same operations from the SDKs.
+
+## The dialect {#dialect}
+
+LanceDB executes SQL with [Apache DataFusion](https://datafusion.apache.org),
+currently **version 54**. The grammar, built-in functions and type system are
+DataFusion's, so anything its reference documents for that version works here
+unchanged and is not reproduced.
+
+What these pages add is the part that is LanceDB's: how a query reaches the
+engine, how Lance columns appear to it, and the statements a lakehouse needs
+that DataFusion has no concept of.
 
 ## Where a query runs {#execution}
 
-Queries execute on the server. The client sends a statement and receives Arrow
-record batches -- nothing is converted to pandas or Python objects unless you
-ask for it. A query feeding training or downstream processing therefore pays no
-serialization cost to get there.
+Queries execute on the server and results come back as Arrow record batches --
+nothing is converted to pandas or Python objects unless you ask. `execute_query`
+hands back a reader as soon as the first batch is ready rather than when the
+query finishes, so a large result set does not have to fit in memory before you
+start reading it. See [Query and job](/basics/jobs#queries).
 
-Results stream. `execute_query` hands back a reader as soon as the first batch
-is ready rather than when the query finishes, so a large result set does not
-have to fit in memory before you can start reading it. See
-[Query and job](/basics/jobs#queries).
+Served over an [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint, so any Flight SQL client reaches it.
 
-## What differs from a warehouse {#differences}
+## Reference {#reference}
 
-Two things, and both come from the storage being Lance rather than something
-SQL-shaped:
-
-- **Columns are Arrow types**, not a SQL type system mapped onto storage. A
-  vector column is a `FixedSizeList<Float32>` and behaves like one. See
-  [Data types](/basics/data-types).
-- **Row metadata is available as columns** -- `_rowid`, `_rowaddr`,
-  `_rowoffset` -- but only when named, so they stay out of `SELECT *`.
-
-## The statements {#statements}
+**Reading data**
 
 | | |
 | --- | --- |
+| [Data types](/sql/data-types) | how Lance columns appear to SQL, and pseudo-columns |
 | [SELECT](/sql/select) | projection, filtering, ordering, set operations, CTEs |
-| [Aggregation](/sql/aggregation) | `GROUP BY`, `HAVING`, aggregate functions |
-| [Joins](/sql/join) | inner, outer, cross, and joining across namespaces |
-| [Window functions](/sql/window) | `OVER (...)`, ranking, running totals |
-| [Sampling](/sql/sampling) | `TABLESAMPLE`, for a random subset |
-| [Functions and types](/sql/functions) | the function set, and what LanceDB adds |
+| [Subqueries](/sql/subqueries) | scalar, `IN`, `EXISTS`, correlated, derived tables |
+| [Joins](/sql/join) | inner, outer, cross, and namespace-qualified paths |
+| [Aggregation](/sql/aggregation) | `GROUP BY`, `HAVING`, the aggregate set |
+| [Window functions](/sql/window) | `OVER`, framing, ranking and offset functions |
+| [Sampling](/sql/sampling) | `TABLESAMPLE`, by rows or by fragments |
 
-Beyond reading, SQL also writes (`INSERT`, `UPDATE`, `DELETE`, `COPY`), manages
-the catalog (`CREATE TABLE`, `CREATE VIEW`, `DROP`, `SHOW`) and drives feature
-engineering (`CREATE FUNCTION`, `REFRESH COLUMN`, `REFRESH MATERIALIZED VIEW`).
-Those are documented with the operation rather than here -- see
-[Management](/management) and [Feature engineering](/feature-engineering).
+**Changing things**
 
-<Note>
-Vector search has no SQL form. It is a query-builder operation -- see
-[Vector search](/search/vector-search). Full-text search does: the
-[`fts()`](/sql/functions#fts) table function and the
-[`contains_tokens`](/sql/functions#contains-tokens) predicate.
-</Note>
+| | |
+| --- | --- |
+| [DDL](/sql/ddl) | tables, views, indexes, functions, columns, WAL |
+| [DML](/sql/dml) | `INSERT`, `UPDATE`, `DELETE`, `COPY` |
+| [REFRESH](/sql/refresh) | filling computed columns and materialized views |
+
+**Introspection**
+
+| | |
+| --- | --- |
+| [SHOW](/sql/show) | jobs, functions, materialized views, errors |
+| [EXPLAIN](/sql/explain) | plans, and measuring them |
+
+**Expressions**
+
+| | |
+| --- | --- |
+| [Operators](/sql/operators) | comparison, logical, arithmetic, literals, precedence |
+| [Functions](/sql/functions) | the function set, and what Lance accelerates |
+
+## What SQL cannot do {#cannot}
+
+| | |
+| --- | --- |
+| Vector search | no SQL form -- a query-builder operation |
+| Merge insert | no SQL form -- needs a source relation and a per-match policy |
+| Run on a local database | no engine to plan the statement |
+
+Full-text search **is** available, as the [`fts()`](/sql/functions#fts) table
+function and the [`contains_tokens`](/sql/functions#contains-tokens) predicate.
+
+See [Limits](/basics/limits#sql) for the bounds these pages enforce.

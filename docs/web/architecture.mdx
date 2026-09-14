@@ -1,0 +1,150 @@
+---
+title: "Architecture"
+sidebarTitle: "Architecture"
+description: "How LanceDB is put together, and what changes between running it embedded and running it distributed."
+icon: cubes
+keywords: ["architecture", "embedded", "distributed", "object storage", "compute", "deployment"]
+---
+
+LanceDB has one storage layer and two ways to put compute on top of it. Which
+one you run decides where queries execute, what runs on your behalf, and what
+you have to operate — and almost nothing else. The data is the same
+[Lance](/basics/lance) tables either way.
+
+## One storage layer {#storage}
+
+Everything durable lives in object storage: table data, manifests, indexes. No
+machine owns a dataset, and no server has to be running for the data to exist.
+
+```
+        ┌──────────────────────────────────────────┐
+        │           object storage                 │
+        │  table data · manifests · indexes        │
+        └──────────────────────────────────────────┘
+```
+
+That is the whole persistence story, and it is why the two deployment shapes can
+differ so much above it while staying compatible below it. A table written
+embedded is opened by a deployment, and the reverse, without conversion.
+
+## Embedded {#embedded}
+
+```
+   your process
+   ┌────────────────────────────────┐
+   │  application                   │
+   │  LanceDB library               │  ← plans, executes, indexes, compacts
+   └────────────────────────────────┘
+                  │
+        ┌─────────▼─────────┐
+        │  object storage   │
+        └───────────────────┘
+```
+
+`lancedb.connect("./data")` or `connect("s3://bucket/path")` gives you a
+**library**, not a client. Your process opens the tables, plans the queries,
+runs the scans, builds the indexes, and writes the new versions. There is no
+server in the picture at all.
+
+**What follows from that.** Nothing runs unless you call it — no background
+compaction, no server-side [jobs](/basics/jobs), no
+[SQL endpoint](/basics/apis). Scale is your process's scale: a query gets the
+cores and memory your process has. Access control is whatever your object store
+enforces, since there is no other gatekeeper.
+
+**What it is good at.** Development, notebooks, single-node pipelines, embedding
+LanceDB inside an application, and anything where "no service to operate" is
+worth more than elasticity.
+
+## Distributed {#distributed}
+
+<Badge color="red">Enterprise</Badge>
+
+```
+   your process
+   ┌──────────────┐
+   │ application  │
+   │ LanceDB SDK  │  ← a thin client
+   └──────┬───────┘
+          │  db://  (REST / Flight SQL)
+   ┌──────▼──────────────────────────────────────┐
+   │  control plane   config · identity · policy │
+   ├─────────────────────────────────────────────┤
+   │  data plane      query serving · writes     │
+   │  indexers        indexing · compaction      │
+   └──────┬──────────────────────────────────────┘
+          │
+   ┌──────▼────────────┐
+   │  object storage   │
+   └───────────────────┘
+```
+
+`connect("db://...")` gives you a **client**. Planning and execution move to a
+cluster, and the work splits across tiers that scale independently: a control
+plane governing configuration, identity and policy; a data plane serving reads
+and writes; and indexers building indexes and compacting outside the request
+path.
+
+**What follows from that.** Compute and storage are separated, so a query fleet
+scales for interactive traffic without also scaling indexing capacity, and heavy
+background work does not steal resources from user queries. Because a server
+exists, so do the things that need one: [SQL](/sql),
+[functions](/management/function), server-side jobs, and
+[authorization](/governance/authorization) per object rather than per bucket.
+
+**What it is good at.** Many concurrent queries, continuous ingestion and
+indexing, multi-team access with real permissions, and workloads too large for
+one machine.
+
+## What changes, precisely {#differences}
+
+| | Embedded | Distributed |
+| --- | --- | --- |
+| What you connect to | a library in your process | a cluster |
+| Where queries plan and execute | your process | the data plane |
+| Table handle | `LanceTable` | `RemoteTable` |
+| Indexing and compaction | when you call it | dedicated indexers |
+| [Jobs](/basics/jobs) | run in-process, no server record | real jobs: id, status, events, cancel |
+| [SQL](/sql) | unavailable | Flight SQL endpoint |
+| [Functions](/management/function) | unavailable | run on workers |
+| Access control | object-store permissions | [per-object grants](/governance/authorization) |
+| Scale bound | your process | the cluster |
+| What you operate | nothing | a deployment |
+
+Both expose the same table API — create, open, mutate, query — so application
+code moves between them by changing the URI. What does not move is code that
+depends on a row in the right-hand column.
+
+## Choosing, and changing your mind {#choosing}
+
+Start embedded. It has no operational cost and the API is the same one you will
+keep using.
+
+Move when you hit something in the right-hand column — usually concurrent
+serving, ingestion that outgrows one machine, or a permissions requirement.
+Because the storage layer is identical, moving is a connection-string change
+plus a data migration, not a rewrite.
+
+<Note>
+The one thing to decide early is **stable row ids**, which cannot be enabled
+after a table exists and are required for
+[materialized views](/management/materialized-view). See
+[Limits](/basics/limits#schema).
+</Note>
+
+## Where to go next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Guarantees" icon="shield-check" href="/basics/guarantees">
+    What a write promises, and what a reader sees.
+  </Card>
+  <Card title="Lance format" icon="layer-group" href="/basics/lance">
+    The open format underneath both shapes.
+  </Card>
+  <Card title="Enterprise architecture" icon="cubes" href="/enterprise/architecture">
+    The distributed tiers in detail.
+  </Card>
+  <Card title="Limits" icon="ruler" href="/basics/limits">
+    The bounds you can actually hit.
+  </Card>
+</CardGroup>
