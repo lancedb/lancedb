@@ -1528,6 +1528,11 @@ def _mock_remote_function_catalog():
                 if len(parts) == 4 and parts[0] == "v1" and parts[1] == "function"
                 else (None, None)
             )
+            secret_action = (
+                (urllib.parse.unquote(parts[2]), parts[3])
+                if len(parts) == 4 and parts[0] == "v1" and parts[1] == "secret"
+                else (None, None)
+            )
             if function_action[1] == "create":
                 state["version"] = {
                     "name": function_action[0],
@@ -1559,20 +1564,14 @@ def _mock_remote_function_catalog():
             elif function_action[1] == "drop":
                 assert body == {"version": "fv_exact"}
                 response = {"dropped": True}
-            elif self.path in ("/v1/secrets/create", "/v1/secrets/alter"):
-                assert set(body) == {"name", "value"}
+            elif secret_action[1] in ("create", "alter"):
+                # The Secret is the path identifier, so the body is the value.
+                assert set(body) == {"value"}
+                assert secret_action[0] == "openai-prod"
                 response = {}
-            elif self.path == "/v1/secrets/list":
-                if "page_token" not in body:
-                    response = {
-                        "secrets": [{"name": "openai-prod"}],
-                        "page_token": "next",
-                    }
-                else:
-                    assert body["page_token"] == "next"
-                    response = {"secrets": [{"name": "hf-prod"}]}
-            elif self.path == "/v1/secrets/drop":
-                assert body == {"name": "openai-prod"}
+            elif secret_action[1] == "drop":
+                assert secret_action[0] == "openai-prod"
+                assert body == {}
                 response = {}
             else:
                 status = 404
@@ -1586,6 +1585,16 @@ def _mock_remote_function_catalog():
                 for key, values in urllib.parse.parse_qs(url.query).items()
             }
             state["requests"].append((url.path, query))
+            if url.path == "/v1/namespace/$/secret/list":
+                if "page_token" not in query:
+                    self._write_response(
+                        200,
+                        {"secrets": [{"name": "openai-prod"}], "page_token": "next"},
+                    )
+                else:
+                    assert query["page_token"] == "next"
+                    self._write_response(200, {"secrets": [{"name": "hf-prod"}]})
+                return
             if url.path != "/v1/namespace/$/function/list":
                 self._write_response(404, {"error": "not found"})
                 return
@@ -1698,15 +1707,18 @@ def test_remote_secret_verbs_round_trip():
 
     routes = [path for path, _ in state["requests"]]
     assert routes == [
-        "/v1/secrets/create",
-        "/v1/secrets/alter",
-        "/v1/secrets/list",
-        "/v1/secrets/list",
-        "/v1/secrets/drop",
+        "/v1/secret/openai-prod/create",
+        "/v1/secret/openai-prod/alter",
+        "/v1/namespace/$/secret/list",
+        "/v1/namespace/$/secret/list",
+        "/v1/secret/openai-prod/drop",
     ]
-    assert state["requests"][0][1] == {"name": "openai-prod", "value": "sk-live-0001"}
-    # The listing returns names, and the client has no way to ask for more.
+    # The Secret is the path identifier, so the body is the value alone.
+    assert state["requests"][0][1] == {"value": "sk-live-0001"}
+    # Listing is a GET: the first page asks for nothing, the second resumes on
+    # the token the server handed back, and neither carries a body.
     assert state["requests"][2][1] == {}
+    assert state["requests"][3][1] == {"page_token": "next"}
 
 
 def test_building_a_binding_contacts_no_server():
