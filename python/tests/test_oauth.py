@@ -31,3 +31,24 @@ def test_oauth_config_repr_redacts_client_secret():
     rendered = repr(config)
     assert "super-secret" not in rendered
     assert "client_secret" not in rendered
+
+
+def test_authorization_code_uses_pkce_by_default():
+    oauth = _load_oauth_module()
+
+    config = oauth.OAuthConfig(
+        issuer_url="https://issuer.example.com",
+        client_id="client-id",
+        scopes=["openid"],
+        flow=oauth.OAuthFlowType.AUTHORIZATION_CODE,
+    )
+
+    assert config.use_pkce is True
+    assert config.redirect_uri is None
+    assert config.callback_port is None
+
+
+def test_device_code_flow_value():
+    oauth = _load_oauth_module()
+
+    assert oauth.OAuthFlowType.DEVICE_CODE.value == "device_code"

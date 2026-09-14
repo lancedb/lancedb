@@ -2,23 +2,102 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use log::debug;
+use base64::Engine;
+use log::{debug, info, warn};
+use rand::Rng;
 use reqwest::Client;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio::time::Instant as TokioInstant;
+use url::Url;
 
 use crate::error::{Error, Result};
 use crate::remote::client::HeaderProvider;
 
 const DEFAULT_REFRESH_BUFFER_SECS: u64 = 300;
 const DEFAULT_TOKEN_TTL_SECS: u64 = 3600;
+const DEFAULT_CALLBACK_PORT: u16 = 8400;
+const AUTHORIZATION_CALLBACK_TIMEOUT_SECS: u64 = 300;
 const AZURE_IMDS_ENDPOINT: &str = "http://169.254.169.254/metadata/identity/oauth2/token";
 const AZURE_IMDS_API_VERSION: &str = "2018-02-01";
+
+/// Options for the interactive OAuth Authorization Code flow.
+///
+/// The built-in callback server accepts only loopback HTTP redirect URIs. PKCE
+/// with the S256 challenge method is enabled by default and should be disabled
+/// only for providers that do not support it.
+///
+/// # Example
+///
+/// ```
+/// use lancedb::remote::{AuthorizationCodeOptions, OAuthFlow};
+///
+/// let flow = OAuthFlow::AuthorizationCode(
+///     AuthorizationCodeOptions::new()
+///         .callback_port(8400)
+///         .use_pkce(true),
+/// );
+/// ```
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct AuthorizationCodeOptions {
+    /// Redirect URI registered with the identity provider.
+    ///
+    /// Defaults to `http://127.0.0.1:{callback_port}/callback`.
+    pub redirect_uri: Option<String>,
+
+    /// Port for the built-in loopback callback server.
+    ///
+    /// Defaults to 8400. When `redirect_uri` contains an explicit port, this
+    /// option must either be omitted or match that port.
+    pub callback_port: Option<u16>,
+
+    /// Whether to protect the authorization code exchange with S256 PKCE.
+    pub use_pkce: bool,
+}
+
+impl Default for AuthorizationCodeOptions {
+    fn default() -> Self {
+        Self {
+            redirect_uri: None,
+            callback_port: None,
+            use_pkce: true,
+        }
+    }
+}
+
+impl AuthorizationCodeOptions {
+    /// Create authorization-code options with S256 PKCE enabled.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the loopback redirect URI registered with the identity provider.
+    pub fn redirect_uri(mut self, redirect_uri: impl Into<String>) -> Self {
+        self.redirect_uri = Some(redirect_uri.into());
+        self
+    }
+
+    /// Set the port for the built-in loopback callback server.
+    pub fn callback_port(mut self, callback_port: u16) -> Self {
+        self.callback_port = Some(callback_port);
+        self
+    }
+
+    /// Enable or disable S256 PKCE.
+    pub fn use_pkce(mut self, use_pkce: bool) -> Self {
+        self.use_pkce = use_pkce;
+        self
+    }
+}
 
 /// OAuth authentication flow configuration.
 #[derive(Debug, Clone)]
@@ -26,6 +105,13 @@ pub enum OAuthFlow {
     /// Client Credentials grant (service-to-service / M2M).
     /// Requires `client_secret` in [`OAuthConfig`].
     ClientCredentials,
+
+    /// Authorization Code grant using an interactive browser and a built-in
+    /// loopback callback server.
+    AuthorizationCode(AuthorizationCodeOptions),
+
+    /// Device Authorization grant for CLI and headless environments.
+    DeviceCode,
 
     /// Azure Managed Identity via IMDS.
     /// Works on Azure VMs, AKS, App Service, and Azure Functions.
@@ -88,6 +174,8 @@ impl std::fmt::Debug for OAuthConfig {
 #[derive(Clone, Debug, Deserialize)]
 struct OidcDiscovery {
     token_endpoint: String,
+    authorization_endpoint: Option<String>,
+    device_authorization_endpoint: Option<String>,
 }
 
 // -- Token Response --
@@ -95,6 +183,8 @@ struct OidcDiscovery {
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
     /// Token lifetime in seconds.
     /// Some providers (Azure IMDS) return this as a string, so we accept both.
     #[serde(default, deserialize_with = "deserialize_optional_u64_or_string")]
@@ -108,6 +198,10 @@ impl std::fmt::Debug for TokenResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokenResponse")
             .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("expires_in", &self.expires_in)
             .field("token_type", &self.token_type)
             .finish()
@@ -168,6 +262,7 @@ where
 
 struct TokenState {
     access_token: Option<String>,
+    refresh_token: Option<String>,
     expires_at: Option<Instant>,
 }
 
@@ -175,6 +270,7 @@ impl TokenState {
     fn new() -> Self {
         Self {
             access_token: None,
+            refresh_token: None,
             expires_at: None,
         }
     }
@@ -189,6 +285,9 @@ impl TokenState {
 
     fn update(&mut self, resp: &TokenResponse) {
         self.access_token = Some(resp.access_token.clone());
+        if resp.refresh_token.is_some() {
+            self.refresh_token = resp.refresh_token.clone();
+        }
         let expires_in = resp.expires_in.unwrap_or(DEFAULT_TOKEN_TTL_SECS);
         self.expires_at = Some(Instant::now() + Duration::from_secs(expires_in));
     }
@@ -197,38 +296,42 @@ impl TokenState {
 #[async_trait]
 trait TokenSource: Send + Sync + std::fmt::Debug {
     async fn fetch_token(&self) -> Result<TokenResponse>;
+
+    async fn refresh_token(&self, _refresh_token: &str) -> Result<Option<TokenResponse>> {
+        Ok(None)
+    }
 }
 
-struct ClientCredentialsSource {
+struct OidcClient {
     issuer_url: String,
     client_id: String,
-    client_secret: String,
+    client_secret: Option<String>,
     scopes: Vec<String>,
     http_client: Client,
     discovery: RwLock<Option<OidcDiscovery>>,
 }
 
-impl std::fmt::Debug for ClientCredentialsSource {
+impl std::fmt::Debug for OidcClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClientCredentialsSource")
+        f.debug_struct("OidcClient")
             .field("issuer_url", &self.issuer_url)
             .field("client_id", &self.client_id)
-            .field("client_secret", &"<redacted>")
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .field("scopes", &self.scopes)
             .finish()
     }
 }
 
-impl ClientCredentialsSource {
+impl OidcClient {
     fn new(
         issuer_url: String,
         client_id: String,
         client_secret: Option<String>,
         scopes: Vec<String>,
     ) -> Result<Self> {
-        let client_secret = client_secret.ok_or(Error::InvalidInput {
-            message: "client_secret is required for ClientCredentials flow".to_string(),
-        })?;
         Self::validate_issuer_transport(&issuer_url)?;
 
         let http_client = Client::builder()
@@ -257,9 +360,7 @@ impl ClientCredentialsSource {
             "https" => Ok(()),
             "http" if Self::is_loopback_issuer(&issuer) => Ok(()),
             _ => Err(Error::InvalidInput {
-                message:
-                    "ClientCredentials OAuth issuer_url must use https, except for loopback hosts"
-                        .to_string(),
+                message: "OAuth issuer_url must use https, except for loopback hosts".to_string(),
             }),
         }
     }
@@ -337,7 +438,7 @@ impl ClientCredentialsSource {
     async fn post_token_request(
         &self,
         endpoint: &str,
-        params: &[(&str, &str)],
+        params: &[(String, String)],
     ) -> Result<TokenResponse> {
         let resp = self
             .http_client
@@ -363,22 +464,593 @@ impl ClientCredentialsSource {
             message: format!("Failed to parse token response: {e}"),
         })
     }
+
+    async fn refresh_token(&self, refresh_token: &str) -> Result<TokenResponse> {
+        let endpoint = self.get_token_endpoint().await?;
+        let mut params = vec![
+            ("grant_type".to_string(), "refresh_token".to_string()),
+            ("client_id".to_string(), self.client_id.clone()),
+            ("refresh_token".to_string(), refresh_token.to_string()),
+        ];
+        if let Some(secret) = self.client_secret.as_ref() {
+            params.push(("client_secret".to_string(), secret.clone()));
+        }
+        self.post_token_request(&endpoint, &params).await
+    }
+}
+
+struct ClientCredentialsSource {
+    oidc: OidcClient,
+}
+
+impl std::fmt::Debug for ClientCredentialsSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientCredentialsSource")
+            .field("oidc", &self.oidc)
+            .finish()
+    }
+}
+
+impl ClientCredentialsSource {
+    fn new(
+        issuer_url: String,
+        client_id: String,
+        client_secret: Option<String>,
+        scopes: Vec<String>,
+    ) -> Result<Self> {
+        if client_secret.is_none() {
+            return Err(Error::InvalidInput {
+                message: "client_secret is required for ClientCredentials flow".to_string(),
+            });
+        }
+        Ok(Self {
+            oidc: OidcClient::new(issuer_url, client_id, client_secret, scopes)?,
+        })
+    }
 }
 
 #[async_trait]
 impl TokenSource for ClientCredentialsSource {
     async fn fetch_token(&self) -> Result<TokenResponse> {
-        let token_endpoint = self.get_token_endpoint().await?;
-        let scope = self.scopes_string();
+        let token_endpoint = self.oidc.get_token_endpoint().await?;
         let params = [
-            ("grant_type", "client_credentials"),
-            ("client_id", self.client_id.as_str()),
-            ("client_secret", self.client_secret.as_str()),
-            ("scope", scope.as_str()),
+            ("grant_type".to_string(), "client_credentials".to_string()),
+            ("client_id".to_string(), self.oidc.client_id.clone()),
+            (
+                "client_secret".to_string(),
+                self.oidc.client_secret.clone().expect("validated in new"),
+            ),
+            ("scope".to_string(), self.oidc.scopes_string()),
         ];
 
-        self.post_token_request(&token_endpoint, &params).await
+        self.oidc.post_token_request(&token_endpoint, &params).await
     }
+}
+
+#[derive(Debug)]
+struct ResolvedRedirect {
+    uri: String,
+    bind_addr: SocketAddr,
+    callback_path: String,
+}
+
+impl ResolvedRedirect {
+    fn new(options: &AuthorizationCodeOptions) -> Result<Self> {
+        let uri = options.redirect_uri.clone().unwrap_or_else(|| {
+            format!(
+                "http://127.0.0.1:{}/callback",
+                options.callback_port.unwrap_or(DEFAULT_CALLBACK_PORT)
+            )
+        });
+        let parsed = Url::parse(&uri).map_err(|e| Error::InvalidInput {
+            message: format!("Invalid OAuth redirect_uri: {e}"),
+        })?;
+
+        if parsed.scheme() != "http" {
+            return Err(Error::InvalidInput {
+                message: "OAuth redirect_uri must use http with a loopback host".to_string(),
+            });
+        }
+        if parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(Error::InvalidInput {
+                message: "OAuth redirect_uri must not contain a query or fragment".to_string(),
+            });
+        }
+
+        let host = parsed.host_str().ok_or(Error::InvalidInput {
+            message: "OAuth redirect_uri must include a loopback host".to_string(),
+        })?;
+        let ip = if host.eq_ignore_ascii_case("localhost") {
+            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        } else {
+            host.parse::<IpAddr>()
+                .ok()
+                .filter(IpAddr::is_loopback)
+                .ok_or(Error::InvalidInput {
+                    message: "OAuth redirect_uri must use a loopback host".to_string(),
+                })?
+        };
+        let port = parsed.port_or_known_default().ok_or(Error::InvalidInput {
+            message: "OAuth redirect_uri must include a port".to_string(),
+        })?;
+        if port == 0 {
+            return Err(Error::InvalidInput {
+                message: "OAuth redirect_uri port must be greater than zero".to_string(),
+            });
+        }
+        if let Some(callback_port) = options.callback_port
+            && callback_port != port
+        {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "OAuth callback_port {callback_port} does not match redirect_uri port {port}"
+                ),
+            });
+        }
+
+        Ok(Self {
+            uri,
+            bind_addr: SocketAddr::new(ip, port),
+            callback_path: parsed.path().to_string(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct AuthorizationRequest {
+    url: Url,
+    state: String,
+    code_verifier: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+enum AuthorizationCallback {
+    Code(String),
+    ProviderError(String),
+}
+
+struct AuthorizationCodeSource {
+    oidc: OidcClient,
+    options: AuthorizationCodeOptions,
+    redirect: ResolvedRedirect,
+}
+
+impl std::fmt::Debug for AuthorizationCodeSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthorizationCodeSource")
+            .field("oidc", &self.oidc)
+            .field("options", &self.options)
+            .field("redirect", &self.redirect)
+            .finish()
+    }
+}
+
+impl AuthorizationCodeSource {
+    fn new(
+        issuer_url: String,
+        client_id: String,
+        client_secret: Option<String>,
+        scopes: Vec<String>,
+        options: AuthorizationCodeOptions,
+    ) -> Result<Self> {
+        let redirect = ResolvedRedirect::new(&options)?;
+        Ok(Self {
+            oidc: OidcClient::new(issuer_url, client_id, client_secret, scopes)?,
+            options,
+            redirect,
+        })
+    }
+
+    async fn build_authorization_request(&self) -> Result<AuthorizationRequest> {
+        let endpoint = self
+            .oidc
+            .get_discovery()
+            .await?
+            .authorization_endpoint
+            .ok_or(Error::Runtime {
+                message: "OIDC discovery did not provide authorization_endpoint".to_string(),
+            })?;
+        let mut url = Url::parse(&endpoint).map_err(|e| Error::Runtime {
+            message: format!("Invalid authorization_endpoint in OIDC discovery: {e}"),
+        })?;
+        let state = random_urlsafe_string(32);
+        let code_verifier = self.options.use_pkce.then(|| random_urlsafe_string(64));
+
+        {
+            let mut query = url.query_pairs_mut();
+            query
+                .append_pair("response_type", "code")
+                .append_pair("client_id", &self.oidc.client_id)
+                .append_pair("redirect_uri", &self.redirect.uri)
+                .append_pair("scope", &self.oidc.scopes_string())
+                .append_pair("state", &state);
+            if let Some(verifier) = code_verifier.as_ref() {
+                let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(Sha256::digest(verifier.as_bytes()));
+                query
+                    .append_pair("code_challenge", &challenge)
+                    .append_pair("code_challenge_method", "S256");
+            }
+        }
+
+        Ok(AuthorizationRequest {
+            url,
+            state,
+            code_verifier,
+        })
+    }
+
+    async fn wait_for_callback(
+        &self,
+        listener: &TcpListener,
+        expected_state: &str,
+    ) -> Result<String> {
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(AUTHORIZATION_CALLBACK_TIMEOUT_SECS),
+            listener.accept(),
+        )
+        .await
+        .map_err(|_| Error::Runtime {
+            message: "Timed out waiting for the OAuth authorization callback".to_string(),
+        })?
+        .map_err(|e| Error::Runtime {
+            message: format!("Failed to accept OAuth callback connection: {e}"),
+        })?;
+        let (mut stream, _) = accepted;
+        let callback =
+            read_authorization_callback(&mut stream, &self.redirect.callback_path, expected_state)
+                .await;
+        let success = matches!(&callback, Ok(AuthorizationCallback::Code(_)));
+        write_callback_response(&mut stream, success).await;
+
+        match callback? {
+            AuthorizationCallback::Code(code) => Ok(code),
+            AuthorizationCallback::ProviderError(message) => Err(Error::Runtime { message }),
+        }
+    }
+
+    async fn exchange_code(
+        &self,
+        code: &str,
+        code_verifier: Option<&str>,
+    ) -> Result<TokenResponse> {
+        let endpoint = self.oidc.get_token_endpoint().await?;
+        let mut params = vec![
+            ("grant_type".to_string(), "authorization_code".to_string()),
+            ("client_id".to_string(), self.oidc.client_id.clone()),
+            ("code".to_string(), code.to_string()),
+            ("redirect_uri".to_string(), self.redirect.uri.clone()),
+        ];
+        if let Some(verifier) = code_verifier {
+            params.push(("code_verifier".to_string(), verifier.to_string()));
+        }
+        if let Some(secret) = self.oidc.client_secret.as_ref() {
+            params.push(("client_secret".to_string(), secret.clone()));
+        }
+        self.oidc.post_token_request(&endpoint, &params).await
+    }
+}
+
+#[async_trait]
+impl TokenSource for AuthorizationCodeSource {
+    async fn fetch_token(&self) -> Result<TokenResponse> {
+        let listener = TcpListener::bind(self.redirect.bind_addr)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!(
+                    "Failed to bind OAuth callback server at {}: {e}",
+                    self.redirect.bind_addr
+                ),
+            })?;
+        let request = self.build_authorization_request().await?;
+        info!("Open this URL to authenticate with OAuth: {}", request.url);
+        launch_browser(request.url.clone());
+        let code = self.wait_for_callback(&listener, &request.state).await?;
+        self.exchange_code(&code, request.code_verifier.as_deref())
+            .await
+    }
+
+    async fn refresh_token(&self, refresh_token: &str) -> Result<Option<TokenResponse>> {
+        self.oidc.refresh_token(refresh_token).await.map(Some)
+    }
+}
+
+#[derive(Deserialize)]
+struct DeviceAuthorizationResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+    #[serde(default)]
+    interval: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthErrorResponse {
+    error: String,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+struct DeviceCodeSource {
+    oidc: OidcClient,
+}
+
+impl std::fmt::Debug for DeviceCodeSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceCodeSource")
+            .field("oidc", &self.oidc)
+            .finish()
+    }
+}
+
+impl DeviceCodeSource {
+    fn new(
+        issuer_url: String,
+        client_id: String,
+        client_secret: Option<String>,
+        scopes: Vec<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            oidc: OidcClient::new(issuer_url, client_id, client_secret, scopes)?,
+        })
+    }
+
+    async fn request_device_authorization(&self) -> Result<DeviceAuthorizationResponse> {
+        let endpoint = self
+            .oidc
+            .get_discovery()
+            .await?
+            .device_authorization_endpoint
+            .ok_or(Error::Runtime {
+                message: "OIDC discovery did not provide device_authorization_endpoint".to_string(),
+            })?;
+        let mut params = vec![
+            ("client_id".to_string(), self.oidc.client_id.clone()),
+            ("scope".to_string(), self.oidc.scopes_string()),
+        ];
+        if let Some(secret) = self.oidc.client_secret.as_ref() {
+            params.push(("client_secret".to_string(), secret.clone()));
+        }
+        let response = self
+            .oidc
+            .http_client
+            .post(&endpoint)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Device authorization request to {endpoint} failed: {e}"),
+            })?;
+        if !response.status().is_success() {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Device authorization request failed with status {}: {}",
+                    response.status(),
+                    response.text().await.unwrap_or_default()
+                ),
+            });
+        }
+        response.json().await.map_err(|e| Error::Runtime {
+            message: format!("Failed to parse device authorization response: {e}"),
+        })
+    }
+
+    async fn poll_for_token(&self, device: &DeviceAuthorizationResponse) -> Result<TokenResponse> {
+        let endpoint = self.oidc.get_token_endpoint().await?;
+        let deadline = TokioInstant::now() + Duration::from_secs(device.expires_in);
+        let mut interval = Duration::from_secs(device.interval.unwrap_or(5).max(1));
+
+        loop {
+            let now = TokioInstant::now();
+            if now >= deadline {
+                return Err(Error::Runtime {
+                    message: "Device authorization expired before authentication completed"
+                        .to_string(),
+                });
+            }
+            tokio::time::sleep_until(std::cmp::min(now + interval, deadline)).await;
+            if TokioInstant::now() >= deadline {
+                return Err(Error::Runtime {
+                    message: "Device authorization expired before authentication completed"
+                        .to_string(),
+                });
+            }
+
+            let mut params = vec![
+                (
+                    "grant_type".to_string(),
+                    "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+                ),
+                ("client_id".to_string(), self.oidc.client_id.clone()),
+                ("device_code".to_string(), device.device_code.clone()),
+            ];
+            if let Some(secret) = self.oidc.client_secret.as_ref() {
+                params.push(("client_secret".to_string(), secret.clone()));
+            }
+
+            let response = self
+                .oidc
+                .http_client
+                .post(&endpoint)
+                .form(&params)
+                .send()
+                .await
+                .map_err(|e| Error::Runtime {
+                    message: format!("Device token request to {endpoint} failed: {e}"),
+                })?;
+            if response.status().is_success() {
+                return response.json().await.map_err(|e| Error::Runtime {
+                    message: format!("Failed to parse device token response: {e}"),
+                });
+            }
+
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let oauth_error = serde_json::from_str::<OAuthErrorResponse>(&body).ok();
+            match oauth_error.as_ref().map(|error| error.error.as_str()) {
+                Some("authorization_pending") => continue,
+                Some("slow_down") => {
+                    interval += Duration::from_secs(5);
+                    continue;
+                }
+                Some("access_denied") => {
+                    return Err(Error::Runtime {
+                        message: "Device authorization was denied by the user".to_string(),
+                    });
+                }
+                Some("expired_token") => {
+                    return Err(Error::Runtime {
+                        message: "Device authorization expired before authentication completed"
+                            .to_string(),
+                    });
+                }
+                _ => {
+                    let detail = oauth_error
+                        .and_then(|error| error.error_description)
+                        .unwrap_or(body);
+                    return Err(Error::Runtime {
+                        message: format!(
+                            "Device token request failed with status {status}: {detail}"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl TokenSource for DeviceCodeSource {
+    async fn fetch_token(&self) -> Result<TokenResponse> {
+        let device = self.request_device_authorization().await?;
+        info!(
+            "To authenticate with OAuth, visit {} and enter code {}",
+            device.verification_uri, device.user_code
+        );
+        let browser_url = device
+            .verification_uri_complete
+            .as_deref()
+            .unwrap_or(&device.verification_uri);
+        launch_browser(Url::parse(browser_url).map_err(|e| Error::Runtime {
+            message: format!("Invalid device verification URI: {e}"),
+        })?);
+        self.poll_for_token(&device).await
+    }
+
+    async fn refresh_token(&self, refresh_token: &str) -> Result<Option<TokenResponse>> {
+        self.oidc.refresh_token(refresh_token).await.map(Some)
+    }
+}
+
+fn random_urlsafe_string(length: usize) -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    let mut rng = rand::rng();
+    (0..length)
+        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
+        .collect()
+}
+
+fn launch_browser(url: Url) {
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Err(error) = webbrowser::open(url.as_str()) {
+            warn!("Could not open an OAuth browser automatically: {error}");
+        }
+    });
+}
+
+async fn read_authorization_callback(
+    stream: &mut TcpStream,
+    expected_path: &str,
+    expected_state: &str,
+) -> Result<AuthorizationCallback> {
+    let mut buffer = vec![0; 16 * 1024];
+    let count = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer))
+        .await
+        .map_err(|_| Error::Runtime {
+            message: "Timed out reading the OAuth authorization callback".to_string(),
+        })?
+        .map_err(|e| Error::Runtime {
+            message: format!("Failed to read OAuth authorization callback: {e}"),
+        })?;
+    let request = std::str::from_utf8(&buffer[..count]).map_err(|e| Error::Runtime {
+        message: format!("OAuth authorization callback was not valid UTF-8: {e}"),
+    })?;
+    parse_authorization_callback(request, expected_path, expected_state)
+}
+
+fn parse_authorization_callback(
+    request: &str,
+    expected_path: &str,
+    expected_state: &str,
+) -> Result<AuthorizationCallback> {
+    let request_target = request
+        .lines()
+        .next()
+        .and_then(|line| {
+            let mut parts = line.split_whitespace();
+            (parts.next() == Some("GET"))
+                .then(|| parts.next())
+                .flatten()
+        })
+        .ok_or(Error::Runtime {
+            message: "OAuth authorization callback was not a valid HTTP GET request".to_string(),
+        })?;
+    let callback =
+        Url::parse(&format!("http://loopback{request_target}")).map_err(|e| Error::Runtime {
+            message: format!("OAuth authorization callback URL was invalid: {e}"),
+        })?;
+    if callback.path() != expected_path {
+        return Err(Error::Runtime {
+            message: format!(
+                "OAuth authorization callback used unexpected path {}",
+                callback.path()
+            ),
+        });
+    }
+    let params: HashMap<_, _> = callback.query_pairs().into_owned().collect();
+    if params.get("state").map(String::as_str) != Some(expected_state) {
+        return Err(Error::Runtime {
+            message: "OAuth authorization callback state did not match".to_string(),
+        });
+    }
+    if let Some(error) = params.get("error") {
+        let description = params
+            .get("error_description")
+            .map(String::as_str)
+            .unwrap_or(error);
+        return Ok(AuthorizationCallback::ProviderError(format!(
+            "OAuth authorization failed: {description}"
+        )));
+    }
+    params
+        .get("code")
+        .cloned()
+        .map(AuthorizationCallback::Code)
+        .ok_or(Error::Runtime {
+            message: "OAuth authorization callback did not contain a code".to_string(),
+        })
+}
+
+async fn write_callback_response(stream: &mut TcpStream, success: bool) {
+    let (status, body) = if success {
+        (
+            "200 OK",
+            "<html><body><h2>Authentication successful</h2><p>You can close this window.</p></body></html>",
+        )
+    } else {
+        (
+            "400 Bad Request",
+            "<html><body><h2>Authentication failed</h2><p>Return to the application for details.</p></body></html>",
+        )
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
 }
 
 struct AzureImdsSource {
@@ -510,6 +1182,19 @@ impl OAuthHeaderProvider {
                 client_secret,
                 scopes,
             )?),
+            OAuthFlow::AuthorizationCode(options) => Box::new(AuthorizationCodeSource::new(
+                issuer_url,
+                client_id,
+                client_secret,
+                scopes,
+                options,
+            )?),
+            OAuthFlow::DeviceCode => Box::new(DeviceCodeSource::new(
+                issuer_url,
+                client_id,
+                client_secret,
+                scopes,
+            )?),
             OAuthFlow::AzureManagedIdentity { client_id } => {
                 Box::new(AzureImdsSource::new(scopes, client_id)?)
             }
@@ -544,8 +1229,17 @@ impl OAuthHeaderProvider {
             return Ok(token.clone());
         }
 
-        debug!("Acquiring new OAuth token via {:?}", self.token_source);
-        let resp = self.token_source.fetch_token().await?;
+        let refresh_token = state.refresh_token.clone();
+        let resp = if let Some(refresh_token) = refresh_token.as_deref() {
+            debug!("Refreshing OAuth access token via {:?}", self.token_source);
+            match self.token_source.refresh_token(refresh_token).await? {
+                Some(response) => response,
+                None => self.token_source.fetch_token().await?,
+            }
+        } else {
+            debug!("Acquiring new OAuth token via {:?}", self.token_source);
+            self.token_source.fetch_token().await?
+        };
 
         state.update(&resp);
         Ok(resp.access_token)
@@ -591,6 +1285,7 @@ mod tests {
         let mut state = TokenState::new();
         let response = TokenResponse {
             access_token: "tok".to_string(),
+            refresh_token: None,
             expires_in: None,
             token_type: None,
         };
@@ -599,6 +1294,25 @@ mod tests {
 
         assert!(!state.is_expired(Duration::from_secs(DEFAULT_TOKEN_TTL_SECS - 1)));
         assert!(state.is_expired(Duration::from_secs(DEFAULT_TOKEN_TTL_SECS + 1)));
+    }
+
+    #[test]
+    fn test_token_state_retains_refresh_token_when_not_rotated() {
+        let mut state = TokenState::new();
+        state.update(&TokenResponse {
+            access_token: "token-1".to_string(),
+            refresh_token: Some("refresh-1".to_string()),
+            expires_in: Some(60),
+            token_type: None,
+        });
+        state.update(&TokenResponse {
+            access_token: "token-2".to_string(),
+            refresh_token: None,
+            expires_in: Some(60),
+            token_type: None,
+        });
+
+        assert_eq!(state.refresh_token.as_deref(), Some("refresh-1"));
     }
 
     #[test]
@@ -622,12 +1336,14 @@ mod tests {
     fn test_token_response_debug_redacts_access_token() {
         let response = TokenResponse {
             access_token: "secret-token".to_string(),
+            refresh_token: Some("secret-refresh-token".to_string()),
             expires_in: Some(3600),
             token_type: Some("Bearer".to_string()),
         };
 
         let debug = format!("{response:?}");
         assert!(!debug.contains("secret-token"));
+        assert!(!debug.contains("secret-refresh-token"));
         assert!(debug.contains("access_token: \"<redacted>\""));
     }
 
@@ -641,7 +1357,252 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(source.scopes_string(), "scope1 scope2");
+        assert_eq!(source.oidc.scopes_string(), "scope1 scope2");
+    }
+
+    #[test]
+    fn test_authorization_code_options_default_to_pkce() {
+        let options = AuthorizationCodeOptions::new();
+
+        assert!(options.use_pkce);
+        assert!(options.redirect_uri.is_none());
+        assert!(options.callback_port.is_none());
+    }
+
+    #[test]
+    fn test_authorization_redirect_defaults_to_ipv4_loopback() {
+        let redirect = ResolvedRedirect::new(&AuthorizationCodeOptions::new()).unwrap();
+
+        assert_eq!(
+            redirect.uri,
+            format!("http://127.0.0.1:{DEFAULT_CALLBACK_PORT}/callback")
+        );
+        assert!(redirect.bind_addr.ip().is_loopback());
+        assert_eq!(redirect.bind_addr.port(), DEFAULT_CALLBACK_PORT);
+        assert_eq!(redirect.callback_path, "/callback");
+    }
+
+    #[test]
+    fn test_authorization_redirect_rejects_non_loopback_host() {
+        let options = AuthorizationCodeOptions::new()
+            .redirect_uri("https://client.example.com/oauth/callback");
+
+        let err = ResolvedRedirect::new(&options).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message == "OAuth redirect_uri must use http with a loopback host"
+        ));
+    }
+
+    #[test]
+    fn test_authorization_redirect_rejects_mismatched_port() {
+        let options = AuthorizationCodeOptions::new()
+            .redirect_uri("http://127.0.0.1:8401/callback")
+            .callback_port(8400);
+
+        let err = ResolvedRedirect::new(&options).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message.contains("does not match redirect_uri port")
+        ));
+    }
+
+    #[test]
+    fn test_authorization_callback_parsing() {
+        let callback = parse_authorization_callback(
+            "GET /callback?code=abc%20123&state=expected HTTP/1.1\r\nHost: localhost\r\n",
+            "/callback",
+            "expected",
+        )
+        .unwrap();
+
+        assert_eq!(callback, AuthorizationCallback::Code("abc 123".to_string()));
+    }
+
+    #[test]
+    fn test_authorization_callback_rejects_state_mismatch() {
+        let err = parse_authorization_callback(
+            "GET /callback?code=abc&state=wrong HTTP/1.1\r\nHost: localhost\r\n",
+            "/callback",
+            "expected",
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::Runtime { message }
+                if message == "OAuth authorization callback state did not match"
+        ));
+    }
+
+    #[test]
+    fn test_authorization_callback_reports_provider_error() {
+        let callback = parse_authorization_callback(
+            "GET /callback?error=access_denied&error_description=user+cancelled&state=expected HTTP/1.1\r\nHost: localhost\r\n",
+            "/callback",
+            "expected",
+        )
+        .unwrap();
+
+        assert_eq!(
+            callback,
+            AuthorizationCallback::ProviderError(
+                "OAuth authorization failed: user cancelled".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_authorization_request_uses_pkce_by_default() {
+        let (issuer_url, server) = spawn_discovery_server(1).await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string(), "profile".to_string()],
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        let request = source.build_authorization_request().await.unwrap();
+        let params: HashMap<_, _> = request.url.query_pairs().into_owned().collect();
+        assert_eq!(
+            params.get("response_type").map(String::as_str),
+            Some("code")
+        );
+        assert_eq!(
+            params.get("scope").map(String::as_str),
+            Some("openid profile")
+        );
+        assert_eq!(
+            params.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert!(params.contains_key("code_challenge"));
+        assert!(request.code_verifier.is_some());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_authorization_request_can_disable_pkce() {
+        let (issuer_url, server) = spawn_discovery_server(1).await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            vec!["openid".to_string()],
+            AuthorizationCodeOptions::new().use_pkce(false),
+        )
+        .unwrap();
+
+        let request = source.build_authorization_request().await.unwrap();
+        let params: HashMap<_, _> = request.url.query_pairs().into_owned().collect();
+        assert!(!params.contains_key("code_challenge"));
+        assert!(!params.contains_key("code_challenge_method"));
+        assert!(request.code_verifier.is_none());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_exchange_includes_optional_credentials() {
+        let (issuer_url, request_body, server) = spawn_token_exchange_server().await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            vec!["openid".to_string()],
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        let response = source
+            .exchange_code("auth-code", Some("verifier"))
+            .await
+            .unwrap();
+        assert_eq!(response.access_token, "token");
+        let body = request_body.lock().unwrap().clone().unwrap();
+        assert!(body.contains("grant_type=authorization_code"));
+        assert!(body.contains("code=auth-code"));
+        assert!(body.contains("code_verifier=verifier"));
+        assert!(body.contains("client_secret=secret"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_device_authorization_polls_until_success() {
+        let (issuer_url, token_requests, server) = spawn_device_server().await;
+        let source = DeviceCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            vec!["openid".to_string()],
+        )
+        .unwrap();
+
+        let device = source.request_device_authorization().await.unwrap();
+        let response = source.poll_for_token(&device).await.unwrap();
+
+        assert_eq!(response.access_token, "device-token");
+        assert_eq!(response.refresh_token.as_deref(), Some("device-refresh"));
+        assert_eq!(token_requests.load(Ordering::SeqCst), 3);
+        server.await.unwrap();
+    }
+
+    #[derive(Debug)]
+    struct RefreshingTokenSource {
+        fetches: Arc<AtomicUsize>,
+        refreshes: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TokenSource for RefreshingTokenSource {
+        async fn fetch_token(&self) -> Result<TokenResponse> {
+            self.fetches.fetch_add(1, Ordering::SeqCst);
+            Ok(TokenResponse {
+                access_token: "initial".to_string(),
+                refresh_token: Some("refresh".to_string()),
+                expires_in: Some(3600),
+                token_type: Some("Bearer".to_string()),
+            })
+        }
+
+        async fn refresh_token(&self, refresh_token: &str) -> Result<Option<TokenResponse>> {
+            assert_eq!(refresh_token, "refresh");
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(TokenResponse {
+                access_token: "refreshed".to_string(),
+                refresh_token: None,
+                expires_in: Some(3600),
+                token_type: Some("Bearer".to_string()),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_header_provider_uses_and_retains_refresh_token() {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let provider = OAuthHeaderProvider {
+            token_source: Box::new(RefreshingTokenSource {
+                fetches: Arc::clone(&fetches),
+                refreshes: Arc::clone(&refreshes),
+            }),
+            token_state: Arc::new(RwLock::new(TokenState::new())),
+            refresh_buffer: Duration::ZERO,
+        };
+
+        assert_eq!(provider.get_valid_token().await.unwrap(), "initial");
+        provider.token_state.write().await.expires_at =
+            Some(Instant::now() - Duration::from_secs(1));
+        assert_eq!(provider.get_valid_token().await.unwrap(), "refreshed");
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.token_state.read().await.refresh_token.as_deref(),
+            Some("refresh")
+        );
     }
 
     #[test]
@@ -674,7 +1635,7 @@ mod tests {
         let provider = OAuthHeaderProvider::new(config).unwrap();
         let debug = format!("{provider:?}");
         assert!(!debug.contains("super-secret"));
-        assert!(debug.contains("client_secret: \"<redacted>\""));
+        assert!(debug.contains("client_secret: Some(\"<redacted>\")"));
     }
 
     #[test]
@@ -720,7 +1681,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = source.get_token_endpoint().await.unwrap_err();
+        let err = source.oidc.get_token_endpoint().await.unwrap_err();
         assert!(matches!(
             err,
             Error::Runtime { message }
@@ -757,7 +1718,7 @@ mod tests {
         assert!(matches!(
             err,
             Error::InvalidInput { message }
-                if message == "ClientCredentials OAuth issuer_url must use https, except for loopback hosts"
+                if message == "OAuth issuer_url must use https, except for loopback hosts"
         ));
     }
 
@@ -803,6 +1764,129 @@ mod tests {
         assert_eq!(token_requests.load(Ordering::SeqCst), 2);
 
         server.await.unwrap();
+    }
+
+    async fn spawn_discovery_server(expected_requests: usize) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_line, _) = read_http_request(&mut stream).await;
+                assert!(request_line.starts_with("GET /.well-known/openid-configuration "));
+                let discovery = format!(
+                    r#"{{"token_endpoint":"http://{addr}/token","authorization_endpoint":"http://{addr}/authorize","device_authorization_endpoint":"http://{addr}/device"}}"#
+                );
+                write_json_response(&mut stream, "200 OK", &discovery).await;
+            }
+        });
+
+        (issuer_url, server)
+    }
+
+    async fn spawn_token_exchange_server() -> (
+        String,
+        Arc<std::sync::Mutex<Option<String>>>,
+        JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+        let request_body = Arc::new(std::sync::Mutex::new(None));
+        let server_request_body = Arc::clone(&request_body);
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_line, body) = read_http_request(&mut stream).await;
+                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                    let discovery = format!(
+                        r#"{{"token_endpoint":"http://{addr}/token","authorization_endpoint":"http://{addr}/authorize"}}"#
+                    );
+                    write_json_response(&mut stream, "200 OK", &discovery).await;
+                } else if request_line.starts_with("POST /token ") {
+                    *server_request_body.lock().unwrap() = Some(body);
+                    write_json_response(
+                        &mut stream,
+                        "200 OK",
+                        r#"{"access_token":"token","refresh_token":"refresh","expires_in":3600}"#,
+                    )
+                    .await;
+                } else {
+                    write_json_response(&mut stream, "404 Not Found", "{}").await;
+                }
+            }
+        });
+
+        (issuer_url, request_body, server)
+    }
+
+    async fn spawn_device_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let server_token_requests = Arc::clone(&token_requests);
+
+        let server = tokio::spawn(async move {
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_line, body) = read_http_request(&mut stream).await;
+                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                    let discovery = format!(
+                        r#"{{"token_endpoint":"http://{addr}/token","device_authorization_endpoint":"http://{addr}/device"}}"#
+                    );
+                    write_json_response(&mut stream, "200 OK", &discovery).await;
+                } else if request_line.starts_with("POST /device ") {
+                    assert!(body.contains("client_id=client-id"));
+                    assert!(body.contains("client_secret=secret"));
+                    assert!(body.contains("scope=openid"));
+                    let device = format!(
+                        r#"{{"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"http://{addr}/verify","verification_uri_complete":"http://{addr}/verify?user_code=ABCD-EFGH","expires_in":60,"interval":1}}"#
+                    );
+                    write_json_response(&mut stream, "200 OK", &device).await;
+                } else if request_line.starts_with("POST /token ") {
+                    assert!(body.contains(
+                        "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"
+                    ));
+                    assert!(body.contains("device_code=device-code"));
+                    assert!(body.contains("client_secret=secret"));
+                    let request = server_token_requests.fetch_add(1, Ordering::SeqCst);
+                    match request {
+                        0 => {
+                            write_json_response(
+                                &mut stream,
+                                "400 Bad Request",
+                                r#"{"error":"authorization_pending"}"#,
+                            )
+                            .await;
+                        }
+                        1 => {
+                            write_json_response(
+                                &mut stream,
+                                "400 Bad Request",
+                                r#"{"error":"slow_down"}"#,
+                            )
+                            .await;
+                        }
+                        _ => {
+                            write_json_response(
+                                &mut stream,
+                                "200 OK",
+                                r#"{"access_token":"device-token","refresh_token":"device-refresh","expires_in":3600}"#,
+                            )
+                            .await;
+                        }
+                    }
+                } else {
+                    write_json_response(&mut stream, "404 Not Found", "{}").await;
+                }
+            }
+        });
+
+        (issuer_url, token_requests, server)
     }
 
     async fn spawn_oauth_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {

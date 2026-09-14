@@ -7,6 +7,10 @@
 export enum OAuthFlowType {
   /** Client Credentials grant (service-to-service / M2M). */
   ClientCredentials = "client_credentials",
+  /** Interactive Authorization Code grant, using PKCE by default. */
+  AuthorizationCode = "authorization_code",
+  /** Device Authorization grant for CLI and headless environments. */
+  DeviceCode = "device_code",
   /** Azure Managed Identity via IMDS. */
   AzureManagedIdentity = "azure_managed_identity",
 }
@@ -40,6 +44,16 @@ export enum OAuthFlowType {
  *   flow: OAuthFlowType.AzureManagedIdentity,
  * };
  * ```
+ *
+ * @example Authorization Code with PKCE:
+ * ```typescript
+ * const config: OAuthConfig = {
+ *   issuerUrl: "https://login.microsoftonline.com/{tenant}/v2.0",
+ *   clientId: "app-id",
+ *   scopes: ["openid", "api://lancedb-api/access"],
+ *   flow: OAuthFlowType.AuthorizationCode,
+ * };
+ * ```
  */
 export interface OAuthConfig {
   /**
@@ -63,6 +77,15 @@ export interface OAuthConfig {
 
   /** Client secret (required for ClientCredentials). */
   clientSecret?: string;
+
+  /** Loopback redirect URI for AuthorizationCode. */
+  redirectUri?: string;
+
+  /** Port for the AuthorizationCode loopback callback server (default: 8400). */
+  callbackPort?: number;
+
+  /** Protect AuthorizationCode with S256 PKCE (default: true). */
+  usePkce?: boolean;
 
   /** Client ID for user-assigned managed identity (AzureManagedIdentity). */
   managedIdentityClientId?: string;

@@ -158,10 +158,17 @@ pub struct OAuthConfig {
     /// OAuth scopes to request. For Azure managed identity, exactly one scope
     /// or resource is required. For example: `["api://{app_id}/.default"]`
     pub scopes: Vec<String>,
-    /// Authentication flow: "client_credentials" or "azure_managed_identity"
+    /// Authentication flow: "client_credentials", "authorization_code",
+    /// "device_code", or "azure_managed_identity"
     pub flow: Option<String>,
     /// Client secret (required for client_credentials).
     pub client_secret: Option<String>,
+    /// Loopback redirect URI for authorization_code.
+    pub redirect_uri: Option<String>,
+    /// Port for the authorization_code loopback callback server.
+    pub callback_port: Option<u16>,
+    /// Whether authorization_code uses S256 PKCE (default: true).
+    pub use_pkce: Option<bool>,
     /// Client ID for user-assigned managed identity (azure_managed_identity).
     pub managed_identity_client_id: Option<String>,
     /// Seconds before expiry to trigger proactive refresh (default: 300).
@@ -181,6 +188,9 @@ impl std::fmt::Debug for OAuthConfig {
                 "client_secret",
                 &self.client_secret.as_deref().map(|_| "<redacted>"),
             )
+            .field("redirect_uri", &self.redirect_uri)
+            .field("callback_port", &self.callback_port)
+            .field("use_pkce", &self.use_pkce)
             .field(
                 "managed_identity_client_id",
                 &self.managed_identity_client_id,
@@ -194,10 +204,22 @@ impl TryFrom<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
     type Error = Error;
 
     fn try_from(config: OAuthConfig) -> Result<Self, Self::Error> {
-        use lancedb::remote::oauth::OAuthFlow;
+        use lancedb::remote::oauth::{AuthorizationCodeOptions, OAuthFlow};
 
         let flow = match config.flow.as_deref().unwrap_or("client_credentials") {
             "client_credentials" => OAuthFlow::ClientCredentials,
+            "authorization_code" => {
+                let mut options =
+                    AuthorizationCodeOptions::new().use_pkce(config.use_pkce.unwrap_or(true));
+                if let Some(redirect_uri) = config.redirect_uri {
+                    options = options.redirect_uri(redirect_uri);
+                }
+                if let Some(callback_port) = config.callback_port {
+                    options = options.callback_port(callback_port);
+                }
+                OAuthFlow::AuthorizationCode(options)
+            }
+            "device_code" => OAuthFlow::DeviceCode,
             "azure_managed_identity" => OAuthFlow::AzureManagedIdentity {
                 client_id: config.managed_identity_client_id,
             },
@@ -252,6 +274,9 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: Some("typo".to_string()),
             client_secret: None,
+            redirect_uri: None,
+            callback_port: None,
+            use_pkce: None,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
         };
@@ -272,6 +297,9 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: Some("client_credentials".to_string()),
             client_secret: Some("super-secret".to_string()),
+            redirect_uri: None,
+            callback_port: None,
+            use_pkce: None,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
         };
@@ -279,5 +307,54 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(!debug.contains("super-secret"));
         assert!(debug.contains("client_secret: Some(\"<redacted>\")"));
+    }
+
+    #[test]
+    fn test_authorization_code_conversion_preserves_options() {
+        let config = OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            scopes: vec!["openid".to_string()],
+            flow: Some("authorization_code".to_string()),
+            client_secret: Some("secret".to_string()),
+            redirect_uri: Some("http://127.0.0.1:9000/callback".to_string()),
+            callback_port: Some(9000),
+            use_pkce: Some(false),
+            managed_identity_client_id: None,
+            refresh_buffer_secs: None,
+        };
+
+        let converted = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap();
+        let lancedb::remote::oauth::OAuthFlow::AuthorizationCode(options) = converted.flow else {
+            panic!("expected authorization code flow");
+        };
+        assert_eq!(
+            options.redirect_uri.as_deref(),
+            Some("http://127.0.0.1:9000/callback")
+        );
+        assert_eq!(options.callback_port, Some(9000));
+        assert!(!options.use_pkce);
+    }
+
+    #[test]
+    fn test_device_code_conversion() {
+        let config = OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            scopes: vec!["openid".to_string()],
+            flow: Some("device_code".to_string()),
+            client_secret: None,
+            redirect_uri: None,
+            callback_port: None,
+            use_pkce: None,
+            managed_identity_client_id: None,
+            refresh_buffer_secs: None,
+        };
+
+        let converted = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap();
+        assert!(matches!(
+            converted.flow,
+            lancedb::remote::oauth::OAuthFlow::DeviceCode
+        ));
     }
 }

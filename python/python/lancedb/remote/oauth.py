@@ -12,6 +12,12 @@ class OAuthFlowType(str, Enum):
     CLIENT_CREDENTIALS = "client_credentials"
     """Client Credentials grant (service-to-service / M2M)."""
 
+    AUTHORIZATION_CODE = "authorization_code"
+    """Interactive Authorization Code grant, using PKCE by default."""
+
+    DEVICE_CODE = "device_code"
+    """Device Authorization grant for CLI and headless environments."""
+
     AZURE_MANAGED_IDENTITY = "azure_managed_identity"
     """Azure Managed Identity via IMDS."""
 
@@ -38,6 +44,13 @@ class OAuthConfig:
         Authentication flow to use. Default: CLIENT_CREDENTIALS.
     client_secret : Optional[str]
         Client secret (required for CLIENT_CREDENTIALS).
+    redirect_uri : Optional[str]
+        Loopback redirect URI for AUTHORIZATION_CODE. The default is
+        ``http://127.0.0.1:{callback_port}/callback``.
+    callback_port : Optional[int]
+        Port for the AUTHORIZATION_CODE loopback callback server (default: 8400).
+    use_pkce : bool
+        Protect AUTHORIZATION_CODE with S256 PKCE (default: True).
     managed_identity_client_id : Optional[str]
         Client ID for user-assigned managed identity (AZURE_MANAGED_IDENTITY).
     refresh_buffer_secs : Optional[int]
@@ -64,6 +77,24 @@ class OAuthConfig:
     ...     scopes=["api://lancedb-api/.default"],
     ...     flow=OAuthFlowType.AZURE_MANAGED_IDENTITY,
     ... )
+
+    Authorization Code with PKCE:
+
+    >>> config = OAuthConfig(
+    ...     issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",
+    ...     client_id="app-id",
+    ...     scopes=["openid", "api://lancedb-api/access"],
+    ...     flow=OAuthFlowType.AUTHORIZATION_CODE,
+    ... )
+
+    Device Authorization:
+
+    >>> config = OAuthConfig(
+    ...     issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",
+    ...     client_id="app-id",
+    ...     scopes=["openid", "api://lancedb-api/access"],
+    ...     flow=OAuthFlowType.DEVICE_CODE,
+    ... )
     """
 
     issuer_url: str
@@ -71,5 +102,8 @@ class OAuthConfig:
     scopes: List[str]
     flow: OAuthFlowType = OAuthFlowType.CLIENT_CREDENTIALS
     client_secret: Optional[str] = field(default=None, repr=False)
+    redirect_uri: Optional[str] = None
+    callback_port: Optional[int] = None
+    use_pkce: bool = True
     managed_identity_client_id: Optional[str] = None
     refresh_buffer_secs: Optional[int] = None
