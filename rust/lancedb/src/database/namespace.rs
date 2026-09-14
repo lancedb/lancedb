@@ -251,11 +251,11 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
-        if let Some(read_consistency_inverval) = self.read_consistency_interval {
-            if read_consistency_inverval.is_zero() {
+        if let Some(interval) = self.read_consistency_interval {
+            if interval.is_zero() {
                 Ok(ReadConsistency::Strong)
             } else {
-                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+                Ok(ReadConsistency::Eventual(interval))
             }
         } else {
             Ok(ReadConsistency::Manual)

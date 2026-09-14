@@ -3354,7 +3354,7 @@ def test_empty_query(mem_db: DBConnection):
     # None is the same as default
     df = table.search().select(["id"]).limit(None).to_arrow()
     assert df.num_rows == 100
-    # invalid limist is the same as None, wihch is the same as default
+    # invalid limist is the same as None, which is the same as default
     df = table.search().select(["id"]).limit(-1).to_arrow()
     assert df.num_rows == 100
     # valid limit should work

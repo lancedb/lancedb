@@ -240,7 +240,7 @@ enum BadVectorHandling {
     /// An error is returned
     #[default]
     Error,
-    /// The offending row is droppped
+    /// The offending row is dropped
     Drop,
     /// The invalid/missing items are replaced by fill_value
     Fill(f32),
@@ -1326,7 +1326,7 @@ impl Table {
     /// Note: if your condition is something like "some_id_column == 7" and
     /// you are updating many rows (with different ids) then you will get
     /// better performance with a single [`merge_insert`] call instead of
-    /// repeatedly calilng this method.
+    /// repeatedly calling this method.
     pub fn update(&self) -> UpdateBuilder {
         UpdateBuilder::new(self.inner.clone())
     }
