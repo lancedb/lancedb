@@ -1287,8 +1287,14 @@ class LanceQueryBuilder(ABC):
         Calling this multiple times combines the filters with a logical AND
         rather than replacing the previous filter.
         """
+        first_filter = self._where is None
         self._where = _combine_where(self._where, where)
-        self._postfilter = not prefilter
+        if first_filter:
+            # The pre/post-filter mode applies to the whole combined
+            # predicate, so it is fixed by the FIRST where() call. Later
+            # calls previously overwrote it, silently changing the recall
+            # semantics of filters the user asked to pre-filter.
+            self._postfilter = not prefilter
         return self
 
     def with_row_id(self, with_row_id: bool) -> Self:
