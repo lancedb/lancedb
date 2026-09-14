@@ -1038,3 +1038,111 @@ fn validates_metadata_with_header_map() {
     assert!(insert_header(&mut headers, "bad header", "value").is_err());
     assert!(insert_header(&mut headers, "valid-header", "bad\nvalue").is_err());
 }
+
+/// The whole point of the one-shot path: the statement is the ticket, so the
+/// rows arrive without a submission first.
+///
+/// The counters are the assertion. Anything that reintroduces a planning round
+/// trip would still return the right rows, and only `query_count` would notice.
+#[tokio::test]
+async fn one_shot_returns_rows_in_a_single_round_trip() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+
+    let service = TestSqlService::default();
+    let query_count = service.query_count.clone();
+    let do_get_count = service.do_get_count.clone();
+    let expected = service.result.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_shutdown(address, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let mut ready = false;
+    for _ in 0..100 {
+        if tokio::net::TcpStream::connect(address).await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(ready, "SQL test server did not start");
+
+    let client = SqlClient::new(
+        "analytics".to_string(),
+        Some("tenant/production".to_string()),
+        "test-key".to_string(),
+        None,
+        Some(format!("grpc://{address}")),
+        ClientConfig::default(),
+    );
+
+    let stream = client
+        .execute_one_shot("SELECT 1", &["public".to_string()])
+        .await
+        .unwrap();
+    let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+
+    assert_eq!(batches, vec![expected]);
+    assert_eq!(
+        query_count.load(Ordering::SeqCst),
+        0,
+        "one-shot must not ask for a FlightInfo first"
+    );
+    assert_eq!(do_get_count.load(Ordering::SeqCst), 1);
+
+    let _ = shutdown_tx.send(());
+    let _ = server.await;
+}
+
+/// An empty answer still carries a schema, which is what the stream is built
+/// from before any row has been seen.
+#[tokio::test]
+async fn one_shot_handles_an_empty_result() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+
+    let service = TestSqlService::default();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_shutdown(address, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let mut ready = false;
+    for _ in 0..100 {
+        if tokio::net::TcpStream::connect(address).await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(ready, "SQL test server did not start");
+
+    let client = SqlClient::new(
+        "analytics".to_string(),
+        Some("tenant/production".to_string()),
+        "test-key".to_string(),
+        None,
+        Some(format!("grpc://{address}")),
+        ClientConfig::default(),
+    );
+
+    let stream = client
+        .execute_one_shot("SELECT empty", &["public".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(stream.schema().fields().len(), 1);
+    let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    assert!(batches.is_empty());
+
+    let _ = shutdown_tx.send(());
+    let _ = server.await;
+}
