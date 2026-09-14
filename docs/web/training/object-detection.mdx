@@ -331,7 +331,7 @@ with open(out / "metadata.json", "w") as f:
     }, f, indent=2)
 ```
 
-To reproduce a run, [time-travel](/tables/versioning) the view to the recorded version before opening the loader:
+To reproduce a run, [time-travel](/management/table#versioning) the view to the recorded version before opening the loader:
 
 ```py Python icon=Python
 tbl = lancedb.connect("data/bdd100k/lancedb").open_table("bdd100k_rider_train")

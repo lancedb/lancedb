@@ -102,6 +102,38 @@
     {
       "source": "/namespaces/usage",
       "destination": "/management/namespace"
+    },
+    {
+      "source": "/basics/data-types",
+      "destination": "/sql/data-types"
+    },
+    {
+      "source": "/tables/schema",
+      "destination": "/management/table#schema"
+    },
+    {
+      "source": "/tables/versioning",
+      "destination": "/management/table#versioning"
+    },
+    {
+      "source": "/search/multivector-search",
+      "destination": "/search/vector-search"
+    },
+    {
+      "source": "/search/explain-analyze",
+      "destination": "/search/explain"
+    },
+    {
+      "source": "/indexing/quantization",
+      "destination": "/indexing/vector-index"
+    },
+    {
+      "source": "/performance",
+      "destination": "/search#performance"
+    },
+    {
+      "source": "/reranking/:slug*",
+      "destination": "/reranking"
     }
   ],
   "navigation": {
@@ -123,7 +155,6 @@
               "basics/lance",
               "basics/catalog",
               "basics/jobs",
-              "basics/data-types",
               "tables/consistency",
               "basics/guarantees",
               "basics/limits",
@@ -138,11 +169,19 @@
               "management/database",
               "management/namespace",
               "management/table",
-              "tables/schema",
-              "tables/versioning",
+              "tables/multimodal",
               "tables/branching",
               "management/materialized-view",
-              "management/function"
+              "management/function",
+              {
+                "group": "Indexing",
+                "pages": [
+                  "indexing/index",
+                  "indexing/vector-index",
+                  "indexing/fts-index",
+                  "indexing/scalar-index"
+                ]
+              }
             ]
           },
           {
@@ -156,38 +195,15 @@
             ]
           },
           {
-            "group": "Query",
+            "group": "Semantic Search",
             "pages": [
               "search/index",
               "search/vector-search",
-              "search/multivector-search",
               "search/full-text-search",
               "search/hybrid-search",
               "search/filtering",
-              {
-                "group": "Reranking",
-                "pages": [
-                  "reranking/index",
-                  "reranking/rrf",
-                  "reranking/linear_combination",
-                  "reranking/mrr",
-                  "reranking/cross_encoder",
-                  "reranking/custom-reranker",
-                  "reranking/eval"
-                ]
-              },
-              {
-                "group": "Indexing",
-                "pages": [
-                  "indexing/index",
-                  "indexing/vector-index",
-                  "indexing/fts-index",
-                  "indexing/scalar-index",
-                  "indexing/quantization"
-                ]
-              },
-              "search/explain",
-              "search/explain-analyze"
+              "reranking/index",
+              "search/explain"
             ]
           },
           {
@@ -220,8 +236,7 @@
                   "storage/configuration",
                   "storage/monitoring"
                 ]
-              },
-              "performance"
+              }
             ]
           },
           {

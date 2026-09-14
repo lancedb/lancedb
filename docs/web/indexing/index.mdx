@@ -163,3 +163,34 @@ Then the greedy search routine operates as follows:
 * At the top layer (using an arbitrary vertex as an entry point), use the greedy local search routine on the k-ANN graph to get an approximate nearest neighbor at that layer.
 * Using the approximate nearest neighbor found in the previous layer as an entry point, find an approximate nearest neighbor in the next layer with the same method.
 * Repeat until the bottom-most layer is reached. Then use the entry point to find multiple nearest neighbors (e.g. top 10).
+
+## Performance {#performance}
+
+#### Vector indexes {#vector-indexes}
+
+If vector search latency climbs with table size (i.e., queries that ran in milliseconds on a small table take seconds as it grows to millions of rows), the cause is the default brute-force scan over every vector. That works fine below ~100K vectors, but past that you should build a dedicated vector index. Pick the type by your data shape:
+
+| Index | When to use |
+|-------|-------------|
+| `IVF_PQ` | General-purpose default; what Enterprise builds automatically. Higher accuracy than RQ at small dimensions (≤ 256). |
+| `IVF_RQ` | Maximum compression on high-dim vectors, faster builds than PQ. |
+| `IVF_HNSW_SQ` | Best recall/latency for unfiltered search; higher latency variance under selective filters. |
+| `IVF_FLAT` | Required for binary vectors with `hamming`. |
+
+The distance metric is fixed once the index is built. Pick the distance metric based on how the embedding model was trained: `cosine` (unnormalized), `dot` (already-normalized, best performance), `l2` (general-purpose, default), `hamming` (binary). For parameter tuning, see [Vector Indexing](/indexing/vector-index).
+
+#### Scalar indexes {#scalar-indexes}
+
+If filtered queries slow down as the table grows — even when the filter is selective — the cause is a full column scan: without a scalar index, LanceDB evaluates the `where(...)` predicate on every row, and the same applies to `merge_insert` join keys. The best practice is to build a scalar index on every column you filter or join on, picking the type by the column's shape:
+
+| Index | Best for |
+|-------|----------|
+| `BTREE` (default) | Numeric, string, temporal columns with mostly distinct values |
+| `BITMAP` | Boolean and low-cardinality columns (< ~1,000 distinct values) |
+| `LABEL_LIST` | `List<T>` columns queried with `array_has_any` / `array_has_all` |
+
+See [Scalar Indexing](/indexing/scalar-index).
+
+#### Full-text search {#full-text-search}
+
+If your full-text index is much larger than expected, or takes longer than expected to build, the cause is usually phrase-query flags being enabled when they aren't needed: `with_position=True` and `remove_stop_words=False` both significantly inflate index size and build time. The best practice is to keep the defaults for most workloads, and only enable those flags when you actually need to search for phrases. See [FTS Indexing](/indexing/fts-index) configuration options for the full set of options.

@@ -1,6 +1,6 @@
 ---
 title: "Branches"
-sidebarTitle: "Branches"
+sidebarTitle: "Branch"
 description: "Fork isolated, writable lines of table history in LanceDB. Run experiments, backfills, and index rebuilds without disturbing production reads on main."
 icon: "code-branch"
 ---
@@ -46,8 +46,8 @@ reads exactly as before. Branches are a natural fit when you want to:
 
 ## How branches relate to versions and tags {#how-branches-relate-to-versions-and-tags}
 
-Every LanceDB table already tracks a linear history of [versions](/tables/versioning),
-and you can [tag](/tables/versioning#tag-based-versioning) a version or `checkout`
+Every LanceDB table already tracks a linear history of [versions](/management/table#versioning),
+and you can [tag](/management/table#versioning-tag-based-versioning) a version or `checkout`
 one to read it. Branches add the missing piece: a *separate, writable* line of
 history. Where a tag is a read-only label and `checkout` is a read-only view, a
 branch forks from a point in history and then evolves on its own. Creating or
@@ -394,10 +394,10 @@ give you to work with table history. Choose these approaches based on whether yo
 | Feature | Writable? | Purpose |
 | --- | --- | --- |
 | **[Branch](#work-with-branches)** | ✅ Yes | Write on top of a point in history without touching `main`. |
-| **[Tag](/tables/versioning#tag-based-versioning)** | ❌ No | Attach a human-readable label to an existing version; protects it from cleanup. |
-| **[`checkout(version)`](/tables/versioning#rollback-to-previous-versions)** | ❌ No | Read a historical version of `main` without forking. Read-only until you `restore`. |
+| **[Tag](/management/table#versioning-tag-based-versioning)** | ❌ No | Attach a human-readable label to an existing version; protects it from cleanup. |
+| **[`checkout(version)`](/management/table#versioning-rollback-to-previous-versions)** | ❌ No | Read a historical version of `main` without forking. Read-only until you `restore`. |
 
 <Note>
 For linear version history — creating versions, listing them, rolling back, and
-tagging — see the [Versioning and Reproducibility](/tables/versioning) guide.
+tagging — see the [Versioning and Reproducibility](/management/table#versioning) guide.
 </Note>

@@ -13,8 +13,31 @@ DataFusion the dataset's Arrow schema directly, so a column is the same object
 to the query engine as it is to the format.
 
 The consequence is that SQL type names here are **spellings of Arrow types**,
-not a system that maps onto them. [Data types](/basics/data-types) documents the
+not a system that maps onto them. [Data types](/sql/data-types) documents the
 storage side; this page covers what changes when you reach a column from SQL.
+
+## The Arrow types a column can be {#supported}
+
+| Category | Types |
+| --- | --- |
+| Null | `null` |
+| Boolean | `bool` |
+| Integer | `int8`, `int16`, `int32`, `int64` and their `uint` counterparts |
+| Floating point | `float16`, `float32`, `float64` |
+| String | `utf8`, `large_utf8` |
+| Binary | `binary`, `large_binary`, `fixed_size_binary(n)` |
+| Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp` (with or without timezone), `duration` |
+| Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
+| Dictionary | `dictionary(key, value)` |
+
+Two limits are worth stating because they surface as schema errors rather than
+as documentation:
+
+- A `map` with `keys_sorted = true` is rejected. Sorted-key maps do not survive
+  the round trip through the Python bindings, so they are refused rather than
+  silently unsorted.
+- Not every type is legal as a `fixed_size_list` child. The vector case is,
+  which is what matters in practice.
 
 ## SQL names for Arrow types {#names}
 
@@ -78,6 +101,26 @@ column's Arrow type, and therefore the schema your query sees.
 The default reads blob columns as descriptions and other binary columns as
 binary. A query selecting a blob column and expecting bytes gets a struct.
 </Warning>
+
+### bfloat16 {#bfloat16}
+
+Sixteen-bit floats in the bfloat16 layout, stored as `fixed_size_binary(2)`.
+Useful as a vector element type when halving the memory matters more than the
+precision does.
+
+## Geospatial {#geospatial}
+
+<Warning>
+Lance defines geospatial types and `st_*` functions on
+[GeoArrow](https://geoarrow.org), but they sit behind an optional build feature
+that **LanceDB does not ship**. Calling `st_intersects` and friends returns an
+error naming the missing feature rather than an unknown-function error, and the
+spatial index is gated the same way.
+</Warning>
+
+Geometry can still be stored -- it is binary, and binary columns work -- but
+nothing interprets it. Filter on a bounding box held in ordinary numeric
+columns if you need spatial predicates today.
 
 ## Pseudo-columns {#pseudo-columns}
 
