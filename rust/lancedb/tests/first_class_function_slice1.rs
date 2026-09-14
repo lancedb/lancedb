@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use lancedb::function::{
     FunctionApplication, FunctionBinding, FunctionVersion, RefreshColumnResult, SecretBinding,
+    SecretReference,
 };
 use serde_json::Value;
 
@@ -52,7 +53,7 @@ fn function_version_job_result_matches_shared_canonical_golden() {
         version.secret_bindings(),
         [SecretBinding::Env {
             variable: "HF_TOKEN".to_string(),
-            secret_ref: "hf-prod".to_string(),
+            secret_ref: SecretReference::new("hf-prod"),
         }]
     );
     assert_eq!(
@@ -183,7 +184,7 @@ fn canonical_client_values_carry_bindings_and_no_credentials() {
 
     assert_eq!(
         canonical["secret_bindings"],
-        serde_json::json!([{"kind": "env", "variable": "HF_TOKEN", "secret_ref": "hf-prod"}])
+        serde_json::json!([{"kind": "env", "variable": "HF_TOKEN", "secret_ref": {"name": "hf-prod"}}])
     );
     assert_no_secret_values(&canonical);
 }
@@ -198,8 +199,8 @@ fn canonical_client_values_carry_bindings_and_no_credentials() {
 fn an_unknown_binding_kind_is_forward_decodable() {
     let mut result = job_result("remote_function_job.json");
     result["secret_bindings"] = serde_json::json!([
-        {"kind": "env", "variable": "HF_TOKEN", "secret_ref": "hf-prod"},
-        {"kind": "file", "path": "/run/secrets/tok", "secret_ref": "hf-prod"},
+        {"kind": "env", "variable": "HF_TOKEN", "secret_ref": {"name": "hf-prod"}},
+        {"kind": "file", "path": "/run/secrets/tok", "secret_ref": {"name": "hf-prod"}},
     ]);
 
     let version = FunctionVersion::from_json(&result.to_string()).expect("future binding kind");

@@ -778,24 +778,32 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.drop_function(name, version=version))
 
     @override
-    def create_secret(self, name: str, value: str) -> None:
-        LOOP.run(self._conn.create_secret(name, value))
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
 
     @override
-    def alter_secret(self, name: str, value: str) -> None:
-        LOOP.run(self._conn.alter_secret(name, value))
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.alter_secret(name, value, namespace_path=namespace_path))
 
     @override
-    def describe_secret(self, name: str) -> SecretInfo:
-        return LOOP.run(self._conn.describe_secret(name))
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
 
     @override
-    def list_secrets(self) -> List[str]:
-        return LOOP.run(self._conn.list_secrets())
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_secrets(namespace_path=namespace_path))
 
     @override
-    def drop_secret(self, name: str) -> None:
-        LOOP.run(self._conn.drop_secret(name))
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_secret(name, namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List["JobInfo"]:

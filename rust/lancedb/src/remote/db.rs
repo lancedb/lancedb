@@ -278,6 +278,22 @@ pub struct RemoteHostOverrides {
     pub sql: Option<String>,
 }
 
+/// Attach a namespace path to a Secret request body.
+///
+/// A root path is omitted rather than sent empty, so a root request is byte
+/// identical to one from a client that predates namespace addressing.
+fn add_namespace_path(body: &mut serde_json::Value, namespace_path: &[String]) {
+    if namespace_path.is_empty() {
+        return;
+    }
+    body["namespace_path"] = serde_json::Value::Array(
+        namespace_path
+            .iter()
+            .map(|segment| serde_json::Value::String(segment.clone()))
+            .collect(),
+    );
+}
+
 impl RemoteDatabase {
     pub(crate) fn try_new(
         uri: &str,
@@ -599,6 +615,10 @@ struct RemoteDropFunctionResponse {
 struct RemoteCreateSecretRequest<'a> {
     name: &'a str,
     value: &'a str,
+    /// Omitted at the root, so a request from a client that predates namespaces
+    /// is byte-identical to one that does not use them.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    namespace_path: &'a [String],
 }
 
 /// Replace the credential behind a Secret the database already holds.
@@ -606,15 +626,21 @@ struct RemoteCreateSecretRequest<'a> {
 struct RemoteAlterSecretRequest<'a> {
     name: &'a str,
     value: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    namespace_path: &'a [String],
 }
 
 /// One page of a Secret listing. A struct rather than an inline object so the
 /// request and the response are declared the same way -- a reader of one finds
 /// the other.
 #[derive(serde::Serialize)]
-struct RemoteListSecretsRequest {
+struct RemoteListSecretsRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     page_token: Option<String>,
+    /// Omitted at the root, so a listing from a client that predates namespaces
+    /// is byte-identical to one that does not use them.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    namespace_path: &'a [String],
 }
 
 #[derive(serde::Deserialize)]
@@ -733,29 +759,43 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(response.dropped)
     }
 
-    async fn create_secret(&self, name: &str, value: &str) -> Result<()> {
+    async fn create_secret(
+        &self,
+        name: &str,
+        value: &str,
+        namespace_path: &[String],
+    ) -> Result<()> {
         self.post_secret_write(
             "/v1/secrets/create",
-            &RemoteCreateSecretRequest { name, value },
+            &RemoteCreateSecretRequest {
+                name,
+                value,
+                namespace_path,
+            },
         )
         .await
     }
 
-    async fn alter_secret(&self, name: &str, value: &str) -> Result<()> {
+    async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
         self.post_secret_write(
             "/v1/secrets/alter",
-            &RemoteAlterSecretRequest { name, value },
+            &RemoteAlterSecretRequest {
+                name,
+                value,
+                namespace_path,
+            },
         )
         .await
     }
 
-    async fn list_secrets(&self) -> Result<Vec<String>> {
+    async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
         let mut names = Vec::new();
         let mut page_token: Option<String> = None;
         let mut seen_page_tokens = HashSet::new();
         loop {
             let body = RemoteListSecretsRequest {
                 page_token: page_token.clone(),
+                namespace_path,
             };
             let req = self.client.post("/v1/secrets/list").json(&body);
             let (request_id, response) = self.client.send(req).await?;
@@ -780,21 +820,19 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(names)
     }
 
-    async fn drop_secret(&self, name: &str) -> Result<()> {
-        let req = self
-            .client
-            .post("/v1/secrets/drop")
-            .json(&serde_json::json!({ "name": name }));
+    async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let mut body = serde_json::json!({ "name": name });
+        add_namespace_path(&mut body, namespace_path);
+        let req = self.client.post("/v1/secrets/drop").json(&body);
         let (request_id, response) = self.client.send(req).await?;
         self.client.check_response(&request_id, response).await?;
         Ok(())
     }
 
-    async fn describe_secret(&self, name: &str) -> Result<SecretInfo> {
-        let req = self
-            .client
-            .post("/v1/secrets/describe")
-            .json(&serde_json::json!({ "name": name }));
+    async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
+        let mut body = serde_json::json!({ "name": name });
+        add_namespace_path(&mut body, namespace_path);
+        let req = self.client.post("/v1/secrets/describe").json(&body);
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         response.json().await.err_to_http(request_id)
@@ -2926,11 +2964,11 @@ mod tests {
                 http::Response::builder().status(200).body("{}").unwrap()
             });
             if call {
-                conn.create_secret("openai-prod", "sk-live-0001")
+                conn.create_secret("openai-prod", "sk-live-0001", &[])
                     .await
                     .unwrap();
             } else {
-                conn.alter_secret("openai-prod", "sk-live-0001")
+                conn.alter_secret("openai-prod", "sk-live-0001", &[])
                     .await
                     .unwrap();
             }
@@ -2952,7 +2990,7 @@ mod tests {
             http::Response::builder().status(200).body(body).unwrap()
         });
         assert_eq!(
-            conn.list_secrets().await.unwrap(),
+            conn.list_secrets(&[]).await.unwrap(),
             vec!["openai-prod".to_string(), "hf-prod".to_string()]
         );
     }
@@ -2967,7 +3005,7 @@ mod tests {
                 .body(r#"{"secrets":[{"name":"openai-prod"}],"page_token":"same"}"#)
                 .unwrap()
         });
-        let error = conn.list_secrets().await.unwrap_err();
+        let error = conn.list_secrets(&[]).await.unwrap_err();
         assert!(
             error.to_string().contains("repeated a page_token"),
             "{error}"
@@ -2983,7 +3021,38 @@ mod tests {
             assert_eq!(body, serde_json::json!({"name": "openai-prod"}));
             http::Response::builder().status(200).body("{}").unwrap()
         });
-        conn.drop_secret("openai-prod").await.unwrap();
+        conn.drop_secret("openai-prod", &[]).await.unwrap();
+    }
+
+    /// A namespace path is sent when there is one and omitted when there is
+    /// not, so a root request stays byte identical to one from a client that
+    /// predates namespace addressing -- which is what lets the parameter ship
+    /// before every server implements it.
+    #[tokio::test]
+    async fn test_a_namespace_path_is_sent_only_when_it_is_not_root() {
+        let conn = Connection::new_with_handler(|request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({
+                    "name": "openai-prod",
+                    "namespace_path": ["prod", "vision"],
+                })
+            );
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_secret("openai-prod", &["prod".to_string(), "vision".to_string()])
+            .await
+            .unwrap();
+
+        let conn = Connection::new_with_handler(|request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert!(body.get("namespace_path").is_none(), "{body}");
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_secret("openai-prod", &[]).await.unwrap();
     }
 
     #[tokio::test]
