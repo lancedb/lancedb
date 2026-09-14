@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Handles to SQL queries running on a remote database.
+//! Lifecycle handles for submitted queries.
 
 use std::{fmt, sync::Arc};
 
@@ -18,6 +18,8 @@ pub enum QueryStatus {
     Running,
     /// The server has made the complete result available.
     Finished,
+    /// Query execution terminated with an error.
+    Failed,
     /// The server accepted cancellation but has not confirmed it yet.
     Cancelling,
     /// The server confirmed cancellation.
@@ -29,6 +31,7 @@ impl fmt::Display for QueryStatus {
         formatter.write_str(match self {
             Self::Running => "running",
             Self::Finished => "finished",
+            Self::Failed => "failed",
             Self::Cancelling => "cancelling",
             Self::Cancelled => "cancelled",
         })
@@ -57,10 +60,12 @@ pub(crate) trait QueryHandle: Send + Sync {
     async fn cancel(&self) -> Result<()>;
 }
 
-/// A handle to a submitted SQL query.
+/// A handle to a submitted query.
 ///
-/// The handle can be inspected, opened as an Arrow reader, or cancelled.
-/// Dropping it does not cancel the server-side query.
+/// The handle can be inspected, opened as an Arrow reader, or cancelled. Remote
+/// SQL and DataFrame queries execute on the server; local DataFrames execute
+/// in-process. Dropping a remote handle does not cancel the query; dropping an
+/// unfinished local reader abandons that in-process query.
 /// Identifier lookup is scoped to the connection that submitted the query and
 /// is not a durable resume mechanism.
 pub struct Query {
@@ -77,7 +82,6 @@ impl std::fmt::Debug for Query {
 }
 
 impl Query {
-    #[cfg(feature = "remote")]
     pub(crate) fn new(handle: Arc<dyn QueryHandle>) -> Self {
         Self { handle }
     }
@@ -92,11 +96,10 @@ impl Query {
         self.handle.describe().await
     }
 
-    /// Wait for the initial result stream and return its Arrow record batches.
+    /// Return the query's Arrow record batches.
     ///
-    /// The stream can begin yielding partial results before query execution is
-    /// complete. It continues polling for newly available result endpoints
-    /// until the query finishes and all endpoints have been consumed.
+    /// Remote streams can yield partial results before execution is complete;
+    /// local streams evaluate the DataFusion plan as they are consumed.
     ///
     /// Results are single-consumer. Calling this method more than once on the
     /// same handle returns an error.
@@ -118,6 +121,7 @@ mod tests {
     fn query_status_display_is_stable() {
         assert_eq!(QueryStatus::Running.to_string(), "running");
         assert_eq!(QueryStatus::Finished.to_string(), "finished");
+        assert_eq!(QueryStatus::Failed.to_string(), "failed");
         assert_eq!(QueryStatus::Cancelling.to_string(), "cancelling");
         assert_eq!(QueryStatus::Cancelled.to_string(), "cancelled");
     }
