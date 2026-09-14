@@ -1,0 +1,88 @@
+---
+title: Search
+sidebarTitle: Overview
+description: "Comprehensive guide to all search capabilities in LanceDB including vector search, full-text search, hybrid search, and more."
+icon: "list"
+---
+
+| Feature | Description |
+|:---------------|:------------|
+| [Vector Search](/search/vector-search/) | Semantic similarity search with multiple distance metrics |
+| [Multivector Search](/search/vector-search) | Search using multiple vector embeddings per document |
+| [Full-Text Search](/search/full-text-search/) | Keyword-based search with BM25 and pre-filtering |
+| [Hybrid Search](/search/hybrid-search/) | Combines vector and full-text search with reranking |
+| [Filtering](/search/filtering/) | Filter results based on metadata fields |
+| [SQL Queries](/search/sql/index) | SQL query capabilities for data exploration and analytics |
+
+## Before you search {#before-you-search}
+
+- Vector search can run without an ANN index as an exhaustive scan. That's useful while prototyping, but build a vector index before relying on low-latency searches over larger tables.
+- Full-text and hybrid text search require an FTS index on the text column you query. If a table has multiple FTS indexes, specify the target column. FTS also supports phrase, boolean, boosted, multi-match, and fuzzy query forms when you need more than plain terms.
+- Phrase FTS queries require an index created with token positions enabled.
+- Multivector search currently uses cosine similarity and accepts either one query vector or a matrix of query vectors; every query vector must match the inner dimension of the multivector column.
+- Set an explicit `.limit(...)` for production queries. The default top-k is 10 for search builders,
+  but spelling it out makes latency and result-count assumptions visible. Query builders also
+  support controls such as prefilter/postfilter, distance ranges, row-id inclusion, offset
+  pagination, and Arrow/Pandas/list result materialization.
+
+## Performance {#performance}
+
+Three knobs materially affect query latency, memory use, and recall. Be deliberate about each one on every query:
+
+<Steps>
+  <Step title="Project and limit explicitly">
+    If queries return more data than you need or take longer than expected, the cause is usually projecting more columns than necessary, or letting the result count run unbounded. The best practice is to always pass both `select()` and `limit()`:
+
+    ```python Python icon="python"
+    table.search(emb).select(["id", "title"]).limit(20)
+    ```
+  </Step>
+  <Step title="Stay on pre-filter unless fewer matches are acceptable">
+    If a query with `prefilter=False` returns fewer than `limit` results — sometimes zero — the cause is that post-filter applies the predicate after the top-k is selected, so only candidates that already passed the search are filtered. Pre-filter is the default and guarantees every result satisfies the predicate. Switch to `prefilter=False` only when fewer-than-`limit` results are acceptable. See [Filtering](/search/filtering).
+  </Step>
+  <Step title="Tune for recall one knob at a time">
+    If recall is lower than expected, the cause is that the search-time knobs limit how many candidates the index considers. Adjust based on your index type:
+
+    - Quantized indexes (PQ, RQ, SQ): `refine_factor` pulls extra candidates and re-scores them on full vectors.
+    - HNSW-backed indexes: `ef` at search time. Start at `1.5 × k`, raise toward `10 × k` if recall is short.
+    - IVF candidate breadth: `nprobes` is auto-tuned; override only when a selective pre-filter leaves too few neighbors.
+  </Step>
+</Steps>
+
+For hybrid search, the default `RRFReranker()` combines vector and FTS results into a single ranking via reciprocal rank fusion. See [Hybrid Search](/search/hybrid-search).
+
+#### Avoid materializing the whole table {#avoid-materializing-the-whole-table}
+
+If you need every row in the table (for training, export, or migration), calling `to_pandas()` or `to_arrow()` will run you out of memory on any non-trivial dataset — both materialize the full table at once. The best practice is to iterate via `table.search(...)` or `table.query(...)`, which work the same way in both LanceDB OSS and Enterprise.
+
+In OSS, you can also stream batches through the underlying Lance dataset directly — useful when you need filter pushdown or fragment-level parallelism via `ds.scanner(...)`:
+
+```python Python icon="python"
+ds = table.to_lance()
+for batch in ds.to_batches(columns=["id", "text"], batch_size=10000):
+    process(batch)
+```
+
+<Info>
+**API disparity between OSS and Enterprise.**
+
+LanceDB OSS exposes the `to_pandas()`, `to_arrow()`, and `table.to_lance()` methods for direct Lance dataset access. Enterprise's `RemoteTable` exposes none of these. Only `table.search(...)` and `table.query(...)`. In general, it's always best to go through `search()` and `query()` to keep your code portable across both OSS and Enterprise.
+</Info>
+
+#### Diagnostics {#diagnostics}
+
+To analyze a slow query, inspect what the query engine actually did and the state of the indexes it touched. These two tools surface that information — use them in this order:
+
+```python Python icon="python"
+print(table.search(emb).where("year > 2000").limit(10).analyze_plan())
+print(table.index_stats("vector_idx"))   # num_unindexed_rows should be ~0
+```
+
+`analyze_plan()` returns the execution plan with per-stage timings, so you can see where the query actually spent its time. `index_stats()` shows how many rows are still unindexed — you want `num_unindexed_rows` to be ~0. In `analyze_plan`, look for:
+
+| Plan pattern | Fix |
+|--------------|-----|
+| `LanceScan` with high `bytes_read` / `iops` | Add a missing index, project columns with `select()`, or check that the dataset has been compacted |
+| Multiple sequential filters | Reorder filter conditions |
+
+[Explain Analyze](/search/explain) walks through a fully worked before/after example, including how `KNNVectorDistance` and `output_batches` change once indexes are in place.

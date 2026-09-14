@@ -1,0 +1,175 @@
+---
+title: "NVIDIA RAG Blueprint with LanceDB"
+sidebarTitle: "NVIDIA RAG Blueprint"
+description: "Use LanceDB as the retrieval layer for NVIDIA RAG Blueprint with a Docker-first, retrieval-only reference integration."
+---
+
+## What this tutorial shows {#what-this-tutorial-shows}
+
+If you are using [NVIDIA RAG Blueprints](https://build.nvidia.com/blueprints) and want to evaluate LanceDB in that stack, this tutorial gives you a concrete starting point. It shows how to use LanceDB as the retrieval layer for a Docker-based NVIDIA RAG deployment with a small, script-driven reference integration where LanceDB OSS is embedded directly in the NVIDIA containers, the collection is prepared ahead of time, and the RAG server retrieves from it for search and generation. The example is intentionally retrieval-only, but it also includes hybrid search and reranker selection so you can see how LanceDB fits into a realistic NVIDIA retrieval workflow.
+
+<Tip>
+The runnable example for this tutorial lives in the
+[VectorDB recipes repository](https://github.com/lancedb/vectordb-recipes/tree/main/examples/nvidia-rag-blueprint-lancedb).
+</Tip>
+
+
+## How NVIDIA organizes vector databases {#how-nvidia-organizes-vector-databases}
+
+NVIDIA's [RAG Blueprint documentation](https://docs.nvidia.com/rag/latest/readme.html) effectively describes three different patterns for vector database support.
+1. There are built-in backends such as Milvus, where NVIDIA already owns both ingestion and
+retrieval.
+2. There are built-in alternatives such as Elasticsearch, where NVIDIA still owns
+the end-to-end flow but switches the backend through configuration.
+3. Then, there is the custom vector database path, where you implement a `VDBRag` backend yourself and register it in NVIDIA's
+factory.
+
+The LanceDB example shown below fits into the third category. More specifically, it follows NVIDIA's
+**retrieval-only** custom backend path: the data is prepared in LanceDB ahead of time, and NVIDIA
+RAG Blueprint is then pointed at that existing collection for search and generation. It does not
+yet teach NVIDIA's ingestor how to write new documents into LanceDB automatically.
+
+## Deployment model {#deployment-model}
+
+This reference integration uses **LanceDB OSS as an embedded retrieval library**, not as a separate
+database service. In practice, `APP_VECTORSTORE_NAME` is set to `lancedb`, `APP_VECTORSTORE_URL`
+points to a local filesystem path inside the NVIDIA containers, the LanceDB collection is prepared
+ahead of time, and the NVIDIA RAG server loads the LanceDB adapter to retrieve directly from that
+local dataset.
+
+## What the recipe contains {#what-the-recipe-contains}
+
+The recipe at
+[`examples/nvidia-rag-blueprint-lancedb`](https://github.com/lancedb/vectordb-recipes/tree/main/examples/nvidia-rag-blueprint-lancedb)
+is organized around a small number of practical pieces. The data-prep script builds a demo
+LanceDB collection from scratch, generates embeddings through the LanceDB embedding registry, and
+creates a full-text index so hybrid retrieval works immediately. The adapter file shows the
+retrieval-only integration point for NVIDIA RAG Blueprint, while the Docker override and NVIDIA
+change guide show the minimal configuration and source changes needed to run the example against
+NVIDIA's containers.
+
+## End-to-end flow {#end-to-end-flow}
+
+### 1\. Prepare the LanceDB collection {#1-prepare-the-lancedb-collection}
+
+From the [recipe directory](https://github.com/lancedb/vectordb-recipes/tree/main/examples/nvidia-rag-blueprint-lancedb):
+
+```bash
+uv sync
+uv run prepare_lancedb.py --embedder demo-keyword --reranker mrr
+```
+
+That script creates:
+
+- a local LanceDB dataset under `data/`
+- a collection named `nvidia_blueprint_demo`
+- automatic embeddings generated at ingest time
+- an FTS index for hybrid search
+
+The default embedder is an offline demo embedder so the example stays easy to run. If you want a
+more realistic setup, the same script can switch to a sentence-transformers embedder.
+
+### 2\. Patch the NVIDIA blueprint {#2-patch-the-nvidia-blueprint}
+
+Follow the instructions in the recipe's
+[`nvidia_blueprint_changes.md`](https://github.com/lancedb/vectordb-recipes/tree/main/examples/nvidia-rag-blueprint-lancedb/nvidia_blueprint_changes.md).
+The essential changes are:
+
+- add LanceDB dependencies to the NVIDIA environment
+- copy `lancedb_vdb.py` into the NVIDIA source tree
+- register the `lancedb` branch in NVIDIA's VDB factory
+
+NVIDIA's [RAG blueprint documentation](https://docs.nvidia.com/rag/latest/readme.html) and custom-VDB guide provide useful background if you want more context before applying the LanceDB-specific changes.
+
+### 3\. Start the Docker deployment {#3-start-the-docker-deployment}
+
+Set the absolute path to the recipe directory:
+
+```bash
+export LANCEDB_RECIPE_DIR=/absolute/path/to/vectordb-recipes/examples/nvidia-rag-blueprint-lancedb
+```
+
+Then from the NVIDIA repo root:
+
+```bash
+docker compose \
+  -f deploy/compose/docker-compose-rag-server.yaml \
+  -f "$LANCEDB_RECIPE_DIR"/docker-compose.override.yml \
+  up -d --build
+
+docker compose \
+  -f deploy/compose/docker-compose-ingestor-server.yaml \
+  -f "$LANCEDB_RECIPE_DIR"/docker-compose.override.yml \
+  up -d --build
+```
+
+The key environment values are:
+
+- `APP_VECTORSTORE_NAME=lancedb`
+- `APP_VECTORSTORE_URL=/opt/lancedb-recipe/data`
+- `COLLECTION_NAME=nvidia_blueprint_demo`
+- `APP_VECTORSTORE_SEARCHTYPE=hybrid`
+- `LANCEDB_RERANKER=mrr`
+
+## Verifying the integration {#verifying-the-integration}
+
+### Search {#search}
+
+```bash
+curl -X POST http://localhost:8081/v1/search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "How do I replace Milvus in the NVIDIA RAG blueprint with LanceDB?",
+    "use_knowledge_base": true,
+    "collection_names": ["nvidia_blueprint_demo"],
+    "vdb_top_k": 3,
+    "reranker_top_k": 0
+  }'
+```
+
+### Generate {#generate}
+
+```bash
+curl -N -X POST http://localhost:8081/v1/generate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role":"user","content":"Summarize the LanceDB integration approach."}],
+    "use_knowledge_base": true,
+    "collection_names": ["nvidia_blueprint_demo"],
+    "vdb_top_k": 3,
+    "reranker_top_k": 0
+  }'
+```
+
+## Hybrid retrieval and rerankers {#hybrid-retrieval-and-rerankers}
+
+This example is meant to prove more than a trivial vector lookup.
+
+- LanceDB hybrid retrieval combines vector search with full-text search
+- the recipe creates the FTS index as part of dataset prep
+- the adapter supports `RRFReranker`, `MRRReranker`, and `CrossEncoderReranker`
+- the default example uses `MRRReranker`, not a plain weighted linear combination
+
+That matters for NVIDIA partner workloads because product names, storage platforms, and technical
+jargon often need exact lexical matching as well as semantic retrieval.
+
+## How this can be extended {#how-this-can-be-extended}
+
+The current example follows NVIDIA's **custom retrieval-only backend** path. In practice, that
+means the LanceDB collection is created ahead of time and NVIDIA RAG Blueprint is then pointed at
+that existing collection for search and generation. The sample data in `prepare_lancedb.py` exists
+only to make that flow runnable end to end: it creates a small local collection, inserts a few
+documents, generates embeddings, and builds an FTS index so the NVIDIA side has something real to
+query.
+
+A fuller integration is possible. NVIDIA's custom `VDBRag` interface also supports the pattern used
+by built-in backends such as Milvus and Elasticsearch, where NVIDIA owns both ingestion and
+retrieval. To make LanceDB work that way, a complete LanceDB backend would need to implement the
+ingestion methods NVIDIA documents, especially `create_collection` and `write_to_index`, along with
+the retrieval and collection-management methods expected by the rest of the stack.
+
+The open work is in defining how NVIDIA's ingestor should write
+records into LanceDB, how that storage is shared between the ingestor and the RAG server, and how
+document and collection metadata should be exposed so the broader NVIDIA APIs behave correctly.
+Until those pieces exist, this example should be read as: prepare LanceDB first, then let NVIDIA
+retrieve from it.

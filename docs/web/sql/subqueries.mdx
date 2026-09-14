@@ -1,0 +1,76 @@
+---
+title: "Subqueries"
+sidebarTitle: "Subqueries"
+description: "Queries inside queries: scalar, IN, EXISTS, correlated, and derived tables."
+icon: code-branch
+keywords: ["subquery", "exists", "in", "correlated", "derived table", "lateral"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+A subquery is allowed anywhere an expression or a relation is.
+
+## As a relation {#derived}
+
+```sql
+SELECT * FROM (
+    SELECT category, count(*) AS n FROM documents GROUP BY category
+) AS counts
+WHERE n > 100
+```
+
+A derived table needs an alias. It can be [sampled](/sql/sampling) like a base
+table:
+
+```sql
+SELECT * FROM (SELECT * FROM documents) d TABLESAMPLE (10)
+```
+
+## As a scalar {#scalar}
+
+```sql
+SELECT title, (SELECT count(*) FROM revisions r WHERE r.doc_id = d.id) AS revisions
+FROM documents AS d
+```
+
+A scalar subquery must return one row and one column. Returning more is an
+error rather than a silently-taken first row.
+
+## IN and EXISTS {#in-exists}
+
+```sql
+SELECT title FROM documents
+WHERE category_id IN (SELECT id FROM categories WHERE active)
+
+SELECT title FROM documents AS d
+WHERE EXISTS (SELECT 1 FROM revisions r WHERE r.doc_id = d.id)
+```
+
+`EXISTS` stops at the first matching row, so it is the cheaper test when you
+only care whether anything matches. `IN` builds the full set.
+
+`NOT IN` and `NOT EXISTS` differ on nulls: `NOT IN` against a set containing a
+null yields no rows, because the comparison is unknown rather than false. Prefer
+`NOT EXISTS` unless you have ruled nulls out.
+
+## Correlated subqueries {#correlated}
+
+A subquery referencing a column from the enclosing query — `d.id` above — is
+correlated, and is conceptually evaluated per outer row. The planner usually
+rewrites it into a join.
+
+<Note>
+Check with [`EXPLAIN`](/sql/explain) when a correlated subquery is slow. A plan
+showing a join has been optimized; one showing a repeated scan has not, and
+rewriting it as an explicit [join](/sql/join) is the fix.
+</Note>
+
+## CTEs as an alternative {#ctes}
+
+A [CTE](/sql/select#ctes) is a named subquery, and is usually more readable when
+the same subquery appears twice or when nesting gets deep.
+
+```sql
+WITH active AS (SELECT id FROM categories WHERE active)
+SELECT title FROM documents WHERE category_id IN (SELECT id FROM active)
+```

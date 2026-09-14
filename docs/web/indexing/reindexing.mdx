@@ -1,0 +1,128 @@
+---
+title: "Building and repairing indexes"
+sidebarTitle: "Build & Repair"
+description: "Learn how to keep your indexes up-to-date in LanceDB using incremental indexing, including best practices for adding new records without full reindexing."
+icon: "refresh"
+keywords: ["reindexing", "re-index", "incremental indexing", "reindex"]
+---
+
+import {
+    PyReindexingIncremental as ReindexingIncremental,
+    PyGpuIndexCuda as GpuIndexCuda,
+    PyGpuIndexMps as GpuIndexMps,
+} from '/snippets/indexing.mdx';
+
+As you add new data to your LanceDB tables, your indexes may become outdated.
+Reindexing is the process of updating the index to account for new data -- this applies to either a full-text search (FTS) index or a vector index. Reindexing is an important operation to run periodically as your data grows, as it has performance implications.
+
+As data is being added and a reindex operation is running, LanceDB will combine results from the existing index with exhaustive/flat search on the new data. This is done to ensure that you're still retrieving results over all your data, but it does come at a performance cost. The more data that you add without reindexing, the impact on latency (due to exhaustive search) can be noticeable.
+
+Rather than dropping an existing index entirely and reindexing from scratch, LanceDB supports **incremental indexing**.
+
+## Incremental Reindexing {#incremental-reindexing}
+
+You can manually trigger an incremental indexing operation on updated data
+using the `optimize()` method on a table.
+
+Table optimization performs three maintenance operations:
+
+1. **Compaction**: merges small fragments into larger ones to improve read performance
+2. **Pruning/Cleanup**: removes files from versions older than a retention window (7 days by default)
+3. **Index update**: adds newly-ingested data to existing vector, scalar, and FTS indexes
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ReindexingIncremental}
+    </CodeBlock>
+</CodeGroup>
+
+<Badge color="red">Enterprise</Badge>
+
+LanceDB Enterprise support incremental reindexing through an automated background process. When new data is added to a table, the system automatically triggers a new index build. As the dataset grows, indexes are asynchronously updated in the background.
+
+- While indexes are being rebuilt, queries use brute force methods on unindexed rows, which may temporarily increase latency. To avoid this, set `fast_search=True` to search only indexed data.
+- Use `index_stats()` to view the number of unindexed rows. This will be zero when indexes are fully up-to-date. If you call `wait_for_index(...)`, it polls the same status and can time out while continuous writes keep adding unindexed rows.
+
+The benefit of using LanceDB Enterprise is that it automates the reindexing process
+and operates continuously in the background, minimizing the impact on latency under high loads.
+In OSS, you must manually manage the reindexing cadence based on your data growth and performance needs.
+
+## Disk utilization {#disk-utilization}
+
+Compaction by itself does not immediately free disk space, and can temporarily increase it because new
+compacted files are written before old-version files are deleted. Disk space is reclaimed when old versions
+are pruned during cleanup. Set retention only as low as your rollback and time-travel requirements allow.
+
+If you need to reclaim space more aggressively in OSS, use a shorter retention window:
+<CodeGroup>
+    ```python Python icon=Python
+    from datetime import timedelta
+
+    table.optimize(cleanup_older_than=timedelta(days=1))
+    ```
+</CodeGroup>
+
+## Building on GPUs {#gpu}
+
+With LanceDB's GPU-powered vector indexing you can index very large datasets in far less time
+than you could with the default CPU-based indexing. In our tests, LanceDB
+is capable of indexing billions of rows in under four hours on a 1-8 GPU cluster.
+
+<Info>
+**Automatic GPU indexing**
+<Badge color="red">Enterprise-only</Badge>
+
+Automatic GPU Indexing is currently only available in [LanceDB Enterprise](/enterprise/).
+Please [contact us](mailto:contact@lancedb.com) to enable this feature for your deployment.
+
+The vector index is created when you call `create_index`. The backend will use GPU resources
+to build either the IVF or HNSW indexes. The system automatically selects the optimal GPU
+configuration based on your data size and available hardware.
+
+This process is also asynchronous by default, but you can use `wait_for_index` to convert it
+into a synchronous process by waiting until the index is built.
+
+</Info>
+
+`wait_for_index(...)` waits for the index to exist and for `index_stats(...)` to report `num_unindexed_rows == 0`. It can time out if the table is receiving continuous writes while the build is trying to catch up.
+
+GPU acceleration changes how the vector index is built, not the lifecycle after the build. Rows
+appended later still need `optimize()` before they are part of the index, and `fast_search()` only
+searches indexed rows.
+
+### Manual GPU indexing in LanceDB OSS {#gpu-manual-gpu-indexing-in-lancedb-oss}
+
+You can use the Python SDK to manually create the `IVF_PQ` index on a GPU. You'll need
+[PyTorch>2.0](https://pytorch.org/). Note that GPU-based indexing is currently only
+supported by the synchronous SDK in LanceDB OSS.
+
+Specify the values `cuda` or `mps` (on Apple Silicon) for the `accelerator` parameter
+to enable GPU training on your device.
+
+#### GPU indexing on Linux {#gpu-gpu-indexing-on-linux}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {GpuIndexCuda}
+    </CodeBlock>
+</CodeGroup>
+
+#### GPU indexing on macOS (Apple Silicon) {#gpu-gpu-indexing-on-macos-apple-silicon}
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {GpuIndexMps}
+    </CodeBlock>
+</CodeGroup>
+
+### Performance considerations {#gpu-performance-considerations}
+
+- GPU memory usage scales with `num_partitions` and vector dimensions
+- For optimal performance, ensure GPU memory exceeds dataset size
+- Batch size is automatically tuned based on available GPU memory
+- Indexing speed improves with larger batch sizes
+
+### Troubleshooting {#gpu-troubleshooting}
+
+If you encounter the error `AssertionError: Torch not compiled with CUDA enabled`,
+you need to [install PyTorch with CUDA support](https://pytorch.org/get-started/locally/).

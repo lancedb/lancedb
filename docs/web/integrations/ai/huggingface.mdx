@@ -1,0 +1,341 @@
+---
+title: "Hugging Face Hub"
+sidebarTitle: "Hugging Face"
+description: "Use LanceDB directly on Lance datasets hosted on the Hugging Face Hub for multimodal search and retrieval."
+---
+
+[Hugging Face Hub](https://huggingface.co/datasets?format=format:lance&sort=trending) is a popular platform for sharing machine learning datasets, models, and other resources.
+
+LanceDB can directly scan Lance datasets hosted on the [Hugging Face Hub](https://huggingface.co/datasets?format=format:lance) with `hf://` URIs.
+This is enabled under the hood by the [lance-huggingface](https://lance.org/integrations/huggingface/)
+integration that allows users to stream Lance datasets directly from Hugging Face without needing to
+download them first.
+
+For ML and AI engineers working in LanceDB, this capability is incredibly useful for quickly exploring
+multimodal datasets and reusing Lance datasets shared by others, without writing custom data loaders
+or preprocessing pipelines.
+
+The snippets below use the [`lance-format/laion-1m`](https://huggingface.co/datasets/lance-format/laion-1m)
+dataset published in Lance format. The dataset includes a million image-caption pairs, and the
+Lance dataset can package image embeddings alongside the metadata. This makes it useful for
+demonstrating LanceDB's multimodal search capabilities in combination with easy sharing via the
+Hugging Face Hub.
+
+The LAION table includes multimodal columns such as:
+
+- `image` (inline JPEG bytes)
+- `caption` (text)
+- `img_emb` (image embedding vector)
+- metadata fields such as `url` and `similarity`
+
+## Install dependencies {#install-dependencies}
+
+```bash
+pip install lancedb pillow
+```
+
+## Open the dataset with LanceDB {#open-the-dataset-with-lancedb}
+
+LanceDB can open the dataset directly from the Hub, without needing to download it first.
+Note that in LanceDB, you need to specify the table name when opening a Lance dataset,
+and the Hugging Face convention is to use `train` and `test` splits for datasets.
+The LAION dataset is uploaded as a single split named `train`, so we specify the table name
+that contains the `*.lance` files when opening the dataset.
+
+```python
+import lancedb
+
+db = lancedb.connect("hf://datasets/lance-format/laion-1m/data")
+table = db.open_table("train")
+
+print(f"Opened table: {table.name}")
+print(f"Rows: {len(table)}")
+```
+
+## Inspect schema and available indexes {#inspect-schema-and-available-indexes}
+
+```python
+print(table.schema)
+```
+This prints the schema of the LAION table. Note that there's an image embedding column that's
+a fixed-size list of 768-dimensional floats, and a binary column containing the raw JPEG bytes of the image.
+```
+image_path: string
+caption: string
+NSFW: string
+similarity: double
+LICENSE: string
+url: string
+key: string
+status: string
+error_message: null
+width: int64
+height: int64
+original_width: int64
+original_height: int64
+exif: string
+md5: string
+img_emb: fixed_size_list<item: float>[768]
+  child 0, item: float
+image: binary
+```
+
+When inspecting Lance datasets from Hugging Face, it's also a good idea to check whether the dataset author included
+any pre-built indexes that you can use for search. You can check the available indexes with:
+
+```python
+print(table.list_indices())
+```
+```
+[
+    Index(IvfPq, columns=["img_emb"], name="img_emb_idx"),
+    Index(FTS, columns=["caption"], name="caption_idx")
+]
+```
+
+In this case, we see that we have an IVF_PQ vector index on the `img_emb` column, and an FTS index on the `caption`
+column, which means we can directly do vector search on the image embeddings and keyword search on the captions
+without needing to build the indexes ourselves!
+
+<Info>
+If you see an empty list, it may be because the dataset author did not include the index files when uploading
+to Hugging Face. You can download the dataset locally, and build the indexes yourself. See the [indexing guide](/indexing/)
+for instructions on building different types of indexes with LanceDB.
+</Info>
+
+## Projection scan {#projection-scan}
+
+Run a simple scan by projecting relevant columns to get a feel for the dataset. For example, we
+can run a search without any filters or input parameters to get a small subset of the data:
+
+```python
+rows = (
+    table.search()
+    .select(["caption", "url", "similarity"])
+    .limit(3)
+    .to_list()
+)
+
+for i, row in enumerate(rows, start=1):
+    print(f"{i}. {row['caption']}")
+    print(f"   url={row['url']}")
+    print(f"   similarity={row['similarity']}")
+```
+
+We get the first three rows and their metadata printed out, which look like this:
+```
+1. Cordelia and Dudley on their wedding  day last year
+   url=https://i.dailymail.co.uk/i/pix/2012/01/05/article-2082728-0EF8956600000578-53_233x315.jpg
+   similarity=0.2926466464996338
+2. Statistics on challenges for automation in 2021
+   url=https://verloop.io/wp-content/uploads/2021/02/Challenges.jpg
+   similarity=0.30174341797828674
+3. Teacher Gifts / Great gifts for your child's teacher.  Don't know what to get?  Take a look at these gifts that the teacher in your life will love!
+   url=https://i.pinimg.com/custom_covers/216x146/550494823141083777_1487893945.jpg
+   similarity=0.3362061381340027
+```
+
+## Scan and filter data {#scan-and-filter-data}
+
+Filtered search is a common pattern to narrow down interesting subsets of the data during early
+exploration. Here's an example:
+
+```python
+filtered = (
+    table.search()
+    .where("height > 600")
+    .select(["caption", "url", "width", "height"])
+    .limit(3)
+    .to_list()
+)
+
+for row in filtered:
+    print(row["caption"], row["url"], row["width"], row["height"])
+```
+
+This prints out the metadata for large images with height greater than 600 pixels:
+```
+Luca Trousers, mustard stripe https://cdn.shopify.com/s/files/1/0151/5333/products/IMG_0791_1024x1024.jpg?v=1585142190 384 766
+Baby Blue Fitted Short Sleeve T Shirt 3 https://cdn-img.prettylittlething.com/a/d/d/1/add198cab3ec30a61102437275573f4963642528_cmf6022_3.jpg 384 612
+pattern cutting made easy pdf https://i.pinimg.com/736x/7c/6c/a7/7c6ca7361815a8929b3dd6ad34a03ab9.jpg 384 1045
+```
+
+## Export image bytes to local files {#export-image-bytes-to-local-files}
+
+To work with a subset of the data locally, you can export the image bytes from the table and save them as JPEG files.
+```python
+from pathlib import Path
+
+sample = (
+    table.search()
+    .select(["image", "caption"])
+    .limit(3)
+    .to_list()
+)
+
+out_dir = Path("samples")
+out_dir.mkdir(exist_ok=True)
+
+for i, row in enumerate(sample):
+    out_path = out_dir / f"laion_{i}.jpg"
+    with open(out_path, "wb") as f:
+        f.write(row["image"])
+    print(f"Saved {out_path} | caption={row['caption']}")
+```
+
+You can now preview the images you just exported on your local machine to get a better sense of the data.
+
+## Vector search {#vector-search}
+
+You can use LanceDB to run vector search directly on the data on the Hub, **without needing to download the dataset
+or build your own vector index**. This makes it incredibly easy to explore the dataset and iterate on your search queries
+before you decide to download a local copy for further experimentation on your end.
+
+```python
+# Pick an arbitrary image embedding from the dataset
+query_embedding = (
+    table.search()
+    .select(["img_emb"])
+    .limit(1)
+    .to_list()[0]["img_emb"]
+)
+
+results = (
+    table.search(query_embedding, vector_column_name="img_emb")
+    .select(["caption", "url", "_distance"])
+    .limit(3)
+    .to_list()
+)
+
+for row in results:
+    print(row["_distance"], row["caption"])
+```
+
+| distance | caption |
+| --- | --- |
+| 0.17765313386917114 | Cordelia and Dudley on their wedding  day last year |
+| 0.17765313386917114 | Cordelia and Dudley on their wedding  day last year |
+| 0.17765313386917114 | Cordelia and Dudley on their wedding  day last year |
+
+<Warning>
+Note that the LAION dataset is known to contain a lot of duplicate images, so you may see the same image
+showing up multiple times in the search results.
+</Warning>
+
+## Full-text search {#full-text-search}
+
+Run an FTS search query that uses BM25 ranking on the `caption` column (on which we already have an FTS index):
+
+```python
+fts_results = (
+    table.search("dog running on beach", query_type="fts")
+    .select(["caption", "url", "_score"])
+    .limit(3)
+    .to_list()
+)
+```
+
+| caption | url | _score |
+| --- | --- | --- |
+| running with dog | https://www.doggytastic.com/wp… | 15.73168 |
+| Dog Running in Water | https://static.wixstatic.com/m… | 14.756516 |
+| Dogs on the run by heidiannemo… | http://ih2.redbubble.net/image… | 14.756516 |
+
+## Download the full dataset {#download-the-full-dataset}
+
+<Warning>
+You may hit Hugging Face rate limits when streaming large samples from `hf://`, despite using a Hugging Face token.
+For repeated queries or queries that operate on the full dataset, it's recommended to
+download the dataset locally and query from disk.
+</Warning>
+
+Here's how to download the entire dataset via the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/en/guides/cli):
+
+```bash
+huggingface-cli download lance-format/laion-1m --repo-type dataset --local-dir ./laion-1m
+```
+
+## Upload your own datasets to Hugging Face in Lance format {#upload-your-own-datasets-to-hugging-face-in-lance-format}
+
+This section shows how you can upload your own Lance datasets to the Hugging Face Hub to share with the community.
+
+First, install the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/en/guides/cli) and export both `OPENAI_API_KEY` and `HF_TOKEN`.
+Then, create a Lance dataset using LanceDB on a local machine, and then proceed to upload it to the Hub via a CLI command.
+
+```bash
+export OPENAI_API_KEY=...
+export HF_TOKEN=hf_...
+hf auth login --token "$HF_TOKEN"
+```
+
+A typical sequence of steps is given below.
+
+### 1\. Upload your local directory to the Hub {#1-upload-your-local-directory-to-the-hub}
+
+Upload the full local directory to a specified repository on the Hugging Face Hub. The command below uploads the contents of your local LanceDB directory at `/path/to/your_local_dir` to a new repository named `your_hf_org/repo_name` under your Hugging Face account.
+
+```bash bash icon="code"
+hf upload-large-folder /path/to/your_local_dir your_hf_org/repo_name \
+  --repo-type dataset \
+  --revision main
+```
+
+<Info>
+The `upload-large-folder` command is designed for [uploading large datasets](https://huggingface.co/docs/huggingface_hub/en/guides/upload) (potentially terabytes in size) and will handle multipart uploads, retries, and resuming interrupted uploads.
+</Info>
+
+### 2\. Inspect dataset versions {#2-inspect-dataset-versions}
+
+Because you can query your remote dataset directly from Hugging Face with `hf://` URIs in LanceDB, you can easily inspect the dataset versions and updates on the Hub without needing to download the data locally. This is very useful to keep track of changes to the dataset and iterate on your data collection and curation process.
+
+```python Python icon="python"
+import lancedb
+
+db = lancedb.connect("hf://datasets/your_hf_org/repo_name")
+table = db.open_table("table_name")
+
+versions = table.list_versions()
+print(versions)
+```
+This will print out the list of versions available for the dataset on the Hub, along with their metadata such as creation date and description.
+
+### 3\. Add a dataset card {#3-add-a-dataset-card}
+
+The Hub dataset card allows you to communicate the schema and usage of the dataset to other developers. It sits at the repo's root in a file named `README.md` on the Hub.
+This project keeps the source card text in `HF_DATASET_CARD.md`, so you can publish updates
+to the dataset there and upload it as `README.md` using the following command on the HF CLI:
+this requires a regular `hf upload` because it is a single-file upload to a specific target path (a custom commit message can be added if you wish).
+
+```bash
+hf upload lancedb/magical_kingdom HF_DATASET_CARD.md README.md \
+  --repo-type dataset \
+  --commit-message "Update dataset card"
+```
+
+### 4\. Update the dataset {#4-update-the-dataset}
+
+Over time, you may want to add new rows (append) or columns (backfill) to your dataset as your needs evolve. You can make the necessary updates to your local dataset using LanceDB, and then upload the updated version back to the Hub with the same `hf upload-large-folder` command.
+
+```bash bash icon="code"
+hf upload-large-folder /path/to/your_local_dir your_hf_org/repo_name \
+  --repo-type dataset \
+  --revision main
+```
+The CLI will only upload the new data that has changed since the last upload, avoiding wasted I/O while making it easy to keep your dataset up-to-date on the Hub.
+
+That's it! Your dataset is now updated on the Hub with the new data and schema changes, and other users can query the latest version of the dataset directly from Hugging Face with `hf://` URIs in LanceDB.
+
+## Explore more Lance datasets on Hugging Face {#explore-more-lance-datasets-on-hugging-face}
+
+The LanceDB team is actively uploading useful and interesting datasets in Lance format to the Hugging Face Hub
+under the [lance-format](https://huggingface.co/lance-format) organization. We actively encourage the Hugging Face
+and LanceDB communities to upload their own Lance datasets to the Hub to share with others!
+
+In the meantime, feel free to check out the Hugging Face Hub to discover more Lance datasets uploaded by the community.
+
+<Card
+  icon="/static/assets/logo/huggingface-logo.svg"
+  href="https://huggingface.co/datasets?format=format:lance&sort=trending"
+>
+Click here to explore the latest trending Lance datasets on 🤗 Hugging Face!
+</Card>

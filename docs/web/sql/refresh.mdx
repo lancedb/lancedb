@@ -1,0 +1,95 @@
+---
+title: "REFRESH"
+sidebarTitle: "REFRESH"
+description: "Filling computed columns and bringing materialized views up to date."
+icon: arrows-rotate
+keywords: ["refresh column", "refresh materialized view", "backfill", "cascade"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+LanceDB extensions with no DataFusion equivalent. They are what makes
+[feature engineering](/feature-engineering) reachable from SQL: a column
+declared by [DDL](/sql/ddl#computed-column) starts empty, and a refresh fills it.
+
+## REFRESH COLUMN {#refresh-column}
+
+```sql
+REFRESH COLUMN <column> ON [TABLE] <table>
+  [WHERE <predicate>]
+  [WITH (<option> = <value> [, ...])]
+```
+
+```sql
+REFRESH COLUMN doubled ON my_table
+REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
+```
+
+A refresh gives values to rows that lack them and **leaves filled rows alone**.
+That makes it idempotent, cheap to repeat as data arrives, and resumable after a
+failure -- re-running costs only the rows that did not complete.
+
+`WHERE` scopes the refresh, which is how you fill a slice and check it before
+committing to the whole table.
+
+### Options {#refresh-column-options}
+
+| Option | Meaning |
+| --- | --- |
+| `num_workers` | how many workers to use |
+| `cpu_millis` | CPU budget per worker |
+| `memory_bytes` | memory budget per worker |
+| `gpu_count` | GPUs per worker |
+| `batch_size` | rows a worker takes at a time |
+| `error_policy` | `'skip'` continues past failing rows instead of failing the job |
+
+```sql
+REFRESH COLUMN embedding ON documents
+  WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
+```
+
+`num_workers` sets a count; the budget options size each worker. They are
+alternatives rather than a pair.
+
+<Note>
+`error_policy` and `num_workers` are refused for a column filled by a registered
+[function](/management/function) with its own resource budget -- use the CPU,
+memory and GPU options there.
+</Note>
+
+## REFRESH MATERIALIZED VIEW {#refresh-materialized-view}
+
+```sql
+REFRESH MATERIALIZED VIEW <name> [WITH (<option> = <value>)]
+```
+
+```sql
+REFRESH MATERIALIZED VIEW chunks
+REFRESH MATERIALIZED VIEW chunks WITH (full = true)
+```
+
+By default a refresh is **incremental** -- it processes what the source has
+added since the last one. `full = true` recomputes every row, which is what you
+want after changing something the view's rows depend on.
+
+<Warning>
+`CASCADE` parses but is **not implemented**. A view built on another view is
+refreshed by refreshing each in dependency order yourself.
+</Warning>
+
+## Watching a refresh {#watching}
+
+Both statements submit work that outlives the call. Track it with
+[`SHOW JOBS`](/sql/show#jobs), and diagnose failures with
+[`SHOW ERRORS`](/sql/show#errors).
+
+## See also {#see-also}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    The same operation from the SDKs, and what a refresh guarantees.
+  </Card>
+  <Card title="DDL" icon="pen-ruler" href="/sql/ddl#columns">
+    Declaring the columns this fills.
+  </Card>
+</CardGroup>

@@ -1,0 +1,113 @@
+---
+title: "Profiling a dataset"
+sidebarTitle: "Aggregate"
+description: "Counting, grouping and summarizing — finding out what your data actually contains."
+icon: chart-column
+keywords: ["aggregate", "group by", "class balance", "count", "profiling", "distinct"]
+---
+
+<Badge color="red">Enterprise</Badge> Aggregation is SQL, and
+[SQL needs a deployment](/basics/apis).
+
+Before curating anything, find out what you have. Most of the surprises in a
+training set — a class that is 90% of the rows, a column that is half null, a
+"unique" id that is not — are one `GROUP BY` away from being visible.
+
+## How big, and how complete {#size}
+
+```sql
+SELECT
+    count(*)            AS rows,
+    count(embedding)    AS embedded,
+    count(caption)      AS captioned
+FROM images
+```
+
+`count(*)` counts rows; `count(col)` counts **non-null values**. The gap between
+them is your coverage, which is the fastest way to check how far a
+[column refresh](/feature-engineering/refresh-column) has got without waiting
+for the job to report.
+
+## Class balance {#balance}
+
+The single most useful curation query:
+
+```sql
+SELECT label, count(*) AS n
+FROM images
+GROUP BY label
+ORDER BY n DESC
+```
+
+If the top class is an order of magnitude larger than the rest, sampling
+uniformly will reproduce that imbalance. Two ways out: draw a fixed number per
+class with [windowing](/curation/windowing#per-group), or oversample the rare
+ones and accept the duplication.
+
+## Distinct values {#distinct}
+
+```sql
+SELECT count(DISTINCT source) FROM images
+```
+
+On a high-cardinality column this is expensive, because exact distinctness means
+holding every value seen. When an estimate will do:
+
+```sql
+SELECT approx_distinct(source) FROM images
+```
+
+Cheap enough to run on a table where the exact version is not worth the wait.
+The other approximate functions — `approx_median`, `approx_percentile_cont` —
+are useful for the same reason when profiling a numeric column.
+
+## Conditional counts {#conditional}
+
+`FILTER` narrows one aggregate without narrowing the query, which is how you get
+several slices in one pass rather than one query each:
+
+```sql
+SELECT
+    label,
+    count(*)                              AS total,
+    count(*) FILTER (WHERE score > 0.9)   AS confident,
+    count(*) FILTER (WHERE caption IS NULL) AS uncaptioned
+FROM images
+GROUP BY label
+```
+
+## Grouping by a bucket {#buckets}
+
+Raw values are rarely the grouping you want. `date_bin` buckets timestamps, and
+ordinary arithmetic buckets numbers:
+
+```sql
+SELECT date_bin(INTERVAL '1 day', created_at) AS day, count(*)
+FROM images GROUP BY day ORDER BY day
+```
+
+A histogram of a score column is the same trick:
+
+```sql
+SELECT floor(score * 10) / 10 AS bucket, count(*)
+FROM images GROUP BY bucket ORDER BY bucket
+```
+
+## Profiling a sample {#sampling}
+
+On a very large table, profile a [sample](/curation/sampling) and scale:
+
+```sql
+SELECT label, count(*) * 100 AS estimated
+FROM images TABLESAMPLE (1)
+GROUP BY label
+```
+
+Treat the result as an estimate. A 1% sample will miss classes rarer than about
+1 in 10,000 entirely, which is exactly the tail you are usually looking for — so
+use this to check the shape of the head, not the existence of the tail.
+
+## Reference {#reference}
+
+The complete clause and function list is in
+[Aggregation](/sql/aggregation).

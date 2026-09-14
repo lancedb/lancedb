@@ -1,0 +1,51 @@
+---
+title: OpenAI Reranker (Experimental)
+sidebarTitle: "OpenAI"
+description: Explore experimental search reranking using OpenAI's GPT models in LanceDB. Features configurable model selection, API key management, and comprehensive scoring options for all search types.
+
+---
+
+import { PyRerankingOpenaiUsage } from '/snippets/integrations.mdx';
+
+# OpenAI Reranker (Experimental)
+
+This reranker uses OpenAI chat model to rerank the search results. You can use this reranker by passing `OpenAI()` to the `rerank()` method. 
+> **Note:** Supported query types – Hybrid, Vector, and FTS.
+
+> **Warning:** This reranker is experimental. OpenAI does not have a dedicated reranking model, so it uses a chat model under the hood.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingOpenaiUsage}
+  </CodeBlock>
+</CodeGroup>
+
+## Accepted Arguments {#accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `model_name` | `str` | `"gpt-4-turbo-preview"` | The name of the reranker model to use.|
+| `column` | `str` | `"text"` | The name of the column to use as input to the cross encoder model. |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score. If "all" is supported, will return relevance score along with the vector and/or fts scores depending on query type. |
+| `api_key` | `str` | `None` | The API key to use. If None, will use the OPENAI_API_KEY environment variable.
+
+
+## Supported Scores for each query type {#supported-scores-for-each-query-type}
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+### Hybrid Search {#hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ❌ Not Supported | Results have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`). |
+
+### Vector Search {#vector-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Results have vector(`_distance`) along with Hybrid Search score(`_relevance_score`). |
+
+### FTS Search {#fts-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Results have FTS(`score`) along with Hybrid Search score(`_relevance_score`). |

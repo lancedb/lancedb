@@ -1,0 +1,89 @@
+---
+title: "SQL reference"
+sidebarTitle: "Overview"
+description: "The SQL surface: dialect, where a query runs, and a page per construct."
+icon: table-list
+keywords: ["sql", "datafusion", "flight sql", "reference", "dialect"]
+---
+
+<Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local database
+has no engine to plan a statement, so `execute_query` raises there -- see
+[SDKs and SQL](/basics/apis).
+
+This is a reference rather than a guide: one page per construct, syntax first.
+The guides elsewhere in these docs show the same operations from the SDKs.
+
+## The dialect {#dialect}
+
+LanceDB executes SQL with [Apache DataFusion](https://datafusion.apache.org),
+currently **version 54**. The grammar, built-in functions and type system are
+DataFusion's, so anything its reference documents for that version works here
+unchanged and is not reproduced.
+
+What these pages add is the part that is LanceDB's: how a query reaches the
+engine, how Lance columns appear to it, and the statements a lakehouse needs
+that DataFusion has no concept of.
+
+## Where a query runs {#execution}
+
+Queries execute on the server and results come back as Arrow record batches --
+nothing is converted to pandas or Python objects unless you ask. `execute_query`
+hands back a reader as soon as the first batch is ready rather than when the
+query finishes, so a large result set does not have to fit in memory before you
+start reading it. See [Query and job](/basics/jobs#queries).
+
+Served over an [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint, so any Flight SQL client reaches it.
+
+## Reference {#reference}
+
+**Reading data**
+
+| | |
+| --- | --- |
+| [Data types](/sql/data-types) | how Lance columns appear to SQL, and pseudo-columns |
+| [SELECT](/sql/select) | projection, filtering, ordering, set operations, CTEs |
+| [Subqueries](/sql/subqueries) | scalar, `IN`, `EXISTS`, correlated, derived tables |
+| [Joins](/sql/join) | inner, outer, cross, and namespace-qualified paths |
+| [Aggregation](/sql/aggregation) | `GROUP BY`, `HAVING`, the aggregate set |
+| [Window functions](/sql/window) | `OVER`, framing, ranking and offset functions |
+| [Sampling](/sql/sampling) | `TABLESAMPLE`, by rows or by fragments |
+
+**Changing things**
+
+| | |
+| --- | --- |
+| [DDL](/sql/ddl) | tables, views, indexes, functions, columns, WAL |
+| [DML](/sql/dml) | `INSERT`, `UPDATE`, `DELETE`, `COPY` |
+| [REFRESH](/sql/refresh) | filling computed columns and materialized views |
+
+**Introspection**
+
+| | |
+| --- | --- |
+| [SHOW](/sql/show) | jobs, functions, materialized views, errors |
+| [EXPLAIN](/sql/explain) | plans, and measuring them |
+
+**Expressions**
+
+| | |
+| --- | --- |
+| [Operators](/sql/operators) | comparison, logical, arithmetic, literals, precedence |
+| [Functions](/sql/functions) | where to find each kind, and table functions |
+| [Scalar functions](/sql/scalar-functions) | the per-row catalogue, and what Lance accelerates |
+| [Prepared statements](/sql/prepared-statements) | planning once, executing many times |
+
+## What SQL cannot do {#cannot}
+
+| | |
+| --- | --- |
+| Vector search | no SQL form -- a query-builder operation |
+| Merge insert | no SQL form -- needs a source relation and a per-match policy |
+| `information_schema` | not enabled, so `SHOW TABLES` and `SHOW COLUMNS` fail |
+| `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/sql/prepared-statements), not a statement |
+| Run on a local database | no engine to plan the statement |
+
+Full-text search **is** available, as the [`fts()`](/sql/functions#fts) table
+function and the [`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate.
+
+See [Limits](/basics/limits#sql) for the bounds these pages enforce.
