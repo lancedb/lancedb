@@ -240,8 +240,10 @@
               "sql/refresh",
               "sql/show",
               "sql/explain",
+              "sql/prepared-statements",
               "sql/operators",
-              "sql/functions"
+              "sql/functions",
+              "sql/scalar-functions"
             ]
           },
           {

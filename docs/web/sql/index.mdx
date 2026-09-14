@@ -69,7 +69,9 @@ endpoint, so any Flight SQL client reaches it.
 | | |
 | --- | --- |
 | [Operators](/sql/operators) | comparison, logical, arithmetic, literals, precedence |
-| [Functions](/sql/functions) | the function set, and what Lance accelerates |
+| [Functions](/sql/functions) | where to find each kind, and table functions |
+| [Scalar functions](/sql/scalar-functions) | the per-row catalogue, and what Lance accelerates |
+| [Prepared statements](/sql/prepared-statements) | planning once, executing many times |
 
 ## What SQL cannot do {#cannot}
 
@@ -77,9 +79,11 @@ endpoint, so any Flight SQL client reaches it.
 | --- | --- |
 | Vector search | no SQL form -- a query-builder operation |
 | Merge insert | no SQL form -- needs a source relation and a per-match policy |
+| `information_schema` | not enabled, so `SHOW TABLES` and `SHOW COLUMNS` fail |
+| `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/sql/prepared-statements), not a statement |
 | Run on a local database | no engine to plan the statement |
 
 Full-text search **is** available, as the [`fts()`](/sql/functions#fts) table
-function and the [`contains_tokens`](/sql/functions#contains-tokens) predicate.
+function and the [`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate.
 
 See [Limits](/basics/limits#sql) for the bounds these pages enforce.

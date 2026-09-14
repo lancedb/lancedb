@@ -17,6 +17,10 @@ Registration is a remote operation. On a local connection `create_function`
 raises `NotImplementedError`; use a
 [computed column](/feature-engineering/refresh-column) instead.
 
+<Note>
+In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl#functions) and listed with [`SHOW FUNCTIONS`](/sql/show#functions).
+</Note>
+
 ## Define a function {#define}
 
 `@udf` packages a scalar Python callable. Input and output types are inferred

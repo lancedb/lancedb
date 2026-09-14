@@ -8,16 +8,18 @@ keywords: ["show jobs", "show functions", "show materialized views", "show error
 
 <Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
 
-Introspection. `SHOW TABLES` is DataFusion's; the rest are LanceDB extensions
-covering objects DataFusion has no concept of.
+Introspection over objects DataFusion has no concept of. All four are LanceDB
+extensions.
 
-## SHOW TABLES {#tables}
+<Warning>
+DataFusion's own `SHOW TABLES`, `SHOW COLUMNS` and `SHOW <variable>` are **not
+available**. They are implemented over `information_schema`, which this session
+does not enable, so they fail with
+`"... is not supported unless information_schema is enabled"`.
 
-```sql
-SHOW TABLES
-```
-
-Lists the tables the session can see.
+List tables with the SDKs -- `table_names()` / `tableNames()`. For a table's
+columns, use [`DESCRIBE`](/sql/explain#describe).
+</Warning>
 
 ## SHOW MATERIALIZED VIEWS {#materialized-views}
 

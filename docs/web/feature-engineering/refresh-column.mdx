@@ -28,6 +28,10 @@ REFRESH COLUMN doubled ON my_table
 The refresh commits an ordinary table version, so
 [versioning](/tables/versioning) applies to it like any other write.
 
+<Note>
+The SQL form is [`REFRESH COLUMN`](/sql/refresh#refresh-column), with the same resource options.
+</Note>
+
 ## It never revisits filled rows {#idempotent}
 
 A refresh fills rows that have no value and leaves the rest alone. Two

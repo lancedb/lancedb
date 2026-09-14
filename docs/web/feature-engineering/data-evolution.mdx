@@ -26,6 +26,10 @@ The reason it is cheap is the format. Adding a derived column writes only that
 column -- the existing data, which is the expensive part on a multimodal table,
 is never rewritten. See [why that works](/basics/lance#evolution).
 
+<Note>
+In SQL this is [`ALTER TABLE ... ADD COLUMN ... AS`](/sql/ddl#computed-column).
+</Note>
+
 ## Set up the example table {#set-up-the-example-table}
 
 <CodeGroup>

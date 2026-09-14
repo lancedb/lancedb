@@ -26,6 +26,10 @@ import {
     RsMergePartialColumns,
 } from '/snippets/tables.mdx';
 
+<Note>
+Merge insert has **no SQL form** -- it needs a source relation and a per-match policy that one statement cannot express. See [DML](/sql/dml#merge-insert).
+</Note>
+
 ## Merge incoming rows by key {#merge-incoming-rows-by-key}
 
 Merging is different from updating because it involves comparing incoming rows to existing rows by key, and then choosing what to do based on whether the key exists in the target table or not.

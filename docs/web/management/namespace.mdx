@@ -28,6 +28,10 @@ This is why many SDK methods in LanceDB, like `create_table`, `open_table`, `dro
 language: Python uses `namespace_path`, Rust uses builder methods like `.namespace(...)`, and
 TypeScript uses `namespacePath` arguments.
 
+<Note>
+In SQL a namespaced table is addressed as a [dotted path](/sql/select#namespaces).
+</Note>
+
 ## Namespace hierarchy {#namespace-hierarchy}
 
 Namespaces are generalizations of catalog specs that give platform developers a clean way to present Lance tables in the structures users expect. The diagram below shows how the hierarchy can go beyond a single level.

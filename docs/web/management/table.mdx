@@ -13,6 +13,10 @@ This page covers the table as a catalog object. Getting data into one is
 [Ingest](/ingestion); changing its shape is
 [Schema evolution](/tables/schema).
 
+<Note>
+Tables are created and dropped in SQL with [`CREATE TABLE` and `DROP TABLE`](/sql/ddl#tables).
+</Note>
+
 ## What a table carries {#carries}
 
 | | |
@@ -65,9 +69,6 @@ const tbl = await db.openTable("documents");
 await db.tableNames();
 ```
 
-```sql SQL
-SHOW TABLES
-```
 </CodeGroup>
 
 Each accepts `namespace_path` to act inside a [namespace](/management/namespace)
@@ -134,7 +135,7 @@ On a large table the drop can take a while, so `drop_table_async` returns a
 | create | `create_table` | `createTable` | `CREATE TABLE` |
 | create empty | `create_table(schema=)` | `createEmptyTable` | `CREATE TABLE` |
 | open | `open_table` | `openTable` | -- |
-| list | `table_names`, `list_tables` | `tableNames`, `listTables` | `SHOW TABLES` |
+| list | `table_names`, `list_tables` | `tableNames`, `listTables` | -- |
 | exists | `table_exists` | -- | -- |
 | rename | `rename_table` | `renameTable` | -- |
 | clone | `clone_table` | `cloneTable` | -- |

@@ -17,6 +17,10 @@ common source of confusion about how work gets done.
 They are independent. A synchronous Python call can start work that runs for an
 hour; an `await` can wait for something that finishes instantly.
 
+<Note>
+Jobs are listed in SQL with [`SHOW JOBS`](/sql/show#jobs), and their failures with [`SHOW ERRORS`](/sql/show#errors).
+</Note>
+
 ## Every `_async` method returns a handle {#handles}
 
 An `_async` method submits work and hands back a **handle** to it. Which handle

@@ -116,7 +116,7 @@ WHERE json_get_int(data, 'status') = 200
 `json_get` returns JSON, so accessors nest for a nested document. **A JSON
 scalar index accelerates `json_get`, its typed variants, and `json_extract`** --
 the rest evaluate per row. The full function list is in
-[SQL functions](/sql/functions#json).
+[SQL functions](/sql/scalar-functions#json).
 
 This is the type to reach for when a column's shape varies per row. When it does
 not, ordinary `struct` columns are faster and typed.

@@ -47,20 +47,54 @@ is before deciding to refresh it again.
 
 ## The function set {#functions}
 
-The aggregates are DataFusion's, and the full list is in its
-[aggregate function reference](https://datafusion.apache.org/user-guide/sql/aggregate_functions.html):
+Registered in DataFusion 54. Names below are what is actually available.
 
-| Kind | Examples |
-| --- | --- |
-| General | `count`, `sum`, `min`, `max`, `avg` |
-| Statistical | `stddev`, `var`, `corr`, `covar`, `regr_*` |
-| Approximate | `approx_distinct`, `approx_percentile_cont`, `approx_median` |
-| Collecting | `array_agg`, `string_agg`, `first_value`, `last_value` |
+**General**
 
-The approximate ones are worth knowing about on a large table:
+```text
+count  sum  min  max  avg  median
+bit_and  bit_or  bit_xor  bool_and  bool_or
+first_value  last_value  nth_value  grouping
+```
+
+**Statistical**
+
+```text
+stddev  stddev_pop  stddev_samp
+var  var_pop  var_samp
+corr  covar_pop  covar_samp
+regr_slope  regr_intercept  regr_count  regr_r2
+regr_avgx  regr_avgy  regr_sxx  regr_syy  regr_sxy
+```
+
+**Approximate**
+
+```text
+approx_distinct  approx_median
+approx_percentile_cont  approx_percentile_cont_with_weight
+percentile_cont
+```
+
+**Collecting**
+
+```text
+array_agg  string_agg
+```
+
+The approximate functions are the ones worth reaching for on a large table.
 `approx_distinct` answers "roughly how many distinct values" for a fraction of
-what `count(DISTINCT ...)` costs, which matters when the column has high
-cardinality.
+what `count(DISTINCT ...)` costs, which matters most where it is most expensive
+— a high-cardinality column.
+
+`DISTINCT` works inside an aggregate: `count(DISTINCT category)`. `FILTER`
+narrows one aggregate without narrowing the others:
+
+```sql
+SELECT
+    count(*) AS total,
+    count(*) FILTER (WHERE score > 0.9) AS confident
+FROM documents
+```
 
 ## Aggregating a sample {#sampling}
 

@@ -57,14 +57,24 @@ WINDOW w AS (PARTITION BY category ORDER BY score DESC)
 
 ## The functions {#functions}
 
-| Kind | Functions |
-| --- | --- |
-| Ranking | `row_number`, `rank`, `dense_rank`, `percent_rank`, `ntile`, `cume_dist` |
-| Offset | `lag`, `lead`, `first_value`, `last_value`, `nth_value` |
-| Aggregate | any [aggregate](/sql/aggregation) used with `OVER` |
+Registered in DataFusion 54.
 
-The full set is DataFusion's
-[window function reference](https://datafusion.apache.org/user-guide/sql/window_functions.html).
+**Ranking**
+
+```text
+row_number  rank  dense_rank  percent_rank  cume_dist  ntile
+```
+
+**Offset and positional**
+
+```text
+lag  lead  first_value  last_value  nth_value
+```
+
+**Aggregates**
+
+Any [aggregate function](/sql/aggregation#functions) used with `OVER` becomes a
+window function — that is how running totals and moving averages are written.
 
 ## Deduplicating with a window {#dedup}
 

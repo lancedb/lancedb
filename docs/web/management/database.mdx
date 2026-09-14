@@ -144,7 +144,7 @@ those writes. The cost is a metadata check on that interval. See
 
 | | Python | TypeScript | SQL |
 | --- | --- | --- | --- |
-| list tables | `table_names`, `list_tables` | `tableNames`, `listTables` | `SHOW TABLES` |
+| list tables | `table_names`, `list_tables` | `tableNames`, `listTables` | -- |
 | the URI it opened | `uri` | `display()` | -- |
 | drop every table | `drop_all_tables` | `dropAllTables` | -- |
 | drop the database | `drop_database` | -- | -- |
@@ -164,7 +164,6 @@ await db.dropTable("documents");
 ```
 
 ```sql SQL
-SHOW TABLES;
 DROP TABLE documents;
 ```
 </CodeGroup>

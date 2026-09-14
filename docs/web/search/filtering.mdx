@@ -14,6 +14,10 @@ with filtering capabilities even on datasets containing billions of records.
 
 On hybrid queries, the same `where(...)` filter is applied to both the vector and full-text halves of the query. The prefilter or postfilter choice controls whether that happens before each subquery scores candidates or after the subquery top-k is produced.
 
+<Note>
+The same predicates work in SQL -- see [SELECT](/sql/select#filtering) and [Operators](/sql/operators).
+</Note>
+
 ## Chaining `where` clauses {#chaining-where-clauses}
 
 In more recent LanceDB SDK versions (see the callout box below for the exact version numbers), you can call `where(...)` (Python and TypeScript) or `only_if(...)` (Rust) more than once on the same query builder. Each additional filter is combined with the previous one using logical `AND`, so `where("a > 0").where("b < 10")` is equivalent to `where("(a > 0) AND (b < 10)")`.

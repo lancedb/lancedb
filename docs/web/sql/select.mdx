@@ -39,7 +39,7 @@ Projection pushes into the scan in all three -- an unselected column is never
 read off storage. On a table of images or video that is the difference between a
 fast query and a slow one, so **prefer naming columns over `SELECT *`**.
 
-Row metadata is available as [pseudo-columns](/sql/functions#pseudo-columns)
+Row metadata is available as [pseudo-columns](/sql/data-types#pseudo-columns)
 (`_rowid`, `_rowaddr`, `_rowoffset`) but only when named, so they stay out of
 `SELECT *`.
 

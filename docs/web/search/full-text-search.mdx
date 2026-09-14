@@ -13,6 +13,10 @@ import {
 
 LanceDB provides support for Full-Text Search via Lance, allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
 
+<Note>
+In SQL, full-text search is the [`fts()`](/sql/functions#fts) table function, or the [`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate when you do not need a score.
+</Note>
+
 ## Basic Usage {#basic-usage}
 
 Consider that we have a LanceDB table named `my_table`, whose string column `text` we want to index and query via keyword search, the FTS index must be created before you can search via keywords.
