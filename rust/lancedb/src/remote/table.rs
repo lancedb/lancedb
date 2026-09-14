@@ -32,6 +32,7 @@ use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::lsm_stats::GetLsmStatsResponse;
 use crate::table::merge::MergeFilter;
+use crate::table::primary_key;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::write_progress::FinishOnDrop;
 use crate::table::{
@@ -68,6 +69,7 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance_core::datatypes::Schema as LanceSchema;
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
@@ -2992,10 +2994,27 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
-    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "set_unenforced_primary_key is not supported on LanceDB cloud.".into(),
-        })
+    /// The unenforced primary key is Lance schema field metadata, so this
+    /// installs it through the `update_field_metadata` endpoint. The commit
+    /// layer behind that endpoint is what actually installs and validates the
+    /// key, exactly as on a native table; the checks here only fail fast with
+    /// the same messages a native table gives.
+    async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
+        self.check_mutable().await?;
+
+        let arrow_schema = self.schema().await?;
+        let schema = LanceSchema::try_from(arrow_schema.as_ref()).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+        primary_key::validate(&schema, columns)?;
+
+        self.update_field_metadata(&[FieldMetadataUpdate {
+            path: columns[0].to_string(),
+            metadata: primary_key::install_edit(),
+            replace: false,
+        }])
+        .await?;
+        Ok(())
     }
 
     async fn flush_lsm(&self) -> Result<()> {
@@ -11830,6 +11849,120 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.version, 7);
+    }
+
+    /// The unenforced primary key is field metadata, so the remote table
+    /// installs it through the `update_field_metadata` endpoint.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![
+                        Field::new("id", DataType::Int64, false),
+                        Field::new("name", DataType::Utf8, true),
+                    ]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/update_field_metadata/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(body["updates"].as_array().unwrap().len(), 1);
+                    let update = &body["updates"][0];
+                    assert_eq!(update["path"], "id");
+                    assert_eq!(update["replace"], json!(false));
+                    assert_eq!(
+                        update["metadata"]["lance-schema:unenforced-primary-key:position"],
+                        "1"
+                    );
+                    assert_eq!(
+                        update["metadata"]["lance-schema:unenforced-primary-key"],
+                        json!(null)
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 3, "fields": {}}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+    }
+
+    /// Requests the native table rejects are rejected here too, before any
+    /// write reaches the server.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_rejects_invalid_requests() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("score", DataType::Float32, true),
+                ]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {}", path),
+        });
+
+        for columns in [
+            vec![],
+            vec!["id", "score"],
+            vec!["nonexistent"],
+            vec!["score"],
+        ] {
+            let err = table
+                .set_unenforced_primary_key(columns.clone())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "unexpected error for {:?}: {:?}",
+                columns,
+                err
+            );
+        }
+    }
+
+    /// The key is immutable once set, and the schema the server already
+    /// reports is enough to say so.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_already_set() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(HashMap::from([(
+                        "lance-schema:unenforced-primary-key:position".to_string(),
+                        "1".to_string(),
+                    )])),
+                    Field::new("name", DataType::Utf8, false),
+                ]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {}", path),
+        });
+
+        for column in ["name", "id"] {
+            let err = table
+                .set_unenforced_primary_key([column])
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("already set"),
+                "unexpected error: {:?}",
+                err
+            );
+        }
     }
 
     // ----- Branch support -----

@@ -1008,7 +1008,7 @@ class RemoteTable(Table):
         return LOOP.run(self._table.drop_columns(columns))
 
     def set_unenforced_primary_key(self, columns: Union[str, Iterable[str]]) -> None:
-        """Not supported on LanceDB Cloud."""
+        """Set the unenforced primary key for this table to a single column."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
     def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
