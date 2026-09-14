@@ -142,7 +142,7 @@
         "tab": "Documentation",
         "groups": [
           {
-            "group": "Get started",
+            "group": "Getting Started",
             "pages": [
               "index",
               "quickstart",
@@ -163,7 +163,7 @@
             ]
           },
           {
-            "group": "Manage",
+            "group": "Management",
             "pages": [
               "management/index",
               "management/database",
@@ -185,7 +185,7 @@
             ]
           },
           {
-            "group": "Ingest",
+            "group": "Ingestion",
             "pages": [
               "ingestion/index",
               "ingestion/insert",
@@ -207,7 +207,7 @@
             ]
           },
           {
-            "group": "Feature engineering",
+            "group": "Feature Engineering",
             "pages": [
               "feature-engineering/index",
               "feature-engineering/data-evolution",
@@ -217,7 +217,7 @@
             ]
           },
           {
-            "group": "Train",
+            "group": "Training",
             "pages": [
               "training/why-lancedb",
               "training/index",
@@ -225,7 +225,7 @@
             ]
           },
           {
-            "group": "Operate",
+            "group": "Operations",
             "pages": [
               "indexing/reindexing",
               "maintenance/compaction",
@@ -240,7 +240,7 @@
             ]
           },
           {
-            "group": "SQL reference",
+            "group": "SQL Reference",
             "pages": [
               "sql/index",
               "sql/data-types",
