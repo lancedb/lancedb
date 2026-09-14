@@ -48,7 +48,9 @@
       {
         "kind": "env",
         "variable": "HF_TOKEN",
-        "secret_ref": "hf-prod"
+        "secret_ref": {
+          "name": "hf-prod"
+        }
       }
     ]
   },
