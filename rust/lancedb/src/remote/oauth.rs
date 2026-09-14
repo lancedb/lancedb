@@ -954,11 +954,11 @@ fn random_urlsafe_string(length: usize) -> String {
 }
 
 fn launch_browser(url: Url) {
-    let _ = tokio::task::spawn_blocking(move || {
+    drop(tokio::task::spawn_blocking(move || {
         if let Err(error) = webbrowser::open(url.as_str()) {
             warn!("Could not open an OAuth browser automatically: {error}");
         }
-    });
+    }));
 }
 
 async fn read_authorization_callback(
