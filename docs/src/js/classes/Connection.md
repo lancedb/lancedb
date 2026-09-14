@@ -448,26 +448,6 @@ on the returned job to know when cleanup has finished.
 
 ***
 
-### getJob()
-
-```ts
-abstract getJob(jobId): Promise<null | JobDescription>
-```
-
-Describe a single server-side job by id.
-
-Resolves to `null` when the server has no such job.
-
-#### Parameters
-
-* **jobId**: `string`
-
-#### Returns
-
-`Promise`&lt;`null` \| [`JobDescription`](../interfaces/JobDescription.md)&gt;
-
-***
-
 ### isOpen()
 
 ```ts
@@ -479,48 +459,6 @@ Return true if the connection has not been closed
 #### Returns
 
 `boolean`
-
-***
-
-### job()
-
-```ts
-abstract job(jobId): Job
-```
-
-A [Job](Job.md) handle for a server-side job by id.
-
-The handle is constructed without a server round trip; an unknown id
-surfaces when the handle is used. Dropping the handle has no effect on
-the job itself.
-
-#### Parameters
-
-* **jobId**: `string`
-
-#### Returns
-
-[`Job`](Job.md)
-
-***
-
-### jobHistory()
-
-```ts
-abstract jobHistory(jobId?): Promise<Table<any>>
-```
-
-The lifecycle event history of a server-side job, as an Arrow table.
-
-Lists history across all jobs when `jobId` is omitted.
-
-#### Parameters
-
-* **jobId?**: `string`
-
-#### Returns
-
-`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 ***
 
@@ -645,6 +583,30 @@ List a page of the tables in this database.
 
 A page of table names and an
   optional token for the tables after it.
+
+***
+
+### openJob()
+
+```ts
+abstract openJob(jobId): Promise<Job>
+```
+
+Open a server-side job by id, returning a handle with its record already
+populated. Rejects when the server has no such job, the way
+[Connection.openTable](Connection.md#opentable) does for a missing table.
+
+The returned [Job](Job.md) answers for its own state, specification,
+result, failure and event history, so there is no separate
+connection-level call for any of them.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 

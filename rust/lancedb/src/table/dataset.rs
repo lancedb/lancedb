@@ -52,7 +52,7 @@ enum ConsistencyMode {
     /// refresh_window = min(3s, TTL/4)
     ///
     /// | t < TTL - refresh_window | t < TTL                           | t >= TTL            |
-    /// |  Return value            | Background refresh & return value |  syncronous refresh |
+    /// |  Return value            | Background refresh & return value |  synchronous refresh |
     Eventual(BackgroundCache<Arc<Dataset>, Error>),
 }
 

@@ -1011,8 +1011,13 @@ def test_fts_ngram(mem_db: DBConnection):
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 
     results = (
-        table.search("nce", query_type="fts").limit(10).to_list()
-    )  # spellchecker:disable-line
+        table.search(
+            "nce",  # spellchecker:disable-line
+            query_type="fts",
+        )
+        .limit(10)
+        .to_list()
+    )
     assert len(results) == 2
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 
@@ -1034,8 +1039,13 @@ def test_fts_ngram(mem_db: DBConnection):
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 
     results = (
-        table.search("nce", query_type="fts").limit(10).to_list()
-    )  # spellchecker:disable-line
+        table.search(
+            "nce",  # spellchecker:disable-line
+            query_type="fts",
+        )
+        .limit(10)
+        .to_list()
+    )
     assert len(results) == 0
 
     results = table.search("la", query_type="fts").limit(10).to_list()

@@ -60,7 +60,7 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
 
     import lancedb
     from lancedb.pydantic import LanceModel, Vector
-    from lancedb.embeddings import get_registry, InstuctorEmbeddingFunction
+    from lancedb.embeddings import get_registry, InstructorEmbeddingFunction
 
     instructor = get_registry().get("instructor").create(
         source_instruction="represent the document for retrieval",
