@@ -683,9 +683,11 @@ mod conda_environment_tests {
         )
         .unwrap();
         assert_eq!(conda.channels, ["conda-forge"]);
-        assert!(serde_json::to_string(&conda)
-            .unwrap()
-            .contains(r#""channels":["conda-forge"]"#));
+        assert!(
+            serde_json::to_string(&conda)
+                .unwrap()
+                .contains(r#""channels":["conda-forge"]"#)
+        );
 
         let pip: PythonEnvironmentSpec =
             serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();

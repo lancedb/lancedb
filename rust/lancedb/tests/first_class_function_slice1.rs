@@ -135,7 +135,9 @@ fn unknown_fields_and_discriminators_are_forward_decodable() {
 fn floating_point_application_literals_are_rejected_consistently() {
     let error = FunctionApplication::from_json(&fixture("remote_function_application_float.json"))
         .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("floating-point Function literals"));
+    assert!(
+        error
+            .to_string()
+            .contains("floating-point Function literals")
+    );
 }
