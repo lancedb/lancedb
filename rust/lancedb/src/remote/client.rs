@@ -435,7 +435,8 @@ fn validate_dns_hostname(hostname: &str) -> Result<()> {
 /// call that has it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BodyLogging {
-    /// Log the body at debug, as every request did before Secrets existed.
+    /// Log the body at debug. The default: a request body is diagnostic unless
+    /// the call that built it says otherwise.
     Allowed,
     /// Never log the body. For a request whose body is a credential.
     Suppressed,
@@ -1337,7 +1338,7 @@ mod tests {
     }
 
     /// A suppressed body is suppressed whatever the content type says, and an
-    /// allowed one is logged exactly as it was before Secrets existed.
+    /// allowed one is logged in full.
     #[test]
     fn test_body_logging_is_decided_by_the_caller() {
         assert_ne!(BodyLogging::Allowed, BodyLogging::Suppressed);

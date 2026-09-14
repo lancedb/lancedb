@@ -104,8 +104,8 @@ def test_secret_bound_udf_matches_its_shared_registration_golden():
 def test_a_namespaced_binding_records_the_path_and_the_name():
     """A binding names the parts, so nothing has to be parsed back out.
 
-    A root binding carries no path at all, which is what keeps its wire shape
-    identical to one written before namespaces existed.
+    A root binding carries no path at all: the field is absent rather than an
+    empty list, so a binding states a namespace only when it has one.
     """
     root = EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
     assert root.secret_namespace_path == []

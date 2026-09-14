@@ -317,8 +317,12 @@ def test_canonical_client_values_carry_bindings_and_no_credentials():
     assert_no_secret_values(canonical)
 
 
-def test_a_version_without_bindings_keeps_the_original_wire_shape():
-    """Every Function registered before Secrets existed serializes unchanged."""
+def test_a_version_without_bindings_omits_the_field_in_both_directions():
+    """A Function that binds nothing carries no ``secret_bindings`` key.
+
+    Absent decodes as an empty list, and an empty list serializes back to
+    absent.
+    """
     value = job_result("remote_function_job.json")
     del value["secret_bindings"]
     version = FunctionVersion.from_json(json.dumps(value))

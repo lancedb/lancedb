@@ -231,9 +231,10 @@ fn an_unknown_binding_kind_is_forward_decodable() {
     );
 }
 
-/// Every Function registered before Secrets existed serializes unchanged.
+/// A Function that binds nothing carries no `secret_bindings` key: absent
+/// decodes as an empty list, and an empty list serializes back to absent.
 #[test]
-fn a_version_without_bindings_keeps_the_original_wire_shape() {
+fn a_version_without_bindings_omits_the_field_in_both_directions() {
     let mut result = job_result("remote_function_job.json");
     result
         .as_object_mut()
