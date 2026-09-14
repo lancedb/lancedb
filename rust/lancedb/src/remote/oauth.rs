@@ -1027,12 +1027,15 @@ fn random_urlsafe_string(length: usize) -> String {
 
 fn launch_browser(url: Url) {
     drop(tokio::task::spawn_blocking(move || {
-        let result = if let Some(browser) = std::env::var_os("LANCEDB_OAUTH_BROWSER") {
-            Command::new(browser).arg(url.as_str()).status().map(drop)
-        } else {
-            webbrowser::open(url.as_str())
-        };
-        if let Err(error) = result {
+        if let Some(browser) = std::env::var_os("LANCEDB_OAUTH_BROWSER") {
+            match Command::new(browser).arg(url.as_str()).status() {
+                Ok(status) if !status.success() => {
+                    warn!("OAuth browser helper exited with status {status}");
+                }
+                Err(error) => warn!("Could not run the OAuth browser helper: {error}"),
+                Ok(_) => {}
+            }
+        } else if let Err(error) = webbrowser::open(url.as_str()) {
             warn!("Could not open an OAuth browser automatically: {error}");
         }
     }));
