@@ -35,7 +35,31 @@ const config: OAuthConfig = {
 };
 ```
 
+The authorization URL is written to stderr before LanceDB tries to open a
+browser, so it can be copied in headless environments.
+```typescript
+const config: OAuthConfig = {
+  issuerUrl: "https://login.microsoftonline.com/{tenant}/v2.0",
+  clientId: "app-id",
+  scopes: ["openid", "api://lancedb-api/access"],
+  flow: OAuthFlowType.AuthorizationCode,
+};
+```
+
+Device Authorization writes the verification URL and user code to stderr
+before polling begins.
+
 ## Properties
+
+### callbackPort?
+
+```ts
+optional callbackPort: number;
+```
+
+Port for the AuthorizationCode loopback callback server (default: 8400).
+
+***
 
 ### clientId
 
@@ -88,6 +112,16 @@ Client ID for user-assigned managed identity (AzureManagedIdentity).
 
 ***
 
+### redirectUri?
+
+```ts
+optional redirectUri: string;
+```
+
+Loopback redirect URI for AuthorizationCode.
+
+***
+
 ### refreshBufferSecs?
 
 ```ts
@@ -109,3 +143,26 @@ scopes: string[];
 OAuth scopes to request.
 For Azure managed identity, exactly one scope or resource is required.
 For example: `["api://{app_id}/.default"]`
+
+***
+
+### tokenCache?
+
+```ts
+optional tokenCache: TokenCacheOptions;
+```
+
+Opt in to the persistent token cache so short-lived processes reuse one
+session. Only refresh tokens are persisted. Only supported by
+AuthorizationCode and DeviceCode; Azure managed identity is rejected.
+Default: unset (memory only).
+
+***
+
+### usePkce?
+
+```ts
+optional usePkce: boolean;
+```
+
+Protect AuthorizationCode with S256 PKCE (default: true).

@@ -170,7 +170,14 @@ export {
   TokenResponse,
 } from "./header";
 
-export { OAuthConfig, OAuthFlowType } from "./oauth";
+export {
+  OAuthConfig,
+  OAuthFlowType,
+  OAuthSession,
+  SessionLogout,
+  SessionStatus,
+  TokenCacheOptions,
+} from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 

@@ -1546,6 +1546,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: crate::remote::OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
 
         let result = ConnectBuilder::new("db://my-container/my-prefix")
@@ -1588,6 +1589,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: crate::remote::OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
         let client_config = crate::remote::ClientConfig {
             header_provider: Some(
