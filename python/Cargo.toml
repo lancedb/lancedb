@@ -15,6 +15,7 @@ name = "_lancedb"
 crate-type = ["cdylib"]
 
 [dependencies]
+arc-swap = "1.9"
 arrow = { workspace = true, features = ["pyarrow"] }
 async-trait.workspace = true
 bytes.workspace = true
