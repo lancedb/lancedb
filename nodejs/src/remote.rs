@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use lancedb::error::Error;
 use napi_derive::*;
 
+use crate::error::NapiErrorExt;
+
 /// Timeout configuration for remote HTTP client.
 #[napi(object)]
 #[derive(Debug)]

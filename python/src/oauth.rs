@@ -86,7 +86,7 @@ impl TryFrom<PyOAuthConfig> for OAuthConfig {
 }
 
 /// Wrapper around [`lancedb::remote::SessionStatus`] exposing safe metadata.
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySessionStatus {
     inner: SessionStatus,
@@ -146,7 +146,7 @@ impl From<SessionStatus> for PySessionStatus {
 }
 
 /// Wrapper around [`lancedb::remote::SessionLogout`].
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySessionLogout {
     inner: SessionLogout,
@@ -172,7 +172,7 @@ impl From<SessionLogout> for PySessionLogout {
 }
 
 /// Wrapper around [`lancedb::remote::OAuthSession`].
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyOAuthSession {
     inner: Arc<OAuthSession>,
