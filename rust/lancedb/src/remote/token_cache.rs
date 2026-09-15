@@ -489,31 +489,44 @@ impl TokenCache {
 
     /// Run the cross-process refresh critical section.
     ///
-    /// Must be called with the in-process write lock held. See the module
-    /// documentation for the locking and rotation protocol.
+    /// Must be called with the in-process write lock held. Refresh grants are
+    /// serialized by the per-key cross-process lock; interactive flows (first
+    /// login or reauthentication) run outside it so a slow human-in-the-loop
+    /// flow never blocks refreshes in other processes.
     async fn refresh_or_acquire(&self, source: &dyn TokenSource) -> Result<TokenResponse> {
-        let _guard = self.acquire_lock().await?;
-        // Reread the record: another process may have rotated the refresh
-        // token since this process last looked.
-        let response = match self.load().await? {
-            Some(record) => match source.refresh_token(&record.refresh_token).await? {
-                RefreshResult::Refreshed(response) => response,
-                RefreshResult::Reauthenticate => {
-                    warn!(
-                        "Cached OAuth refresh token was rejected; removing the cached session \
-                         and reauthenticating via {:?}",
-                        source
-                    );
-                    self.delete().await?;
-                    source.fetch_token().await?
+        let needs_interactive = {
+            let _guard = self.acquire_lock().await?;
+            // Reread the record: another process may have rotated the refresh
+            // token since this process last looked.
+            match self.load().await? {
+                Some(record) => match source.refresh_token(&record.refresh_token).await? {
+                    RefreshResult::Refreshed(response) => {
+                        self.store_if_refreshable(&response).await?;
+                        return Ok(response);
+                    }
+                    RefreshResult::Reauthenticate => {
+                        warn!(
+                            "Cached OAuth refresh token was rejected; removing the cached \
+                             session before reauthenticating via {:?}",
+                            source
+                        );
+                        self.delete().await?;
+                        true
+                    }
+                    RefreshResult::Unsupported => true,
+                },
+                None => {
+                    debug!("No cached OAuth session; acquiring one via {:?}", source);
+                    true
                 }
-                RefreshResult::Unsupported => source.fetch_token().await?,
-            },
-            None => {
-                debug!("No cached OAuth session; acquiring one via {:?}", source);
-                source.fetch_token().await?
             }
         };
+
+        // Interactive acquisition happens without the cross-process lock.
+        // Concurrent logins are independent sessions; the last store wins,
+        // which is the documented multi-session rule.
+        let response = source.fetch_token().await?;
+        let _guard = self.acquire_lock().await?;
         self.store_if_refreshable(&response).await?;
         Ok(response)
     }
@@ -1123,6 +1136,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_provider_reuses_cached_session_across_instances() {
         suppress_browser();
         let dir = tempfile::tempdir().unwrap();
@@ -1151,6 +1165,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_concurrent_providers_serialize_rotation() {
         suppress_browser();
         let dir = tempfile::tempdir().unwrap();
@@ -1191,6 +1206,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_transient_refresh_failure_retains_record() {
         suppress_browser();
         let dir = tempfile::tempdir().unwrap();
@@ -1213,6 +1229,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_invalid_grant_deletes_record_and_reauthenticates() {
         suppress_browser();
         let dir = tempfile::tempdir().unwrap();
@@ -1244,6 +1261,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_session_login_status_logout_lifecycle() {
         suppress_browser();
         let dir = tempfile::tempdir().unwrap();
@@ -1299,6 +1317,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_provider_debug_and_status_reveal_no_secrets() {
         suppress_browser();
         let dir = tempfile::tempdir().unwrap();
