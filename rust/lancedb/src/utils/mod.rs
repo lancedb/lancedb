@@ -22,20 +22,10 @@ use datafusion_physical_plan::SendableRecordBatchStream;
 /// The characters any object name may contain: a table, a namespace segment, a
 /// Secret, a materialized view.
 ///
-/// One set rather than one per object type. They were separate and identical,
-/// which is worse than either having one or having a reason to differ -- a
-/// reader had to compare them to find out, and they could drift without anyone
-/// noticing.
-///
-/// No positional rule on top of it: a name may begin with `_`, `-` or `.`,
-/// because LanceDB namespaces already do, and anything narrower would put
-/// objects out of reach inside namespaces that already exist. `.` and `..` are
-/// excluded separately, by [`reject_relative_segment`], because that is a
-/// property of where a name sits in a URL rather than of the name itself.
-///
-/// No length bound. How long a name may be is the service's to decide, and a
-/// bound here could only disagree with it -- one that is shorter refuses names
-/// the catalog would hold, and one that is longer says nothing.
+/// No positional rule on top of it -- a name may begin with `_`, `-` or `.`,
+/// as LanceDB namespaces already do. `.` and `..` are excluded separately, by
+/// [`reject_relative_segment`]: that is a property of where a name sits in a
+/// URL, not of the name. Length is the service's to bound.
 static OBJECT_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]+$").unwrap());
 
@@ -96,135 +86,85 @@ impl PatchReadParam for ReadParams {
     }
 }
 
+/// The reason `.` and `..` are refused wherever a name becomes a path segment.
+const RELATIVE_SEGMENT_REASON: &str =
+    "'.' and '..' are read as relative path segments and cannot address an object";
+
+/// Whether URL parsing would resolve this component away rather than keep it.
+///
+/// Exactly `.` and `..`, and their percent-encoded spellings -- resolution
+/// happens after decoding, so `%2E%2E` collapses as surely as `..` does, and
+/// `drop_table("..")` would reach `/v1/drop/`. No wider than that: `...` is an
+/// ordinary segment that addresses fine.
+fn is_relative_segment(value: &str) -> bool {
+    let decoded = value.replace("%2e", ".").replace("%2E", ".");
+    decoded == "." || decoded == ".."
+}
+
 /// Refuse a path component that URL parsing resolves as a relative segment.
 ///
-/// Exactly `.` and `..`, and the percent-encoded spellings of them. Those are
-/// the only segments the URL Standard resolves, and it resolves them *after*
-/// decoding -- `%2E%2E` is a double-dot segment as surely as `..` is, so no
-/// escaping of one survives to reach a route. An object so named could be
-/// created and then never addressed again, and on the way there the request
-/// goes somewhere else: `drop_table("..")` resolves to `/v1/drop/`, delivering
-/// a body meant for one route to whatever handler is left at the other.
-///
-/// Deliberately no wider than that. `...` is an ordinary segment and addresses
-/// perfectly well; refusing it would make an object that works today stop
-/// working on upgrade, for a hazard it does not have.
-fn reject_relative_segment(what: &str, value: &str) -> Result<()> {
-    let decoded = value.replace("%2e", ".").replace("%2E", ".");
-    if decoded == "." || decoded == ".." {
+/// Reachable on its own for an identifier with no other validator to hang it
+/// on: a Function name has no client-side grammar, so this is the only one of
+/// these rules that applies to it.
+pub(crate) fn reject_relative_segment(what: &str, value: &str) -> Result<()> {
+    if is_relative_segment(value) {
         return Err(Error::InvalidInput {
-            message: format!(
-                "invalid {what} '{value}': '.' and '..' are read as relative path segments and \
-                 cannot address an object"
-            ),
+            message: format!("invalid {what} '{value}': {RELATIVE_SEGMENT_REASON}"),
         });
     }
     Ok(())
 }
 
-/// Validate table name.
+/// Every rule an object name obeys, in one place: non-empty, inside
+/// [`OBJECT_NAME_REGEX`], and addressable as a path segment.
+///
+/// Returns the reason rather than an [`Error`], because the error *type* is
+/// each API's own -- a table reports [`Error::InvalidTableName`] and the rest
+/// report [`Error::InvalidInput`]. Sharing the rules but not the error is what
+/// keeps a table, a namespace segment and a Secret from drifting apart.
+fn check_object_name(name: &str) -> std::result::Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("it must not be empty");
+    }
+    if !OBJECT_NAME_REGEX.is_match(name) {
+        return Err(
+            "it may contain only alphanumeric characters, underscores, hyphens and periods",
+        );
+    }
+    if is_relative_segment(name) {
+        return Err(RELATIVE_SEGMENT_REASON);
+    }
+    Ok(())
+}
+
+/// Validate a table name.
 pub fn validate_table_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::InvalidTableName {
-            name: name.to_string(),
-            reason: "Table names cannot be empty strings".to_string(),
-        });
-    }
-    if name == "." {
-        return Err(Error::InvalidTableName {
-            name: name.to_string(),
-            reason: "Table name cannot be a single dot.".to_string(),
-        });
-    }
-    if name == ".." {
-        return Err(Error::InvalidTableName {
-            name: name.to_string(),
-            reason: "Table name cannot be two dots.".to_string(),
-        });
-    }
-    if !OBJECT_NAME_REGEX.is_match(name) {
-        return Err(Error::InvalidTableName {
-            name: name.to_string(),
-            reason:
-                "Table names can only contain alphanumeric characters, underscores, hyphens, and periods"
-                    .to_string(),
-        });
-    }
-    reject_relative_segment("table name", name)?;
-    Ok(())
+    check_object_name(name).map_err(|reason| Error::InvalidTableName {
+        name: name.to_string(),
+        reason: reason.to_string(),
+    })
 }
 
-/// Validate a namespace name component
-///
-/// Namespace names must:
-/// - Not be empty
-/// - Only contain alphanumeric characters, underscores, hyphens, and periods
-///
-/// # Arguments
-/// * `name` - A single namespace component (not the full path)
-///
-/// # Returns
-/// * `Ok(())` if the namespace name is valid
-/// * `Err(Error)` if the namespace name is invalid
+/// Validate one component of a namespace path -- a single segment, not the
+/// whole path. [`validate_namespace`] covers a path.
 pub fn validate_namespace_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::InvalidInput {
-            message: "Namespace names cannot be empty strings".to_string(),
-        });
-    }
-    if !OBJECT_NAME_REGEX.is_match(name) {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "Invalid namespace name '{}': Namespace names can only contain alphanumeric characters, underscores, hyphens, and periods",
-                name
-            ),
-        });
-    }
-    reject_relative_segment("namespace name", name)?;
-    Ok(())
+    check_object_name(name).map_err(|reason| Error::InvalidInput {
+        message: format!("invalid namespace name '{name}': {reason}"),
+    })
 }
 
 /// Validate one component of a Secret identifier: a Secret name, or one segment
 /// of the namespace path holding it.
 ///
-/// # Why this is checked here, and not only by the service
-///
-/// A Secret is addressed as `POST /v1/secret/{id}/<action>`, where `{id}` is the
-/// namespace path and the name joined by a delimiter. The client performs that
-/// join. The service can only validate the components the *split* produced, so
-/// by the time it sees anything, the identity has already been decided -- and a
-/// component carrying path or delimiter syntax decides it differently from what
-/// the caller asked for.
-///
-/// `"a$b"` is not a name this service accepts, but joined and split it reads as
-/// the namespace `a` and the name `b`: a different Secret, one that may well
-/// exist. A create files a credential under it and an alter overwrites the
-/// credential already there. Neither is an error the service could have
-/// returned, because it was never asked about `a$b`.
-///
-/// So this is not a second opinion on whether a name is acceptable. It is the
-/// step that makes the service's opinion reachable at all, and it belongs to
-/// whoever builds the URL -- which is this client, for every binding, since
-/// Python and Node both wrap it.
-///
-/// [`validate_table_name`] is called on the local path for the same reason.
-/// This is the remote path catching up.
+/// The client joins these into `{id}`, and the join decides identity -- the
+/// service only ever sees what the split produced. `"a$b"` is not a name the
+/// service accepts, but joined and split it reads as the namespace `a` and the
+/// name `b`, a different Secret that may already exist. So this is not a second
+/// opinion on the name; it is what lets the service have one.
 pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
-    if value.is_empty() {
-        return Err(Error::InvalidInput {
-            message: format!("{what} must not be empty"),
-        });
-    }
-    if !OBJECT_NAME_REGEX.is_match(value) {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "invalid {what} '{value}': it may contain only alphanumeric characters, \
-                 underscores, hyphens and periods"
-            ),
-        });
-    }
-    reject_relative_segment(what, value)?;
-    Ok(())
+    check_object_name(value).map_err(|reason| Error::InvalidInput {
+        message: format!("invalid {what} '{value}': {reason}"),
+    })
 }
 
 /// Validate a Secret name and every segment of the namespace path holding it.
