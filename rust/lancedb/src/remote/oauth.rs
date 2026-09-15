@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use base64::Engine;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use rand::Rng;
 use reqwest::Client;
 use serde::Deserialize;
@@ -29,6 +29,46 @@ const DEFAULT_CALLBACK_PORT: u16 = 8400;
 const AUTHORIZATION_CALLBACK_TIMEOUT_SECS: u64 = 300;
 const AZURE_IMDS_ENDPOINT: &str = "http://169.254.169.254/metadata/identity/oauth2/token";
 const AZURE_IMDS_API_VERSION: &str = "2018-02-01";
+
+fn oauth_url_uses_secure_transport(url: &Url) -> bool {
+    url.scheme() == "https"
+        || (url.scheme() == "http"
+            && match url.host() {
+                Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                None => false,
+            })
+}
+
+fn validate_oauth_url(value: &str, name: &str) -> Result<Url> {
+    let url = Url::parse(value).map_err(|e| Error::InvalidInput {
+        message: format!("Invalid OAuth {name}: {e}"),
+    })?;
+    if oauth_url_uses_secure_transport(&url) {
+        Ok(url)
+    } else {
+        Err(Error::InvalidInput {
+            message: format!("OAuth {name} must use https, except for http on a loopback host"),
+        })
+    }
+}
+
+fn authorization_prompt(url: &Url) -> String {
+    format!("Open this URL to authenticate with OAuth: {url}")
+}
+
+fn device_prompt(verification_uri: &str, user_code: &str) -> String {
+    format!("To authenticate with OAuth, visit {verification_uri} and enter code {user_code}")
+}
+
+fn write_oauth_prompt(mut output: impl std::io::Write, prompt: &str) {
+    let _ = writeln!(output, "{prompt}");
+}
+
+fn show_oauth_prompt(prompt: &str) {
+    write_oauth_prompt(std::io::stderr().lock(), prompt);
+}
 
 /// Options for the interactive OAuth Authorization Code flow.
 ///
@@ -108,10 +148,12 @@ pub enum OAuthFlow {
     ClientCredentials,
 
     /// Authorization Code grant using an interactive browser and a built-in
-    /// loopback callback server.
+    /// loopback callback server. The authorization URL is also written to
+    /// stderr so it remains available when the browser cannot be opened.
     AuthorizationCode(AuthorizationCodeOptions),
 
-    /// Device Authorization grant for CLI and headless environments.
+    /// Device Authorization grant for CLI and headless environments. The
+    /// verification URI and user code are written to stderr.
     DeviceCode,
 
     /// Azure Managed Identity via IMDS.
@@ -344,6 +386,14 @@ impl OidcClient {
 
         let http_client = Client::builder()
             .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if oauth_url_uses_secure_transport(attempt.url()) {
+                    attempt.follow()
+                } else {
+                    attempt
+                        .error("OAuth redirects must use https, except for http on a loopback host")
+                }
+            }))
             .build()
             .map_err(|e| Error::Runtime {
                 message: format!("Failed to create HTTP client for OAuth: {e}"),
@@ -360,29 +410,7 @@ impl OidcClient {
     }
 
     fn validate_issuer_transport(issuer_url: &str) -> Result<()> {
-        let issuer = url::Url::parse(issuer_url).map_err(|e| Error::InvalidInput {
-            message: format!("Invalid OAuth issuer_url: {e}"),
-        })?;
-
-        match issuer.scheme() {
-            "https" => Ok(()),
-            "http" if Self::is_loopback_issuer(&issuer) => Ok(()),
-            _ => Err(Error::InvalidInput {
-                message: "OAuth issuer_url must use https, except for loopback hosts".to_string(),
-            }),
-        }
-    }
-
-    fn is_loopback_issuer(issuer: &url::Url) -> bool {
-        let Some(host) = issuer.host_str() else {
-            return false;
-        };
-
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<IpAddr>()
-                .map(|addr| addr.is_loopback())
-                .unwrap_or(false)
+        validate_oauth_url(issuer_url, "issuer_url").map(drop)
     }
 
     async fn get_discovery(&self) -> Result<OidcDiscovery> {
@@ -428,6 +456,13 @@ impl OidcClient {
         let disc: OidcDiscovery = resp.json().await.map_err(|e| Error::Runtime {
             message: format!("Failed to parse OIDC discovery document: {e}"),
         })?;
+        validate_oauth_url(&disc.token_endpoint, "token_endpoint")?;
+        if let Some(endpoint) = disc.authorization_endpoint.as_deref() {
+            validate_oauth_url(endpoint, "authorization_endpoint")?;
+        }
+        if let Some(endpoint) = disc.device_authorization_endpoint.as_deref() {
+            validate_oauth_url(endpoint, "device_authorization_endpoint")?;
+        }
 
         let result = disc.clone();
 
@@ -694,9 +729,7 @@ impl AuthorizationCodeSource {
             .ok_or(Error::Runtime {
                 message: "OIDC discovery did not provide authorization_endpoint".to_string(),
             })?;
-        let mut url = Url::parse(&endpoint).map_err(|e| Error::Runtime {
-            message: format!("Invalid authorization_endpoint in OIDC discovery: {e}"),
-        })?;
+        let mut url = validate_oauth_url(&endpoint, "authorization_endpoint")?;
         let state = random_urlsafe_string(32);
         let code_verifier = self.options.use_pkce.then(|| random_urlsafe_string(64));
 
@@ -804,7 +837,7 @@ impl TokenSource for AuthorizationCodeSource {
                 ),
             })?;
         let request = self.build_authorization_request().await?;
-        info!("Open this URL to authenticate with OAuth: {}", request.url);
+        show_oauth_prompt(&authorization_prompt(&request.url));
         launch_browser(request.url.clone());
         let code = self.wait_for_callback(&listener, &request.state).await?;
         self.exchange_code(&code, request.code_verifier.as_deref())
@@ -894,9 +927,15 @@ impl DeviceCodeSource {
                 ),
             });
         }
-        response.json().await.map_err(|e| Error::Runtime {
-            message: format!("Failed to parse device authorization response: {e}"),
-        })
+        let device: DeviceAuthorizationResponse =
+            response.json().await.map_err(|e| Error::Runtime {
+                message: format!("Failed to parse device authorization response: {e}"),
+            })?;
+        validate_oauth_url(&device.verification_uri, "verification_uri")?;
+        if let Some(uri) = device.verification_uri_complete.as_deref() {
+            validate_oauth_url(uri, "verification_uri_complete")?;
+        }
+        Ok(device)
     }
 
     async fn poll_for_token(&self, device: &DeviceAuthorizationResponse) -> Result<TokenResponse> {
@@ -998,17 +1037,13 @@ impl DeviceCodeSource {
 impl TokenSource for DeviceCodeSource {
     async fn fetch_token(&self) -> Result<TokenResponse> {
         let device = self.request_device_authorization().await?;
-        info!(
-            "To authenticate with OAuth, visit {} and enter code {}",
-            device.verification_uri, device.user_code
-        );
-        let browser_url = device
+        show_oauth_prompt(&device_prompt(&device.verification_uri, &device.user_code));
+        let (browser_url, name) = device
             .verification_uri_complete
             .as_deref()
-            .unwrap_or(&device.verification_uri);
-        launch_browser(Url::parse(browser_url).map_err(|e| Error::Runtime {
-            message: format!("Invalid device verification URI: {e}"),
-        })?);
+            .map(|url| (url, "verification_uri_complete"))
+            .unwrap_or((&device.verification_uri, "verification_uri"));
+        launch_browser(validate_oauth_url(browser_url, name)?);
         self.poll_for_token(&device).await
     }
 
@@ -1472,6 +1507,37 @@ mod tests {
     }
 
     #[test]
+    fn test_oauth_transport_requires_https_except_for_loopback() {
+        assert!(validate_oauth_url("https://idp.example.com/token", "endpoint").is_ok());
+        assert!(validate_oauth_url("http://localhost:8080/token", "endpoint").is_ok());
+        assert!(validate_oauth_url("http://127.0.0.1:8080/token", "endpoint").is_ok());
+        assert!(validate_oauth_url("http://[::1]:8080/token", "endpoint").is_ok());
+
+        let err = validate_oauth_url("http://idp.example.com/token", "endpoint").unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message == "OAuth endpoint must use https, except for http on a loopback host"
+        ));
+    }
+
+    #[test]
+    fn test_interactive_prompts_use_default_visible_output() {
+        let authorization_url = Url::parse("https://idp.example.com/authorize?state=abc").unwrap();
+        let authorization = authorization_prompt(&authorization_url);
+        let device = device_prompt("https://idp.example.com/device", "ABCD-EFGH");
+        let mut output = Vec::new();
+
+        write_oauth_prompt(&mut output, &authorization);
+        write_oauth_prompt(&mut output, &device);
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains(authorization_url.as_str()));
+        assert!(output.contains("https://idp.example.com/device"));
+        assert!(output.contains("ABCD-EFGH"));
+    }
+
+    #[test]
     fn test_authorization_code_options_default_to_pkce() {
         let options = AuthorizationCodeOptions::new();
 
@@ -1697,6 +1763,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_authorization_request_rejects_plaintext_provider_endpoint() {
+        let (issuer_url, server) = spawn_insecure_authorization_discovery_server().await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        let err = source.build_authorization_request().await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message.contains("authorization_endpoint must use https")
+        ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_authorization_request_can_disable_pkce() {
         let (issuer_url, server) = spawn_discovery_server(1).await;
         let source = AuthorizationCodeSource::new(
@@ -1803,6 +1890,26 @@ mod tests {
         assert_eq!(response.access_token, "device-token");
         assert_eq!(response.refresh_token.as_deref(), Some("device-refresh"));
         assert_eq!(token_requests.load(Ordering::SeqCst), 3);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_device_authorization_rejects_plaintext_verification_uri() {
+        let (issuer_url, server) = spawn_insecure_device_verification_server().await;
+        let source = DeviceCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            None,
+            vec!["openid".to_string()],
+        )
+        .unwrap();
+
+        let err = source.request_device_authorization().await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message.contains("verification_uri must use https")
+        ));
         server.await.unwrap();
     }
 
@@ -2155,7 +2262,8 @@ mod tests {
         assert!(matches!(
             err,
             Error::InvalidInput { message }
-                if message == "OAuth issuer_url must use https, except for loopback hosts"
+                if message
+                    == "OAuth issuer_url must use https, except for http on a loopback host"
         ));
     }
 
@@ -2217,6 +2325,53 @@ mod tests {
                     r#"{{"token_endpoint":"http://{addr}/token","authorization_endpoint":"http://{addr}/authorize","device_authorization_endpoint":"http://{addr}/device"}}"#
                 );
                 write_json_response(&mut stream, "200 OK", &discovery).await;
+            }
+        });
+
+        (issuer_url, server)
+    }
+
+    async fn spawn_insecure_authorization_discovery_server() -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (request_line, _) = read_http_request(&mut stream).await;
+            assert!(request_line.starts_with("GET /.well-known/openid-configuration "));
+            write_json_response(
+                &mut stream,
+                "200 OK",
+                r#"{"token_endpoint":"https://idp.example.com/token","authorization_endpoint":"http://idp.example.com/authorize"}"#,
+            )
+            .await;
+        });
+
+        (issuer_url, server)
+    }
+
+    async fn spawn_insecure_device_verification_server() -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_line, _) = read_http_request(&mut stream).await;
+                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                    let discovery = format!(
+                        r#"{{"token_endpoint":"http://{addr}/token","device_authorization_endpoint":"http://{addr}/device"}}"#
+                    );
+                    write_json_response(&mut stream, "200 OK", &discovery).await;
+                } else {
+                    assert!(request_line.starts_with("POST /device "));
+                    write_json_response(
+                        &mut stream,
+                        "200 OK",
+                        r#"{"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"http://idp.example.com/device","expires_in":60}"#,
+                    )
+                    .await;
+                }
             }
         });
 

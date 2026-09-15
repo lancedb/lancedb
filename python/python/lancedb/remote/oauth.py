@@ -80,6 +80,9 @@ class OAuthConfig:
 
     Authorization Code with PKCE:
 
+    The authorization URL is written to standard error before LanceDB tries to
+    open a browser, so it can be copied in headless environments.
+
     >>> config = OAuthConfig(
     ...     issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",
     ...     client_id="app-id",
@@ -88,6 +91,9 @@ class OAuthConfig:
     ... )
 
     Device Authorization:
+
+    The verification URL and user code are written to standard error before
+    polling begins.
 
     >>> config = OAuthConfig(
     ...     issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",

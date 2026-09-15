@@ -46,6 +46,8 @@ export enum OAuthFlowType {
  * ```
  *
  * @example Authorization Code with PKCE:
+ * The authorization URL is written to stderr before LanceDB tries to open a
+ * browser, so it can be copied in headless environments.
  * ```typescript
  * const config: OAuthConfig = {
  *   issuerUrl: "https://login.microsoftonline.com/{tenant}/v2.0",
@@ -54,6 +56,9 @@ export enum OAuthFlowType {
  *   flow: OAuthFlowType.AuthorizationCode,
  * };
  * ```
+ *
+ * Device Authorization writes the verification URL and user code to stderr
+ * before polling begins.
  */
 export interface OAuthConfig {
   /**
