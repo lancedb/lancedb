@@ -693,19 +693,20 @@ class DBConnection(EnforceOverrides):
         raise NotImplementedError("serialize is not supported for this connection type")
 
     def create_function(self, definition: UdfDefinition) -> FunctionVersion:
-        """Register a scalar Python UDF and wait for its immutable version.
+        """Build and register a scalar Python UDF, then return its version.
 
+        The server builds the OCI image and registers the completed artifact.
         This is the blocking counterpart of :meth:`create_function_async`.
         Local connections raise ``NotImplementedError``.
         """
         return self.create_function_async(definition).wait()
 
     def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        """Register a scalar Python UDF through the remote Function catalog.
+        """Submit a scalar Python UDF for building and registration.
 
-        Submission returns a typed job. The immutable Function version becomes
-        available only when :meth:`Job.wait` succeeds. Local connections raise
-        ``NotImplementedError``.
+        The server-side job builds the OCI image, then registers the completed
+        artifact. Waiting on the job returns the immutable Function version.
+        Local connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -2267,9 +2268,10 @@ class AsyncConnection(object):
     async def create_function_async(
         self, definition: UdfDefinition
     ) -> AsyncJob[FunctionVersion]:
-        """Register a scalar Python UDF through the remote Function catalog.
+        """Submit a scalar Python UDF for building and registration.
 
-        The returned typed job resolves to the immutable Function version.
+        The server-side job builds the OCI image, then registers the completed
+        artifact. Waiting on the job returns the immutable Function version.
         Local connections raise ``NotImplementedError``.
         """
         if not isinstance(definition, UdfDefinition):

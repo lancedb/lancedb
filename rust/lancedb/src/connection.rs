@@ -581,10 +581,11 @@ impl Connection {
         )
     }
 
-    /// Register a Python callable as a new immutable Function version.
+    /// Build and register a Python callable as an immutable Function version.
     ///
-    /// Registration is remote-only and always asynchronous. Waiting on the
-    /// returned typed job yields the durable [`crate::function::FunctionVersion`].
+    /// The server-side job builds the OCI image, then registers the completed
+    /// artifact. Waiting on the returned typed job yields the durable
+    /// [`crate::function::FunctionVersion`]. Creation is remote-only.
     /// Local databases return [`Error::NotSupported`].
     pub async fn create_function_async(
         &self,

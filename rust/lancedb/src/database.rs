@@ -294,7 +294,7 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
-    /// Register an immutable Function version through the remote catalog.
+    /// Submit a Function creation job that builds an image and registers it.
     async fn create_function_async(
         &self,
         _request: crate::function::FunctionRegistrationRequest,
