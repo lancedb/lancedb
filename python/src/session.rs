@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use lancedb::{ObjectStoreRegistry, Session as LanceSession};
-use pyo3::{PyResult, pyclass, pymethods};
+use pyo3::{PyResult, Python, pyclass, pymethods};
 
 /// A session for managing caches and object stores across LanceDB operations.
 ///
@@ -95,6 +95,27 @@ impl Session {
     #[getter]
     pub fn approx_num_items(&self) -> usize {
         self.inner.approx_num_items()
+    }
+
+    /// Drop everything held in the metadata cache.
+    ///
+    /// The metadata cache holds file metadata and schema information, and by
+    /// default is allowed to grow to 1GB per session. Since a session is
+    /// created per connection unless one is passed explicitly, a process that
+    /// opens many connections can accumulate a lot of it with no way to hand
+    /// it back short of dropping every connection.
+    ///
+    /// This does not touch the index cache, which is the larger of the two:
+    /// `lance` does not currently expose it outside its own crate, so it
+    /// cannot be cleared from here.
+    ///
+    /// Subsequent reads repopulate the cache, so this trades memory for the
+    /// cost of re-reading metadata.
+    pub fn clear_metadata_cache(&self, py: Python<'_>) {
+        let cache = self.inner.file_metadata_cache().clone();
+        // Releases the GIL: nothing in the clear needs Python, and a large
+        // cache can take a moment to walk.
+        py.detach(|| crate::runtime::block_on(cache.clear()));
     }
 
     fn __repr__(&self) -> String {
