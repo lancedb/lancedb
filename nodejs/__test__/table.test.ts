@@ -2766,6 +2766,15 @@ describe("when dealing with tags", () => {
   });
 });
 
+/** Returns a Date strictly later than every instant observed before the call. */
+async function nextMillisecond(): Promise<Date> {
+  const start = Date.now();
+  while (Date.now() <= start) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  return new Date();
+}
+
 describe("when optimizing a dataset", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
@@ -2788,7 +2797,12 @@ describe("when optimizing a dataset", () => {
   });
 
   it("cleanups old versions", async () => {
-    const stats = await table.optimize({ cleanupOlderThan: new Date() });
+    // Lance stores version timestamps with nanosecond precision while a JS
+    // Date only has millisecond precision. A cutoff captured in the same
+    // millisecond as the last commit would truncate to *before* that commit
+    // and leave it in place, so wait for the clock to tick over first.
+    const cutoff = await nextMillisecond();
+    const stats = await table.optimize({ cleanupOlderThan: cutoff });
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
     expect(stats.prune.oldVersionsRemoved).toBe(2);
   });
