@@ -332,9 +332,10 @@ impl OAuthSession {
 
     /// Eagerly run the configured authentication flow and store the session.
     ///
-    /// If the provider does not issue a refresh token (for example without
-    /// `offline_access`), nothing is cached and the status reports
-    /// `refreshable == false`.
+    /// A successful login always replaces any prior cached session for this
+    /// identity; if the provider does not issue a refresh token (for example
+    /// without `offline_access`), the previous record is removed and the
+    /// status reports `refreshable == false`.
     pub async fn login(&self) -> napi::Result<SessionStatus> {
         let status = self.inner.login().await.default_error()?;
         Ok(SessionStatus::from(status))

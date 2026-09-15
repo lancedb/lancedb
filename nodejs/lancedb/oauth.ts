@@ -220,9 +220,10 @@ export class OAuthSession {
   /**
    * Eagerly run the configured authentication flow and store the session.
    *
-   * If the provider does not issue a refresh token (for example without
-   * `offline_access`), nothing is cached and the status reports
-   * `refreshable == false`.
+   * A successful login always replaces any prior cached session for this
+   * identity; if the provider does not issue a refresh token (for example
+   * without `offline_access`), the previous record is removed and the status
+   * reports `refreshable == false`.
    */
   async login(): Promise<SessionStatus> {
     return this.inner.login();

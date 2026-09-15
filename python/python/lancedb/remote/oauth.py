@@ -190,9 +190,10 @@ class OAuthSession:
         """Eagerly run the configured flow and store the session.
 
         Returns a :class:`lancedb._lancedb.SessionStatus` describing the
-        cached session. If the provider does not issue a refresh token (for
-        example without ``offline_access``), nothing is cached and
-        ``refreshable`` is ``False``.
+        cached session. A successful login always replaces any prior cached
+        session for this identity; if the provider does not issue a refresh
+        token (for example without ``offline_access``), the previous record
+        is removed and ``refreshable`` is ``False``.
         """
         return await self._inner.login()
 

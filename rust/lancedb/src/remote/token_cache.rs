@@ -534,10 +534,18 @@ impl TokenCache {
     }
 
     /// Store a fresh login response (used by the eager `login` API).
+    ///
+    /// A successful login atomically replaces any prior session for this
+    /// cache identity: when the provider does not issue a refresh token, the
+    /// previous record is removed rather than left in place, so logging in
+    /// can never silently keep an earlier account's credential.
     async fn store_login_response(&self, response: &TokenResponse) -> Result<()> {
-        if let Some(record) = self.record_from_response(response) {
-            let _guard = self.acquire_lock().await?;
-            self.store(&record).await?;
+        let _guard = self.acquire_lock().await?;
+        match self.record_from_response(response) {
+            Some(record) => self.store(&record).await?,
+            None => {
+                self.delete().await?;
+            }
         }
         Ok(())
     }
@@ -842,9 +850,11 @@ impl OAuthSession {
 
     /// Eagerly run the configured authentication flow and store the session.
     ///
-    /// Returns the resulting [`SessionStatus`]. If the provider does not
-    /// issue a refresh token (for example without `offline_access`), nothing
-    /// is cached and the status reports `refreshable == false`.
+    /// Returns the resulting [`SessionStatus`]. A successful login always
+    /// replaces any prior cached session for this identity; if the provider
+    /// does not issue a refresh token (for example without `offline_access`),
+    /// the previous record is removed and the status reports
+    /// `refreshable == false`.
     pub async fn login(&self) -> Result<SessionStatus> {
         let response = self.token_source.fetch_token().await?;
         self.cache.store_login_response(&response).await?;
@@ -929,6 +939,19 @@ mod tests {
     use crate::remote::oauth::OAuthHeaderProvider;
     use serial_test::serial;
 
+    /// Temp directory that satisfies the cache hardening checks. CI runners
+    /// can create temp directories with group/other bits set, which the
+    /// private-directory validation correctly rejects.
+    fn cache_tempdir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        dir
+    }
+
     fn device_config(cache_dir: &Path) -> OAuthConfig {
         OAuthConfig {
             issuer_url: "https://issuer.example.com".to_string(),
@@ -953,6 +976,7 @@ mod tests {
         access_tokens_issued: Arc<AtomicUsize>,
         current_refresh: Arc<std::sync::Mutex<Option<String>>>,
         fail_refreshes: Arc<AtomicBool>,
+        issue_refresh_tokens: Arc<AtomicBool>,
     }
 
     impl MockIdp {
@@ -968,6 +992,7 @@ mod tests {
                 access_tokens_issued: Arc::new(AtomicUsize::new(0)),
                 current_refresh: Arc::new(std::sync::Mutex::new(None)),
                 fail_refreshes: Arc::new(AtomicBool::new(false)),
+                issue_refresh_tokens: Arc::new(AtomicBool::new(true)),
             };
             let device_authorizations = Arc::clone(&server.device_authorizations);
             let refresh_attempts = Arc::clone(&server.refresh_attempts);
@@ -987,6 +1012,7 @@ mod tests {
                     let access_tokens_issued = Arc::clone(&access_tokens_issued);
                     let current_refresh = Arc::clone(&current_refresh);
                     let fail_refreshes = Arc::clone(&fail_refreshes);
+                    let issue_refresh_tokens = Arc::clone(&issue_refresh_tokens);
                     tokio::spawn(async move {
                         let (request_line, body) = read_http_request(&mut stream).await;
                         if request_line.starts_with("GET /.well-known/openid-configuration ") {
@@ -1033,6 +1059,7 @@ mod tests {
                                     &mut stream,
                                     &access_tokens_issued,
                                     &current_refresh,
+                                    issue_refresh_tokens.load(Ordering::SeqCst),
                                 )
                                 .await;
                             } else {
@@ -1046,6 +1073,7 @@ mod tests {
                                         &mut stream,
                                         &access_tokens_issued,
                                         &current_refresh,
+                                        issue_refresh_tokens.load(Ordering::SeqCst),
                                     )
                                     .await;
                                 } else {
@@ -1076,12 +1104,17 @@ mod tests {
         stream: &mut TcpStream,
         access_tokens_issued: &AtomicUsize,
         current_refresh: &std::sync::Mutex<Option<String>>,
+        with_refresh: bool,
     ) {
         let number = access_tokens_issued.fetch_add(1, Ordering::SeqCst) + 1;
-        *current_refresh.lock().unwrap() = Some(format!("refresh-{number}"));
-        let token = format!(
-            r#"{{"access_token":"access-{number}","refresh_token":"refresh-{number}","expires_in":3600}}"#
-        );
+        let token = if with_refresh {
+            *current_refresh.lock().unwrap() = Some(format!("refresh-{number}"));
+            format!(
+                r#"{{"access_token":"access-{number}","refresh_token":"refresh-{number}","expires_in":3600}}"#
+            )
+        } else {
+            format!(r#"{{"access_token":"access-{number}","expires_in":3600}}"#)
+        };
         write_json_response(stream, "200 OK", &token).await;
     }
 
@@ -1142,7 +1175,7 @@ mod tests {
     #[serial]
     async fn test_provider_reuses_cached_session_across_instances() {
         suppress_browser();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let idp = MockIdp::start().await;
 
         let first = OAuthHeaderProvider::new(idp.config(dir.path())).unwrap();
@@ -1171,7 +1204,7 @@ mod tests {
     #[serial]
     async fn test_concurrent_providers_serialize_rotation() {
         suppress_browser();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let idp = MockIdp::start().await;
 
         let priming = OAuthHeaderProvider::new(idp.config(dir.path())).unwrap();
@@ -1212,7 +1245,7 @@ mod tests {
     #[serial]
     async fn test_transient_refresh_failure_retains_record() {
         suppress_browser();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let idp = MockIdp::start().await;
 
         let priming = OAuthHeaderProvider::new(idp.config(dir.path())).unwrap();
@@ -1235,7 +1268,7 @@ mod tests {
     #[serial]
     async fn test_invalid_grant_deletes_record_and_reauthenticates() {
         suppress_browser();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let idp = MockIdp::start().await;
 
         let priming = OAuthHeaderProvider::new(idp.config(dir.path())).unwrap();
@@ -1267,7 +1300,7 @@ mod tests {
     #[serial]
     async fn test_session_login_status_logout_lifecycle() {
         suppress_browser();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let idp = MockIdp::start().await;
 
         let session = OAuthSession::new(idp.config(dir.path())).unwrap();
@@ -1293,8 +1326,27 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
+    async fn test_login_without_refresh_token_clears_prior_record() {
+        suppress_browser();
+        let dir = cache_tempdir();
+        let idp = MockIdp::start().await;
+
+        let session = OAuthSession::new(idp.config(dir.path())).unwrap();
+        session.login().await.unwrap();
+        assert!(session.status().await.unwrap().refreshable);
+
+        // A provider that stops issuing refresh tokens (for example a login
+        // without offline_access) must not leave the earlier account behind.
+        idp.issue_refresh_tokens.store(false, Ordering::SeqCst);
+        let status = session.login().await.unwrap();
+        assert!(!status.refreshable);
+        assert!(!session.status().await.unwrap().refreshable);
+    }
+
+    #[tokio::test]
     async fn test_client_credentials_with_cache_stays_memory_only() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let idp = MockIdp::start().await;
 
         let mut config = idp.config(dir.path());
@@ -1309,7 +1361,7 @@ mod tests {
 
     #[test]
     fn test_managed_identity_with_cache_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let mut config = device_config(dir.path());
         config.flow = OAuthFlow::AzureManagedIdentity { client_id: None };
 
@@ -1323,7 +1375,7 @@ mod tests {
     #[serial]
     async fn test_provider_debug_and_status_reveal_no_secrets() {
         suppress_browser();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let idp = MockIdp::start().await;
 
         let provider = OAuthHeaderProvider::new(idp.config(dir.path())).unwrap();
@@ -1424,7 +1476,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_lifecycle_without_cache_entry() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let session = OAuthSession::new(device_config(dir.path())).unwrap();
 
         let status = session.status().await.unwrap();
@@ -1441,7 +1493,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_record_round_trip_and_redaction() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let cache = TokenCache::new(
             &device_config(dir.path()),
             &TokenCacheOptions::new().cache_dir(dir.path()),
@@ -1484,7 +1536,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_record_rejects_symlink() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let cache = TokenCache::new(
             &device_config(dir.path()),
             &TokenCacheOptions::new().cache_dir(dir.path()),
@@ -1514,7 +1566,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_record_rejects_world_readable_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let cache = TokenCache::new(
             &device_config(dir.path()),
             &TokenCacheOptions::new().cache_dir(dir.path()),
@@ -1533,7 +1585,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_record_rejects_unknown_version_and_corruption() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let cache = TokenCache::new(
             &device_config(dir.path()),
             &TokenCacheOptions::new().cache_dir(dir.path()),
@@ -1541,7 +1593,18 @@ mod tests {
         .unwrap();
         let path = cache.record_path();
 
-        std::fs::write(&path, r#"{"version":99}"#).unwrap();
+        // A complete, well-formed record with an unknown schema version.
+        let record = cache
+            .record_from_response(&TokenResponse {
+                access_token: "a".to_string(),
+                refresh_token: Some("r".to_string()),
+                expires_in: None,
+                token_type: None,
+            })
+            .unwrap();
+        let mut json = serde_json::to_value(&record).unwrap();
+        json["version"] = serde_json::json!(99);
+        std::fs::write(&path, json.to_string()).unwrap();
         let err = cache.load().await.unwrap_err();
         assert!(
             matches!(err, Error::Runtime { message } if message.contains("unsupported version"))
@@ -1565,7 +1628,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_cache_dir_rejects_open_permissions() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let err = TokenCache::new(
@@ -1578,7 +1641,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lock_serializes_and_releases() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let cache = TokenCache::new(
             &device_config(dir.path()),
             &TokenCacheOptions::new().cache_dir(dir.path()),
@@ -1613,7 +1676,7 @@ mod tests {
 
     #[test]
     fn test_token_cache_for_config_gating() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         assert!(
             token_cache_for_config(&device_config(dir.path()))
                 .unwrap()
@@ -1646,7 +1709,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_skips_responses_without_refresh_token() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = cache_tempdir();
         let cache = TokenCache::new(
             &device_config(dir.path()),
             &TokenCacheOptions::new().cache_dir(dir.path()),
