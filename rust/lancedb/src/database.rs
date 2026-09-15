@@ -30,6 +30,7 @@ use crate::data::scannable::Scannable;
 use crate::error::Result;
 use crate::job::Job;
 use crate::materialized_view::CreateMaterializedViewRequest;
+use crate::secrets::SecretInfo;
 use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
@@ -251,6 +252,12 @@ fn function_catalog_not_supported<T>() -> Result<T> {
     })
 }
 
+fn secret_catalog_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Secret operations are not supported by this database".to_string(),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -385,6 +392,44 @@ pub trait Database:
     /// Drop one exact immutable Function version from the remote catalog.
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
+    }
+    /// Create a named Secret in this database. Fails if the name is taken, so
+    /// a create can never silently become a rotation.
+    async fn create_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// Replace the credential behind an existing Secret. Fails if it does not
+    /// exist. Every Function bound to it resolves the new value from its next
+    /// execution, with no new Function version.
+    async fn alter_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// The names of every Secret in this database.
+    ///
+    /// Names only. No API path returns a stored credential, by construction
+    /// rather than by policy.
+    async fn list_secrets(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a Secret. Functions bound to it fail at their next job, which is
+    /// the revocation path.
+    async fn drop_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// What the database records about one Secret: its name and timestamps,
+    /// never its value.
+    async fn describe_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<SecretInfo> {
+        secret_catalog_not_supported()
     }
     /// Open a job by id, returning a handle with its record already
     /// populated. Fails with [`crate::Error::JobNotFound`] when the server has
