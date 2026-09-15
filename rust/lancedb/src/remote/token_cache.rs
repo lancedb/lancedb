@@ -444,6 +444,7 @@ impl TokenCache {
                 .create(true)
                 .read(true)
                 .write(true)
+                .truncate(false)
                 .open(&path)
                 .map_err(|e| Error::Runtime {
                     message: format!(
@@ -926,6 +927,7 @@ mod tests {
 
     use crate::remote::HeaderProvider;
     use crate::remote::oauth::OAuthHeaderProvider;
+    use serial_test::serial;
 
     fn device_config(cache_dir: &Path) -> OAuthConfig {
         OAuthConfig {
