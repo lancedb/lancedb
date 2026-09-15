@@ -494,12 +494,13 @@ impl TokenCache {
     /// login or reauthentication) run outside it so a slow human-in-the-loop
     /// flow never blocks refreshes in other processes.
     async fn refresh_or_acquire(&self, source: &dyn TokenSource) -> Result<TokenResponse> {
-        let needs_interactive = {
+        // Fast path under the lock: refresh from the durable record.
+        {
             let _guard = self.acquire_lock().await?;
             // Reread the record: another process may have rotated the refresh
             // token since this process last looked.
-            match self.load().await? {
-                Some(record) => match source.refresh_token(&record.refresh_token).await? {
+            if let Some(record) = self.load().await? {
+                match source.refresh_token(&record.refresh_token).await? {
                     RefreshResult::Refreshed(response) => {
                         self.store_if_refreshable(&response).await?;
                         return Ok(response);
@@ -511,16 +512,13 @@ impl TokenCache {
                             source
                         );
                         self.delete().await?;
-                        true
                     }
-                    RefreshResult::Unsupported => true,
-                },
-                None => {
-                    debug!("No cached OAuth session; acquiring one via {:?}", source);
-                    true
+                    RefreshResult::Unsupported => {}
                 }
+            } else {
+                debug!("No cached OAuth session; acquiring one via {:?}", source);
             }
-        };
+        }
 
         // Interactive acquisition happens without the cross-process lock.
         // Concurrent logins are independent sessions; the last store wins,
