@@ -313,7 +313,7 @@ pub trait Database:
     async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
-    /// Drop one exact immutable Function version from the remote catalog.
+    /// Remove the current Function name binding, retaining the object history.
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
     }

@@ -45,7 +45,7 @@ FIXTURES = (
 )
 
 
-IMAGE_VERSION = json.loads(
+FUNCTION_VERSION = json.loads(
     (FIXTURES / "remote_function_version.canonical.json").read_text()
 )["version"]
 
@@ -1204,11 +1204,11 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.create_function_async(normalize_score)
     with pytest.raises(NotImplementedError, match=message):
-        db.get_function("normalize_score", version=IMAGE_VERSION)
+        db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
         db.list_functions()
     with pytest.raises(NotImplementedError, match=message):
-        db.drop_function("normalize_score", version=IMAGE_VERSION)
+        db.drop_function("normalize_score", version=FUNCTION_VERSION)
 
 
 @contextlib.contextmanager
@@ -1235,7 +1235,11 @@ def _mock_remote_function_catalog():
             if self.path == "/v1/function/normalize_score/create":
                 state["version"] = {
                     "name": "normalize_score",
-                    "version": IMAGE_VERSION,
+                    "version": FUNCTION_VERSION,
+                    "object_id": "fixture",
+                    "location": "memory:///fixture",
+                    "metadata": {},
+                    "disabled": False,
                     "image": json.loads(
                         (
                             FIXTURES / "remote_function_version.canonical.json"
@@ -1255,10 +1259,10 @@ def _mock_remote_function_catalog():
                     "result": state["version"],
                 }
             elif self.path == "/v1/function/normalize_score/describe":
-                assert body == {"version": IMAGE_VERSION}
+                assert body == {"version": FUNCTION_VERSION}
                 response = state["version"]
             elif self.path == "/v1/function/normalize_score/drop":
-                assert body == {"version": IMAGE_VERSION}
+                assert body == {"version": FUNCTION_VERSION}
                 response = {"dropped": True}
             else:
                 status = 404
@@ -1281,7 +1285,7 @@ def _mock_remote_function_catalog():
                     "functions": [
                         {
                             "name": "normalize_score",
-                            "version": IMAGE_VERSION,
+                            "version": FUNCTION_VERSION,
                             "definition": state["version"],
                         }
                     ],
@@ -1317,7 +1321,7 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
 
     assert created == reopened
     assert reopened.name == "normalize_score"
-    assert reopened.version == IMAGE_VERSION
+    assert reopened.version == FUNCTION_VERSION
     create_request = state["requests"][0][1]
     expected_request = json.loads(
         normalize_score.registration_request.to_canonical_json()
@@ -1337,7 +1341,7 @@ def test_blocking_remote_registration_returns_function_version():
         created = db.create_function(normalize_score)
 
     assert created.name == "normalize_score"
-    assert created.version == IMAGE_VERSION
+    assert created.version == FUNCTION_VERSION
     assert [path for path, _ in state["requests"]] == [
         "/v1/function/normalize_score/create",
         "/v1/jobs/describe",
@@ -1395,12 +1399,12 @@ def test_remote_drop_function_sends_exact_version():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert db.drop_function("normalize_score", version=IMAGE_VERSION) is True
+        assert db.drop_function("normalize_score", version=FUNCTION_VERSION) is True
 
     assert state["requests"] == [
         (
             "/v1/function/normalize_score/drop",
-            {"version": IMAGE_VERSION},
+            {"version": FUNCTION_VERSION},
         )
     ]
 
@@ -1414,11 +1418,13 @@ async def test_async_remote_drop_function_sends_exact_version():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert await db.drop_function("normalize_score", version=IMAGE_VERSION) is True
+        assert (
+            await db.drop_function("normalize_score", version=FUNCTION_VERSION) is True
+        )
 
     assert state["requests"] == [
         (
             "/v1/function/normalize_score/drop",
-            {"version": IMAGE_VERSION},
+            {"version": FUNCTION_VERSION},
         )
     ]

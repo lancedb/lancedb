@@ -631,7 +631,7 @@ impl Connection {
         self.internal.list_functions().await
     }
 
-    /// Drop one exact immutable Function version from the remote catalog.
+    /// Remove the current Function name binding, retaining the object history.
     ///
     /// Returns `true` when the server appended a Dropped transition and
     /// `false` for an idempotent replay. Local databases return

@@ -88,10 +88,18 @@ fn application_has_unknown_nested_fields(value: &Value) -> bool {
     let Some(application) = value.as_object() else {
         return false;
     };
-    if application
-        .get("function")
-        .is_some_and(|value| has_unknown_keys(value, &["name", "version"]))
-    {
+    if application.get("function").is_some_and(|value| {
+        has_unknown_keys(
+            value,
+            &[
+                "name",
+                "object_id",
+                "location",
+                "version",
+                "manifest_digest",
+            ],
+        )
+    }) {
         return true;
     }
     if application
@@ -404,17 +412,55 @@ pub struct FunctionImage {
     pub source: bool,
 }
 
-/// An immutable catalog name bound to a concrete OCI manifest.
+fn deserialize_object_version<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    match value.parse::<u64>() {
+        Ok(number) if number > 0 && number.to_string() == value => Ok(value),
+        _ => Err(de::Error::custom(
+            "Function version must be a canonical positive uint64",
+        )),
+    }
+}
+
+/// One immutable Function object revision and its executable artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
+    object_id: String,
+    location: String,
+    #[serde(deserialize_with = "deserialize_object_version")]
     version: String,
     image: FunctionImage,
     signature: FunctionSignature,
     created_at: String,
+    metadata: BTreeMap<String, String>,
+    disabled: bool,
 }
 
 impl FunctionVersion {
+    pub fn object_id(&self) -> &str {
+        &self.object_id
+    }
+    pub fn location(&self) -> &str {
+        &self.location
+    }
+    pub fn metadata(&self) -> &BTreeMap<String, String> {
+        &self.metadata
+    }
+    pub fn disabled(&self) -> bool {
+        self.disabled
+    }
+    pub fn reference(&self) -> FunctionVersionRef {
+        FunctionVersionRef {
+            name: self.name.clone(),
+            object_id: self.object_id.clone(),
+            location: self.location.clone(),
+            version: self.version.clone(),
+            manifest_digest: self.image.manifest_digest.clone(),
+        }
+    }
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -482,7 +528,11 @@ impl_json!(FunctionRegistrationRequest);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersionRef {
     pub name: String,
+    pub object_id: String,
+    pub location: String,
+    #[serde(deserialize_with = "deserialize_object_version")]
     pub version: String,
+    pub manifest_digest: String,
 }
 
 /// Parameter binding in a FunctionApplication.

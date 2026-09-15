@@ -737,10 +737,12 @@ class DBConnection(EnforceOverrides):
         )
 
     def drop_function(self, name: str, *, version: str) -> bool:
-        """Drop one exact immutable Function version from the remote catalog.
+        """Remove the current Function name binding from the remote catalog.
 
-        Returns True when the version changed to Dropped and False for an
-        idempotent replay. Local connections raise NotImplementedError.
+        The requested version must exist in the currently named object.
+        Object history and existing computed-column references are retained.
+        Returns True when the name was removed and False when it was absent.
+        Local connections raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -2297,7 +2299,7 @@ class AsyncConnection(object):
         ]
 
     async def drop_function(self, name: str, *, version: str) -> bool:
-        """Drop one exact immutable Function version from the remote catalog."""
+        """Remove the current name binding, retaining the object and its history."""
         return await self._inner.drop_function(name, version)
 
     async def list_jobs(self) -> List[JobInfo]:

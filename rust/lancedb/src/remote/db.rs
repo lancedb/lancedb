@@ -2864,10 +2864,7 @@ mod tests {
         assert_eq!(job.id(), Some("job-function-1"));
         let version = job.wait().await.unwrap();
         assert_eq!(version.name(), "embed");
-        assert_eq!(
-            version.version(),
-            "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
-        );
+        assert_eq!(version.version(), "1");
     }
 
     #[tokio::test]
@@ -2880,24 +2877,12 @@ mod tests {
             assert_eq!(request.url().path(), "/v1/function/embed/describe");
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({"version": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"})
-            );
+            assert_eq!(body, serde_json::json!({"version": "1"}));
             http::Response::builder().status(200).body(VERSION).unwrap()
         });
-        let version = conn
-            .get_function(
-                "embed",
-                "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6",
-            )
-            .await
-            .unwrap();
+        let version = conn.get_function("embed", "1").await.unwrap();
         assert_eq!(version.name(), "embed");
-        assert_eq!(
-            version.version(),
-            "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
-        );
+        assert_eq!(version.version(), "1");
     }
 
     #[tokio::test]
@@ -2928,7 +2913,7 @@ mod tests {
                             serde_json::json!({
                                 "functions": [{
                                     "name": "embed",
-                                    "version": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6",
+                                    "version": "1",
                                     "definition": version.clone(),
                                 }],
                             })
@@ -2941,10 +2926,7 @@ mod tests {
         let functions = conn.list_functions().await.unwrap();
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name(), "embed");
-        assert_eq!(
-            functions[0].version(),
-            "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
-        );
+        assert_eq!(functions[0].version(), "1");
     }
 
     #[tokio::test]
@@ -3026,24 +3008,13 @@ mod tests {
             assert_eq!(request.url().path(), "/v1/function/embed/drop");
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(
-                body,
-                serde_json::json!({"version": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"})
-            );
+            assert_eq!(body, serde_json::json!({"version": "1"}));
             http::Response::builder()
                 .status(200)
                 .body(r#"{"dropped":false}"#)
                 .unwrap()
         });
-        assert!(
-            !conn
-                .drop_function(
-                    "embed",
-                    "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
-                )
-                .await
-                .unwrap()
-        );
+        assert!(!conn.drop_function("embed", "1").await.unwrap());
     }
 
     #[tokio::test]

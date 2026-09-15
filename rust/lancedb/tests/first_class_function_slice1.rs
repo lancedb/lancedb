@@ -26,11 +26,8 @@ fn function_version_job_result_matches_shared_canonical_golden() {
     let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
 
     assert_eq!(version.name(), "embed");
-    assert_eq!(
-        version.version(),
-        "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
-    );
-    assert_eq!(version.image().manifest_digest, version.version());
+    assert_eq!(version.version(), "1");
+    assert_ne!(version.image().manifest_digest, version.version());
     assert_eq!(
         version.to_canonical_json().expect("canonical JSON"),
         fixture("remote_function_version.canonical.json").trim()
@@ -48,16 +45,28 @@ fn version_identity_is_immutable_and_exact() {
     assert_eq!(reopened.version(), version.version());
 
     let mut changed = original;
-    changed["version"] = Value::String("fv_01K3DIFFERENT".to_string());
+    changed["version"] = Value::String("2".to_string());
     let changed = FunctionVersion::from_json(&changed.to_string()).expect("changed version");
     assert_ne!(changed, version);
+    assert_eq!(changed.image(), version.image());
+    for invalid in [
+        version.image().manifest_digest.as_str(),
+        "0",
+        "01",
+        "-1",
+        "18446744073709551616",
+    ] {
+        let mut value = serde_json::to_value(&version).unwrap();
+        value["version"] = Value::String(invalid.into());
+        assert!(FunctionVersion::from_json(&value.to_string()).is_err());
+    }
 }
 
 #[test]
 fn application_and_binding_match_shared_remote_goldens() {
     let application = FunctionApplication::from_json(&fixture("remote_function_application.json"))
         .expect("application fixture");
-    assert_eq!(application.function().version, "fv_01K3TEXT");
+    assert_eq!(application.function().version, "1");
     assert_eq!(application.output().kind, "named_struct");
     assert_eq!(application.inputs().len(), 2);
     assert_eq!(
@@ -67,7 +76,7 @@ fn application_and_binding_match_shared_remote_goldens() {
 
     let binding = FunctionBinding::from_json(&fixture("remote_function_binding.json"))
         .expect("binding fixture");
-    assert_eq!(binding.function().version, "fv_01K3TEXT");
+    assert_eq!(binding.function().version, "1");
     assert_eq!(binding.outputs()[0].output_ordinal, 0);
     assert_eq!(binding.outputs()[1].output_ordinal, 1);
     assert!(binding.input_schema().is_some());

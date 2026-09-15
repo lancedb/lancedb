@@ -93,17 +93,22 @@ def test_function_version_identity_is_immutable_and_exact():
     value = job_result("remote_function_job.json")
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.name == "embed"
-    assert version.version == version.image.manifest_digest
-    assert version.version.startswith("sha256:")
+    assert version.version == "1"
+    assert version.image.manifest_digest.startswith("sha256:")
+    assert version.version != version.image.manifest_digest
 
     with pytest.raises((TypeError, ValueError)):
-        version.version = "fv_changed"
+        version.version = "1"
     with pytest.raises(TypeError, match="immutable"):
         version.image.descriptor["format_version"] = "changed"
 
     changed = dict(value)
-    changed["version"] = "fv_changed"
+    changed["version"] = "2"
     assert FunctionVersion(**changed) != version
+    assert FunctionVersion(**changed).image == version.image
+    for invalid in [version.image.manifest_digest, "0", "01", "-1", str(2**64)]:
+        with pytest.raises(ValueError):
+            FunctionVersion(**{**value, "version": invalid})
 
 
 def test_function_version_binds_named_columns_as_one_immutable_application():
@@ -138,7 +143,7 @@ def test_function_version_binding_validates_names_and_direct_columns():
 def test_function_version_keeps_named_struct_outputs_in_one_application():
     value = job_result("remote_function_job.json")
     value["name"] = "text_features"
-    value["version"] = "fv_multi_output"
+    value["version"] = "1"
     value["signature"] = {
         "inputs": [
             {"name": "title", "arrow_type": "utf8", "nullable": True},
@@ -223,7 +228,7 @@ def test_function_application_uses_rename_columns_only():
 
 def test_binding_and_refresh_result_keep_stable_remote_fields():
     binding = FunctionBinding.from_json(fixture("remote_function_binding.json"))
-    assert binding.function.version == "fv_01K3TEXT"
+    assert binding.function.version == "1"
     assert [output.output_ordinal for output in binding.outputs] == [0, 1]
     assert binding.input_schema is not None
     assert binding.output_schema is not None
@@ -340,7 +345,16 @@ def test_rename_requires_named_struct_and_keeps_partial_mapping_immutable():
     scalar = FunctionApplication.from_json(
         json.dumps(
             {
-                "function": {"name": "embed", "version": "fv_exact"},
+                "function": {
+                    "name": "embed",
+                    "version": "1",
+                    "object_id": "fixture",
+                    "location": "memory:///fixture",
+                    "manifest_digest": (
+                        "sha256:"
+                        "7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
+                    ),
+                },
                 "inputs": [],
                 "output": {
                     "kind": "scalar",
