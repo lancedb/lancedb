@@ -22,7 +22,8 @@
 //!   owner-checked, and symlink-rejected on Unix; records are replaced
 //!   atomically via `rename` so a crash can never leave a torn file.
 //! - Cache filenames are SHA-256 hashes of the canonical issuer, client,
-//!   scope, flow, and client-auth identity. No secret appears in a filename.
+//!   scope, resource, audience, flow, and client-auth identity. No secret appears
+//!   in a filename.
 //! - Refresh-token rotation is serialized across processes with a per-key
 //!   advisory file lock (`flock` on Unix, `LockFileEx` on Windows). The
 //!   operating system releases these locks when a process dies, so a crash
@@ -44,6 +45,8 @@
 //!     scopes: vec!["openid".to_string()],
 //!     flow: OAuthFlow::DeviceCode,
 //!     refresh_buffer_secs: None,
+//!     resource: Some("https://api.example.com".to_string()),
+//!     audience: None,
 //!     token_cache: Some(
 //!         TokenCacheOptions::new().cache_dir("/tmp/my-app/oauth-cache"),
 //!     ),
@@ -184,6 +187,10 @@ struct CachedTokenRecord {
     issuer_url: String,
     client_id: String,
     scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resource: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audience: Option<String>,
     flow: String,
     client_auth: String,
     refresh_token: String,
@@ -197,6 +204,8 @@ impl std::fmt::Debug for CachedTokenRecord {
             .field("issuer_url", &self.issuer_url)
             .field("client_id", &self.client_id)
             .field("scopes", &self.scopes)
+            .field("resource", &self.resource)
+            .field("audience", &self.audience)
             .field("flow", &self.flow)
             .field("client_auth", &self.client_auth)
             .field("refresh_token", &"<redacted>")
@@ -240,13 +249,15 @@ fn client_auth_key(client_secret: Option<&str>) -> &'static str {
     }
 }
 
-/// Identity of one cached session: canonical issuer, client, scopes, flow,
-/// and client-auth mode, plus the hashed filename derived from it.
+/// Identity of one cached session: canonical issuer, client, scopes, resource,
+/// audience, flow, and client-auth mode, plus the hashed filename derived from it.
 #[derive(Clone, Debug)]
 struct CacheKey {
     issuer_url: String,
     client_id: String,
     scopes: Vec<String>,
+    resource: Option<String>,
+    audience: Option<String>,
     flow: &'static str,
     client_auth: &'static str,
     file_stem: String,
@@ -272,11 +283,32 @@ impl CacheKey {
             flow,
             client_auth
         );
+        // Keep existing sessions reachable when no target was specified. Targeted
+        // sessions use a structured encoding so parameter contents cannot collide.
+        let identity = if config.resource.is_none() && config.audience.is_none() {
+            identity
+        } else {
+            serde_json::to_string(&(
+                "v2",
+                &issuer_url,
+                &config.client_id,
+                &scopes,
+                flow,
+                client_auth,
+                &config.resource,
+                &config.audience,
+            ))
+            .map_err(|error| Error::Runtime {
+                message: format!("Failed to encode OAuth cache identity: {error}"),
+            })?
+        };
         let file_stem = hex_sha256(identity.as_bytes());
         Ok(Self {
             issuer_url,
             client_id: config.client_id.clone(),
             scopes,
+            resource: config.resource.clone(),
+            audience: config.audience.clone(),
             flow,
             client_auth,
             file_stem,
@@ -394,6 +426,8 @@ impl TokenCache {
             issuer_url: self.key.issuer_url.clone(),
             client_id: self.key.client_id.clone(),
             scopes: self.key.scopes.clone(),
+            resource: self.key.resource.clone(),
+            audience: self.key.audience.clone(),
             flow: self.key.flow.to_string(),
             client_auth: self.key.client_auth.to_string(),
             refresh_token,
@@ -761,6 +795,12 @@ pub struct SessionStatus {
     /// Canonical (sorted, de-duplicated) scope set of the cached session.
     pub scopes: Vec<String>,
 
+    /// Resource indicator used to obtain the cached session, if configured.
+    pub resource: Option<String>,
+
+    /// Provider-specific audience used to obtain the cached session, if configured.
+    pub audience: Option<String>,
+
     /// Flow that produced the cached session.
     pub flow: String,
 
@@ -803,6 +843,8 @@ pub struct SessionLogout {
 ///     scopes: vec!["openid".to_string()],
 ///     flow: OAuthFlow::DeviceCode,
 ///     refresh_buffer_secs: None,
+///     resource: None,
+///     audience: None,
 ///     token_cache: Some(TokenCacheOptions::new()),
 /// };
 /// let session = OAuthSession::new(config)?;
@@ -873,6 +915,8 @@ impl OAuthSession {
                 issuer_url: record.issuer_url,
                 client_id: record.client_id,
                 scopes: record.scopes,
+                resource: record.resource,
+                audience: record.audience,
                 flow: record.flow,
                 obtained_at: Some(record.obtained_at),
             },
@@ -881,6 +925,8 @@ impl OAuthSession {
                 issuer_url: self.cache.key.issuer_url.clone(),
                 client_id: self.cache.key.client_id.clone(),
                 scopes: self.cache.key.scopes.clone(),
+                resource: self.cache.key.resource.clone(),
+                audience: self.cache.key.audience.clone(),
                 flow: self.cache.key.flow.to_string(),
                 obtained_at: None,
             },
@@ -960,6 +1006,8 @@ mod tests {
             scopes: vec!["openid".to_string()],
             flow: OAuthFlow::DeviceCode,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: Some(TokenCacheOptions::new().cache_dir(cache_dir)),
         }
     }
@@ -970,6 +1018,7 @@ mod tests {
     /// `invalid_grant`, which is exactly what real providers do on rotation.
     struct MockIdp {
         issuer_url: String,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
         device_authorizations: Arc<AtomicUsize>,
         refresh_attempts: Arc<AtomicUsize>,
         invalid_grant_rejections: Arc<AtomicUsize>,
@@ -986,6 +1035,7 @@ mod tests {
             let issuer_url = format!("http://{addr}");
             let server = Self {
                 issuer_url: issuer_url.clone(),
+                requests: Arc::new(std::sync::Mutex::new(Vec::new())),
                 device_authorizations: Arc::new(AtomicUsize::new(0)),
                 refresh_attempts: Arc::new(AtomicUsize::new(0)),
                 invalid_grant_rejections: Arc::new(AtomicUsize::new(0)),
@@ -994,6 +1044,7 @@ mod tests {
                 fail_refreshes: Arc::new(AtomicBool::new(false)),
                 issue_refresh_tokens: Arc::new(AtomicBool::new(true)),
             };
+            let requests = Arc::clone(&server.requests);
             let device_authorizations = Arc::clone(&server.device_authorizations);
             let refresh_attempts = Arc::clone(&server.refresh_attempts);
             let invalid_grant_rejections = Arc::clone(&server.invalid_grant_rejections);
@@ -1007,6 +1058,7 @@ mod tests {
                     let Ok((mut stream, _)) = listener.accept().await else {
                         return;
                     };
+                    let requests = Arc::clone(&requests);
                     let device_authorizations = Arc::clone(&device_authorizations);
                     let refresh_attempts = Arc::clone(&refresh_attempts);
                     let invalid_grant_rejections = Arc::clone(&invalid_grant_rejections);
@@ -1016,6 +1068,9 @@ mod tests {
                     let issue_refresh_tokens = Arc::clone(&issue_refresh_tokens);
                     tokio::spawn(async move {
                         let (request_line, body) = read_http_request(&mut stream).await;
+                        if request_line.starts_with("POST ") {
+                            requests.lock().unwrap().push(body.clone());
+                        }
                         if request_line.starts_with("GET /.well-known/openid-configuration ") {
                             let discovery = format!(
                                 r#"{{"token_endpoint":"http://{addr}/token","device_authorization_endpoint":"http://{addr}/device"}}"#
@@ -1391,6 +1446,84 @@ mod tests {
         assert!(!format!("{status:?}").contains("refresh-"));
     }
 
+    #[tokio::test]
+    async fn test_targeted_cache_refresh_and_logout_isolation() {
+        let dir = cache_tempdir();
+        let idp = MockIdp::start().await;
+        let mut config = idp.config(dir.path());
+        let options = config.token_cache.clone().unwrap();
+        let untargeted_key = CacheKey::new(&config).unwrap().file_stem;
+        assert_eq!(
+            untargeted_key,
+            hex_sha256(
+                format!(
+                    "v1\n{}\nclient-id\nopenid\ndevice_code\npublic",
+                    idp.issuer_url
+                )
+                .as_bytes()
+            )
+        );
+        let mut sessions = Vec::new();
+        let mut keys = std::collections::HashSet::new();
+        for (resource, audience) in [
+            (None, None),
+            (Some("urn:one"), None),
+            (None, Some("audience & ü")),
+            (Some("urn:one"), Some("audience & ü")),
+            (Some("urn:two"), Some("audience & ü")),
+            (Some("urn:one"), Some("other")),
+        ] {
+            config.resource = resource.map(str::to_owned);
+            config.audience = audience.map(str::to_owned);
+            let cache = TokenCache::new(&config, &options).unwrap();
+            assert!(keys.insert(cache.key.file_stem.clone()));
+            let record = cache
+                .record_from_response(&TokenResponse {
+                    access_token: "unused".into(),
+                    refresh_token: Some("seed-refresh".into()),
+                    expires_in: Some(3600),
+                    token_type: None,
+                })
+                .unwrap();
+            cache.store(&record).await.unwrap();
+            *idp.current_refresh.lock().unwrap() = Some("seed-refresh".into());
+            let provider = OAuthHeaderProvider::new(config.clone()).unwrap();
+            provider.get_headers().await.unwrap();
+            let request = idp.requests.lock().unwrap().last().unwrap().clone();
+            let params: std::collections::HashMap<_, _> =
+                url::form_urlencoded::parse(request.as_bytes()).collect();
+            assert_eq!(params.get("resource").map(|s| s.as_ref()), resource);
+            assert_eq!(params.get("audience").map(|s| s.as_ref()), audience);
+            assert_eq!(params.get("grant_type").unwrap(), "refresh_token");
+            let session = OAuthSession::new(config.clone()).unwrap();
+            let status = session.status().await.unwrap();
+            assert!(status.refreshable);
+            assert_eq!(status.resource, config.resource);
+            assert_eq!(status.audience, config.audience);
+            sessions.push(session);
+        }
+        assert!(sessions.pop().unwrap().logout().await.unwrap().removed);
+        for session in sessions {
+            assert!(session.status().await.unwrap().refreshable);
+        }
+        assert_eq!(idp.device_authorizations.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_legacy_cache_record_without_target_fields() {
+        let dir = cache_tempdir();
+        let config = device_config(dir.path());
+        let cache = TokenCache::new(&config, config.token_cache.as_ref().unwrap()).unwrap();
+        let legacy = br#"{"version":1,"issuer_url":"https://issuer.example.com","client_id":"client-id","scopes":["openid"],"flow":"device_code","client_auth":"public","refresh_token":"legacy","obtained_at":1}"#;
+        write_record(dir.path(), &cache.record_path(), legacy).unwrap();
+        let session = OAuthSession::new(config).unwrap();
+        let status = session.status().await.unwrap();
+        assert!(status.refreshable);
+        assert_eq!(status.resource, None);
+        assert_eq!(status.audience, None);
+        assert!(session.logout().await.unwrap().removed);
+    }
+
     #[test]
     fn test_cache_key_canonicalizes_scopes_and_issuer() {
         let mut config = device_config(Path::new("/tmp/cache"));
@@ -1744,6 +1877,8 @@ mod tests {
             issuer_url: "https://issuer.example.com".to_string(),
             client_id: "client-id".to_string(),
             scopes: vec!["openid".to_string()],
+            resource: None,
+            audience: None,
             flow: "device_code".to_string(),
             obtained_at: Some(100),
         };

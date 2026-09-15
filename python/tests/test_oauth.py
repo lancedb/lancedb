@@ -72,6 +72,8 @@ def test_token_cache_options_default_to_memory_only():
         scopes=["openid"],
     )
     assert config.token_cache is None
+    assert config.resource is None
+    assert config.audience is None
 
     options = oauth.TokenCacheOptions()
     assert options.cache_dir is None
@@ -121,6 +123,7 @@ class _MockIdpState:
         self.invalid_grant_rejections = 0
         self.access_tokens_issued = 0
         self.current_refresh = None
+        self.requests = []
 
 
 class _MockIdpHandler(BaseHTTPRequestHandler):
@@ -156,6 +159,8 @@ class _MockIdpHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode()
         params = urllib.parse.parse_qs(body)
+        with self.state.lock:
+            self.state.requests.append(params)
 
         if self.path == "/device":
             with self.state.lock:
@@ -212,11 +217,11 @@ def _start_mock_idp() -> tuple[_MockIdpState, HTTPServer]:
     return state, server
 
 
-def _run_subprocess(script: Path, issuer_url: str, cache_dir: Path):
+def _run_subprocess(script: Path, issuer_url: str, cache_dir: Path, target: dict):
     env = dict(os.environ)
     env["LANCEDB_OAUTH_BROWSER"] = "/usr/bin/true"
     result = subprocess.run(
-        [sys.executable, str(script), issuer_url, str(cache_dir)],
+        [sys.executable, str(script), issuer_url, str(cache_dir), json.dumps(target)],
         capture_output=True,
         text=True,
         timeout=120,
@@ -230,6 +235,7 @@ def _run_subprocess(script: Path, issuer_url: str, cache_dir: Path):
 
 LOGIN_SCRIPT = """
 import asyncio
+import json
 import sys
 
 from lancedb.remote import OAuthConfig, OAuthFlowType, OAuthSession, TokenCacheOptions
@@ -241,15 +247,19 @@ config = OAuthConfig(
     scopes=["openid"],
     flow=OAuthFlowType.DEVICE_CODE,
     token_cache=TokenCacheOptions(cache_dir=cache_dir),
+    **json.loads(sys.argv[3]),
 )
 session = OAuthSession(config)
 status = asyncio.run(session.login())
 assert status.refreshable, "login must cache a refresh token"
+assert status.resource == config.resource
+assert status.audience == config.audience
 print("LOGIN-OK")
 """
 
 REUSE_SCRIPT = """
 import asyncio
+import json
 import sys
 
 import lancedb
@@ -262,6 +272,7 @@ config = OAuthConfig(
     scopes=["openid"],
     flow=OAuthFlowType.DEVICE_CODE,
     token_cache=TokenCacheOptions(cache_dir=cache_dir),
+    **json.loads(sys.argv[3]),
 )
 
 session = OAuthSession(config)
@@ -292,7 +303,17 @@ print("REUSE-OK")
 """
 
 
-def test_cross_process_session_reuse_without_new_prompt(tmp_path):
+@pytest.mark.parametrize(
+    "target",
+    [
+        {},
+        {
+            "resource": "https://api.example.com/a?x=1&y=two",
+            "audience": "audience + & / ü",
+        },
+    ],
+)
+def test_cross_process_session_reuse_without_new_prompt(tmp_path, target):
     pytest.importorskip("lancedb")
     state, server = _start_mock_idp()
     try:
@@ -303,11 +324,11 @@ def test_cross_process_session_reuse_without_new_prompt(tmp_path):
         reuse_script.write_text(REUSE_SCRIPT)
         cache_dir = tmp_path / "oauth-cache"
 
-        result = _run_subprocess(login_script, issuer_url, cache_dir)
+        result = _run_subprocess(login_script, issuer_url, cache_dir, target)
         assert "LOGIN-OK" in result.stdout
         assert state.device_authorizations == 1
 
-        result = _run_subprocess(reuse_script, issuer_url, cache_dir)
+        result = _run_subprocess(reuse_script, issuer_url, cache_dir, target)
         assert "REUSE-OK" in result.stdout
         assert "DATABASE-UNREACHABLE-AS-EXPECTED" in result.stdout
 
@@ -317,11 +338,14 @@ def test_cross_process_session_reuse_without_new_prompt(tmp_path):
         assert state.device_authorizations == 1
         assert state.invalid_grant_rejections == 0
 
-        logout = asyncio.run(
-            _remote_oauth()
-            .OAuthSession(_device_config(_remote_oauth(), issuer_url, cache_dir))
-            .logout()
-        )
+        assert len(state.requests) == 3
+        for params in state.requests:
+            for key in ("resource", "audience"):
+                assert params.get(key) == ([target[key]] if key in target else None)
+        config = _device_config(_remote_oauth(), issuer_url, cache_dir)
+        config.resource = target.get("resource")
+        config.audience = target.get("audience")
+        logout = asyncio.run(_remote_oauth().OAuthSession(config).logout())
         assert logout.removed is True
     finally:
         server.shutdown()

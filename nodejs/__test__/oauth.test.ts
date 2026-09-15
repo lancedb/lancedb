@@ -67,41 +67,64 @@ describe("OAuthSession", () => {
     expect(() => new OAuthSession(config)).toThrow(/AzureManagedIdentity/);
   });
 
-  it("logs in via device flow, caches, and logs out", async () => {
-    const server = new MockIdp();
-    await server.start();
-    try {
-      const cacheDir = tempCacheDir();
-      const issuerUrl = server.issuerUrl();
+  it.each([
+    {},
+    {
+      resource: "https://api.example.com/a?x=1&y=two",
+      audience: "audience + & / ü",
+    },
+  ])(
+    "logs in via device flow with target %j, caches, and logs out",
+    async (target) => {
+      const server = new MockIdp();
+      await server.start();
+      try {
+        const cacheDir = tempCacheDir();
+        const issuerUrl = server.issuerUrl();
 
-      const session = new OAuthSession(deviceConfig(issuerUrl, cacheDir));
-      const status = await session.login();
-      expect(status.refreshable).toBe(true);
-      expect(status.obtainedAt).toBeGreaterThan(0);
-      expect(server.state.deviceAuthorizations).toBe(1);
+        const config = { ...deviceConfig(issuerUrl, cacheDir), ...target };
+        const session = new OAuthSession(config);
+        const status = await session.login();
+        expect(status.refreshable).toBe(true);
+        expect(status.resource).toBe(config.resource);
+        expect(status.audience).toBe(config.audience);
+        expect(status.obtainedAt).toBeGreaterThan(0);
+        expect(server.state.deviceAuthorizations).toBe(1);
 
-      // An independent session (a fresh "process") sees the cached login.
-      const other = new OAuthSession(deviceConfig(issuerUrl, cacheDir));
-      const cached = await other.status();
-      expect(cached.refreshable).toBe(true);
+        // An independent session (a fresh "process") sees the cached login.
+        const other = new OAuthSession(config);
+        const cached = await other.status();
+        expect(cached.refreshable).toBe(true);
 
-      const logout = await other.logout();
-      expect(logout.removed).toBe(true);
-      const again = await session.logout();
-      expect(again.removed).toBe(false);
-      expect((await session.status()).refreshable).toBe(false);
+        const logout = await other.logout();
+        expect(logout.removed).toBe(true);
+        const again = await session.logout();
+        expect(again.removed).toBe(false);
+        expect((await session.status()).refreshable).toBe(false);
 
-      // Only the initial login used the interactive device flow.
-      expect(server.state.deviceAuthorizations).toBe(1);
-      expect(server.state.refreshGrants).toBe(0);
-    } finally {
-      server.close();
-    }
-  }, 15000);
+        // Only the initial login used the interactive device flow.
+        expect(server.state.deviceAuthorizations).toBe(1);
+        expect(server.state.refreshGrants).toBe(0);
+        expect(server.requests).toHaveLength(2);
+        for (const params of server.requests) {
+          expect(params.getAll("resource")).toEqual(
+            config.resource === undefined ? [] : [config.resource],
+          );
+          expect(params.getAll("audience")).toEqual(
+            config.audience === undefined ? [] : [config.audience],
+          );
+        }
+      } finally {
+        server.close();
+      }
+    },
+    15000,
+  );
 });
 
 /** Mock IdP with discovery, device authorization, and rotating refresh. */
 class MockIdp {
+  readonly requests: URLSearchParams[] = [];
   readonly state = {
     deviceAuthorizations: 0,
     refreshGrants: 0,
@@ -157,6 +180,10 @@ class MockIdp {
         device_authorization_endpoint: `${this.issuerUrl()}/device`,
       });
       return;
+    }
+
+    if (url === "/device" || url === "/token") {
+      this.requests.push(params);
     }
 
     if (url === "/device") {

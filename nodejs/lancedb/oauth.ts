@@ -28,7 +28,7 @@ export enum OAuthFlowType {
  * directory with owner-only permissions, so short-lived processes can reuse
  * an authenticated session instead of re-prompting on every start.
  *
- * Multiple identities (issuer, client, scopes, flow, client authentication)
+ * Multiple identities (issuer, client, scopes, resource, audience, flow, client authentication)
  * get separate cache entries. Within one identity the most recent login wins.
  */
 export interface TokenCacheOptions {
@@ -64,6 +64,18 @@ export interface TokenCacheOptions {
  *   clientId: "app-id",
  *   clientSecret: "secret",
  *   scopes: ["api://lancedb-api/.default"],
+ * };
+ * ```
+ *
+ * Providers requiring an explicit target can set `resource` and/or `audience`:
+ * ```typescript
+ * const targeted: OAuthConfig = {
+ *   issuerUrl: "https://issuer.example.com",
+ *   clientId: "app-id",
+ *   clientSecret: "secret",
+ *   scopes: ["read"],
+ *   resource: "https://api.example.com",
+ *   audience: "lancedb-api",
  * };
  * ```
  *
@@ -108,6 +120,19 @@ export interface OAuthConfig {
    * For example: `["api://{app_id}/.default"]`
    */
   scopes: string[];
+
+  /**
+   * Resource indicator (RFC 8707), forwarded verbatim to authorization and token
+   * endpoints, including refresh requests. Must be an absolute URI without a
+   * fragment. Not supported for Azure managed identity.
+   */
+  resource?: string;
+
+  /**
+   * Provider-specific audience, forwarded to authorization and token endpoints,
+   * including refresh requests. Not supported for Azure managed identity.
+   */
+  audience?: string;
 
   /** Authentication flow (default: ClientCredentials). */
   flow?: OAuthFlowType;
@@ -165,6 +190,12 @@ export interface SessionStatus {
 
   /** Canonical (sorted, de-duplicated) scope set of the cached session. */
   scopes: string[];
+
+  /** Resource indicator used to obtain the cached session, if configured. */
+  resource?: string;
+
+  /** Provider-specific audience used to obtain the cached session, if configured. */
+  audience?: string;
 
   /** Flow that produced the cached session. */
   flow: string;

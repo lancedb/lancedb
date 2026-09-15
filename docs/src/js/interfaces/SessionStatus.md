@@ -11,6 +11,16 @@ Safe, non-secret view of a cached OAuth session, returned by
 
 ## Properties
 
+### audience?
+
+```ts
+optional audience: string;
+```
+
+Provider-specific audience used to obtain the cached session, if configured.
+
+***
+
 ### clientId
 
 ```ts
@@ -62,6 +72,16 @@ interactive authentication. Because access tokens are not persisted,
 this is `true` exactly when a refresh token is cached; the next
 connection refreshes with it rather than opening a browser or device
 prompt.
+
+***
+
+### resource?
+
+```ts
+optional resource: string;
+```
+
+Resource indicator used to obtain the cached session, if configured.
 
 ***
 

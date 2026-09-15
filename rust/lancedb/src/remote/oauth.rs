@@ -187,6 +187,17 @@ pub struct OAuthConfig {
     /// For example: `["api://{app_id}/.default"]`
     pub scopes: Vec<String>,
 
+    /// Resource indicator sent to the authorization and token endpoints (RFC 8707).
+    /// The value is forwarded verbatim, including on refresh requests, and must
+    /// be an absolute URI without a fragment.
+    /// Not supported for Azure managed identity.
+    pub resource: Option<String>,
+
+    /// Provider-specific audience sent to the authorization and token endpoints,
+    /// including refresh requests.
+    /// Not supported for Azure managed identity.
+    pub audience: Option<String>,
+
     /// Authentication flow to use.
     pub flow: OAuthFlow,
 
@@ -214,6 +225,8 @@ impl std::fmt::Debug for OAuthConfig {
                 &self.client_secret.as_deref().map(|_| "<redacted>"),
             )
             .field("scopes", &self.scopes)
+            .field("resource", &self.resource)
+            .field("audience", &self.audience)
             .field("flow", &self.flow)
             .field("refresh_buffer_secs", &self.refresh_buffer_secs)
             .field("token_cache", &self.token_cache)
@@ -366,6 +379,8 @@ struct OidcClient {
     client_id: String,
     client_secret: Option<String>,
     scopes: Vec<String>,
+    resource: Option<String>,
+    audience: Option<String>,
     http_client: Client,
     discovery: RwLock<Option<OidcDiscovery>>,
 }
@@ -380,6 +395,8 @@ impl std::fmt::Debug for OidcClient {
                 &self.client_secret.as_ref().map(|_| "<redacted>"),
             )
             .field("scopes", &self.scopes)
+            .field("resource", &self.resource)
+            .field("audience", &self.audience)
             .finish()
     }
 }
@@ -390,6 +407,8 @@ impl OidcClient {
         client_id: String,
         client_secret: Option<String>,
         scopes: Vec<String>,
+        resource: Option<String>,
+        audience: Option<String>,
     ) -> Result<Self> {
         Self::validate_issuer_transport(&issuer_url)?;
 
@@ -413,6 +432,8 @@ impl OidcClient {
             client_id,
             client_secret,
             scopes,
+            resource,
+            audience,
             http_client,
             discovery: RwLock::new(None),
         })
@@ -483,6 +504,14 @@ impl OidcClient {
         self.get_discovery().await.map(|disc| disc.token_endpoint)
     }
 
+    fn target_params(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.resource
+            .as_deref()
+            .map(|value| ("resource", value))
+            .into_iter()
+            .chain(self.audience.as_deref().map(|value| ("audience", value)))
+    }
+
     fn scopes_string(&self) -> String {
         self.scopes.join(" ")
     }
@@ -492,10 +521,15 @@ impl OidcClient {
         endpoint: &str,
         params: &[(String, String)],
     ) -> Result<TokenResponse> {
+        let mut params = params.to_vec();
+        params.extend(
+            self.target_params()
+                .map(|(key, value)| (key.to_owned(), value.to_owned())),
+        );
         let resp = self
             .http_client
             .post(endpoint)
-            .form(params)
+            .form(&params)
             .send()
             .await
             .map_err(|e| Error::Runtime {
@@ -527,6 +561,10 @@ impl OidcClient {
         if let Some(secret) = self.client_secret.as_ref() {
             params.push(("client_secret".to_string(), secret.clone()));
         }
+        params.extend(
+            self.target_params()
+                .map(|(key, value)| (key.to_owned(), value.to_owned())),
+        );
         let response = self
             .http_client
             .post(&endpoint)
@@ -581,6 +619,8 @@ impl ClientCredentialsSource {
         client_id: String,
         client_secret: Option<String>,
         scopes: Vec<String>,
+        resource: Option<String>,
+        audience: Option<String>,
     ) -> Result<Self> {
         if client_secret.is_none() {
             return Err(Error::InvalidInput {
@@ -588,7 +628,14 @@ impl ClientCredentialsSource {
             });
         }
         Ok(Self {
-            oidc: OidcClient::new(issuer_url, client_id, client_secret, scopes)?,
+            oidc: OidcClient::new(
+                issuer_url,
+                client_id,
+                client_secret,
+                scopes,
+                resource,
+                audience,
+            )?,
         })
     }
 }
@@ -719,11 +766,20 @@ impl AuthorizationCodeSource {
         client_id: String,
         client_secret: Option<String>,
         scopes: Vec<String>,
+        resource: Option<String>,
+        audience: Option<String>,
         options: AuthorizationCodeOptions,
     ) -> Result<Self> {
         let redirect = ResolvedRedirect::new(&options)?;
         Ok(Self {
-            oidc: OidcClient::new(issuer_url, client_id, client_secret, scopes)?,
+            oidc: OidcClient::new(
+                issuer_url,
+                client_id,
+                client_secret,
+                scopes,
+                resource,
+                audience,
+            )?,
             options,
             redirect,
         })
@@ -750,6 +806,7 @@ impl AuthorizationCodeSource {
                 .append_pair("redirect_uri", &self.redirect.uri)
                 .append_pair("scope", &self.oidc.scopes_string())
                 .append_pair("state", &state);
+            query.extend_pairs(self.oidc.target_params());
             if let Some(verifier) = code_verifier.as_ref() {
                 let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
                     .encode(Sha256::digest(verifier.as_bytes()));
@@ -895,9 +952,18 @@ impl DeviceCodeSource {
         client_id: String,
         client_secret: Option<String>,
         scopes: Vec<String>,
+        resource: Option<String>,
+        audience: Option<String>,
     ) -> Result<Self> {
         Ok(Self {
-            oidc: OidcClient::new(issuer_url, client_id, client_secret, scopes)?,
+            oidc: OidcClient::new(
+                issuer_url,
+                client_id,
+                client_secret,
+                scopes,
+                resource,
+                audience,
+            )?,
         })
     }
 
@@ -917,6 +983,11 @@ impl DeviceCodeSource {
         if let Some(secret) = self.oidc.client_secret.as_ref() {
             params.push(("client_secret".to_string(), secret.clone()));
         }
+        params.extend(
+            self.oidc
+                .target_params()
+                .map(|(key, value)| (key.to_owned(), value.to_owned())),
+        );
         let response = self
             .oidc
             .http_client
@@ -980,6 +1051,11 @@ impl DeviceCodeSource {
                 params.push(("client_secret".to_string(), secret.clone()));
             }
 
+            params.extend(
+                self.oidc
+                    .target_params()
+                    .map(|(key, value)| (key.to_owned(), value.to_owned())),
+            );
             let response = match self
                 .oidc
                 .http_client
@@ -1287,6 +1363,13 @@ impl TokenSource for AzureImdsSource {
 /// Shared by [`OAuthHeaderProvider`] and
 /// [`OAuthSession`](crate::remote::OAuthSession).
 pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSource>> {
+    if matches!(config.flow, OAuthFlow::AzureManagedIdentity { .. })
+        && (config.resource.is_some() || config.audience.is_some())
+    {
+        return Err(Error::InvalidInput {
+            message: "resource and audience are not supported for AzureManagedIdentity; configure its resource through scopes".to_string(),
+        });
+    }
     if config.scopes.is_empty() {
         return Err(Error::InvalidInput {
             message: "At least one OAuth scope is required".to_string(),
@@ -1298,12 +1381,16 @@ pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSo
             config.client_id.clone(),
             config.client_secret.clone(),
             config.scopes.clone(),
+            config.resource.clone(),
+            config.audience.clone(),
         )?),
         OAuthFlow::AuthorizationCode(options) => Box::new(AuthorizationCodeSource::new(
             config.issuer_url.clone(),
             config.client_id.clone(),
             config.client_secret.clone(),
             config.scopes.clone(),
+            config.resource.clone(),
+            config.audience.clone(),
             options.clone(),
         )?),
         OAuthFlow::DeviceCode => Box::new(DeviceCodeSource::new(
@@ -1311,6 +1398,8 @@ pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSo
             config.client_id.clone(),
             config.client_secret.clone(),
             config.scopes.clone(),
+            config.resource.clone(),
+            config.audience.clone(),
         )?),
         OAuthFlow::AzureManagedIdentity { client_id } => Box::new(AzureImdsSource::new(
             config.scopes.clone(),
@@ -1441,6 +1530,145 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinHandle;
 
+    #[tokio::test]
+    async fn test_target_parameters_across_oauth_flows() {
+        for (resource, audience) in [
+            (None, None),
+            (Some("https://api.example.com/a?x=1&y=two"), None),
+            (None, Some("audience + & / ü")),
+            (Some("urn:example:resource"), Some("audience + & / ü")),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let issuer = format!("http://{addr}");
+            let server = tokio::spawn(async move {
+                let mut grants = Vec::new();
+                // Three discovery requests and six form submissions.
+                for _ in 0..9 {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let (line, body) = read_http_request(&mut stream).await;
+                    let response = if line.starts_with("GET ") {
+                        serde_json::json!({
+                            "token_endpoint": format!("http://{addr}/token"),
+                            "authorization_endpoint": format!("http://{addr}/authorize"),
+                            "device_authorization_endpoint": format!("http://{addr}/device"),
+                        })
+                    } else {
+                        let params: Vec<_> = url::form_urlencoded::parse(body.as_bytes()).collect();
+                        for (key, expected) in [("resource", resource), ("audience", audience)] {
+                            let values: Vec<_> = params
+                                .iter()
+                                .filter(|(name, _)| name == key)
+                                .map(|(_, value)| value.as_ref())
+                                .collect();
+                            assert_eq!(values, expected.into_iter().collect::<Vec<_>>());
+                        }
+                        if line.starts_with("POST /device ") {
+                            serde_json::json!({
+                                "device_code": "device-code", "user_code": "ABCD",
+                                "verification_uri": format!("http://{addr}/verify"),
+                                "expires_in": 60, "interval": 1,
+                            })
+                        } else {
+                            grants.push(
+                                params
+                                    .iter()
+                                    .find(|(key, _)| key == "grant_type")
+                                    .unwrap()
+                                    .1
+                                    .to_string(),
+                            );
+                            serde_json::json!({"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})
+                        }
+                    };
+                    write_json_response(&mut stream, "200 OK", &response.to_string()).await;
+                }
+                assert_eq!(
+                    grants,
+                    [
+                        "client_credentials",
+                        "authorization_code",
+                        "refresh_token",
+                        "urn:ietf:params:oauth:grant-type:device_code",
+                        "refresh_token"
+                    ]
+                );
+            });
+            let credentials = ClientCredentialsSource::new(
+                issuer.clone(),
+                "client".into(),
+                Some("secret".into()),
+                vec!["scope".into()],
+                resource.map(str::to_owned),
+                audience.map(str::to_owned),
+            )
+            .unwrap();
+            credentials.fetch_token().await.unwrap();
+            let browser = AuthorizationCodeSource::new(
+                issuer.clone(),
+                "client".into(),
+                None,
+                vec!["scope".into()],
+                resource.map(str::to_owned),
+                audience.map(str::to_owned),
+                AuthorizationCodeOptions::new(),
+            )
+            .unwrap();
+            let request = browser.build_authorization_request().await.unwrap();
+            for (key, expected) in [("resource", resource), ("audience", audience)] {
+                let values: Vec<_> = request
+                    .url
+                    .query_pairs()
+                    .filter(|(name, _)| name == key)
+                    .map(|(_, value)| value.into_owned())
+                    .collect();
+                assert_eq!(
+                    values,
+                    expected.into_iter().map(str::to_owned).collect::<Vec<_>>()
+                );
+            }
+            browser
+                .exchange_code("code", Some("verifier"))
+                .await
+                .unwrap();
+            browser.refresh_token("refresh").await.unwrap();
+            let device = DeviceCodeSource::new(
+                issuer,
+                "client".into(),
+                None,
+                vec!["scope".into()],
+                resource.map(str::to_owned),
+                audience.map(str::to_owned),
+            )
+            .unwrap();
+            let authorization = device.request_device_authorization().await.unwrap();
+            device.poll_for_token(&authorization).await.unwrap();
+            device.refresh_token("refresh").await.unwrap();
+            server.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn test_managed_identity_rejects_target_parameters() {
+        for (resource, audience) in [(Some("urn:resource"), None), (None, Some("audience"))] {
+            let config = OAuthConfig {
+                issuer_url: "https://issuer.example.com".into(),
+                client_id: "client".into(),
+                client_secret: None,
+                scopes: vec!["api://app/.default".into()],
+                flow: OAuthFlow::AzureManagedIdentity { client_id: None },
+                resource: resource.map(str::to_owned),
+                audience: audience.map(str::to_owned),
+                refresh_buffer_secs: None,
+                token_cache: None,
+            };
+            let error = OAuthHeaderProvider::new(config).unwrap_err().to_string();
+            assert!(
+                error.contains("resource and audience are not supported for AzureManagedIdentity")
+            );
+        }
+    }
+
     #[test]
     fn test_token_state_expiry() {
         let mut state = TokenState::new();
@@ -1529,6 +1757,8 @@ mod tests {
             "app-id".to_string(),
             Some("secret".to_string()),
             vec!["scope1".to_string(), "scope2".to_string()],
+            None,
+            None,
         )
         .unwrap();
 
@@ -1692,6 +1922,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
             AuthorizationCodeOptions::new()
                 .redirect_uri(format!("http://127.0.0.1:{port}/callback")),
         )
@@ -1768,6 +2000,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string(), "profile".to_string()],
+            None,
+            None,
             AuthorizationCodeOptions::new(),
         )
         .unwrap();
@@ -1799,6 +2033,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
             AuthorizationCodeOptions::new(),
         )
         .unwrap();
@@ -1820,6 +2056,8 @@ mod tests {
             "client-id".to_string(),
             Some("secret".to_string()),
             vec!["openid".to_string()],
+            None,
+            None,
             AuthorizationCodeOptions::new().use_pkce(false),
         )
         .unwrap();
@@ -1840,6 +2078,8 @@ mod tests {
             "client-id".to_string(),
             Some("secret".to_string()),
             vec!["openid".to_string()],
+            None,
+            None,
             AuthorizationCodeOptions::new(),
         )
         .unwrap();
@@ -1866,6 +2106,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
             AuthorizationCodeOptions::new(),
         )
         .unwrap();
@@ -1889,6 +2131,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
             AuthorizationCodeOptions::new(),
         )
         .unwrap();
@@ -1910,6 +2154,8 @@ mod tests {
             "client-id".to_string(),
             Some("secret".to_string()),
             vec!["openid".to_string()],
+            None,
+            None,
         )
         .unwrap();
 
@@ -1930,6 +2176,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
         )
         .unwrap();
 
@@ -1952,6 +2200,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
         )
         .unwrap();
         let device = test_device_authorization_response(10, 1);
@@ -1971,6 +2221,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
         )
         .unwrap();
         let device = test_device_authorization_response(60, 1);
@@ -1992,6 +2244,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
         )
         .unwrap();
         let device = test_device_authorization_response(60, 1);
@@ -2013,6 +2267,8 @@ mod tests {
             "client-id".to_string(),
             None,
             vec!["openid".to_string()],
+            None,
+            None,
         )
         .unwrap();
         let device = test_device_authorization_response(1, 5);
@@ -2192,6 +2448,8 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
 
@@ -2209,6 +2467,8 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
 
@@ -2246,6 +2506,8 @@ mod tests {
             ],
             flow: OAuthFlow::AzureManagedIdentity { client_id: None },
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
         assert!(OAuthHeaderProvider::new(config).is_err());
@@ -2259,6 +2521,8 @@ mod tests {
             "client-id".to_string(),
             Some("secret".to_string()),
             vec!["scope".to_string()],
+            None,
+            None,
         )
         .unwrap();
 
@@ -2280,6 +2544,8 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
         assert!(OAuthHeaderProvider::new(config).is_err());
@@ -2294,6 +2560,8 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
 
@@ -2315,6 +2583,8 @@ mod tests {
             scopes: vec![],
             flow: OAuthFlow::AzureManagedIdentity { client_id: None },
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
         assert!(OAuthHeaderProvider::new(config).is_err());
@@ -2330,6 +2600,8 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: Some(0),
+            resource: None,
+            audience: None,
             token_cache: None,
         };
         let provider = OAuthHeaderProvider::new(config).unwrap();

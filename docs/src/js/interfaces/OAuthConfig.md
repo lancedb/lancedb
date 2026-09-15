@@ -26,6 +26,18 @@ const config: OAuthConfig = {
 };
 ```
 
+Providers requiring an explicit target can set `resource` and/or `audience`:
+```typescript
+const targeted: OAuthConfig = {
+  issuerUrl: "https://issuer.example.com",
+  clientId: "app-id",
+  clientSecret: "secret",
+  scopes: ["read"],
+  resource: "https://api.example.com",
+  audience: "lancedb-api",
+};
+```
+
 ```typescript
 const config: OAuthConfig = {
   issuerUrl: "https://login.microsoftonline.com/{tenant}/v2.0",
@@ -50,6 +62,17 @@ Device Authorization writes the verification URL and user code to stderr
 before polling begins.
 
 ## Properties
+
+### audience?
+
+```ts
+optional audience: string;
+```
+
+Provider-specific audience, forwarded to authorization and token endpoints,
+including refresh requests. Not supported for Azure managed identity.
+
+***
 
 ### callbackPort?
 
@@ -131,6 +154,18 @@ optional refreshBufferSecs: number;
 Seconds before expiry to trigger proactive refresh (default: 300).
 Keep this well below the token TTL; if it is greater than or equal to
 the TTL, each request refreshes the token.
+
+***
+
+### resource?
+
+```ts
+optional resource: string;
+```
+
+Resource indicator (RFC 8707), forwarded verbatim to authorization and token
+endpoints, including refresh requests. Must be an absolute URI without a
+fragment. Not supported for Azure managed identity.
 
 ***
 

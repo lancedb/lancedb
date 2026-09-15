@@ -86,6 +86,13 @@ class OAuthConfig:
         Protect AUTHORIZATION_CODE with S256 PKCE (default: True).
     managed_identity_client_id : Optional[str]
         Client ID for user-assigned managed identity (AZURE_MANAGED_IDENTITY).
+    resource : Optional[str]
+        Resource indicator (RFC 8707), forwarded verbatim to authorization and
+        token endpoints, including refresh requests. Must be an absolute URI
+        without a fragment. Not supported for Azure managed identity.
+    audience : Optional[str]
+        Provider-specific audience, forwarded to authorization and token
+        endpoints, including refresh requests. Not supported for Azure managed identity.
     refresh_buffer_secs : Optional[int]
         Seconds before expiry to trigger proactive refresh (default: 300).
         Keep this well below the token TTL; if it is greater than or equal to
@@ -105,6 +112,12 @@ class OAuthConfig:
     ...     client_secret="secret",
     ...     scopes=["api://lancedb-api/.default"],
     ... )
+
+    Providers that require an explicit target can use ``resource`` and/or
+    ``audience`` (these are forwarded unchanged):
+
+    >>> config.resource = "https://api.example.com"
+    >>> config.audience = "lancedb-api"
 
     Azure Managed Identity:
 
@@ -150,6 +163,8 @@ class OAuthConfig:
     managed_identity_client_id: Optional[str] = None
     refresh_buffer_secs: Optional[int] = None
     token_cache: Optional[TokenCacheOptions] = None
+    resource: Optional[str] = None
+    audience: Optional[str] = None
 
 
 class OAuthSession:

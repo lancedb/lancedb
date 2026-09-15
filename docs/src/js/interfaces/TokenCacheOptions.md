@@ -13,7 +13,7 @@ The cache is opt-in: it is only used when set as `tokenCache` on
 directory with owner-only permissions, so short-lived processes can reuse
 an authenticated session instead of re-prompting on every start.
 
-Multiple identities (issuer, client, scopes, flow, client authentication)
+Multiple identities (issuer, client, scopes, resource, audience, flow, client authentication)
 get separate cache entries. Within one identity the most recent login wins.
 
 ## Properties

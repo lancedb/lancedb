@@ -1546,6 +1546,8 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: crate::remote::OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
 
@@ -1589,6 +1591,8 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: crate::remote::OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
         let client_config = crate::remote::ClientConfig {
