@@ -217,13 +217,22 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 /// `get_runtime()` caller is, at that exact instant, still between loading
 /// the slot and finishing its own call, this abandons the runtime instead
 /// of forcing the issue -- the same trade `atfork_child` already makes.
+///
+/// Neither of the two ways this can fail to cleanly retire the runtime --
+/// the wait timing out, or `try_unwrap` losing that race -- has any other
+/// signal to report through (`shutdown_timeout` itself returns nothing),
+/// so both log a warning instead of failing silently.
 pub fn shutdown(timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
-        if OUTSTANDING.load(Ordering::SeqCst) == 0 {
+        let outstanding = OUTSTANDING.load(Ordering::SeqCst);
+        if outstanding == 0 {
             break;
         }
         if Instant::now() >= deadline {
+            log::warn!(
+                "lancedb: runtime shutdown timed out with {outstanding} call(s) still in flight; forcing shutdown anyway, some in-flight work may be abandoned"
+            );
             break;
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -232,10 +241,22 @@ pub fn shutdown(timeout: Duration) {
         return;
     };
     RUNTIME.compare_and_swap(&Some(Arc::clone(&current)), None);
-    if let Ok(tagged) = Arc::try_unwrap(current) {
-        tagged
-            .runtime
-            .shutdown_timeout(deadline.saturating_duration_since(Instant::now()));
+    match Arc::try_unwrap(current) {
+        Ok(tagged) => {
+            tagged
+                .runtime
+                .shutdown_timeout(deadline.saturating_duration_since(Instant::now()));
+        }
+        Err(_) => {
+            // Some transient `get_runtime()` caller is, at this exact
+            // instant, still between loading the slot and finishing its own
+            // call: we have no owned handle to call `shutdown_timeout` on,
+            // and no way to force one (tokio has no shutdown API over a
+            // shared reference). Nothing more to do but say so.
+            log::warn!(
+                "lancedb: runtime shutdown could not obtain exclusive ownership; the shared runtime was left running"
+            );
+        }
     }
 }
 
