@@ -438,6 +438,44 @@ enum BodyLogging {
     Suppressed,
 }
 
+/// Check a configured identifier delimiter before anything is joined with it.
+///
+/// The delimiter is written into a URL path raw -- it is what separates the
+/// components, so it cannot itself be escaped. That makes it the one piece of
+/// configuration that can change a route's *shape* rather than its content: a
+/// delimiter of `/` turns `["prod"] + "openai"` into `prod/openai`, which is
+/// two path segments, and `POST /v1/secret/prod/openai/drop` matches no route
+/// at all.
+///
+/// Refusing a component that contains the delimiter is not enough to catch
+/// this, because neither component contains one -- the delimiter is the
+/// problem, not what it joins.
+///
+/// An empty delimiter is refused for the same reason from the other side: it
+/// joins `["a", "b"]` into `ab`, which no split recovers.
+fn validate_id_delimiter(delimiter: String) -> Result<String> {
+    if delimiter.is_empty() {
+        return Err(Error::InvalidInput {
+            message: "id_delimiter must not be empty: an identifier joined by nothing cannot be \
+                      split back into a namespace path and a name"
+                .to_string(),
+        });
+    }
+    if let Some(unsafe_character) = delimiter
+        .chars()
+        .find(|character| matches!(character, '/' | '?' | '#' | '%' | '\\'))
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "id_delimiter '{delimiter}' contains {unsafe_character:?}, which is URL path \
+                 syntax: a delimiter is written into the path raw, so one that divides or ends \
+                 the path changes which route a request reaches"
+            ),
+        });
+    }
+    Ok(delimiter)
+}
+
 impl RestfulLanceDbClient<Sender> {
     fn get_timeout(passed: Option<Duration>, env_var: &str) -> Result<Option<Duration>> {
         if let Some(passed) = passed {
@@ -562,10 +600,12 @@ impl RestfulLanceDbClient<Sender> {
             host,
             retry_config,
             sender: Sender,
-            id_delimiter: client_config
-                .id_delimiter
-                .clone()
-                .unwrap_or("$".to_string()),
+            id_delimiter: validate_id_delimiter(
+                client_config
+                    .id_delimiter
+                    .clone()
+                    .unwrap_or("$".to_string()),
+            )?,
             header_provider: client_config.header_provider,
             read_consistency_interval,
             max_bytes_per_request,
@@ -1123,6 +1163,27 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    /// A delimiter is written into the path raw, so one that is path syntax
+    /// changes the shape of a route rather than its content. Refusing a
+    /// component that contains the delimiter cannot catch this: neither
+    /// component contains one.
+    #[test]
+    fn test_a_delimiter_that_is_path_syntax_is_refused() {
+        for delimiter in ["/", "?", "#", "%", "a/b", ""] {
+            let error = super::validate_id_delimiter(delimiter.to_string())
+                .expect_err("a delimiter that is path syntax must be refused");
+            assert!(
+                error.to_string().contains("id_delimiter"),
+                "{delimiter:?}: {error}"
+            );
+        }
+        // The default, and other separators that are not path syntax, stand.
+        for delimiter in ["$", ".", "-", "_", "|", "::"] {
+            super::validate_id_delimiter(delimiter.to_string())
+                .unwrap_or_else(|error| panic!("{delimiter:?} must be accepted: {error}"));
+        }
+    }
+
     use super::*;
     use serial_test::serial;
     use std::time::Duration;

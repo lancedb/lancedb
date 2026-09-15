@@ -608,22 +608,23 @@ fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> 
 /// then resolved as a relative path segment -- `create_function` for a Function
 /// so named would post its registration body to `/v1/create`.
 fn build_function_identifier(name: &str) -> Result<String> {
-    reject_dot_only_component("Function name", name)?;
+    reject_relative_segment_component("Function name", name)?;
     Ok(urlencoding::encode(name).into_owned())
 }
 
-/// The dot-segment rule, for identifiers that have no other validator to hang
-/// it on.
+/// The relative-segment rule, for identifiers that have no other validator to
+/// hang it on.
 ///
 /// Table and namespace names reach this through [`validate_table_name`] and
 /// [`validate_namespace_name`], which own the rest of their grammar. A Function
 /// name has no client-side grammar, so only this part applies.
-fn reject_dot_only_component(what: &str, value: &str) -> Result<()> {
-    if !value.is_empty() && value.chars().all(|character| character == '.') {
+fn reject_relative_segment_component(what: &str, value: &str) -> Result<()> {
+    let decoded = value.replace("%2e", ".").replace("%2E", ".");
+    if decoded == "." || decoded == ".." {
         return Err(Error::InvalidInput {
             message: format!(
-                "invalid {what} '{value}': a component of only periods is read as a relative \
-                 path and cannot address an object"
+                "invalid {what} '{value}': '.' and '..' are read as relative path segments and \
+                 cannot address an object"
             ),
         });
     }
@@ -3441,13 +3442,17 @@ mod tests {
         }
     }
 
-    /// A component of only periods passes the character set and still cannot
-    /// address anything: it is resolved as a relative path, and after
-    /// percent-decoding, so no spelling of it survives.
+    /// `.` and `..` pass the character set and still cannot address anything:
+    /// URL parsing resolves them as relative segments, and after
+    /// percent-decoding, so no spelling of either survives.
     #[tokio::test]
-    async fn test_a_dot_only_component_is_refused() {
+    async fn test_a_relative_segment_component_is_refused() {
         use std::sync::{Arc, Mutex};
-        for component in [".", "..", "..."] {
+        // The percent-encoded spellings are caught a step earlier, by the
+        // character set: `%` is not a character a Secret component may hold.
+        // They reach the relative-segment rule only where there is no charset
+        // to catch them first -- see the Function case below.
+        for component in [".", ".."] {
             let reached = Arc::new(Mutex::new(false));
             let flag = reached.clone();
             let conn = Connection::new_with_handler(move |_| {
@@ -3461,14 +3466,17 @@ mod tests {
                 .drop_secret(component, &[])
                 .await
                 .expect_err("a dot-only name must be refused");
-            assert!(by_name.to_string().contains("only periods"), "{by_name}");
+            assert!(
+                by_name.to_string().contains("relative path segments"),
+                "{by_name}"
+            );
 
             let by_segment = conn
                 .list_secrets(&[component.to_string()])
                 .await
                 .expect_err("a dot-only namespace segment must be refused");
             assert!(
-                by_segment.to_string().contains("only periods"),
+                by_segment.to_string().contains("relative path segments"),
                 "{by_segment}"
             );
             assert!(
@@ -3605,13 +3613,13 @@ mod tests {
         assert!(!*reached.lock().unwrap(), "the request was sent anyway");
     }
 
-    /// A Function name is percent-encoded, which covers everything but the dot
-    /// segment: `..` is unreserved, so it survives encoding and is then
-    /// resolved away, posting a registration body to `/v1/create`.
+    /// A Function name is percent-encoded, which covers everything but the
+    /// relative segment: `..` is unreserved, so it survives encoding and is
+    /// then resolved away, posting a registration body to `/v1/create`.
     #[tokio::test]
-    async fn test_a_dot_only_function_name_is_refused() {
+    async fn test_a_relative_segment_function_name_is_refused() {
         use std::sync::{Arc, Mutex};
-        for name in [".", "..", "..."] {
+        for name in [".", "..", "%2E%2E"] {
             let reached = Arc::new(Mutex::new(false));
             let flag = reached.clone();
             let conn = Connection::new_with_handler(move |_| {
@@ -3622,8 +3630,35 @@ mod tests {
                 .drop_function(name, "fv_1")
                 .await
                 .expect_err("a dot-only Function name must be refused");
-            assert!(error.to_string().contains("only periods"), "{error}");
+            assert!(
+                error.to_string().contains("relative path segments"),
+                "{error}"
+            );
             assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
+        }
+    }
+
+    /// Only `.` and `..` are relative segments. `...` and longer runs are
+    /// ordinary and address perfectly well, so refusing them would make an
+    /// object that works today stop working on upgrade. This pins that.
+    #[tokio::test]
+    async fn test_a_longer_run_of_periods_is_an_ordinary_name() {
+        use std::sync::{Arc, Mutex};
+        for name in ["...", "....", "a.", ".a", "a..b"] {
+            let seen = Arc::new(Mutex::new(String::new()));
+            let captured = seen.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                *captured.lock().unwrap() = request.url().path().to_string();
+                http::Response::builder().status(200).body("{}").unwrap()
+            });
+            conn.drop_secret(name, &[])
+                .await
+                .unwrap_or_else(|error| panic!("{name:?} must remain addressable: {error}"));
+            assert_eq!(
+                *seen.lock().unwrap(),
+                format!("/v1/secret/{name}/drop"),
+                "{name:?} did not reach its own route"
+            );
         }
     }
 
