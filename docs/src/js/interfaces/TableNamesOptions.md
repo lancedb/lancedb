@@ -4,11 +4,16 @@
 
 [@lancedb/lancedb](../globals.md) / TableNamesOptions
 
-# Interface: TableNamesOptions
+# Interface: ~~TableNamesOptions~~
+
+## Deprecated
+
+Use [ListTablesOptions](ListTablesOptions.md) with [Connection.listTables](../classes/Connection.md#listtables)
+instead.
 
 ## Properties
 
-### limit?
+### ~~limit?~~
 
 ```ts
 optional limit: number;
@@ -18,7 +23,7 @@ An optional limit to the number of results to return.
 
 ***
 
-### startAfter?
+### ~~startAfter?~~
 
 ```ts
 optional startAfter: string;

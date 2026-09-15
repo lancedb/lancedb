@@ -32,8 +32,6 @@ from typing_extensions import Annotated
 
 from lancedb._lancedb import fts_query_to_json
 from lancedb.background_loop import LOOP
-from lancedb.pydantic import PYDANTIC_VERSION
-
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
@@ -80,6 +78,10 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="LanceModel")
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
 
+# Number of rows a hybrid query returns when no limit was set on it. This
+# mirrors the default the Rust query builder applies to its sub-queries.
+DEFAULT_HYBRID_LIMIT = 10
+
 
 @runtime_checkable
 class _LanceScanner(Protocol):
@@ -111,6 +113,7 @@ def _query_is_plain_scan(query: Query) -> bool:
     return (
         query.vector is None
         and query.full_text_query is None
+        and query.take_offsets is None
         and not query.postfilter
         and not query.order_by
     )
@@ -167,6 +170,12 @@ def _projection_to_scanner_kwargs(columns: QueryProjection) -> Dict[str, Any]:
             expr = expr.to_sql()
         projection[name] = expr
     return {"columns": projection}
+
+
+def _query_request_projection(req: "PyQueryRequest") -> QueryProjection:
+    if req.select_source_columns is not None:
+        return req.select_source_columns
+    return req.select
 
 
 def _scanner_kwargs_for_query(
@@ -377,6 +386,13 @@ class FullTextOperator(str, Enum):
     OR = "OR"
 
 
+class DocumentGranularity(str, Enum):
+    """The unit treated as one full-text-search document."""
+
+    ROW = "row"
+    LIST_ELEMENT = "list_element"
+
+
 class Occur(str, Enum):
     SHOULD = "SHOULD"
     MUST = "MUST"
@@ -480,6 +496,10 @@ class MatchQuery(FullTextQuery):
     prefix_length : int, optional
         The number of beginning characters being unchanged for fuzzy matching.
         This is useful to achieve prefix matching.
+    document_granularity : DocumentGranularity, optional
+        Explicitly select row or deepest-list-element documents. If omitted,
+        the indexed granularity is inferred. When both granularities are indexed
+        for the field, this must be specified. With no index, row granularity is used.
     """
 
     query: str
@@ -489,6 +509,9 @@ class MatchQuery(FullTextQuery):
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
+    document_granularity: Optional[DocumentGranularity] = pydantic.Field(
+        None, kw_only=True
+    )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
@@ -505,11 +528,20 @@ class PhraseQuery(FullTextQuery):
         The query string to match against.
     column : str
         The name of the column to match against.
+    slop : int, default 0
+        The maximum number of intervening positions permitted in the phrase.
+    document_granularity : DocumentGranularity, optional
+        Explicitly select row or deepest-list-element documents. If omitted,
+        the indexed granularity is inferred. When both granularities are indexed
+        for the field, this must be specified. With no index, row granularity is used.
     """
 
     query: str
     column: str
     slop: int = pydantic.Field(0, kw_only=True)
+    document_granularity: Optional[DocumentGranularity] = pydantic.Field(
+        None, kw_only=True
+    )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
@@ -777,6 +809,10 @@ class Query(pydantic.BaseModel):
     # offset to start fetching results from
     offset: Optional[int] = None
 
+    # Dataset offsets whose duplicate occurrences must be restored after lookup.
+    # This is populated when a take query is converted to this serializable form.
+    take_offsets: Optional[List[int]] = None
+
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
@@ -798,6 +834,7 @@ class Query(pydantic.BaseModel):
         query = cls()
         query.limit = req.limit
         query.offset = req.offset
+        query.take_offsets = req.take_offsets
         query.filter = req.filter
         query.full_text_query = req.full_text_search
         query.columns = req.select
@@ -826,13 +863,8 @@ class Query(pydantic.BaseModel):
         return query
 
     # This tells pydantic to allow custom types (needed for the `vector` query since
-    # pa.Array wouln't be allowed otherwise)
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            arbitrary_types_allowed = True
-    else:
-        model_config = {"arbitrary_types_allowed": True}
+    # pa.Array wouldn't be allowed otherwise)
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
 
 class LanceQueryBuilder(ABC):
@@ -2235,6 +2267,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             reranker=self._reranker,
             limit=self._limit,
             with_row_ids=True,
+            offset=self._offset,
         )
         return self._finish_hybrid_results(results)
 
@@ -2256,6 +2289,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         reranker,
         limit: int,
         with_row_ids: bool,
+        offset: Optional[int] = None,
     ) -> pa.Table:
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
@@ -2332,7 +2366,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = results.column_names.index("_score")
             results = results.set_column(score_i, "_score", original_scores)
 
-        results = results.slice(length=limit)
+        results = results.slice(offset=offset or 0, length=limit)
 
         if not with_row_ids:
             results = results.drop(["_rowid"])
@@ -2679,8 +2713,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         # Apply common configurations
         if self._limit:
-            self._vector_query.limit(self._limit)
-            self._fts_query.limit(self._limit)
+            # The final offset/limit window is sliced out of the combined,
+            # reranked results, so each sub-query must fetch enough rows to
+            # cover the skipped prefix as well as the window itself.
+            sub_query_limit = self._limit + (self._offset or 0)
+            self._vector_query.limit(sub_query_limit)
+            self._fts_query.limit(sub_query_limit)
         if self._columns:
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
@@ -2777,15 +2815,16 @@ class AsyncQueryBase(object):
 
         req = self._inner.to_query_request()
         schema = await self._table.schema()
+        projection = _query_request_projection(req)
         self._blob_auto_row_id = blob_auto_row_id_for_scan(
             schema,
-            req.select,
+            projection,
             with_row_id=self._with_row_id,
         )
         if not self._blob_auto_row_id:
             self._blob_paths = ()
             return
-        self._blob_paths = tuple(blob_v2_projection_sources(schema, req.select).keys())
+        self._blob_paths = tuple(blob_v2_projection_sources(schema, projection).keys())
         self._inner.with_row_id()
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
@@ -3245,12 +3284,7 @@ class AsyncStandardQuery(AsyncQueryBase):
         if ordering is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by(
-                [
-                    o.model_dump() if hasattr(o, "model_dump") else o.dict()
-                    for o in ordering
-                ]
-            )
+            self._inner.order_by([o.model_dump() for o in ordering])
         return self
 
     def fast_search(self) -> Self:
@@ -3384,9 +3418,10 @@ class AsyncQuery(AsyncStandardQuery):
         pass in multiple vectors. When multiple vectors are passed in, if the vector
         column is with multivector type, then the vectors will be treated as a single
         query. Or the vectors will be treated as multiple queries, this can be useful
-        if you want to find the nearest vectors to multiple query vectors.
-        This is not expected to be faster than making multiple queries concurrently;
-        it is just a convenience method. If multiple vectors are passed in then
+        if you want to find the nearest vectors to multiple query vectors. Flat
+        searches share one table scan across the query vectors, avoiding the scan
+        and memory amplification of making multiple queries concurrently. If
+        multiple vectors are passed in then
         an additional column `query_index` will be added to the results. This column
         will contain the index of the query vector that the result is nearest to.
         """
@@ -3515,8 +3550,8 @@ class AsyncFTSQuery(AsyncStandardQuery):
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest
-        vectors to multiple query vectors. This is not expected to be faster than
-        making multiple queries concurrently; it is just a convenience method.
+        vectors to multiple query vectors. Flat searches share one table scan across
+        the query vectors instead of issuing concurrent full scans.
         If multiple vectors are passed in then an additional column `query_index`
         will be added to the results.  This column will contain the index of the
         query vector that the result is nearest to.
@@ -3862,34 +3897,72 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         return self
 
+    def _create_child_queries(
+        self,
+    ) -> Tuple["AsyncFTSQuery", "AsyncVectorQuery", int, int]:
+        """Build the sub-queries that make up this hybrid query.
+
+        Execution, `explain_plan` and `analyze_plan` all go through here so that
+        the plans that are reported are the plans that actually run.
+
+        Returns the two sub-queries along with the effective limit and offset of
+        the hybrid query itself.
+        """
+        fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
+        vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
+
+        fts_req = fts_query._inner.to_query_request()
+        vec_req = vec_query._inner.to_query_request()
+
+        # Only one of the two sub-queries carries the limit when it was never
+        # set explicitly: nearest_to()/nearest_to_text() build the sibling query
+        # from scratch, and that is where the default gets filled in. Which one
+        # that is depends on the order the hybrid query was built in, so look at
+        # both rather than at a single side.
+        limit = fts_req.limit if fts_req.limit is not None else vec_req.limit
+        if limit is None:
+            limit = DEFAULT_HYBRID_LIMIT
+        offset = fts_req.offset or vec_req.offset or 0
+
+        fts_query.with_row_id()
+        vec_query.with_row_id()
+
+        # offset() pushes the offset down into both sub-queries, which would make
+        # each of them skip its own first `offset` rows. The window has to be
+        # taken out of the combined, reranked results instead, so fetch the
+        # skipped prefix here too and slice it off afterwards.
+        fts_query.limit(limit + offset)
+        vec_query.limit(limit + offset)
+        fts_query.offset(0)
+        vec_query.offset(0)
+
+        return fts_query, vec_query, limit, offset
+
     async def to_batches(
         self,
         *,
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
-        fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
-        vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
+        fts_query, vec_query, limit, offset = self._create_child_queries()
 
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
         blob_paths: tuple[str, ...] = ()
         if self._table is not None:
             schema = await self._table.schema()
+            projection = _query_request_projection(req)
             blob_auto_row_id = blob_auto_row_id_for_scan(
                 schema,
-                req.select,
+                projection,
                 with_row_id=self._with_row_id,
             )
             if blob_auto_row_id:
                 blob_paths = tuple(
-                    blob_v2_projection_sources(schema, req.select).keys()
+                    blob_v2_projection_sources(schema, projection).keys()
                 )
         self._blob_auto_row_id = blob_auto_row_id
         self._blob_paths = blob_paths
-
-        fts_query.with_row_id()
-        vec_query.with_row_id()
 
         fts_results, vector_results = await asyncio.gather(
             fts_query.to_arrow(timeout=timeout),
@@ -3902,8 +3975,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             norm=self._norm,
             fts_query=fts_query.get_query(),
             reranker=self._reranker,
-            limit=self._inner.get_limit(),
+            limit=limit,
             with_row_ids=True,
+            offset=offset,
         )
         if (
             not self._user_requested_row_id()
@@ -3932,14 +4006,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         RRFReranker(K=60)
-            ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
+            ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance, _rowid@1 as _rowid]
               LanceRead: uri=..., projection=[text], source=stream(_rowid)
                 GlobalLimitExec: skip=0, fetch=10
                   FilterExec: _distance@2 IS NOT NULL
                     SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                       KNNVectorDistance: metric=l2
                         LanceRead: uri=..., projection=[vector], ...
-            ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
+            ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score, _rowid@0 as _rowid]
               LanceRead: uri=..., projection=[vector, text], source=stream(_rowid)
                 GlobalLimitExec: skip=0, fetch=10
                   MatchQuery: column=text, query=[hello]
@@ -3954,8 +4028,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         plan : str
         """  # noqa: E501
 
-        vector_plan = await self._inner.to_vector_query().explain_plan(verbose)
-        fts_plan = await self._inner.to_fts_query().explain_plan(verbose)
+        fts_query, vec_query, _, _ = self._create_child_queries()
+        vector_plan = await vec_query.explain_plan(verbose)
+        fts_plan = await fts_query.explain_plan(verbose)
         # Indent sub-plans under the reranker
         indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
         indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
@@ -3982,14 +4057,12 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         -------
         plan : str
         """
+        fts_query, vec_query, _, _ = self._create_child_queries()
+
         results = ["Vector Search Query:"]
-        results.append(
-            await self._inner.to_vector_query().analyze_plan(distributed_metrics)
-        )
+        results.append(await vec_query.analyze_plan(distributed_metrics))
         results.append("FTS Search Query:")
-        results.append(
-            await self._inner.to_fts_query().analyze_plan(distributed_metrics)
-        )
+        results.append(await fts_query.analyze_plan(distributed_metrics))
 
         return "\n".join(results)
 

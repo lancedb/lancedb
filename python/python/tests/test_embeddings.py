@@ -327,8 +327,8 @@ def test_embedding_function_with_pandas(tmp_path):
         ) -> List[np.array]:
             return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
-    registery = get_registry()
-    func = registery.get("mock-embedding").create()
+    registry = get_registry()
+    func = registry.get("mock-embedding").create()
 
     class TestSchema(LanceModel):
         text: str = func.SourceField()
@@ -394,9 +394,9 @@ def test_multiple_embeddings_for_pandas(tmp_path):
         ) -> List[np.array]:
             return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
-    registery = get_registry()
-    func1 = registery.get("mock-embedding").create()
-    func2 = registery.get("mock-embedding2").create()
+    registry = get_registry()
+    func1 = registry.get("mock-embedding").create()
+    func2 = registry.get("mock-embedding2").create()
 
     class TestSchema(LanceModel):
         text: str = func1.SourceField()
@@ -631,3 +631,23 @@ def test_url_retrieve_downloads_image():
     image_bytes = url_retrieve(image_url)
     img = Image.open(io.BytesIO(image_bytes))
     assert img.size[0] > 0 and img.size[1] > 0
+
+
+def test_jina_generate_image_input_dict_local_path(tmp_path):
+    """
+    JinaEmbeddings._generate_image_input_dict must accept a local image path
+    (str or Path), not just bytes. Previously it crashed with
+    `AttributeError: 'function' object has no attribute 'urlparse'` on any
+    str/Path input because it called `urlparse.urlparse(image)` instead of
+    `urlparse(image)` (urlparse was imported as a function, not a module).
+    """
+    Image = pytest.importorskip("PIL.Image")
+    from lancedb.embeddings.jinaai import JinaEmbeddings
+
+    image_path = tmp_path / "test.png"
+    Image.new("RGB", (4, 4), color="red").save(image_path, format="PNG")
+
+    for image in (str(image_path), image_path):
+        image_dict = JinaEmbeddings._generate_image_input_dict(image)
+        assert "image" in image_dict
+        assert isinstance(image_dict["image"], str) and len(image_dict["image"]) > 0

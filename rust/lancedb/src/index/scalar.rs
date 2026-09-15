@@ -63,4 +63,5 @@ pub struct FmIndexBuilder {}
 pub use lance_index::scalar::FullTextSearchQuery;
 pub use lance_index::scalar::InvertedIndexParams as FtsIndexBuilder;
 pub use lance_index::scalar::InvertedIndexParams;
+pub use lance_index::scalar::inverted::DocumentGranularity;
 pub use lance_index::scalar::inverted::query::*;

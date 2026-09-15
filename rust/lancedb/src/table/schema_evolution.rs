@@ -8,12 +8,14 @@
 //! - [`alter_columns`](execute_alter_columns): Rename columns, change types, or modify nullability
 //! - [`drop_columns`](execute_drop_columns): Remove columns from the table
 
+use arrow_schema::Schema as ArrowSchema;
 use lance::dataset::{ColumnAlteration, NewColumnTransform};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::NativeTable;
-use crate::Result;
+use super::computed_columns;
+use super::{BaseTable, NativeTable};
+use crate::{Error, Result};
 
 /// The result of an add columns operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -53,7 +55,9 @@ pub struct DropColumnsResult {
 pub struct FieldMetadataUpdate {
     /// Dot-separated path to the field (e.g. `"embedding"` or `"address.zip"`).
     pub path: String,
-    /// Keys to set (`Some`) or delete (`None`).
+    /// Keys to set (`Some`) or delete (`None`). See
+    /// [`Table::update_field_metadata`](crate::Table::update_field_metadata) for
+    /// the conventional `lancedb:*` keys.
     pub metadata: HashMap<String, Option<String>>,
     /// If `true`, replace the field's entire metadata map instead of merging.
     pub replace: bool,
@@ -99,6 +103,64 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "schema evolution",
+    )?;
+    // Declarations are admitted only through [`execute_declare`].
+    match &transforms {
+        NewColumnTransform::AllNulls(schema) => {
+            computed_columns::ensure_no_foreign_declarations(schema.fields())?
+        }
+        NewColumnTransform::BatchUDF(udf) => {
+            computed_columns::ensure_no_foreign_declarations(udf.output_schema.fields())?
+        }
+        _ => {}
+    }
+    commit_add_columns(table, transforms, read_columns).await
+}
+
+/// Declare validated computed columns. The only admission path for
+/// declaration metadata.
+pub(crate) async fn execute_declare(
+    table: &NativeTable,
+    columns: &[(String, String)],
+) -> Result<AddColumnsResult> {
+    use lance::dataset::mem_wal::DatasetMemWalExt;
+
+    // An LSM write spec keeps visible rows in tiers refresh cannot reach;
+    // checked against latest committed state, not this handle's snapshot.
+    table.checkout_latest().await?;
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "schema evolution",
+    )?;
+    // Unset drops the MemWAL index, so the spec alone stops describing a table
+    // whose SSTables still hold rows. The shard directories outlive it and are
+    // the durable evidence.
+    let retained_sstables = !table
+        .dataset
+        .get()
+        .await?
+        .list_mem_wal_latest_shard_ids()
+        .await?
+        .is_empty();
+    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
+        return Err(Error::NotSupported {
+            message: "computed columns are not supported on a table with an LSM write \
+                      spec: rows in un-compacted tiers are invisible to refresh"
+                .into(),
+        });
+    }
+    let transform = computed_columns::declare(table.schema().await?, columns)?;
+    commit_add_columns(table, transform, None).await
+}
+
+pub(crate) async fn commit_add_columns(
+    table: &NativeTable,
+    transforms: NewColumnTransform,
+    read_columns: Option<Vec<String>>,
+) -> Result<AddColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
     dataset.add_columns(transforms, read_columns, None).await?;
@@ -116,6 +178,25 @@ pub(crate) async fn execute_alter_columns(
 ) -> Result<AlterColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    // Nullability is not part of what an expression resolves against, so only
+    // a rename or a retype can invalidate a binding.
+    let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        schema.as_ref(),
+        "schema evolution",
+    )?;
+    let rebinding = alterations
+        .iter()
+        .filter(|alteration| alteration.rename.is_some() || alteration.data_type.is_some())
+        .map(|alteration| alteration.path.as_str())
+        .collect::<Vec<_>>();
+    computed_columns::ensure_not_an_input(&schema, &rebinding)?;
+    let retyped = alterations
+        .iter()
+        .filter(|alteration| alteration.data_type.is_some())
+        .map(|alteration| alteration.path.as_str())
+        .collect::<Vec<_>>();
+    computed_columns::ensure_not_retyped(schema.as_ref(), &retyped)?;
     dataset.alter_columns(alterations).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
@@ -131,6 +212,14 @@ pub(crate) async fn execute_drop_columns(
 ) -> Result<DropColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        &ArrowSchema::from(dataset.schema()),
+        "schema evolution",
+    )?;
+    computed_columns::ensure_not_an_input(
+        &std::sync::Arc::new(ArrowSchema::from(dataset.schema())),
+        columns,
+    )?;
     dataset.drop_columns(columns).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
@@ -146,6 +235,45 @@ pub(crate) async fn execute_update_field_metadata(
 ) -> Result<UpdateFieldMetadataResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+
+    // A declaration is validated as a whole at declare time; editing its keys
+    // here would bypass that, fabricate one on a plain column, or move a
+    // binding out from under a refresh. A replace on a declared column would
+    // silently erase it.
+    let schema = ArrowSchema::from(dataset.schema());
+    computed_columns::ensure_no_function_bindings_for_mutation(&schema, "schema evolution")?;
+    let declared: Vec<String> = computed_columns::computed_columns(&schema)
+        .into_iter()
+        .map(|declaration| declaration.name)
+        .collect();
+    for update in updates {
+        if update
+            .metadata
+            .keys()
+            .any(|key| computed_columns::is_declaration_key(key))
+        {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "metadata keys of a computed-column declaration cannot be edited \
+                     (path '{}'); drop the column and declare it again",
+                    update.path
+                ),
+            });
+        }
+        if update.replace
+            && declared
+                .iter()
+                .any(|name| name == computed_columns::root(&update.path))
+        {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "replacing all metadata of computed column '{}' would erase its \
+                     declaration; drop the column and declare it again",
+                    update.path
+                ),
+            });
+        }
+    }
 
     let mut builder = dataset.update_field_metadata();
     for update in updates {

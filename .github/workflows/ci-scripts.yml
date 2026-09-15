@@ -1,0 +1,30 @@
+name: CI scripts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ci/set_lance_version.py
+      - ci/tests/**
+      - .github/workflows/ci-scripts.yml
+  pull_request:
+    paths:
+      - ci/set_lance_version.py
+      - ci/tests/**
+      - .github/workflows/ci-scripts.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test CI scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Run tests
+        run: python -m unittest discover -s ci/tests -v

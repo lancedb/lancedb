@@ -81,7 +81,7 @@ def get_test_table(tmp_path):
         "but his son was mortal",
         "there hasn't been a good battlefield game since 2142",
         "I wish they would make another one",
-        "campains are not as good as they used to be",
+        "campaigns are not as good as they used to be",
         "Multiplayer and open world games have destroyed the single player experience",
         "Maybe the future is console games",
         "I don't know",

@@ -101,6 +101,19 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2026-0195
     { id = "RUSTSEC-2026-0194", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
     { id = "RUSTSEC-2026-0195", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
+    # smartstring: unmaintained — the repository was archived by its author on
+    # 2026-05-03. Not a vulnerability. Reached only transitively through polars
+    # (polars-core/-io/-ops/-time/-utils); nothing in LanceDB depends on it directly.
+    # The advisory states no safe upgrade is available: upstream recommends
+    # compact_str/smol_str, so clearing this requires polars to migrate.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0249
+    { id = "RUSTSEC-2026-0249", reason = "smartstring unmaintained via polars; no fixed upstream release" },
+
+    # h2 0.3: empty DATA frames can be queued without limit. The patched
+    # h2 0.4 line is locked to 0.4.16, but no patched 0.3 release exists.
+    # The old copy is pulled in by aws-smithy's legacy hyper 0.14 client.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0258
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 via legacy aws-smithy/hyper 0.14; no patched 0.3 release" },
 ]
 
 # ---------------------------------------------------------------------------
@@ -118,18 +131,13 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
     "BSL-1.0",
-    "OpenSSL",
     # 0BSD ("BSD Zero Clause") is effectively public domain — no attribution
     # required. Pulled in by `mock_instant`.
     "0BSD",
-    # bzip2-1.0.6 is the permissive upstream bzip2 license (BSD-like). Pulled
-    # in by `libbz2-rs-sys`, the pure-Rust bzip2 implementation.
-    "bzip2-1.0.6",
     # CDLA-Permissive-2.0 is a permissive data license used by `webpki-roots`
     # for the Mozilla CA root bundle. Data-only, distribution-compatible.
     "CDLA-Permissive-2.0",
@@ -137,12 +145,7 @@ allow = [
 confidence-threshold = 0.8
 # Per-crate license exceptions: allow a license for a specific crate only,
 # rather than globally via the `allow` list above.
-exceptions = [
-    # CDDL-1.0 (copyleft) is pulled in only as a dev/profiling dependency via
-    # `inferno` -> `pprof` -> `lance-testing`; it is a test dependency that we
-    # do not distribute, so scope the allowance to `inferno` alone.
-    { allow = ["CDDL-1.0"], crate = "inferno" },
-]
+exceptions = []
 # Crates whose license cannot be determined from Cargo metadata but whose
 # license we've manually confirmed from upstream. Keep this list minimal.
 [[licenses.clarify]]
@@ -164,6 +167,11 @@ multiple-versions = "warn"
 # Wildcard version requirements (`foo = "*"`) are a footgun — they let any
 # future release in without review. Ban them outright.
 wildcards = "deny"
+# Lint every dependency declared by a workspace member against the shared
+# `[workspace.dependencies]` table: any crate used by more than one member must
+# go through `workspace = true`, and entries nothing uses are an error. This
+# keeps versions from drifting between the core crate and the bindings.
+workspace-dependencies = { duplicates = "deny", unused = "deny" }
 # Internal workspace crates reference each other via `path = "..."`, which
 # cargo-deny sees as a wildcard version. That's fine for private workspace
 # members (not published to crates.io), so allow it specifically for paths.

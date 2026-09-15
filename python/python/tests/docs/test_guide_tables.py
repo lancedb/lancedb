@@ -266,7 +266,7 @@ def test_table():
     tbl.add(pydantic_model_items)
     # --8<-- [end:add_table_from_pydantic]
     # --8<-- [start:delete_row]
-    tbl.delete('item = "fizz"')
+    tbl.delete("item = 'fizz'")
     # --8<-- [end:delete_row]
     # --8<-- [start:delete_specific_row]
     data = [
@@ -538,7 +538,7 @@ async def test_table_async():
     await async_tbl.add(pydantic_model_items)
     # --8<-- [end:add_table_async_from_pydantic]
     # --8<-- [start:delete_row_async]
-    await async_tbl.delete('item = "fizz"')
+    await async_tbl.delete("item = 'fizz'")
     # --8<-- [end:delete_row_async]
     # --8<-- [start:delete_specific_row_async]
     data = [

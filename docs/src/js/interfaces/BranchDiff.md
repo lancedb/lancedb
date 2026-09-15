@@ -50,6 +50,14 @@ changedColumns: BranchColumnChange[];
 
 ***
 
+### errors
+
+```ts
+errors: CherryPickError[];
+```
+
+***
+
 ### fromBranch
 
 ```ts
@@ -62,22 +70,6 @@ fromBranch: string;
 
 ```ts
 mainVersion: number;
-```
-
-***
-
-### mergeBlockers
-
-```ts
-mergeBlockers: MergeBlocker[];
-```
-
-***
-
-### mergeable
-
-```ts
-mergeable: boolean;
 ```
 
 ***

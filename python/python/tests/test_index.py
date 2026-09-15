@@ -88,7 +88,7 @@ async def binary_table(db_async):
 async def test_create_index_async_returns_done_job(some_table: AsyncTable):
     job = await some_table.create_index_async("id", config=BTree())
     assert job.id is None
-    await job.wait()
+    assert await job.wait() is None
     assert len(await some_table.list_indices()) == 1
     await job.cancel()
 

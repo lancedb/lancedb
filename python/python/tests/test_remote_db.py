@@ -242,8 +242,8 @@ def test_remote_table_branches_sync():
         table.branches.delete("exp")
 
 
-def test_remote_table_branch_merge_defaults_to_execute():
-    merge_bodies = []
+def test_remote_table_cherry_pick_defaults_to_execute():
+    cherry_pick_bodies = []
     diff = {
         "fromBranch": "exp",
         "parentVersion": 1,
@@ -265,8 +265,7 @@ def test_remote_table_branch_merge_defaults_to_execute():
         "changedColumns": [],
         "addedIndexes": [],
         "removedIndexes": [],
-        "mergeable": True,
-        "mergeBlockers": [],
+        "errors": [],
     }
 
     def handler(request):
@@ -276,11 +275,11 @@ def test_remote_table_branch_merge_defaults_to_execute():
         else:
             content_len = int(request.headers.get("Content-Length"))
             request_body = json.loads(request.rfile.read(content_len))
-            merge_bodies.append(request_body)
+            cherry_pick_bodies.append(request_body)
             dry_run = request_body["dry_run"]
             status = 200 if dry_run else 409
             body = {
-                "status": "ready" if dry_run else "rejected",
+                "status": "ready" if dry_run else "failed",
                 "diff": diff,
                 "preview": {"promotedColumns": []},
             }
@@ -292,10 +291,10 @@ def test_remote_table_branch_merge_defaults_to_execute():
 
     with mock_lancedb_connection(handler) as db:
         branches = db.open_table("test").branches
-        assert branches.merge("exp")["status"] == "rejected"
-        assert branches.merge("exp", dry_run=True)["status"] == "ready"
+        assert branches.cherry_pick("exp")["status"] == "failed"
+        assert branches.cherry_pick("exp", dry_run=True)["status"] == "ready"
 
-    assert merge_bodies == [
+    assert cherry_pick_bodies == [
         {"from_branch": "exp", "dry_run": False},
         {"from_branch": "exp", "dry_run": True},
     ]
@@ -480,24 +479,49 @@ def test_remote_permutation_is_picklable():
                 match = re.search(
                     r"_rowoffset\s+in\s+\((.*?)\)", body["filter"], re.IGNORECASE
                 )
-                offsets = [int(o.strip()) for o in match.group(1).split(",")]
+                offsets = list(
+                    dict.fromkeys(int(o.strip()) for o in match.group(1).split(","))
+                )
             else:
                 offsets = list(range(len(rows)))
-            table = pa.table({"a": [rows[offset] for offset in offsets]})
+            columns = body.get("columns") or ["a"]
+            table = pa.table(
+                {
+                    column: (
+                        [rows[offset] for offset in offsets]
+                        if column == "a"
+                        else offsets
+                    )
+                    for column in columns
+                }
+            )
 
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()
             with pa.ipc.new_file(request.wfile, schema=table.schema) as writer:
-                writer.write_table(table)
+                writer.write_table(table, max_chunksize=2)
         else:
             request.send_response(404)
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        permutation = Permutation.identity(db.open_table("test"))
+        table = db.open_table("test")
+        assert table.take_offsets([0, 2, 0, 4]).to_list() == [
+            {"a": 0},
+            {"a": 0},
+            {"a": 2},
+            {"a": 4},
+        ]
+
+        permutation = Permutation.identity(table)
         restored = pickle.loads(pickle.dumps(permutation))
-        assert restored.__getitems__([0, 2, 4]) == [{"a": 0}, {"a": 2}, {"a": 4}]
+        assert restored.__getitems__([0, 2, 0, 4]) == [
+            {"a": 0},
+            {"a": 2},
+            {"a": 0},
+            {"a": 4},
+        ]
 
 
 def test_create_table_exist_ok():
@@ -796,11 +820,13 @@ def test_table_create_indices():
         scalar_req = received_requests[0]
         assert "name" in scalar_req
         assert scalar_req["name"] == "custom_scalar_idx"
+        assert scalar_req["replace"] is False
 
         # Check FTS index request has custom name
         fts_req = received_requests[1]
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
+        assert fts_req["replace"] is False
         assert fts_req["block_size"] == 256
         assert fts_req["custom_stop_words"] == ["cloud"]
 
@@ -808,6 +834,7 @@ def test_table_create_indices():
         vector_req = received_requests[2]
         assert "name" in vector_req
         assert vector_req["name"] == "custom_vector_idx"
+        assert "replace" not in vector_req
 
         table.wait_for_index(["custom_scalar_idx"], timedelta(seconds=2))
         table.wait_for_index(
@@ -876,9 +903,83 @@ def test_remote_create_index_async_returns_job():
         table = db.create_table("test", [{"id": 1}])
         job = table.create_index_async("id", config=BTree())
         assert job.id == "job-1"
-        job.wait(timeout=timedelta(seconds=30))
+        assert job.wait(timeout=timedelta(seconds=30)) is None
         assert len(describe_calls) == 2
         job.cancel()
+
+
+def test_remote_refresh_async_returns_typed_terminal_result():
+    terminal_result = {
+        "rows_assigned": 12,
+        "rows_failed": 0,
+        "rows_remaining": 0,
+        "source_version": 7,
+        "published_version": 8,
+    }
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/backfill_column":
+            assert json.loads(body)["column"] == "derived"
+            request.send_response(202)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "refresh-1"}')
+        elif request.path == "/v1/jobs/describe":
+            assert json.loads(body)["job_id"] == "refresh-1"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "job_id": "refresh-1",
+                        "job_type": "function_refresh",
+                        "job_state": "DONE",
+                        "result": terminal_result,
+                    }
+                ).encode()
+            )
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "id",
+                                    "type": {"type": "int64"},
+                                    "nullable": False,
+                                }
+                            ]
+                        },
+                    }
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        job = table.refresh_column_async("derived")
+        assert job.id == "refresh-1"
+        result = job.wait(timeout=timedelta(seconds=30))
+
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.model_dump() == terminal_result
+    assert result.rows_filled == 12
+    assert result.version == 8
 
 
 def test_remote_job_wait_raises_on_failure():
@@ -1006,6 +1107,9 @@ def test_remote_create_index_new_api():
             table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
+            table.create_index(
+                "vector", config=IvfPq(distance_type="l2"), replace=False
+            )
 
         # Legacy index_type="IVF_RQ" routes to IvfRq config under the hood.
         with pytest.warns(DeprecationWarning, match="create_index"):
@@ -1015,15 +1119,17 @@ def test_remote_create_index_new_api():
                 num_partitions=8,
             )
 
-        assert len(received_requests) == 5
+        assert len(received_requests) == 6
         assert [req["column"] for req in received_requests] == [
             "vector",
             "category",
             "text",
             "vector",
             "vector",
+            "vector",
         ]
         assert received_requests[2]["block_size"] == 256
+        assert received_requests[4]["replace"] is False
 
 
 def test_table_wait_for_index_timeout():
@@ -1131,6 +1237,131 @@ def test_stats():
         res = table.stats()
         print(f"{res=}")
         assert res == stats
+
+
+@contextlib.contextmanager
+def lsm_test_table(lsm_handler):
+    """A remote table whose LSM routes are served by ``lsm_handler``.
+
+    ``lsm_handler(request, route)`` is called for ``/v1/table/test/<route>/``
+    where route is one of flush_lsm, compact_lsm, get_lsm_stats, and is
+    responsible for writing the response.
+    """
+    routes = ("flush_lsm", "compact_lsm", "get_lsm_stats")
+
+    def handler(request):
+        match = re.fullmatch(r"/v1/table/test/(\w+)/", request.path)
+        route = match.group(1) if match else None
+        if route in routes:
+            lsm_handler(request, route)
+        elif route == "describe":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        yield db.open_table("test")
+
+
+def read_json_body(request):
+    content_len = int(request.headers.get("Content-Length"))
+    return json.loads(request.rfile.read(content_len))
+
+
+def send_json(request, payload, status=200):
+    request.send_response(status)
+    request.send_header("Content-Type", "application/json")
+    request.end_headers()
+    request.wfile.write(json.dumps(payload).encode())
+
+
+def test_get_lsm_stats_sync():
+    """The sync wrapper round-trips the server payload into a dict."""
+    bucket = {
+        "shard_id": "b0",
+        "status": "Active",
+        "writer_epoch": 3,
+        "manifest_version": 12,
+        "current_generation": 6,
+        "replay_after_wal_entry_position": 40,
+        "wal_entry_position_last_seen": 42,
+        "generations": [{"generation": 5, "bytes": 1024, "rows": 7}],
+        "compacting": False,
+        "memtables": [
+            {
+                "generation": 6,
+                "rows": 2,
+                "bytes": 64,
+                "batches": 1,
+                "indexes": ["vec_idx"],
+            }
+        ],
+    }
+    seen_bodies = []
+
+    def lsm_handler(request, route):
+        assert route == "get_lsm_stats"
+        seen_bodies.append(read_json_body(request))
+        send_json(request, {"lsm_stats": {"buckets": [bucket]}})
+
+    with lsm_test_table(lsm_handler) as table:
+        assert table.get_lsm_stats() == {"buckets": [bucket]}
+        # Off by default, and forwarded when asked for.
+        assert seen_bodies == [{"include_generation_rows": False}]
+        table.get_lsm_stats(include_generation_rows=True)
+        assert seen_bodies[-1] == {"include_generation_rows": True}
+
+
+def test_get_lsm_stats_sync_returns_none_when_lsm_disabled():
+    """A null envelope means the LSM write path is not enabled, not an error."""
+
+    def lsm_handler(request, route):
+        send_json(request, {"lsm_stats": None})
+
+    with lsm_test_table(lsm_handler) as table:
+        assert table.get_lsm_stats() is None
+
+
+def test_flush_and_compact_lsm_sync():
+    """Both are one-shot POSTs answered 202 with no body."""
+    called = []
+
+    def lsm_handler(request, route):
+        called.append(route)
+        request.send_response(202)
+        request.end_headers()
+
+    with lsm_test_table(lsm_handler) as table:
+        assert table.flush_lsm() is None
+        assert table.compact_lsm() is None
+        assert called == ["flush_lsm", "compact_lsm"]
+
+
+def test_checkpoint_lsm_sync():
+    """Seal, read the watermark, and return once L0 holds nothing.
+
+    The convergence loop itself is covered in Rust; this pins the sync
+    binding to the endpoints it drives.
+    """
+    called = []
+
+    def lsm_handler(request, route):
+        called.append(route)
+        if route == "get_lsm_stats":
+            # An empty L0 yields no target watermark, so the loop is done
+            # after the seal without ever polling compaction.
+            send_json(request, {"lsm_stats": {"buckets": []}})
+        else:
+            request.send_response(202)
+            request.end_headers()
+
+    with lsm_test_table(lsm_handler) as table:
+        assert table.checkpoint_lsm() is None
+        assert called == ["flush_lsm", "get_lsm_stats"]
 
 
 @contextlib.contextmanager
@@ -1418,6 +1649,49 @@ def test_query_sync_fts():
             .limit(42)
             .to_list()
         )
+
+
+def test_query_sync_fts_document_granularity():
+    from lancedb.query import DocumentGranularity, MatchQuery
+
+    def handler(body):
+        assert body == {
+            "full_text_query": {
+                "query": {
+                    "match": {
+                        "column": "docs.content",
+                        "terms": "alpha",
+                        "boost": 1.0,
+                        "fuzziness": 0,
+                        "max_expansions": 50,
+                        "operator": "Or",
+                        "prefix_length": 0,
+                        "document_granularity": "list_element",
+                    }
+                }
+            },
+            "k": 10,
+            "prefilter": True,
+            "vector": [],
+            "version": None,
+        }
+        return pa.table(
+            {
+                "id": [1, 1],
+                "_doc_index": pa.array([[0], [4]], type=pa.list_(pa.uint32())),
+            }
+        )
+
+    with query_test_table(handler, server_version=Version("0.6.0")) as table:
+        result = table.search(
+            MatchQuery(
+                "alpha",
+                "docs.content",
+                document_granularity=DocumentGranularity.LIST_ELEMENT,
+            )
+        ).to_arrow()
+
+    assert result["_doc_index"].to_pylist() == [[0], [4]]
 
 
 def test_query_sync_hybrid():
@@ -2193,7 +2467,7 @@ def test_remote_blob_byte_apis_not_supported_on_old_server():
 
 
 def test_remote_connection_jobs_surface():
-    from lancedb.exceptions import JobFailedError
+    from lancedb.exceptions import JobFailedError, JobNotFoundError
 
     schema = pa.schema([("state", pa.string())])
     batch = pa.record_batch([pa.array(["created", "done"])], schema=schema)
@@ -2201,6 +2475,7 @@ def test_remote_connection_jobs_surface():
     with pa.ipc.new_stream(sink, schema) as writer:
         writer.write_batch(batch)
     events_body = sink.getvalue().to_pybytes()
+    query_events_payloads = []
 
     def handler(request):
         content_len = int(request.headers.get("Content-Length", 0))
@@ -2238,6 +2513,22 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
             request.wfile.write(json.dumps(rsp).encode())
         elif request.path == "/v1/jobs/describe":
+            if payload["job_id"] == "job-2":
+                request.send_response(200)
+                request.send_header("Content-Type", "application/json")
+                request.end_headers()
+                request.wfile.write(
+                    json.dumps(
+                        dict(
+                            job_id="job-2",
+                            job_type="refresh_column",
+                            job_state="DONE",
+                            creation_ms=2000,
+                            result=dict(rows_assigned=1000000, rows_failed=0),
+                        )
+                    ).encode()
+                )
+                return
             if payload["job_id"] != "job-1":
                 request.send_response(404)
                 request.end_headers()
@@ -2269,7 +2560,7 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
             request.wfile.write(b'{"job_id": "job-1"}')
         elif request.path == "/v1/jobs/query_events":
-            assert payload["job_id"] == "job-1"
+            query_events_payloads.append(payload)
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
             request.end_headers()
@@ -2285,24 +2576,109 @@ def test_remote_connection_jobs_surface():
         assert jobs[0].table == "t1"
         assert jobs[1].state == "finished"
 
-        description = db.get_job("job-1")
-        assert description.job_type == "create_index"
-        assert description.state == "failed"
-        assert json.loads(description.spec_json) == {"column": "vec"}
-        assert description.failure.message == "worker died"
-        assert description.failure.retryable is True
-        assert db.get_job("missing") is None
-
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
 
-        batches = db.job_history("job-1")
-        assert len(batches) == 1
-        assert batches[0].num_rows == 2
-        assert batches[0].column("state").to_pylist() == ["created", "done"]
+        # Opening a job hands back a populated handle; a missing one fails.
+        with pytest.raises(JobNotFoundError, match="missing"):
+            db.open_job("missing")
+        finished = db.open_job("job-2")
+        assert finished.state == "finished"
+        assert finished.result == {"rows_assigned": 1000000, "rows_failed": 0}
 
-        job = db.job("job-1")
+        job = db.open_job("job-1")
         assert job.id == "job-1"
+        # Opening already populated the handle.
+        assert job.state == "failed"
+        assert job.spec == {"column": "vec"}
+        assert job.failure.message == "worker died"
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
+
+
+def test_remote_job_handle_reports_its_own_detail():
+    schema = pa.schema([("state", pa.string())])
+    batch = pa.record_batch([pa.array(["claim_complete"])], schema=schema)
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, schema) as writer:
+        writer.write_batch(batch)
+    events_body = sink.getvalue().to_pybytes()
+    event_payloads = []
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        payload = json.loads(body) if body else {}
+        if request.path == "/v1/jobs/describe":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        job_id="job-1",
+                        job_type="refresh_column",
+                        job_state="DONE",
+                        creation_ms=2000,
+                        spec=dict(column="vec"),
+                        result=dict(rows_assigned=1000000),
+                    )
+                ).encode()
+            )
+        elif request.path == "/v1/jobs/query_events":
+            event_payloads.append(payload)
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.end_headers()
+            request.wfile.write(events_body)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        job = db.open_job("job-1")
+
+        # Opening populates the handle in the same round trip.
+        assert job.state == "finished"
+        job.refresh()
+        assert job.job_type == "refresh_column"
+        assert job.creation_ms == 2000
+        assert job.spec == {"column": "vec"}
+        assert job.result == {"rows_assigned": 1000000}
+        assert job.failure is None
+        # The JSON payloads stay reachable, but as internal APIs.
+        assert json.loads(job._spec_json) == {"column": "vec"}
+        assert json.loads(job._result_json) == {"rows_assigned": 1000000}
+
+        # print() shows everything the handle knows and nothing it does not.
+        # print() lays every known field out on its own line, with the JSON
+        # payloads indented rather than crammed onto one line.
+        assert repr(job) == "\n".join(
+            [
+                "Job(",
+                "    id='job-1',",
+                "    state='finished',",
+                "    job_type='refresh_column',",
+                "    creation_ms=2000,",
+                "    spec={",
+                '        "column": "vec"',
+                "    },",
+                "    result={",
+                '        "rows_assigned": 1000000',
+                "    },",
+                ")",
+            ]
+        )
+        # Nothing it does not know shows up.
+        assert "failure" not in repr(job)
+
+        events = job.events(filter="state = 'claim_complete'", limit=500)
+        assert isinstance(events, pa.Table)
+        assert events.column("state").to_pylist() == ["claim_complete"]
+        # The handle supplies job_id; the caller only narrows the query.
+        assert event_payloads[-1] == {
+            "job_id": "job-1",
+            "limit": 500,
+            "filter": "state = 'claim_complete'",
+        }

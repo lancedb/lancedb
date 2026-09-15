@@ -4,6 +4,7 @@
 
 import asyncio
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 import threading
 
@@ -84,6 +85,25 @@ def test_s3_lifecycle(s3_bucket: str):
         await db.drop_database()
 
     asyncio.run(test())
+
+
+@pytest.mark.s3_test
+def test_concurrent_open_table(s3_bucket: str):
+    uri = f"s3://{s3_bucket}/test_concurrent_open_table"
+    db = lancedb.connect(uri, storage_options=copy.copy(CONFIG))
+    db.create_table("test", pa.table({"x": [1, 2, 3]}))
+
+    num_workers = 32
+    barrier = threading.Barrier(num_workers)
+
+    def open_and_count(_):
+        barrier.wait()
+        return db.open_table("test").count_rows()
+
+    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+        row_counts = list(pool.map(open_and_count, range(num_workers)))
+
+    assert row_counts == [3] * num_workers
 
 
 @pytest.fixture()

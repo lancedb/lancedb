@@ -136,29 +136,48 @@ public class LanceDbNamespaceClientBuilder {
    * @throws IllegalStateException if required parameters are missing
    */
   public LanceNamespace build() {
-    // Validate required fields
+    validate();
+
+    // Build configuration map
+    Map<String, String> config = new HashMap<>(additionalConfig);
+    config.put("header.x-lancedb-database", database);
+    config.put("header.x-api-key", apiKey);
+    config.put("uri", resolveUri());
+
+    return LanceNamespace.connect("rest", config, null);
+  }
+
+  /**
+   * Build a {@link LanceDbRestClient} for the same endpoint.
+   *
+   * <p>Needed only for LanceDB routes that the Lance Namespace specification does not cover — the
+   * MemWAL LSM write path, reached through {@link LanceDbTableLsm}. Every other table operation
+   * belongs on the {@link LanceNamespace} from {@link #build()}.
+   *
+   * <p>The returned client owns an HTTP connection pool; close it when you are done with it.
+   *
+   * @return A configured LanceDbRestClient
+   * @throws IllegalStateException if required parameters are missing
+   */
+  public LanceDbRestClient buildRestClient() {
+    validate();
+    return new LanceDbRestClient(resolveUri(), apiKey, database);
+  }
+
+  private void validate() {
     if (apiKey == null) {
       throw new IllegalStateException("API key is required");
     }
     if (database == null) {
       throw new IllegalStateException("Database is required");
     }
+  }
 
-    // Build configuration map
-    Map<String, String> config = new HashMap<>(additionalConfig);
-    config.put("header.x-lancedb-database", database);
-    config.put("header.x-api-key", apiKey);
-
-    // Determine base URL
-    String uri;
+  /** The custom endpoint when set, else the LanceDB Cloud URL for this database and region. */
+  private String resolveUri() {
     if (endpoint.isPresent()) {
-      uri = endpoint.get();
-    } else {
-      String effectiveRegion = region.orElse(DEFAULT_REGION);
-      uri = String.format(CLOUD_URL_PATTERN, database, effectiveRegion);
+      return endpoint.get();
     }
-    config.put("uri", uri);
-
-    return LanceNamespace.connect("rest", config, null);
+    return String.format(CLOUD_URL_PATTERN, database, region.orElse(DEFAULT_REGION));
   }
 }

@@ -85,8 +85,9 @@ class Expr:
     # for dict keys / set membership.
     __hash__ = None  # type: ignore[assignment]
 
-    def __init__(self, inner: PyExpr) -> None:
+    def __init__(self, inner: PyExpr, *, column_path: str | None = None) -> None:
         self._inner = inner
+        self._column_path = column_path
 
     # ── comparisons ──────────────────────────────────────────────────────────
 
@@ -248,6 +249,10 @@ class Expr:
 
     # ── utilities ────────────────────────────────────────────────────────────
 
+    def _column_name(self) -> str | None:
+        """Return the source name when this is a bare column expression."""
+        return self._inner.column_name()
+
     def to_sql(self) -> str:
         """Render the expression as a SQL string (useful for debugging)."""
         return self._inner.to_sql()
@@ -273,7 +278,7 @@ def col(name: str) -> Expr:
     >>> col("age") > lit(18)
     Expr((age > 18))
     """
-    return Expr(expr_col(name))
+    return Expr(expr_col(name), column_path=name)
 
 
 def lit(value: Union[bool, int, float, str, bytes, date, datetime, Decimal]) -> Expr:
@@ -311,7 +316,7 @@ def func(name: str, *args: ExprLike) -> Expr:
     --------
     >>> from lancedb.expr import col, func
     >>> func("lower", col("name"))
-    Expr(lower(name))
+    Expr(lower(`name`))
     """
     inner_args = [_coerce(a)._inner for a in args]
     return Expr(expr_func(name, inner_args))

@@ -7,6 +7,7 @@ import pathlib
 from typing import Optional
 
 import lance
+from lance.blob import BlobType as LanceBlobType
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings.base import EmbeddingFunctionConfig
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
@@ -905,6 +906,165 @@ def test_cast_to_target_schema():
         schema=expected_schema,
     )
     assert output == expected
+
+
+def test_cast_to_target_schema_coerces_binary_to_blob_v2():
+    data = pa.table({"image": pa.array([b"hello", None], type=pa.binary())})
+    target = pa.schema([lancedb.blob("image")])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.to_pylist() == [
+        {"data": b"hello", "uri": None, "position": None, "size": None},
+        None,
+    ]
+
+
+def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
+    storage = lancedb.blob("image").type.storage_type
+    target = pa.schema(
+        [
+            pa.field(
+                "image",
+                storage,
+                metadata={
+                    b"ARROW:extension:name": b"lance.blob.v2",
+                    b"ARROW:extension:metadata": b"",
+                },
+            )
+        ]
+    )
+    data = pa.table({"image": pa.array([b"hello", None], type=pa.binary())})
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert not isinstance(image.type, pa.ExtensionType)
+    assert image.to_pylist() == [
+        {"data": b"hello", "uri": None, "position": None, "size": None},
+        None,
+    ]
+
+
+def test_cast_to_target_schema_coerces_nested_binary_blob():
+    data = pa.table(
+        {
+            "info": pa.array(
+                [{"blob": b"hello"}, {"blob": None}],
+                type=pa.struct([pa.field("blob", pa.binary())]),
+            )
+        }
+    )
+    target = pa.schema([pa.field("info", pa.struct([lancedb.blob("blob")]))])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    blob = output["info"].chunk(0).field("blob")
+    assert type(blob.type) is lancedb.BlobType
+    assert blob.storage.to_pylist() == [
+        {"data": b"hello", "uri": None, "position": None, "size": None},
+        None,
+    ]
+
+
+def test_cast_to_target_schema_coerces_list_binary_blob_with_inferred_child_name():
+    data = pa.table(
+        {"images": pa.array([[b"a", b"b"], None], type=pa.list_(pa.binary()))}
+    )
+    target = pa.schema([pa.field("images", pa.list_(lancedb.blob("image")))])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    images = output["images"].chunk(0)
+    assert images.type.value_field.name == "image"
+    assert type(images.type.value_type) is lancedb.BlobType
+    assert images.to_pylist()[1] is None
+    assert images.values.storage.to_pylist() == [
+        {"data": b"a", "uri": None, "position": None, "size": None},
+        {"data": b"b", "uri": None, "position": None, "size": None},
+    ]
+
+
+def test_list_blob_coercion_preserves_null_slots_with_nonzero_extent():
+    child = pa.field("image", pa.binary())
+    source = pa.ListArray.from_arrays(
+        pa.array([0, 2, 4], type=pa.int32()),
+        pa.array([b"a", b"b", b"dead", b"beef"], type=pa.binary()),
+        mask=pa.array([False, True]),
+    ).cast(pa.list_(child))
+    target = pa.schema([pa.field("images", pa.list_(lancedb.blob("image")))])
+
+    output = _cast_to_target_schema(
+        pa.table({"images": source}).to_reader(), target
+    ).read_all()
+
+    images = output["images"].chunk(0)
+    assert images.to_pylist()[1] is None
+    assert [b["data"] for b in images.to_pylist()[0]] == [b"a", b"b"]
+
+
+def test_fixed_size_list_blob_coercion_keeps_null_rows():
+    child = pa.field("frame", pa.binary())
+    source = (
+        pa.FixedSizeListArray.from_arrays(
+            pa.array([b"a", b"b", b"c", b"d"], type=pa.binary()), 2
+        )
+        .take(pa.array([0, None], type=pa.int32()))
+        .cast(pa.list_(child, 2))
+    )
+    target = pa.schema([pa.field("frames", pa.list_(lancedb.blob("frame"), 2))])
+
+    output = _cast_to_target_schema(
+        pa.table({"frames": source}).to_reader(), target
+    ).read_all()
+
+    frames = output["frames"].chunk(0)
+    assert frames.to_pylist()[1] is None
+    assert [b["data"] for b in frames.to_pylist()[0]] == [b"a", b"b"]
+
+
+def test_cast_to_target_schema_accepts_pylance_blob_v2():
+    target_type = lancedb.BlobType()
+    source = lance.blob_array([b"hello", None])
+    assert type(source.type) is LanceBlobType
+    assert type(source.type) is type(target_type)
+    data = pa.table({"image": source})
+    target = pa.schema([pa.field("image", target_type)])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is LanceBlobType
+    assert image.type == target_type
+    assert image.storage.to_pylist() == [
+        {"data": b"hello", "uri": None, "position": None, "size": None},
+        None,
+    ]
+
+
+def test_cast_to_target_schema_rejects_different_blob_v2_class():
+    class OtherBlobType(pa.ExtensionType):
+        def __init__(self):
+            super().__init__(lancedb.BlobType().storage_type, "lance.blob.v2")
+
+        def __arrow_ext_serialize__(self) -> bytes:
+            return b""
+
+        @classmethod
+        def __arrow_ext_deserialize__(
+            cls, storage_type: pa.DataType, serialized: bytes
+        ) -> "OtherBlobType":
+            return cls()
+
+    storage = lance.blob_array([b"hello"]).storage
+    source = pa.ExtensionArray.from_storage(OtherBlobType(), storage)
+    data = pa.table({"image": source})
+    target = pa.schema([lancedb.blob("image")])
+
+    with pytest.raises(pa.ArrowTypeError, match="different extension type"):
+        _cast_to_target_schema(data.to_reader(), target).read_all()
 
 
 def test_sanitize_data_stream():

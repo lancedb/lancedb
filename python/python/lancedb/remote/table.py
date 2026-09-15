@@ -36,6 +36,7 @@ from lancedb._lancedb import (
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
+from lancedb.expr import Expr
 from lancedb.index import (
     FTS,
     BTree,
@@ -49,6 +50,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.job import Job
+from lancedb.functions import FunctionApplication, RefreshColumnResult
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
@@ -60,11 +62,20 @@ from lancedb.table import _normalize_progress
 
 from ..query import (
     AnalyzePlanDistributedMetrics,
+    DocumentGranularity,
     LanceQueryBuilder,
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
 )
-from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
+from ..table import (
+    AsyncTable,
+    BlobMode,
+    Branches,
+    IndexStatistics,
+    Query,
+    Table,
+    Tags,
+)
 from ..types import BaseTokenizerType
 
 
@@ -348,6 +359,7 @@ class RemoteTable(Table):
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         block_size: int = 128,
+        document_granularity: DocumentGranularity = DocumentGranularity.ROW,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -370,6 +382,7 @@ class RemoteTable(Table):
             ngram_max_length=ngram_max_length,
             prefix_only=prefix_only,
             block_size=block_size,
+            document_granularity=document_granularity,
         )
         LOOP.run(
             self._table.create_index(
@@ -535,6 +548,7 @@ class RemoteTable(Table):
         LOOP.run(
             self._table.create_index(
                 column,
+                replace=replace,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
@@ -609,6 +623,7 @@ class RemoteTable(Table):
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -641,6 +656,8 @@ class RemoteTable(Table):
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Not supported on LanceDB Cloud. Setting this raises.
 
         Returns
         -------
@@ -657,6 +674,7 @@ class RemoteTable(Table):
                     fill_value=fill_value,
                     progress=progress,
                     write_parallelism=write_parallelism,
+                    allow_external_blob_outside_bases=allow_external_blob_outside_bases,
                 )
             )
         finally:
@@ -702,7 +720,7 @@ class RemoteTable(Table):
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
@@ -855,7 +873,7 @@ class RemoteTable(Table):
 
     def update(
         self,
-        where: Optional[str] = None,
+        where: Optional[Union[str, Expr]] = None,
         values: Optional[dict] = None,
         *,
         values_sql: Optional[Dict[str, str]] = None,
@@ -866,9 +884,11 @@ class RemoteTable(Table):
 
         Parameters
         ----------
-        where: str, optional
-            The SQL where clause to use when updating rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        where: str or [Expr][lancedb.expr.Expr], optional
+            The filter condition. Can be a SQL string or a type-safe
+            [Expr][lancedb.expr.Expr] built with [col][lancedb.expr.col] and
+            [lit][lancedb.expr.lit]. The filter must not be empty, or it will
+            error.
         values: dict, optional
             The values to update. The keys are the column names and the values
             are the values to set.
@@ -958,8 +978,21 @@ class RemoteTable(Table):
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
 
-    def add_columns(self, transforms: Dict[str, str]) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms))
+    def add_columns(
+        self,
+        transforms: Dict[str, str | FunctionApplication]
+        | FunctionApplication
+        | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
+    ) -> AddColumnsResult:
+        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+
+    def refresh_column(self, column: str):
+        return LOOP.run(self._table.refresh_column(column))
+
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnResult]:
+        return Job(LOOP.run(self._table.refresh_column_async(column)))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -979,16 +1012,38 @@ class RemoteTable(Table):
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
     def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
-        """Not supported on LanceDB Cloud."""
+        """Install an LsmWriteSpec."""
         return LOOP.run(self._table.set_lsm_write_spec(spec))
 
     def unset_lsm_write_spec(self) -> None:
-        """Not supported on LanceDB Cloud."""
+        """Remove the LsmWriteSpec."""
         return LOOP.run(self._table.unset_lsm_write_spec())
 
     def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
         """Read the installed LsmWriteSpec, or ``None``."""
         return LOOP.run(self._table.get_lsm_write_spec())
+
+    def checkpoint_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
+        return LOOP.run(self._table.checkpoint_lsm())
+
+    def flush_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.flush_lsm`][lancedb.AsyncTable.flush_lsm]."""
+        return LOOP.run(self._table.flush_lsm())
+
+    def compact_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
+        return LOOP.run(self._table.compact_lsm())
+
+    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+        """Synchronous version of
+        [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
+        return LOOP.run(
+            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+        )
 
     def close_lsm_writers(self) -> None:
         """No-op on LanceDB Cloud (no local shard writers)."""

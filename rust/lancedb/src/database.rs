@@ -18,8 +18,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::RecordBatch;
-
 use lance::dataset::ReadParams;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
@@ -206,8 +204,8 @@ pub enum ReadConsistency {
 /// compaction, column refresh, ...).
 #[derive(Debug, Clone)]
 pub struct JobInfo {
-    /// The job id -- what [`Database::get_job`] and [`Database::cancel_job`]
-    /// accept.
+    /// The job id -- what [`Database::open_job`] and
+    /// [`Database::cancel_job`] accept.
     pub job_id: String,
     /// The table the job runs against, without URI or namespace.
     pub table: String,
@@ -218,8 +216,8 @@ pub struct JobInfo {
     pub created_at_millis: i64,
 }
 
-/// A described job from [`Database::get_job`]: lifecycle state plus the
-/// job-type-specific specification.
+/// The server-side record behind a [`crate::job::Job`] handle: lifecycle
+/// state plus the job-type-specific specification and result.
 #[derive(Debug, Clone)]
 pub struct JobDescription {
     pub job_id: String,
@@ -230,6 +228,10 @@ pub struct JobDescription {
     pub creation_ms: i64,
     /// The job-type-specific specification. Null when the server omits it.
     pub spec: serde_json::Value,
+    /// The job-type-specific terminal result, for job types that define one.
+    /// `None` until the job succeeds, so a job that never terminates reports
+    /// its progress through [`crate::job::Job::events`] instead.
+    pub result: Option<serde_json::Value>,
     /// Why the job failed, when the job is failed and the server reports a
     /// reason.
     pub failure: Option<crate::error::JobFailure>,
@@ -238,6 +240,12 @@ pub struct JobDescription {
 fn job_op_not_supported<T>(what: &str) -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: format!("{} is not supported by this database", what),
+    })
+}
+
+fn function_catalog_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Function catalog operations are not supported by this database".to_string(),
     })
 }
 
@@ -286,19 +294,38 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
-    /// A [`crate::job::Job`] handle for a server-side job by id, suitable for
-    /// waiting on or cancelling the job. The handle is constructed without a
-    /// server round trip; an unknown id surfaces when the handle is used.
-    fn job(&self, _job_id: &str) -> Result<crate::job::Job> {
-        job_op_not_supported("job")
+    /// Register an immutable Function version through the remote catalog.
+    async fn create_function_async(
+        &self,
+        _request: crate::function::FunctionRegistrationRequest,
+    ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
+        function_catalog_not_supported()
+    }
+    /// Look up one exact immutable Function version.
+    async fn get_function(
+        &self,
+        _name: &str,
+        _version: &str,
+    ) -> Result<crate::function::FunctionVersion> {
+        function_catalog_not_supported()
+    }
+    /// List every published immutable Function version in the remote catalog.
+    async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
+        function_catalog_not_supported()
+    }
+    /// Drop one exact immutable Function version from the remote catalog.
+    async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
+        function_catalog_not_supported()
+    }
+    /// Open a job by id, returning a handle with its record already
+    /// populated. Fails with [`crate::Error::JobNotFound`] when the server has
+    /// no such job.
+    async fn open_job(&self, _job_id: &str) -> Result<crate::job::Job> {
+        job_op_not_supported("open_job")
     }
     /// List server-side jobs across the database's tables.
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
         job_op_not_supported("list_jobs")
-    }
-    /// Describe a single job by id. `None` when the server has no such job.
-    async fn get_job(&self, _job_id: &str) -> Result<Option<JobDescription>> {
-        job_op_not_supported("get_job")
     }
     /// Request cancellation of a job by id. Returns true if the server
     /// accepted the cancellation, false if no such job exists. Cancelling an
@@ -306,10 +333,21 @@ pub trait Database:
     async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
         job_op_not_supported("cancel_job")
     }
-    /// The lifecycle event history of a job (all jobs when `job_id` is
-    /// `None`), as recorded Arrow batches.
-    async fn job_history(&self, _job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
-        job_op_not_supported("job_history")
+    /// Start executing a SQL statement on a remote database.
+    async fn execute_query_async(
+        &self,
+        _query: &str,
+        _default_namespace_path: &[String],
+    ) -> Result<crate::sql::Query> {
+        Err(crate::error::Error::NotSupported {
+            message: "SQL is not supported by this database".to_string(),
+        })
+    }
+    /// Describe a submitted SQL query by its connection-scoped id.
+    async fn describe_query(&self, _query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
+        Err(crate::error::Error::NotSupported {
+            message: "SQL is not supported by this database".to_string(),
+        })
     }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
@@ -323,6 +361,18 @@ pub trait Database:
     ) -> Result<()>;
     /// Drop a table in the database
     async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()>;
+    /// Start dropping a table and return a handle to the cleanup job.
+    ///
+    /// Backends without asynchronous cleanup complete the drop before
+    /// returning an already-finished job.
+    async fn drop_table_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        self.drop_table(name, namespace_path).await?;
+        Ok(crate::job::Job::new_done())
+    }
     /// Drop all tables in the database
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;

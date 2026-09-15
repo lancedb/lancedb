@@ -9,6 +9,18 @@ debug = true
 codegen-units = 16
 lto = "thin"
 
+[profile.release-no-lto]
+inherits = "release"
+debug = true
+lto = false
+# Prioritize compile time when LTO is not relevant to the measurement.
+codegen-units = 16
+
+[profile.bench]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 [target.'cfg(all())']
 rustflags = [
     "-Wclippy::all",

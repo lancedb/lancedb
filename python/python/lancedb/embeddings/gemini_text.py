@@ -7,8 +7,7 @@ from functools import cached_property
 from typing import List, Optional, Union
 
 import numpy as np
-
-from lancedb.pydantic import PYDANTIC_VERSION
+from pydantic import ConfigDict
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
@@ -87,13 +86,7 @@ class GeminiText(TextEmbeddingFunction):
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
 
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            keep_untouched = (cached_property,)
-    else:
-        model_config = dict()
-        model_config["ignored_types"] = (cached_property,)
+    model_config = ConfigDict(ignored_types=(cached_property,))
 
     def ndims(self):
         if self.dim:

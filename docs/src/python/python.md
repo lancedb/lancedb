@@ -28,10 +28,63 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.Session
 
+## Remote SQL
+
+Submit SQL against a remote LanceDB database through the connection.
+The connected database and `default_namespace_path=["public"]` are used for
+unqualified tables. Fully qualified references can still query other databases
+and namespaces available to the same deployment. `execute_query` returns a
+reader as soon as its initial result stream is available. `execute_query_async`
+returns a query handle immediately; use it to inspect progress, open a reader,
+or cancel the query. The SQL client is initialized by the first query and
+retained for the lifetime of the remote connection. Query ids are random,
+connection-scoped references rather than encoded SQL or durable resume tokens:
+
+```python
+import lancedb
+
+db = lancedb.connect(
+    "db://analytics",
+    api_key="ldb_...",
+    host_override="https://api.example.com",
+    sql_host_override="grpc+tls://sql.example.com:10026",
+)
+reader = db.execute_query(
+    """
+    SELECT events.id, accounts.name
+    FROM analytics.public.events AS events
+    JOIN users.public.accounts AS accounts ON events.user_id = accounts.id
+    """,
+    default_namespace_path=["public"],
+)
+for batch in reader:
+    print(batch.num_rows)
+
+query = db.execute_query_async("SELECT * FROM events")
+print(query.id)
+print(query.describe().status)
+for batch in query.reader():
+    print(batch.num_rows)
+
+# The async connection exposes the same lifecycle without blocking:
+# async_db = await lancedb.connect_async(
+#     "db://analytics",
+#     api_key="ldb_...",
+#     host_override="https://api.example.com",
+#     sql_host_override="grpc+tls://sql.example.com:10026",
+# )
+# reader = await async_db.execute_query("SELECT * FROM events")
+# query = await async_db.execute_query_async("SELECT * FROM events")
+# description = await async_db.describe_query(query.id)
+# async for batch in await query.reader():
+#     print(batch.num_rows)
+# await query.cancel()
+```
+
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
-[Lance namespace](https://lancedb.github.io/lance-namespace/) service instead of
+[Lance namespace](https://lance-format.github.io/lance-namespace/) service instead of
 listing a storage directory.
 
 ::: lancedb.connect_namespace
@@ -51,6 +104,76 @@ listing a storage directory.
 ::: lancedb.table.Tags
 
 ::: lancedb.table.Branches
+
+::: lancedb.LsmWriteSpec
+
+## Functions and Jobs
+
+::: lancedb.functions.FunctionArtifact
+
+::: lancedb.functions.FunctionParameter
+
+::: lancedb.functions.FunctionResultField
+
+::: lancedb.functions.FunctionOutput
+
+::: lancedb.functions.FunctionSignature
+
+::: lancedb.functions.PythonEnvironmentSpec
+
+::: lancedb.functions.udf
+
+::: lancedb.functions.UdfDefinition
+
+::: lancedb.functions.FunctionRegistrationRequest
+
+::: lancedb.functions.FunctionArtifactRequest
+
+::: lancedb.functions.FunctionArtifactContent
+
+::: lancedb.functions.PythonAdapterSpec
+
+::: lancedb.functions.FunctionVersion
+
+::: lancedb.functions.PythonRuntimeSpec
+
+::: lancedb.functions.FunctionVersionRef
+
+::: lancedb.functions.ApplicationInput
+
+::: lancedb.functions.FunctionApplication
+
+::: lancedb.functions.InputBinding
+
+::: lancedb.functions.OutputMapping
+
+::: lancedb.functions.AssignmentMapping
+
+::: lancedb.functions.FunctionBinding
+
+::: lancedb.functions.RefreshColumnResult
+
+::: lancedb.job.Job
+
+::: lancedb.job.AsyncJob
+
+::: lancedb.job.JobInfo
+
+::: lancedb.job.JobDescription
+
+::: lancedb.job.JobFailureInfo
+
+::: lancedb.sql.Query
+
+::: lancedb.sql.AsyncQuery
+
+::: lancedb.sql.QueryDescription
+
+## Materialized Views (Synchronous)
+
+::: lancedb.materialized_view.MaterializedView
+
+::: lancedb.materialized_view.MaterializedViewDefinition
 
 ## Expressions
 
@@ -103,6 +226,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 
 ::: lancedb.query.FullTextOperator
 
+::: lancedb.query.DocumentGranularity
+
 ::: lancedb.query.Occur
 
 ## Embeddings
@@ -151,8 +276,9 @@ The same option is available on `lancedb.tokenize(...)` and the deprecated
 ```python
 import lancedb
 
-tokens = list(lancedb.tokenize("acme makes searchable data",
-                               custom_stop_words=["acme"]))
+tokens = list(
+    lancedb.tokenize("acme makes searchable data", custom_stop_words=["acme"])
+)
 ```
 
 ::: lancedb.tokenize
@@ -164,9 +290,13 @@ tokens = list(lancedb.tokenize("acme makes searchable data",
 Blob columns store large binary values out of line so they can be read lazily
 instead of being materialized with the rest of the row.
 
-::: lancedb.blob
+`lancedb.BlobType` is `lance.blob.BlobType` when pylance is installed. Without
+pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
+still work. Queries return descriptors. Call
+[`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
+[`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
 
-::: lancedb.BlobType
+::: lancedb.blob
 
 ::: lancedb._blob.BlobFile
     options:
@@ -186,6 +316,12 @@ instead of being materialized with the rest of the row.
 
 ::: lancedb.exceptions.MissingColumnError
 
+::: lancedb.exceptions.JobNotFoundError
+
+::: lancedb.exceptions.JobFailedError
+
+::: lancedb.exceptions.JobCancelledError
+
 ## Integrations
 
 ## Pydantic
@@ -203,6 +339,8 @@ instead of being materialized with the rest of the row.
 ## PyTorch
 
 ::: lancedb.streaming.StreamingDataset
+
+::: lancedb.streaming.StreamingDataLoader
 
 ::: lancedb.permutation.permutation_builder
 
@@ -243,6 +381,10 @@ Table hold your actual data as a collection of records / rows.
 ::: lancedb.table.AsyncTags
 
 ::: lancedb.table.AsyncBranches
+
+## Materialized Views (Asynchronous)
+
+::: lancedb.materialized_view.AsyncMaterializedView
 
 ## Indices (Asynchronous)
 

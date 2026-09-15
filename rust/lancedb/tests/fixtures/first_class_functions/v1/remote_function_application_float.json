@@ -1,0 +1,7 @@
+{
+  "function": {"name": "score", "version": "fv_01K3FLOAT"},
+  "inputs": [
+    {"parameter": "threshold", "kind": "literal", "value": 1e-7}
+  ],
+  "output": {"kind": "scalar", "arrow_type": "bool", "nullable": false}
+}

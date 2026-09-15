@@ -10,16 +10,12 @@
 function getRegistry(): EmbeddingFunctionRegistry
 ```
 
-Utility function to get the global instance of the registry
+Get the global embedding function registry.
+
+LanceDB built-in providers are initialized when this public API is first
+used, so importing the root package does not change automatic search
+selection for tables without embedding metadata.
 
 ## Returns
 
 [`EmbeddingFunctionRegistry`](../classes/EmbeddingFunctionRegistry.md)
-
-`EmbeddingFunctionRegistry` The global instance of the registry
-
-## Example
-
-```ts
-const registry = getRegistry();
-const openai = registry.get("openai").create();

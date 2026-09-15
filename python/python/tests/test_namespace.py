@@ -193,7 +193,13 @@ class TestNamespaceConnection:
             ),
         )
 
-        table = db.create_table("blob_table", data, namespace_path=["test_ns"])
+        # Legacy v1 blob columns are only writable at file version <= 2.1.
+        table = db.create_table(
+            "blob_table",
+            data,
+            namespace_path=["test_ns"],
+            storage_options={"new_table_data_storage_version": "2.1"},
+        )
         df = table.to_pandas(blob_mode="lazy").sort_values("id")
 
         blob = df["blob"].iloc[0]
