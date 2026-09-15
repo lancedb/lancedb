@@ -81,6 +81,30 @@ impl PatchReadParam for ReadParams {
     }
 }
 
+/// Refuse a path component that is periods alone.
+///
+/// Every character these names admit is unreserved, so a component needs no
+/// escaping to sit in a URL path segment -- with one exception that is
+/// positional rather than lexical. `.` and `..` are resolved as relative path
+/// segments, and *after* percent-decoding, so `%2E%2E` is resolved exactly as
+/// `..` is and no spelling of a dot-only component survives to reach a route.
+///
+/// An object so named could be created and then never addressed again, and on
+/// the way there the request goes somewhere else: `drop_table("..")` resolves
+/// to `/v1/drop/`, and a body meant for one route is delivered to whatever
+/// handler is left at the other.
+fn reject_dot_only(what: &str, value: &str) -> Result<()> {
+    if !value.is_empty() && value.chars().all(|character| character == '.') {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "invalid {what} '{value}': a component of only periods is read as a relative \
+                 path and cannot address an object"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Validate table name.
 pub fn validate_table_name(name: &str) -> Result<()> {
     if name.is_empty() {
@@ -109,6 +133,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
                     .to_string(),
         });
     }
+    reject_dot_only("table name", name)?;
     Ok(())
 }
 
@@ -138,6 +163,7 @@ pub fn validate_namespace_name(name: &str) -> Result<()> {
             ),
         });
     }
+    reject_dot_only("namespace name", name)?;
     Ok(())
 }
 
@@ -190,20 +216,7 @@ pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
             ),
         });
     }
-    // Every character above is unreserved, so a component needs no escaping to
-    // sit in a path segment -- with one exception that is positional rather
-    // than lexical. `.` and `..` are resolved as relative path segments, and
-    // after percent-decoding, so `%2E%2E` is resolved exactly as `..` is and no
-    // spelling of a dot-only component survives to reach a route. A Secret so
-    // named could be stored and then never addressed again.
-    if value.chars().all(|character| character == '.') {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "invalid {what} '{value}': a component of only periods is read as a relative \
-                 path and cannot address a Secret"
-            ),
-        });
-    }
+    reject_dot_only(what, value)?;
     Ok(())
 }
 
