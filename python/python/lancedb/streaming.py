@@ -21,12 +21,10 @@ above.
 import ctypes
 import heapq
 import logging
-import math
 import os
 import random
 import threading
 import time
-import uuid
 import warnings
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -137,7 +135,7 @@ class _TwoPhaseSplitReader:
         shuffle: bool,
         max_shuffle_distance: int,
         seed: int,
-        read_block_fn: Callable[[int], tuple[pa.Table, list[int]]],
+        read_block_fn: Callable[[int], pa.Table],
         columns: Optional[list[str]],
     ):
         self._block_ids = block_ids
@@ -189,10 +187,10 @@ class _TwoPhaseSplitReader:
             for bp in needed:
                 if bp not in self._loaded:
                     block_id = self._block_ids[bp]
-                    raw, live_positions = self._read_block_fn(block_id)
-                    self._loaded[bp] = raw.take(
-                        pa.array(live_positions, type=pa.int64())
-                    )
+                    # read_block_fn already returns only this block's live
+                    # rows, in natural (ascending) order -- no further
+                    # filtering or reordering needed here.
+                    self._loaded[bp] = self._read_block_fn(block_id)
 
             # Group by source block (stable, so each block's rows keep
             # their relative order), gather from each, then invert the
@@ -447,13 +445,19 @@ class StreamingDataset(IterableDataset):
         set (2-phase mode has its own locality/randomness knobs, below).
     block_size:
         Enables 2-phase shuffled reads: rows are shuffled at the granularity
-        of contiguous blocks of (approximately, or exactly when ``filter``
-        is unset) this many rows, and each split reads a rolling window of
-        ``window_blocks`` blocks at a time instead of taking individual rows
-        by row-id.  This trades some randomness for I/O that is almost
-        entirely contiguous range scans rather than row-id takes, which is
-        far cheaper on object storage.  ``None`` (the default) uses 1-phase
-        shuffling, which permutes every row individually up front.
+        of contiguous blocks of exactly this many live rows, and each split
+        reads a rolling window of ``window_blocks`` blocks at a time instead
+        of taking individual rows by row-id.  This trades some randomness
+        for I/O that is mostly contiguous range scans (or, when ``filter``
+        is set, sparse takes of just the live rows) rather than one row-id
+        take per row, which is far cheaper on object storage.  ``None`` (the
+        default) uses 1-phase shuffling, which permutes every row
+        individually up front.  If
+        ``block_size`` doesn't evenly divide the (live) row count, the
+        trailing partial block is discarded rather than read as an
+        undersized final block; likewise, if the block count doesn't evenly
+        divide ``num_splits``, the surplus blocks are dropped so every split
+        gets the same number of blocks.
     window_blocks:
         Number of blocks kept in RAM per split at once in 2-phase mode.
         Larger windows shuffle across more rows at the cost of more memory;
@@ -790,55 +794,65 @@ class StreamingDataset(IterableDataset):
             # row-by-row index mapping) is not built at all in this mode.
             #
             # block_size counts LIVE rows (rows passing `filter`), not raw
-            # rows, so a block's raw span varies with local filter
-            # selectivity.  Each block therefore remembers its own raw
-            # [start, end) row range in self._block_ranges rather than being
-            # derived from block_id via fixed-size arithmetic alone.
+            # rows.
+            block_live_offsets: Optional[list[np.ndarray]] = None
             if filter is None:
-                num_rows = table.count_rows()
-                num_blocks = math.ceil(num_rows / block_size) if num_rows else 0
+                total_rows = table.count_rows()
+                # Discard the trailing runt block (the remainder rows left
+                # over when block_size doesn't evenly divide the row count)
+                # rather than reading it as an undersized final block.
+                num_blocks = total_rows // block_size
                 block_ranges = [
-                    (i * block_size, min((i + 1) * block_size, num_rows))
-                    for i in range(num_blocks)
+                    (i * block_size, (i + 1) * block_size) for i in range(num_blocks)
                 ]
-                block_live_counts = [end - start for start, end in block_ranges]
+                block_live_counts = [block_size] * num_blocks
+                num_rows = num_blocks * block_size
             else:
                 # One pass, computed once here and never repeated at read
-                # time: every fragment's raw and live row counts are read
-                # exactly once (count_rows(filter) touches that fragment's
-                # data once) to lay out block boundaries on fragment edges,
-                # so later block reads are plain offset/limit scans that
-                # Lance can seek to directly, instead of re-scanning from
-                # the start of the table on every read.  The exact live
-                # count of each block is also recorded here, from the same
-                # pass, so read time never has to guess how many live rows
-                # a block will actually yield.
-                fragments = table.to_lance().get_fragments()
-                frag_raw_lens = [frag.count_rows() for frag in fragments]
-                frag_live_lens = [frag.count_rows(filter) for frag in fragments]
-                num_rows = sum(frag_live_lens)
+                # time: a single filtered scan over the whole table asks
+                # Lance to evaluate `filter` natively (pushed down against
+                # each fragment's own data, using its usual page/zone-map
+                # skipping) and hand back only each live row's
+                # "_rowoffset" -- a system column giving its 0-indexed
+                # dataset-wide position -- without materializing any real
+                # column data.  Blocks are then just contiguous chunks of
+                # this live-offset array (exactly block_size live rows
+                # each; no more approximating by snapping to fragment
+                # edges), and at read time each block's exact live offsets
+                # are already known, so a sparse take() can fetch just
+                # those rows -- see _read_block in _iter_owned.
+                live_offsets = (
+                    table.to_lance()
+                    .scanner(filter=filter, columns=["_rowoffset"])
+                    .to_table()
+                    .column("_rowoffset")
+                    .to_numpy()
+                )
+                # Defensive: guarantee ascending order regardless of scan
+                # execution order, since block/row semantics below assume
+                # it (a no-op when already ascending, the common case).
+                if live_offsets.size and not np.all(
+                    live_offsets[:-1] <= live_offsets[1:]
+                ):
+                    live_offsets = np.sort(live_offsets)
 
+                # Whatever live rows remain after the last full block is
+                # the trailing runt block (block_size doesn't evenly
+                # divide the live row count) -- discard it rather than
+                # reading an undersized final block.
+                num_blocks = live_offsets.size // block_size
                 block_ranges = []
-                block_live_counts = []
-                raw_pos = 0
-                block_start = 0
-                block_live = 0
-                for raw_len, live_len in zip(frag_raw_lens, frag_live_lens):
-                    if block_live > 0 and block_live + live_len > block_size:
-                        block_ranges.append((block_start, raw_pos))
-                        block_live_counts.append(block_live)
-                        block_start = raw_pos
-                        block_live = 0
-                    block_live += live_len
-                    raw_pos += raw_len
-                if block_live > 0:
-                    block_ranges.append((block_start, raw_pos))
-                    block_live_counts.append(block_live)
-                num_blocks = len(block_ranges)
+                block_live_offsets = [
+                    live_offsets[i * block_size : (i + 1) * block_size]
+                    for i in range(num_blocks)
+                ]
+                block_live_counts = [block_size] * num_blocks
+                num_rows = num_blocks * block_size
 
             self._num_rows = num_rows
             self._num_blocks = num_blocks
             self._block_ranges: list[tuple[int, int]] = block_ranges
+            self._block_live_offsets: Optional[list[np.ndarray]] = block_live_offsets
             self._block_live_counts: list[int] = block_live_counts
             if self._num_blocks < num_splits:
                 raise ValueError(
@@ -1074,44 +1088,27 @@ class StreamingDataset(IterableDataset):
             # 1-phase.  No 2-phase-specific code exists past this point.
             blocks_per_split = self._num_blocks // self._num_splits
             lance_ds = self._table.to_lance()
-            from . import connect as _connect
 
-            def _read_block(block_id: int) -> tuple[pa.Table, list[int]]:
-                # Plain offset/limit, no filter: unambiguous raw-position
-                # scan that Lance can seek to directly, and it pulls in
-                # dead rows right along with live ones -- that's fine, they
-                # never get selected below and cost nothing extra to fetch.
-                # Bytes/time accounting happens generically in _io_call,
-                # below, not here.
-                row_start, row_end = self._block_ranges[block_id]
-                raw = lance_ds.scanner(
-                    offset=row_start,
-                    limit=row_end - row_start,
-                ).to_table()
-
+            def _read_block(block_id: int) -> pa.Table:
                 if self._filter is None:
-                    return raw, list(range(raw.num_rows))
+                    # Plain offset/limit: unambiguous raw-position scan
+                    # that Lance can seek to directly.  Bytes/time
+                    # accounting happens generically in _io_call, below,
+                    # not here.
+                    row_start, row_end = self._block_ranges[block_id]
+                    return lance_ds.scanner(
+                        offset=row_start,
+                        limit=row_end - row_start,
+                    ).to_table()
 
-                # Which of these already-in-RAM rows are live?  Answered
-                # without any further object-storage access: tag each row
-                # with its position, round-trip that through a throwaway
-                # in-memory Lance table, and apply the real filter engine
-                # to it locally -- guarantees the exact same filter
-                # semantics as everywhere else, with no extra I/O.
-                tagged = raw.append_column(
-                    "__pos", pa.array(range(raw.num_rows), type=pa.int64())
-                )
-                mem_table = _connect("memory://").create_table(
-                    f"block-{uuid.uuid4().hex}", tagged
-                )
-                live_positions = (
-                    mem_table.to_lance()
-                    .scanner(filter=self._filter, columns=["__pos"])
-                    .to_table()
-                    .column("__pos")
-                    .to_pylist()
-                )
-                return raw, live_positions
+                # Filtered: this block's exact live-row dataset offsets
+                # were already computed once, up front (from the
+                # "_rowoffset" system column -- see __init__), so a
+                # sparse take() fetches just the live rows themselves,
+                # skipping any dead-row gaps entirely, in the requested
+                # (already-ascending, already-natural) order.
+                offsets = self._block_live_offsets[block_id]
+                return lance_ds.take(offsets.tolist())
 
             permutations: list[_TwoPhaseSplitReader] = []
             initial_samples = []
