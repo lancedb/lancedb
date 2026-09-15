@@ -15,6 +15,16 @@ All token acquisition and refresh is handled in the Rust layer.
 
 ## Properties
 
+### callbackPort?
+
+```ts
+optional callbackPort: number;
+```
+
+Port for the authorization_code loopback callback server.
+
+***
+
 ### clientId
 
 ```ts
@@ -41,7 +51,8 @@ Client secret (required for client_credentials).
 optional flow: string;
 ```
 
-Authentication flow: "client_credentials" or "azure_managed_identity"
+Authentication flow: "client_credentials", "authorization_code",
+"device_code", or "azure_managed_identity"
 
 ***
 
@@ -66,6 +77,16 @@ Client ID for user-assigned managed identity (azure_managed_identity).
 
 ***
 
+### redirectUri?
+
+```ts
+optional redirectUri: string;
+```
+
+Loopback redirect URI for authorization_code.
+
+***
+
 ### refreshBufferSecs?
 
 ```ts
@@ -86,3 +107,24 @@ scopes: string[];
 
 OAuth scopes to request. For Azure managed identity, exactly one scope
 or resource is required. For example: `["api://{app_id}/.default"]`
+
+***
+
+### tokenCache?
+
+```ts
+optional tokenCache: TokenCacheOptions;
+```
+
+Opt in to the persistent token cache so short-lived processes reuse
+one session. Only refresh tokens are persisted.
+
+***
+
+### usePkce?
+
+```ts
+optional usePkce: boolean;
+```
+
+Whether authorization_code uses S256 PKCE (default: true).
