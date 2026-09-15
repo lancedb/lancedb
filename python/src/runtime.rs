@@ -350,6 +350,22 @@ where
 mod tests {
     use super::*;
 
+    // RUNTIME, GENERATION, OUTSTANDING, and ATFORK_INSTALLED are process-wide
+    // statics, and Rust's test harness runs tests in parallel by default,
+    // so separate test functions below would otherwise race each other
+    // through this shared state (this reproduced in CI: one test's
+    // in-flight task got reclaimed by a *different* test's concurrent
+    // `shutdown()` call, and another observed `OUTSTANDING` left non-zero
+    // by a still-running sibling). Every test takes this lock first so
+    // only one of them touches the shared runtime state at a time; a
+    // poisoned lock (a previous test's genuine failure) is still honored
+    // rather than cascading into every later test as an unrelated panic.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_runtime_state_for_test() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     // A task's own completion must never be the final drop of the shared
     // `Runtime`: tasks carry only an `OutstandingGuard` (a plain counter
     // token), never an `Arc<Runtime>`, specifically so this can't happen.
@@ -361,6 +377,7 @@ mod tests {
     #[allow(unused_must_use)] // fire-and-forget spawn, same as future_into_py itself
     fn test_top_level_task_survives_concurrent_shutdown_reclaim() {
         use std::sync::mpsc;
+        let _lock = lock_runtime_state_for_test();
 
         for _ in 0..50 {
             let (tx, rx) = mpsc::channel::<()>();
@@ -381,6 +398,8 @@ mod tests {
 
     #[test]
     fn test_shutdown_stops_and_the_runtime_rebuilds_lazily_after() {
+        let _lock = lock_runtime_state_for_test();
+
         // No runtime created yet in this process: shutdown must be a no-op,
         // not a null-pointer dereference.
         shutdown(Duration::from_secs(1));
@@ -412,6 +431,7 @@ mod tests {
     fn test_shutdown_is_safe_concurrently_with_live_callers() {
         use std::sync::Barrier;
         use std::sync::atomic::AtomicBool as StopFlag;
+        let _lock = lock_runtime_state_for_test();
 
         for _ in 0..50 {
             let barrier = Arc::new(Barrier::new(9));
@@ -453,6 +473,7 @@ mod tests {
     #[allow(unused_must_use)] // fire-and-forget outer spawn, same as future_into_py itself
     fn test_nested_spawn_survives_concurrent_shutdown() {
         use std::sync::mpsc;
+        let _lock = lock_runtime_state_for_test();
 
         for _ in 0..50 {
             let stop = Arc::new(AtomicBool::new(false));
@@ -504,6 +525,7 @@ mod tests {
     #[test]
     fn test_shutdown_waits_for_a_racing_install() {
         use std::sync::mpsc;
+        let _lock = lock_runtime_state_for_test();
 
         // Clean slate: no runtime installed, OUTSTANDING at zero.
         shutdown(Duration::from_secs(5));
