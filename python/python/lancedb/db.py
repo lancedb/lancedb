@@ -1345,13 +1345,13 @@ class LanceDBConnection(DBConnection):
             self._conn.create_materialized_view_async(
                 name,
                 source,
-                projections=normalize_select(select),
-                filter=where,
+                select=select,
+                where=where,
                 limit=limit,
                 with_no_data=with_no_data,
             )
         )
-        return Job(AsyncJob(job))
+        return Job(job)
 
     @override
     def open_materialized_view(self, name: str) -> MaterializedView:
