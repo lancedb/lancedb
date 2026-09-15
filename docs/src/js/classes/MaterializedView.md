@@ -49,7 +49,7 @@ get name(): string
 definition(): Promise<MaterializedViewDefinition>
 ```
 
-The query that defines the view, read from its stored schema.
+The query that defines the view.
 
 #### Returns
 

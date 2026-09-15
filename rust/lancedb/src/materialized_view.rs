@@ -29,7 +29,6 @@ use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
 use crate::database::{CreateTableRequest, Database, OpenTableRequest};
 use crate::embeddings::EmbeddingDefinition;
 use crate::function::FunctionBinding;
-use crate::job::Job;
 use crate::table::Table;
 use crate::table::computed_columns::{
     FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,

@@ -404,7 +404,7 @@ impl Connection {
                 builder = builder.limit(limit);
             }
             builder = builder.with_no_data(with_no_data);
-            let view = builder.execute().await.infer_error()?;
+            let view = Box::pin(builder.execute()).await.infer_error()?;
             Ok(Table::new(view.table().clone()))
         })
     }
