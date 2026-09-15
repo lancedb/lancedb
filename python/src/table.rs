@@ -452,6 +452,17 @@ pub struct RefreshMaterializedViewResult {
 
 #[pymethods]
 impl RefreshMaterializedViewResult {
+    #[staticmethod]
+    pub fn from_json(value: &str) -> PyResult<Self> {
+        let result: lancedb::RefreshMaterializedViewResult =
+            serde_json::from_str(value).map_err(|err| {
+                PyValueError::new_err(format!(
+                    "failed to decode materialized-view refresh result: {err}"
+                ))
+            })?;
+        Ok(Self::from(result))
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
             "RefreshMaterializedViewResult(mode={}, rows_written={}, source_version={}, version={})",
@@ -1644,6 +1655,40 @@ impl Table {
             }
             let result = builder.execute().await.infer_error()?;
             Ok(RefreshMaterializedViewResult::from(result))
+        })
+    }
+
+    #[pyo3(signature = (full=false, source_version=None))]
+    pub fn refresh_materialized_view_async(
+        self_: PyRef<'_, Self>,
+        full: bool,
+        source_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            let mut builder = view.refresh().full(full);
+            if let Some(version) = source_version {
+                builder = builder.source_version(version);
+            }
+            let job = builder.execute_async().await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
+        })
+    }
+
+    pub fn materialized_view_definition(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            serde_json::to_string(view.definition()).map_err(|err| {
+                PyRuntimeError::new_err(format!(
+                    "failed to serialize materialized-view definition: {err}"
+                ))
+            })
         })
     }
 

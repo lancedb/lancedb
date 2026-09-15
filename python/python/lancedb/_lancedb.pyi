@@ -211,8 +211,24 @@ class Connection(object):
         projections: Optional[List[Tuple[str, str]]] = None,
         filter: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> Table: ...
+    async def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        projections: Optional[List[Tuple[str, str]]] = None,
+        filter: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job: ...
     async def list_materialized_views(self) -> List[str]: ...
+    async def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None: ...
+    async def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job: ...
     async def drop_table(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
@@ -429,6 +445,10 @@ class Table:
     async def refresh_materialized_view(
         self, full: bool = False, source_version: Optional[int] = None
     ) -> RefreshMaterializedViewResult: ...
+    async def refresh_materialized_view_async(
+        self, full: bool = False, source_version: Optional[int] = None
+    ) -> Job: ...
+    async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
     async def alter_columns(
         self, columns: list[dict[str, Any]]
@@ -782,6 +802,8 @@ class RefreshColumnResult:
     version: int
 
 class RefreshMaterializedViewResult:
+    @staticmethod
+    def from_json(value: str) -> RefreshMaterializedViewResult: ...
     mode: str
     rows_written: int
     source_version: int

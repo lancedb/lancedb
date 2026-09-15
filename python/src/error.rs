@@ -29,6 +29,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 LanceError::InvalidInput { .. }
                 | LanceError::InvalidTableName { .. }
                 | LanceError::TableNotFound { .. }
+                | LanceError::NotAMaterializedView { .. }
                 | LanceError::Schema { .. }
                 | LanceError::TableAlreadyExists { .. } => self.value_error(),
                 LanceError::CreateDir { .. } => self.os_error(),
