@@ -375,6 +375,54 @@ Drop all tables in the database.
 
 ***
 
+### dropMaterializedView()
+
+```ts
+abstract dropMaterializedView(name, namespacePath?): Promise<void>
+```
+
+Drop the materialized view named `name`.
+
+The view may become unavailable before physical cleanup finishes. Use
+[dropMaterializedViewAsync](Connection.md#dropmaterializedviewasync) to retain and wait for the cleanup job.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### dropMaterializedViewAsync()
+
+```ts
+abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping the materialized view named `name` and return its cleanup
+job without waiting for completion.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### dropNamespace()
 
 ```ts

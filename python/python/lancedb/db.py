@@ -612,7 +612,12 @@ class DBConnection(EnforceOverrides):
     def drop_materialized_view(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None:
-        """Drop a materialized view."""
+        """Drop a materialized view.
+
+        The view may become unavailable before physical cleanup finishes. Use
+        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
+        job.
+        """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
         )
@@ -620,7 +625,12 @@ class DBConnection(EnforceOverrides):
     def drop_materialized_view_async(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job[None]:
-        """Start dropping a materialized view and return its cleanup job."""
+        """Start dropping a materialized view and return its cleanup job.
+
+        The job may already be complete for a local database. On LanceDB Cloud
+        and Enterprise, its ``id`` is the server job identifier from the
+        ``202 Accepted`` drop response.
+        """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
         )
@@ -2231,7 +2241,12 @@ class AsyncConnection(object):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> None:
-        """Drop a materialized view."""
+        """Drop a materialized view.
+
+        The view may become unavailable before physical cleanup finishes. Use
+        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
+        job.
+        """
         if namespace_path is None:
             namespace_path = []
         await self._inner.drop_materialized_view(name, namespace_path=namespace_path)
@@ -2242,7 +2257,11 @@ class AsyncConnection(object):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[None]:
-        """Start dropping a materialized view and return its cleanup job."""
+        """Start dropping a materialized view and return its cleanup job.
+
+        Await :meth:`AsyncJob.wait` before assuming physical cleanup has
+        finished.
+        """
         if namespace_path is None:
             namespace_path = []
         return AsyncJob(

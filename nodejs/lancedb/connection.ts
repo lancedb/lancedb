@@ -356,6 +356,9 @@ export abstract class Connection {
   /**
    * Drop the materialized view named `name`.
    *
+   * The view may become unavailable before physical cleanup finishes. Use
+   * {@link dropMaterializedViewAsync} to retain and wait for the cleanup job.
+   *
    * Rejects a table that exists but is not a materialized view.
    */
   abstract dropMaterializedView(

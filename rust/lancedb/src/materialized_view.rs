@@ -1515,6 +1515,10 @@ impl Connection {
     }
 
     /// Drop a materialized view.
+    ///
+    /// The view may become unavailable before its physical data is removed.
+    /// Use [`Connection::drop_materialized_view_async`] to retain the cleanup
+    /// job and wait for it explicitly.
     pub async fn drop_materialized_view(
         &self,
         name: impl AsRef<str>,
@@ -1542,6 +1546,15 @@ impl Connection {
     /// This validates that the named resource is a materialized view rather
     /// than an ordinary table. Call [`Job::wait`] before assuming physical
     /// cleanup has finished.
+    ///
+    /// ```no_run
+    /// # use lancedb::Connection;
+    /// # async fn drop_view(conn: &Connection) -> lancedb::Result<()> {
+    /// let job = conn.drop_materialized_view_async("daily_sales", &[]).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn drop_materialized_view_async(
         &self,
         name: impl AsRef<str>,
