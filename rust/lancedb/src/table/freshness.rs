@@ -17,16 +17,17 @@
 //! only the reference. Sidecars no retained version references are removed
 //! by [`prune_sidecars`].
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 use arrow_array::{Array, UInt64Array};
 use futures::TryStreamExt;
 use lance::Dataset;
+use lance::dataset::refs::Ref;
 use lance::dataset::transaction::Operation;
 use lance_core::ROW_ADDR;
 use lance_core::datatypes::{Field as LanceField, Schema as LanceSchema};
-use lance_io::object_store::ObjectStore;
+use lance_io::object_store::{ObjectStore, uri_to_url};
 use lance_table::format::{DataFile, Fragment};
 use object_store::path::Path;
 use roaring::RoaringBitmap;
@@ -108,36 +109,88 @@ pub fn fields_for_paths(schema: &LanceSchema, paths: &[String]) -> Result<InputF
 /// columns storing it, and the overlays overriding cells of it, newest last
 /// with the physical column and the cells each covers. A file stores the
 /// field under its own id or, packed, under an ancestor's; `ids` is the
-/// field's id followed by its ancestors'. Object identity is by base and
-/// path; field ids are left out, since a sibling column's rewrite re-labels
-/// them without touching a value.
+/// field's id followed by its ancestors'. Object identity is the resolved
+/// location and path (see [`Bases`]); field ids are left out, since a
+/// sibling column's rewrite re-labels them without touching a value.
 #[derive(Debug, PartialEq, Eq)]
 pub struct InputBasis {
-    files: Vec<(Option<u32>, String, i32)>,
-    overlays: Vec<(Option<u32>, String, i32, RoaringBitmap, u64)>,
+    files: Vec<(String, String, i32)>,
+    overlays: Vec<(String, String, i32, RoaringBitmap, u64)>,
 }
 
-pub fn input_basis(metadata: &Fragment, ids: &[i32]) -> Result<InputBasis> {
+/// Where each storage base's data lives, as the store resolves it. A file
+/// signs the same on the table that wrote it and on a branch or shallow
+/// clone reading it through a base, while files under different bases
+/// stay distinct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bases {
+    own: String,
+    registered: HashMap<u32, String>,
+}
+
+impl Bases {
+    pub fn of(dataset: &Dataset) -> Result<Self> {
+        let registered = dataset
+            .manifest()
+            .base_paths
+            .values()
+            .map(|base| Ok((base.id, location(&base.path, base.is_dataset_root)?)))
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            own: location(dataset.uri(), true)?,
+            registered,
+        })
+    }
+
+    fn location(&self, base_id: Option<u32>) -> Result<&str> {
+        match base_id {
+            None => Ok(&self.own),
+            Some(id) => self
+                .registered
+                .get(&id)
+                .map(String::as_str)
+                .ok_or_else(|| invalid(format!("base path id {id} not found"))),
+        }
+    }
+}
+
+/// `uri` as its store resolves it, with the data directory under a dataset
+/// root. The query part only selects a commit handler, so it is left out.
+fn location(uri: &str, is_dataset_root: bool) -> Result<String> {
+    let url = uri_to_url(uri)?;
+    let mut location = url[..url::Position::BeforeQuery]
+        .trim_end_matches('/')
+        .to_string();
+    if is_dataset_root {
+        location.push_str("/data");
+    }
+    Ok(location)
+}
+
+pub fn input_basis(bases: &Bases, metadata: &Fragment, ids: &[i32]) -> Result<InputBasis> {
     let column_of = |file: &DataFile| {
         file.fields
             .iter()
             .position(|id| ids.contains(id))
             .map(|pos| (pos, file.column_indices.get(pos).copied().unwrap_or(-1)))
     };
-    let files = metadata
-        .files
-        .iter()
-        .filter_map(|file| {
-            column_of(file).map(|(_, column)| (file.base_id, file.path.clone(), column))
-        })
-        .collect();
+    let mut files = Vec::new();
+    for file in &metadata.files {
+        if let Some((_, column)) = column_of(file) {
+            files.push((
+                bases.location(file.base_id)?.to_string(),
+                file.path.clone(),
+                column,
+            ));
+        }
+    }
     let mut overlays = Vec::new();
     for overlay in &metadata.overlays {
         let Some((pos, column)) = column_of(&overlay.data_file) else {
             continue;
         };
         overlays.push((
-            overlay.data_file.base_id,
+            bases.location(overlay.data_file.base_id)?.to_string(),
             overlay.data_file.path.clone(),
             column,
             overlay.coverage_for_field(pos)?.as_ref().clone(),
@@ -152,10 +205,14 @@ pub fn input_basis(metadata: &Fragment, ids: &[i32]) -> Result<InputBasis> {
 /// computed, and the rows that stay keep their values. Physical identity,
 /// not content, so a rewrite that preserves values still reads as a change;
 /// compaction is followed separately.
-pub fn fragment_input_signature(fragment: &Fragment, inputs: &InputFields) -> Result<String> {
+pub fn fragment_input_signature(
+    bases: &Bases,
+    fragment: &Fragment,
+    inputs: &InputFields,
+) -> Result<String> {
     let mut parts = Vec::new();
     for (path, ids) in inputs {
-        let basis = input_basis(fragment, ids)?;
+        let basis = input_basis(bases, fragment, ids)?;
         parts.push(format!("{}={basis:?}", path.join(".")));
     }
     Ok(short_hash(&parts.join("|")))
@@ -166,9 +223,10 @@ fn signature_of(
     fragment_id: u32,
     inputs: &InputFields,
 ) -> Result<Option<String>> {
+    let bases = Bases::of(dataset)?;
     dataset
         .get_fragment(fragment_id as usize)
-        .map(|fragment| fragment_input_signature(fragment.metadata(), inputs))
+        .map(|fragment| fragment_input_signature(&bases, fragment.metadata(), inputs))
         .transpose()
 }
 
@@ -179,6 +237,7 @@ pub fn signatures_for(
     inputs: &InputFields,
 ) -> Result<SignatureMap> {
     let wanted: HashSet<u32> = fragment_ids.iter().copied().collect();
+    let bases = Bases::of(dataset)?;
     dataset
         .get_fragments()
         .iter()
@@ -186,7 +245,7 @@ pub fn signatures_for(
         .map(|fragment| {
             Ok((
                 fragment.id() as u32,
-                fragment_input_signature(fragment.metadata(), inputs)?,
+                fragment_input_signature(&bases, fragment.metadata(), inputs)?,
             ))
         })
         .collect()
@@ -222,19 +281,16 @@ const SIDECAR_FORMAT: u8 = 1;
 /// version history a cleanup keeps.
 const SIDECAR_UNVERIFIED_THRESHOLD_DAYS: i64 = 7;
 
-/// The dataset's root directory: the parent of its versions directory.
-/// Rebuilt from the raw parts, since re-encoding them would escape a
-/// Windows drive letter's colon.
-fn dataset_root(dataset: &Dataset) -> Path {
-    let versions = dataset.versions_dir();
-    let count = versions.parts().count();
-    Path::from_iter(versions.parts().take(count.saturating_sub(1)))
+/// The table's root: one `_computed/` per table, shared by main and its
+/// branches, so a branch reads the stamps it was taken with.
+fn dataset_root(dataset: &Dataset) -> Result<Path> {
+    Ok(dataset.branch_location().find_main()?.path)
 }
 
-fn sidecar_path(dataset: &Dataset, digest: &str) -> Path {
-    dataset_root(dataset)
+fn sidecar_path(dataset: &Dataset, digest: &str) -> Result<Path> {
+    Ok(dataset_root(dataset)?
         .join(SIDECAR_DIR)
-        .join(format!("{digest}.sig"))
+        .join(format!("{digest}.sig")))
 }
 
 /// `CSIG`, format byte, entry count, then one fragment id and 8-byte
@@ -299,22 +355,69 @@ async fn write_sidecar(dataset: &Dataset, map: &SignatureMap) -> Result<String> 
     let digest = digest_of(&bytes);
     store(dataset)
         .await?
-        .put(&sidecar_path(dataset, &digest), &bytes)
+        .put(&sidecar_path(dataset, &digest)?, &bytes)
         .await?;
     Ok(format!("{SIDECAR_REF}{digest}"))
 }
 
+/// A map is read from the table's own directory, then through the bases a
+/// shallow clone reads its data from, where the source stamped it. A copy
+/// found through a base is put in the table's own directory so it outlives
+/// the source's pruning; a failed copy only costs the next lookup.
 async fn read_sidecar(dataset: &Dataset, digest: &str) -> Result<SignatureMap> {
-    let bytes = store(dataset)
-        .await?
-        .read_one_all(&sidecar_path(dataset, digest))
-        .await?;
+    let own = sidecar_path(dataset, digest)?;
+    let store = store(dataset).await?;
+    let bytes = match store.read_one_all(&own).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.is_not_found() => {
+            let bytes = read_sidecar_through_bases(dataset, digest).await?;
+            if let Err(error) = store.put(&own, &bytes).await {
+                log::warn!(
+                    "computed column signature sidecar {digest} could not be copied to {own}: {error}"
+                );
+            }
+            bytes
+        }
+        Err(error) => return Err(error.into()),
+    };
     if digest_of(&bytes) != digest {
         return Err(invalid(format!(
             "signature sidecar {digest} does not match its digest"
         )));
     }
     decode_sidecar(&bytes)
+}
+
+async fn read_sidecar_through_bases(dataset: &Dataset, digest: &str) -> Result<bytes::Bytes> {
+    let registry = dataset.session().store_registry();
+    for base in dataset.manifest().base_paths.values() {
+        if !base.is_dataset_root {
+            continue;
+        }
+        let path = base.extract_path(registry.clone())?;
+        // A base cloned from a branch is named after it and sits at
+        // `<root>/tree/<branch>`; the stamps are at that root.
+        let below_root = base
+            .name
+            .as_deref()
+            .map_or(0, |branch| 1 + branch.split('/').count());
+        let count = path.parts().count();
+        let root = Path::from_iter(path.parts().take(count.saturating_sub(below_root)));
+        let location = root.join(SIDECAR_DIR).join(format!("{digest}.sig"));
+        match dataset
+            .object_store(Some(base.id))
+            .await?
+            .read_one_all(&location)
+            .await
+        {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) if error.is_not_found() => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(invalid(format!(
+        "signature sidecar {digest} is in neither the table's directory nor a base's"
+    )))
 }
 
 /// Remove signature sidecars that no version still present references,
@@ -324,8 +427,17 @@ async fn read_sidecar(dataset: &Dataset, digest: &str) -> Result<SignatureMap> {
 /// [`SIDECAR_UNVERIFIED_THRESHOLD_DAYS`] is left alone unless
 /// `delete_unverified`. Returns how many were removed.
 pub async fn prune_sidecars(dataset: &Dataset, delete_unverified: bool) -> Result<usize> {
+    // The directory serves main and every branch, so the references are
+    // collected across all of them whichever handle prunes.
+    let main;
+    let dataset = if dataset.manifest().branch.is_some() {
+        main = dataset.checkout_version(Ref::Version(None, None)).await?;
+        &main
+    } else {
+        dataset
+    };
     let store = store(dataset).await?;
-    let dir = dataset_root(dataset).join(SIDECAR_DIR);
+    let dir = dataset_root(dataset)?.join(SIDECAR_DIR);
     let unmodified_since = (!delete_unverified)
         .then(|| chrono::Utc::now() - chrono::Duration::days(SIDECAR_UNVERIFIED_THRESHOLD_DAYS));
     let present: Vec<String> = match store
@@ -349,6 +461,22 @@ pub async fn prune_sidecars(dataset: &Dataset, delete_unverified: bool) -> Resul
         return Ok(0);
     }
     let mut referenced = HashSet::new();
+    referenced_digests(dataset, &mut referenced).await?;
+    for branch in dataset.list_branches().await?.keys() {
+        referenced_digests(&dataset.checkout_branch(branch).await?, &mut referenced).await?;
+    }
+    let mut removed = 0;
+    for digest in present {
+        if !referenced.contains(&digest) {
+            store.delete(&sidecar_path(dataset, &digest)?).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// The sidecars every retained version of `dataset` references.
+async fn referenced_digests(dataset: &Dataset, into: &mut HashSet<String>) -> Result<()> {
     for version in dataset.versions().await? {
         let at = dataset.checkout_version(version.version).await?;
         for field in at.schema().fields_pre_order() {
@@ -357,18 +485,11 @@ pub async fn prune_sidecars(dataset: &Dataset, delete_unverified: bool) -> Resul
                 .get(SOURCE_SIGNATURE_META_KEY)
                 .and_then(|value| value.strip_prefix(SIDECAR_REF))
             {
-                referenced.insert(digest.to_string());
+                into.insert(digest.to_string());
             }
         }
     }
-    let mut removed = 0;
-    for digest in present {
-        if !referenced.contains(&digest) {
-            store.delete(&sidecar_path(dataset, &digest)).await?;
-            removed += 1;
-        }
-    }
-    Ok(removed)
+    Ok(())
 }
 
 /// Read the column's stored map. An unreadable map is a state, not an error:
@@ -427,8 +548,12 @@ enum Step {
 /// skipped: a row-moving update rewrites the rows it moves, so it does not
 /// carry their inputs unchanged.
 async fn step_at(dataset: &Dataset, version: u64) -> Result<Option<Step>> {
-    let Some(transaction) = dataset.read_transaction_by_version(version).await? else {
-        return Ok(None);
+    let transaction = match dataset.read_transaction_by_version(version).await {
+        Ok(Some(transaction)) => transaction,
+        // A branch or clone holds no manifest before the version it was
+        // taken from; what happened there is unknown, and unknown is stale.
+        Ok(None) | Err(lance_core::Error::DatasetNotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error.into()),
     };
     let groups = match &transaction.operation {
         Operation::Append { .. } => return Ok(Some(Step::Append)),
@@ -436,18 +561,16 @@ async fn step_at(dataset: &Dataset, version: u64) -> Result<Option<Step>> {
         _ => return Ok(None),
     };
     let at = dataset.checkout_version(version).await?;
-    let by_file: BTreeMap<(Option<u32>, String), u32> = at
-        .get_fragments()
-        .iter()
-        .flat_map(|fragment| {
-            let id = fragment.id() as u32;
-            fragment
-                .metadata()
-                .files
-                .iter()
-                .map(move |file| ((file.base_id, file.path.clone()), id))
-        })
-        .collect();
+    let bases = Bases::of(&at)?;
+    let identity = |file: &DataFile| -> Result<(String, String)> {
+        Ok((bases.location(file.base_id)?.to_string(), file.path.clone()))
+    };
+    let mut by_file = BTreeMap::new();
+    for fragment in at.get_fragments() {
+        for file in &fragment.metadata().files {
+            by_file.insert(identity(file)?, fragment.id() as u32);
+        }
+    }
     let compactions = groups
         .iter()
         .map(|group| {
@@ -456,11 +579,14 @@ async fn step_at(dataset: &Dataset, version: u64) -> Result<Option<Step>> {
                 .new_fragments
                 .iter()
                 .map(|fragment| {
-                    fragment
-                        .files
-                        .iter()
-                        .find_map(|file| by_file.get(&(file.base_id, file.path.clone())).copied())
-                        .ok_or_else(|| {
+                    let mut found = None;
+                    for file in &fragment.files {
+                        if let Some(id) = by_file.get(&identity(file)?) {
+                            found = Some(*id);
+                            break;
+                        }
+                    }
+                    found.ok_or_else(|| {
                             invalid(format!(
                                 "a fragment added in version {version} is not in that version's manifest"
                             ))
@@ -711,10 +837,11 @@ pub async fn staleness_against(
     };
     let mut dirty = HashSet::new();
     let mut live = HashSet::new();
+    let bases = Bases::of(dataset)?;
     for fragment in dataset.get_fragments() {
         let id = fragment.id() as u32;
         live.insert(id);
-        let current = fragment_input_signature(fragment.metadata(), inputs)?;
+        let current = fragment_input_signature(&bases, fragment.metadata(), inputs)?;
         if stored.get(&id).or_else(|| inherited.get(&id)) != Some(&current) {
             dirty.insert(id);
         }
@@ -1043,8 +1170,50 @@ mod tests {
             None,
             None,
         ));
-        let basis = input_basis(&fragment, word_count).unwrap();
-        assert_eq!(basis.files, vec![(None, "packed.lance".to_string(), 3)]);
+        let basis = input_basis(&bases("memory://t"), &fragment, word_count).unwrap();
+        assert_eq!(
+            basis.files,
+            vec![("memory://t/data".to_string(), "packed.lance".to_string(), 3)]
+        );
+    }
+
+    fn bases(root: &str) -> Bases {
+        Bases {
+            own: location(root, true).unwrap(),
+            registered: HashMap::new(),
+        }
+    }
+
+    /// A file is identified by where its store resolves it: the table that
+    /// wrote it and a clone reading it through a base agree, however the
+    /// root was spelled, and a different root is a different file.
+    #[test]
+    fn a_file_signs_by_its_resolved_location() {
+        let file = |base_id| {
+            let mut fragment = Fragment::new(0);
+            fragment.files.push(DataFile::new(
+                "a.lance",
+                vec![7],
+                vec![0],
+                ConcreteFileVersion::V2_2,
+                None,
+                base_id,
+            ));
+            fragment
+        };
+        let source = bases("/t/source/");
+        let mut clone = bases("/t/clone");
+        clone
+            .registered
+            .insert(1, location("/t/source", true).unwrap());
+        let written = input_basis(&source, &file(None), &[7]).unwrap();
+        assert_eq!(written, input_basis(&clone, &file(Some(1)), &[7]).unwrap());
+        assert_ne!(written, input_basis(&clone, &file(None), &[7]).unwrap());
+        assert_ne!(
+            written,
+            input_basis(&bases("/t/other"), &file(None), &[7]).unwrap()
+        );
+        assert!(input_basis(&source, &file(Some(1)), &[7]).is_err());
     }
 
     /// An overlay that stores the input in another physical column of the
@@ -1065,7 +1234,7 @@ mod tests {
                 coverage: OverlayCoverage::dense(RoaringBitmap::from_iter([0u32])),
                 committed_version: 2,
             });
-            input_basis(&fragment, &[7]).unwrap()
+            input_basis(&bases("memory://t"), &fragment, &[7]).unwrap()
         };
         assert_ne!(overlay(0), overlay(1));
         assert_eq!(overlay(0), overlay(0));
@@ -1075,7 +1244,7 @@ mod tests {
         let mut names = store(dataset)
             .await
             .unwrap()
-            .read_dir(dataset_root(dataset).join(SIDECAR_DIR))
+            .read_dir(dataset_root(dataset).unwrap().join(SIDECAR_DIR))
             .await
             .unwrap_or_default();
         names.sort();
@@ -1143,7 +1312,7 @@ mod tests {
             .strip_prefix(SIDECAR_REF)
             .unwrap()
             .to_string();
-        let path = sidecar_path(&dataset, &digest);
+        let path = sidecar_path(&dataset, &digest).unwrap();
         let object_store = store(&dataset).await.unwrap();
         object_store.put(&path, b"CSIG garbage").await.unwrap();
         assert!(plan(&dataset).await.recompute_all);
@@ -1198,7 +1367,7 @@ mod tests {
         store(&dataset)
             .await
             .unwrap()
-            .put(&sidecar_path(&dataset, "orphan"), b"CSIG")
+            .put(&sidecar_path(&dataset, "orphan").unwrap(), b"CSIG")
             .await
             .unwrap();
         assert_eq!(prune_sidecars(&dataset, true).await.unwrap(), 1);
@@ -1532,5 +1701,108 @@ mod tests {
         assert!(plan(&dataset).await.recompute_all);
         stamp_all(&mut dataset).await;
         assert_eq!(plan(&dataset).await, StalenessPlan::default());
+    }
+    async fn names_under(dataset: &Dataset, dir: Path) -> Vec<String> {
+        let mut names = store(dataset)
+            .await
+            .unwrap()
+            .read_dir(dir.join(SIDECAR_DIR))
+            .await
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// A branch starts with main's freshness, and its stamps join the
+    /// table's one sidecar directory rather than the branch's tree.
+    #[tokio::test]
+    async fn a_branch_starts_with_mains_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let mut branch = dataset
+            .create_branch("exp", dataset.version().version, None)
+            .await
+            .unwrap();
+        assert_eq!(plan(&branch).await, StalenessPlan::default());
+        rewrite_value(&mut branch, 3).await;
+        assert_eq!(plan(&branch).await.dirty, HashSet::from([0]));
+        stamp_all(&mut branch).await;
+        assert_eq!(plan(&branch).await, StalenessPlan::default());
+        assert_eq!(sidecar_names(&dataset).await.len(), 2);
+        assert!(
+            names_under(&branch, branch.branch_location().path)
+                .await
+                .is_empty()
+        );
+        assert_eq!(plan(&dataset).await, StalenessPlan::default());
+    }
+
+    /// A branch taken after an append main never stamped: the versions
+    /// before the branch are not in its tree, so the walk skips them and
+    /// the appended fragment is simply stale.
+    #[tokio::test]
+    async fn a_branch_walks_only_the_history_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let appended = append_rows(&mut dataset, 100, 10).await;
+        let mut branch = dataset
+            .create_branch("exp", dataset.version().version, None)
+            .await
+            .unwrap();
+        let staleness = plan(&branch).await;
+        assert_eq!(staleness.dirty, HashSet::from([appended]));
+        assert!(staleness.inherited.is_empty());
+        let product = compact(&mut branch).await;
+        assert_eq!(plan(&branch).await.dirty, HashSet::from([product]));
+    }
+
+    /// A shallow clone reads the map through the base it was cloned from
+    /// and keeps its own copy from then on.
+    #[tokio::test]
+    async fn a_shallow_clone_starts_with_its_sources_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().join("source").to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let target = dir.path().join("clone");
+        let mut clone = dataset
+            .shallow_clone(target.to_str().unwrap(), dataset.version().version, None)
+            .await
+            .unwrap();
+        assert_eq!(plan(&clone).await, StalenessPlan::default());
+        assert_eq!(sidecar_names(&clone).await, sidecar_names(&dataset).await);
+        rewrite_value(&mut clone, 3).await;
+        assert_eq!(plan(&clone).await.dirty, HashSet::from([0]));
+        stamp_all(&mut clone).await;
+        assert_eq!(plan(&clone).await, StalenessPlan::default());
+        assert_eq!(plan(&dataset).await, StalenessPlan::default());
+    }
+
+    /// A sidecar only a branch references survives a prune from either
+    /// handle until the branch is gone.
+    #[tokio::test]
+    async fn pruning_keeps_what_a_branch_references() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        stamp_all(&mut dataset).await;
+        let mains = signature_ref(&dataset, COLUMN);
+        let mut branch = dataset
+            .create_branch("exp", dataset.version().version, None)
+            .await
+            .unwrap();
+        rewrite_value(&mut branch, 3).await;
+        stamp_all(&mut branch).await;
+        assert_ne!(signature_ref(&branch, COLUMN), mains);
+        assert_eq!(sidecar_names(&dataset).await.len(), 2);
+        assert_eq!(prune_sidecars(&dataset, true).await.unwrap(), 0);
+        assert_eq!(prune_sidecars(&branch, true).await.unwrap(), 0);
+        assert_eq!(plan(&branch).await, StalenessPlan::default());
+        dataset.delete_branch("exp").await.unwrap();
+        assert_eq!(prune_sidecars(&dataset, true).await.unwrap(), 1);
+        assert_eq!(
+            sidecar_names(&dataset).await,
+            vec![format!("{}.sig", mains.strip_prefix(SIDECAR_REF).unwrap())]
+        );
     }
 }
