@@ -4,68 +4,81 @@
 //! Fork-safe wrapper around tokio + pyo3-async-runtimes.
 //!
 //! `pyo3_async_runtimes::tokio` keeps its multi-threaded runtime in a
-//! `OnceLock` that can never be replaced.  Tokio's worker threads do not
+//! `OnceLock` that can never be replaced. Tokio's worker threads do not
 //! survive `fork()`, so once a child inherits a "frozen" runtime, every
-//! `future_into_py` call hangs forever.
+//! `future_into_py` call hangs forever. Normal (non-fork) process exit has
+//! its own gap: nothing tells the runtime to shut down, so its worker
+//! threads keep running, uncoordinated with the interpreter, right up until
+//! the process ends. If one of them is mid-task exactly as `Py_Finalize`
+//! starts tearing down interpreter state, it can panic on state that's
+//! already gone -- and since that happens on a background thread with no
+//! PyO3-wrapped call frame to catch it, Rust aborts the whole process
+//! rather than failing that one call. [`shutdown`], registered as a Python
+//! `atexit` callback, closes that gap by giving the runtime a coordinated,
+//! bounded exit while the interpreter is still fully valid.
 //!
-//! We sidestep the global by routing every future through our own
-//! [`LanceRuntime`] (a [`pyo3_async_runtimes::generic::Runtime`] impl) backed
-//! by an [`ArcSwapOption`] holding the tokio runtime we own.  A
-//! `pthread_atfork` child handler clears the slot without dropping what it
-//! finds there (see `atfork_child`); the next call rebuilds the runtime in
-//! the child.  This mirrors the pattern used in the Lance Python bindings.
+//! Getting both of these right at once took a few tries; the design here
+//! rests on three separate mechanisms, each solving one problem the others
+//! cannot:
 //!
-//! Normal (non-fork) process exit has its own gap: nothing tells the runtime
-//! to shut down, so its worker threads keep running, uncoordinated with the
-//! interpreter, right up until the process ends. If one of them is mid-task
-//! exactly as `Py_Finalize` starts tearing down interpreter state, it can
-//! panic on state that's already gone -- and since that happens on a
-//! background thread with no PyO3-wrapped call frame to catch it, Rust
-//! aborts the whole process rather than failing that one call. [`shutdown`],
-//! registered as a Python `atexit` callback, closes that gap by giving the
-//! runtime a coordinated, bounded exit while the interpreter is still fully
-//! valid.
+//! **`OUTSTANDING`, not `Arc::strong_count`, decides when the runtime is
+//! idle.** Early versions tried to infer "is anything still using this
+//! runtime" from how many `Arc<Runtime>` clones existed. That signal is
+//! wrong in both directions: a clone taken only for the instant a task is
+//! *submitted* says nothing about whether that task has actually finished
+//! running (`Runtime::shutdown_timeout` gives spawned, non-blocking tasks
+//! no grace period at all -- a task "keeps running until it yields, then is
+//! dropped" -- so a reclaim landing right after submission would silently
+//! abandon it before it ever got to run); and a clone held for a task's
+//! *whole* lifetime can end up making that task the final owner of the
+//! `Runtime`, so completing it drops the `Runtime` from inside one of its
+//! own worker threads, which tokio itself forbids ("cannot drop a runtime
+//! in a context where blocking is not allowed") and panics. `OUTSTANDING`
+//! is an explicit courtesy counter instead: every top-level `spawn`,
+//! `spawn_blocking`, or `block_on` call increments it before it starts and
+//! decrements it (via [`OutstandingGuard`]) when it is truly done, entirely
+//! decoupled from how many `Arc` clones exist at any instant. `shutdown`
+//! waits for it to reach zero before ever touching the runtime, which also
+//! closes a narrower race: because the counter is incremented *before*
+//! `get_runtime()` is even called, an install already in progress when
+//! `shutdown` runs is never invisible to it the way an empty slot would be.
+//! If the counter never reaches zero within the bound, `shutdown` stops
+//! waiting and forces the retirement attempt anyway -- silently returning
+//! with the runtime and its workers still fully alive would just recreate
+//! the exact race this function exists to close, for any call slower than
+//! the grace period.
 //!
-//! Every reader holds its own `Arc` clone for as long as it is using the
-//! runtime (see `get_runtime`), rather than a bare reference into the slot.
-//! `shutdown` only ever reclaims (drops) the runtime once it can prove it
-//! holds the only remaining reference; if some other clone is still
-//! outstanding when its bound elapses, it abandons the runtime instead --
-//! the same trade `atfork_child` already makes -- rather than ever risk
-//! freeing memory a live caller might still be using.
+//! **Tasks never hold an `Arc<Runtime>`.** Because `OUTSTANDING` (not
+//! reference counting) is what `shutdown` waits on, a top-level task only
+//! needs to carry an `OutstandingGuard` -- a token whose `Drop` is a plain
+//! atomic decrement -- not a clone of the runtime itself. That is what
+//! makes it impossible for a task's completion to become the final,
+//! worker-thread-side drop of the `Runtime`: nothing a task holds ever
+//! *is* the `Runtime`.
 //!
-//! That alone is not enough, for two compounding reasons.
-//!
-//! First, `future_into_py` does not make one `get_runtime()`-mediated call
-//! per logical operation -- it spawns a task that, once running, spawns a
-//! second one to do the real work and awaits its `JoinHandle`. If the two
-//! nested calls independently re-resolved "the current runtime", a reclaim
-//! landing between them could bind the outer and inner task to two
-//! *different* instances; tearing down the outer task's runtime while it
-//! awaits the inner one then leaves it parked forever. `spawn`/
-//! `spawn_blocking` below close that gap with `Handle::try_current`: a call
-//! already running on one of our runtime's worker threads is pinned to that
-//! same instance regardless of what the global slot holds, so only the
-//! first, outermost call of a chain (from a thread outside any runtime)
-//! ever consults it.
-//!
-//! Second, and more fundamentally: `Runtime::shutdown_timeout` does not
-//! give spawned (non-blocking) tasks a bounded grace period at all -- per
-//! its own docs, a task "keeps running until it yields, then is dropped".
-//! An outermost call that only held its `Arc` for the instant it submitted
-//! the task (as `get_runtime()`'s doc once assumed of every caller) let
-//! `strong_count` fall back to baseline immediately, long before the task
-//! itself finished -- so `shutdown` could, and empirically did, reclaim the
-//! runtime while a top-level task was still in flight, silently abandoning
-//! it and leaving whatever Python future it was going to resolve unresolved
-//! forever. `spawn`/`spawn_blocking`'s outermost branch now moves an `Arc`
-//! clone *into* the task itself, so `strong_count` stays elevated for the
-//! task's entire lifetime, not just the submission call.
+//! **`atfork_child` touches nothing but a plain counter.** `future_into_py`
+//! spawns a task that, once running, spawns a second one to do the real
+//! work and awaits its `JoinHandle`; if a nested call re-resolved "the
+//! current runtime" independently, a reclaim landing between the two calls
+//! could bind them to different instances. `spawn`/`spawn_blocking` close
+//! that with `Handle::try_current`: a call already running on one of our
+//! worker threads stays pinned to that instance, so only the first,
+//! outermost call of a chain ever consults [`get_runtime`]. That leaves
+//! fork as the other place identity can change, and it has to be handled
+//! without ever calling into `ArcSwapOption` from the child handler itself
+//! -- `swap`/`compare_and_swap` reconcile reader "debts" internally (via
+//! thread-local state, and potentially an allocation), none of which is
+//! safe to run in a forked child that may have inherited another thread's
+//! lock mid-acquisition. `atfork_child` therefore does nothing but bump a
+//! bare `GENERATION` counter; [`get_runtime`] compares the generation its
+//! installed runtime was built in against the live counter on every call,
+//! from ordinary (non-signal) context, and treats a mismatch as "stale,
+//! rebuild" -- exactly the check `atfork_child` used to perform directly.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwapOption;
@@ -76,7 +89,31 @@ use pyo3_async_runtimes::{
 };
 use tokio::{runtime, task};
 
-static RUNTIME: ArcSwapOption<runtime::Runtime> = ArcSwapOption::const_empty();
+/// A runtime tagged with the fork generation it was built in, so a stale
+/// (post-fork, dead-worker-threads) instance can be told apart from a live
+/// one without `atfork_child` ever having to touch it directly.
+struct Tagged {
+    runtime: runtime::Runtime,
+    generation: u64,
+}
+
+impl std::ops::Deref for Tagged {
+    type Target = runtime::Runtime;
+    fn deref(&self) -> &runtime::Runtime {
+        &self.runtime
+    }
+}
+
+static RUNTIME: ArcSwapOption<Tagged> = ArcSwapOption::const_empty();
+/// Bumped only by `atfork_child`, and only ever read elsewhere. This is the
+/// entire fork-safety mechanism: no lock, no allocation, no thread-local
+/// access -- just one atomic add, which is all a `pthread_atfork` child
+/// handler is ever safe to do.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Count of top-level `spawn`/`spawn_blocking`/`block_on` calls that have
+/// started but not yet finished. See the module docs for why this, and not
+/// `Arc::strong_count`, is what `shutdown` waits on.
+static OUTSTANDING: AtomicU64 = AtomicU64::new(0);
 static ATFORK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 fn create_runtime() -> runtime::Runtime {
@@ -87,34 +124,66 @@ fn create_runtime() -> runtime::Runtime {
         .expect("Failed to build tokio runtime")
 }
 
-/// Get a live, owned handle to the shared runtime.
-///
-/// Returns an owned `Arc` rather than a bare reference so the runtime cannot
-/// be freed out from under a caller still using it: as long as any clone is
-/// held, `shutdown` will not reclaim the runtime it points to. Callers below
-/// rely on Rust's own temporary-drop timing to hold the returned `Arc` for
-/// the duration of one `block_on`, `spawn`, or `spawn_blocking` call --
-/// exactly as long as the runtime is actually in use, not just to obtain it.
-fn get_runtime() -> Arc<runtime::Runtime> {
+/// Get a live, owned handle to the shared runtime, rebuilding it if the
+/// installed one predates the most recent `fork()`.
+fn get_runtime() -> Arc<Tagged> {
+    let current_gen = GENERATION.load(Ordering::SeqCst);
     loop {
-        if let Some(existing) = RUNTIME.load_full() {
-            return existing;
+        let existing = RUNTIME.load_full();
+        if let Some(existing) = &existing {
+            if existing.generation == current_gen {
+                return Arc::clone(existing);
+            }
         }
         if !ATFORK_INSTALLED.fetch_or(true, Ordering::SeqCst) {
             install_atfork();
         }
         // Built optimistically, outside any lock: on the rare race where two
-        // threads both find the slot empty, one candidate wins the
-        // compare-and-swap below and the other is simply dropped here,
+        // threads both find the slot empty (or stale), one candidate wins
+        // the compare-and-swap below and the other is simply dropped here,
         // tearing down its own (never shared, never used) worker pool the
         // ordinary way.
-        let candidate = Arc::new(create_runtime());
-        let previous =
-            RUNTIME.compare_and_swap(&None::<Arc<runtime::Runtime>>, Some(Arc::clone(&candidate)));
-        if previous.is_none() {
+        let candidate = Arc::new(Tagged {
+            runtime: create_runtime(),
+            generation: current_gen,
+        });
+        let previous = RUNTIME.compare_and_swap(&existing, Some(Arc::clone(&candidate)));
+        let won = match (&*previous, &existing) {
+            (None, None) => true,
+            (Some(prev), Some(exist)) => Arc::ptr_eq(prev, exist),
+            _ => false,
+        };
+        if won {
+            if let Some(stale) = existing {
+                // A prior generation's runtime: its worker threads are dead
+                // in this process (they do not survive fork), so dropping it
+                // normally would try to join them and hang. Leak it instead.
+                std::mem::forget(stale);
+            }
             return candidate;
         }
-        // Someone else's candidate won; go around and load it.
+        // Someone else's candidate (or a concurrent shutdown) won; go around
+        // and reload.
+    }
+}
+
+/// RAII token tracked by [`OUTSTANDING`]. Held for the duration of a
+/// top-level `block_on` call, or moved into a top-level `spawn`/
+/// `spawn_blocking` task so it decrements only once that task's *entire*
+/// body -- including anything it nested-spawns and awaits -- has run to
+/// completion or been dropped without completing.
+struct OutstandingGuard;
+
+impl OutstandingGuard {
+    fn new() -> Self {
+        OUTSTANDING.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for OutstandingGuard {
+    fn drop(&mut self) {
+        OUTSTANDING.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -124,73 +193,57 @@ fn get_runtime() -> Arc<runtime::Runtime> {
 /// building a namespace client). Must not be called from within the runtime's
 /// own worker threads.
 pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    let _guard = OutstandingGuard::new();
     get_runtime().block_on(fut)
 }
 
 /// Gracefully quiesce the shared runtime, meant to run at normal process exit.
 ///
-/// Polls (bounded by `timeout`) for every other outstanding `Arc` clone --
-/// each held by a caller still actually using the runtime, see
-/// `get_runtime` -- to be dropped, and only once none remain does it remove
-/// the runtime from the slot and reclaim it, so reclaiming can never free
-/// memory anyone else might still touch. If the bound elapses first, it
-/// leaves the runtime exactly where it is rather than forcing the issue:
-/// the process is exiting either way, so an unreclaimed runtime here costs
-/// nothing a crash would cost more.
+/// Waits (bounded by `timeout`) for [`OUTSTANDING`] to reach zero -- i.e.
+/// for every top-level call already under way to actually finish, not just
+/// for `Arc::strong_count` to look low -- before ever touching the runtime.
+/// If the bound elapses first, it stops waiting and attempts retirement
+/// anyway: leaving the runtime and its worker threads untouched would just
+/// recreate the exact race this function exists to close, for any call
+/// slower than the grace period.
 ///
-/// Deliberately does not empty the slot up front and reclaim once ownership
-/// clears, the way a first version of this function did: `get_runtime()`
-/// treats an empty slot as "nothing built yet" and responds by building a
-/// whole new multi-threaded runtime, worker pool included. Emptying the slot
-/// before we are actually ready to consume what was in it means every other
-/// concurrent caller sees that empty slot too, and a caller looping tightly
-/// (a busy poller, say) would rebuild a brand new runtime on every single
-/// call for as long as the slot stayed empty -- not a crash, but a
-/// self-inflicted thundering herd that starves real work for the same
-/// bounded window this function is supposed to just wait out quietly.
-///
-/// `shutdown_timeout` rather than a bare `drop`, once exclusive ownership is
-/// proven: dropping a tokio `Runtime` waits (in the worst case indefinitely)
-/// for its worker threads to join, whereas `shutdown_timeout` gives real
-/// in-flight work -- a connection pool's keep-alive, a graceful close -- a
-/// bounded chance to finish first, then forcibly ends whatever has not.
-///
-/// Safe to call even while operations are still in flight on the runtime
-/// being reclaimed: `spawn`/`spawn_blocking` below pin every nested call
-/// spawned from an already-running task to that same task's runtime (via
-/// `Handle::try_current`), so reclaiming this instance out from under a
-/// task that outlives the exclusivity check can, at worst, make
-/// `shutdown_timeout` leak that task's worker threads to finish in the
-/// background -- it can never split one logical operation across two
-/// different runtime instances.
+/// Retirement itself removes the runtime from the slot and calls
+/// `shutdown_timeout` rather than a bare `drop`: dropping a tokio `Runtime`
+/// waits (in the worst case indefinitely) for its worker threads to join,
+/// whereas `shutdown_timeout` gives real in-flight work -- a connection
+/// pool's keep-alive, a graceful close -- a bounded chance to finish first,
+/// then forcibly ends whatever has not. Reclaiming can only proceed once
+/// `Arc::try_unwrap` proves no other reference remains; if some transient
+/// `get_runtime()` caller is, at that exact instant, still between loading
+/// the slot and finishing its own call, this abandons the runtime instead
+/// of forcing the issue -- the same trade `atfork_child` already makes.
 pub fn shutdown(timeout: Duration) {
-    let Some(current) = RUNTIME.load_full() else {
-        return;
-    };
     let deadline = Instant::now() + timeout;
     loop {
-        if Arc::strong_count(&current) <= 2 {
-            RUNTIME.store(None);
-            if let Ok(runtime) = Arc::try_unwrap(current) {
-                runtime.shutdown_timeout(deadline.saturating_duration_since(Instant::now()));
-            }
-            return;
+        if OUTSTANDING.load(Ordering::SeqCst) == 0 {
+            break;
         }
         if Instant::now() >= deadline {
-            return;
+            break;
         }
         std::thread::sleep(Duration::from_millis(1));
     }
+    let Some(current) = RUNTIME.load_full() else {
+        return;
+    };
+    RUNTIME.compare_and_swap(&Some(Arc::clone(&current)), None);
+    if let Ok(tagged) = Arc::try_unwrap(current) {
+        tagged
+            .runtime
+            .shutdown_timeout(deadline.saturating_duration_since(Instant::now()));
+    }
 }
 
-/// Runs in async-signal context after `fork()` in the child. We can only
-/// touch the atomic slot here; we deliberately do not drop whatever runtime
-/// we find, because dropping a tokio `Runtime` would try to join its
-/// (now-dead) worker threads and hang.
+/// Runs in async-signal context after `fork()` in the child. Touches
+/// nothing but a plain atomic add -- see the module docs for why even
+/// `ArcSwapOption::swap` is not safe to call here.
 extern "C" fn atfork_child() {
-    if let Some(orphaned) = RUNTIME.swap(None) {
-        std::mem::forget(orphaned);
-    }
+    GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
 #[cfg(not(windows))]
@@ -222,30 +275,11 @@ impl Runtime for LanceRuntime {
     type JoinHandle = Pin<Box<dyn Future<Output = Result<(), Self::JoinError>> + Send>>;
 
     /// `pyo3_async_runtimes::generic::future_into_py` spawns a task that,
-    /// once it starts running, spawns a second one to do the real work (and
-    /// spawn_blocking calls beyond that to hand the result back to Python).
-    /// If each of those calls re-resolved "the current runtime" independently
-    /// via `get_runtime()`, a reclaim landing between them could bind the
-    /// outer and inner tasks to two different runtime instances -- and if
-    /// the outer task's own runtime is the one torn down while it awaits the
-    /// inner task's `JoinHandle`, it never resumes. `Handle::try_current`
-    /// sidesteps the global slot entirely whenever we're already running
-    /// inside a runtime, pinning nested spawns to that same instance; only a
-    /// call from a genuine outside thread (the first, outermost spawn of a
-    /// call chain) falls through to `get_runtime()`.
-    ///
-    /// That call also has to hold its `Arc` for as long as the task it
-    /// starts is actually running, not just for the moment it submits it:
-    /// `Runtime::shutdown_timeout` does not wait for spawned (non-blocking)
-    /// tasks to finish, it lets each run until it next yields and then
-    /// *drops* it -- so `shutdown` reclaiming the runtime while a top-level
-    /// task is still in flight would silently abandon it mid-await, and
-    /// whatever Python future it was going to resolve would never resolve.
-    /// Moving a clone into the task itself keeps `strong_count` elevated for
-    /// the task's whole lifetime, so `shutdown`'s exclusivity check (see
-    /// `shutdown`) does not consider the runtime free until every top-level
-    /// task genuinely has completed or been abandoned by some earlier,
-    /// already-accounted-for reclaim.
+    /// once it starts running, spawns a second one to do the real work and
+    /// awaits its `JoinHandle`. `Handle::try_current` pins that nested call
+    /// to whatever runtime is already executing it, so only the first,
+    /// outermost call of a chain -- one running on a thread outside any
+    /// runtime -- ever consults [`get_runtime`] or [`OUTSTANDING`].
     fn spawn<F>(fut: F) -> Self::JoinHandle
     where
         F: Future<Output = ()> + Send + 'static,
@@ -253,10 +287,9 @@ impl Runtime for LanceRuntime {
         let handle = match tokio::runtime::Handle::try_current() {
             Ok(handle) => handle.spawn(fut),
             Err(_) => {
-                let rt = get_runtime();
-                let rt_for_task = Arc::clone(&rt);
-                rt.spawn(async move {
-                    let _rt = rt_for_task;
+                let guard = OutstandingGuard::new();
+                get_runtime().spawn(async move {
+                    let _guard = guard;
                     fut.await;
                 })
             }
@@ -271,10 +304,9 @@ impl Runtime for LanceRuntime {
         let handle = match tokio::runtime::Handle::try_current() {
             Ok(handle) => handle.spawn_blocking(f),
             Err(_) => {
-                let rt = get_runtime();
-                let rt_for_task = Arc::clone(&rt);
-                rt.spawn_blocking(move || {
-                    let _rt = rt_for_task;
+                let guard = OutstandingGuard::new();
+                get_runtime().spawn_blocking(move || {
+                    let _guard = guard;
                     f();
                 })
             }
@@ -318,16 +350,13 @@ where
 mod tests {
     use super::*;
 
-    // Before an outermost `spawn`/`spawn_blocking` call held its `Arc` for
-    // the task's whole lifetime, `strong_count` fell back to baseline as
-    // soon as the task was merely *submitted* -- long before it actually
-    // finished running. `shutdown_timeout` gives spawned tasks no grace
-    // period of its own (it lets one run until it next yields, then drops
-    // it), so a concurrent `shutdown()` could, and empirically did, reclaim
-    // the runtime out from under a task still in flight, abandoning it
-    // silently. Yielding a few times keeps this task genuinely in flight
-    // (not yet started, and not yet finished) when `shutdown` runs its
-    // exclusivity check immediately after.
+    // A task's own completion must never be the final drop of the shared
+    // `Runtime`: tasks carry only an `OutstandingGuard` (a plain counter
+    // token), never an `Arc<Runtime>`, specifically so this can't happen.
+    // Getting this wrong panics ("cannot drop a runtime in a context where
+    // blocking is not allowed") -- this reproduced unprompted, twice, in a
+    // single run of `test_nested_spawn_survives_concurrent_shutdown` under
+    // an earlier design that held the `Arc` for a task's whole lifetime.
     #[test]
     #[allow(unused_must_use)] // fire-and-forget spawn, same as future_into_py itself
     fn test_top_level_task_survives_concurrent_shutdown_reclaim() {
@@ -465,5 +494,43 @@ mod tests {
                 worker.join().unwrap();
             }
         }
+    }
+
+    // Forces the exact interleaving the install-race finding described: an
+    // installer registers as outstanding (as `spawn`'s outermost branch
+    // does, before it ever calls `get_runtime()`) and then pauses, while a
+    // concurrent `shutdown()` must not decide "nothing here" and return
+    // before that install actually completes and is retired in turn.
+    #[test]
+    fn test_shutdown_waits_for_a_racing_install() {
+        use std::sync::mpsc;
+
+        // Clean slate: no runtime installed, OUTSTANDING at zero.
+        shutdown(Duration::from_secs(5));
+
+        let (installer_ready_tx, installer_ready_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+
+        let installer = std::thread::spawn(move || {
+            let _guard = OutstandingGuard::new();
+            installer_ready_tx.send(()).unwrap();
+            proceed_rx.recv().unwrap();
+            assert_eq!(get_runtime().block_on(async { 1 + 1 }), 2);
+        });
+
+        installer_ready_rx.recv().unwrap();
+        let shutdown_thread = std::thread::spawn(|| shutdown(Duration::from_secs(5)));
+        // Give shutdown's polling loop several chances to (wrongly) observe
+        // an idle runtime before the installer is allowed to proceed.
+        std::thread::sleep(Duration::from_millis(50));
+        proceed_tx.send(()).unwrap();
+
+        installer.join().unwrap();
+        shutdown_thread.join().unwrap();
+
+        // shutdown must have waited for the install to finish and then
+        // retired it, not returned early and left it stranded.
+        assert!(RUNTIME.load_full().is_none());
+        assert_eq!(OUTSTANDING.load(Ordering::SeqCst), 0);
     }
 }
