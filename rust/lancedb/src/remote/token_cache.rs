@@ -43,6 +43,7 @@
 //!     client_secret: None,
 //!     scopes: vec!["openid".to_string()],
 //!     flow: OAuthFlow::DeviceCode,
+//!     client_auth_method: None,
 //!     refresh_buffer_secs: None,
 //!     token_cache: Some(
 //!         TokenCacheOptions::new().cache_dir("/tmp/my-app/oauth-cache"),
@@ -388,7 +389,10 @@ impl TokenCache {
     /// Build a record from a token response, or `None` when the response
     /// carries no refresh token (nothing may be persisted).
     fn record_from_response(&self, response: &TokenResponse) -> Option<CachedTokenRecord> {
-        let refresh_token = response.refresh_token.clone()?;
+        let refresh_token = response
+            .refresh_token
+            .as_ref()
+            .map(|token| token.secret().clone())?;
         Some(CachedTokenRecord {
             version: CACHE_RECORD_VERSION,
             issuer_url: self.key.issuer_url.clone(),
@@ -802,6 +806,7 @@ pub struct SessionLogout {
 ///     client_secret: None,
 ///     scopes: vec!["openid".to_string()],
 ///     flow: OAuthFlow::DeviceCode,
+///     client_auth_method: None,
 ///     refresh_buffer_secs: None,
 ///     token_cache: Some(TokenCacheOptions::new()),
 /// };
@@ -937,6 +942,8 @@ mod tests {
 
     use crate::remote::HeaderProvider;
     use crate::remote::oauth::OAuthHeaderProvider;
+    use oauth2::basic::BasicTokenType;
+    use oauth2::{AccessToken, RefreshToken};
     use serial_test::serial;
 
     /// Temp directory that satisfies the cache hardening checks. CI runners
@@ -957,6 +964,7 @@ mod tests {
             issuer_url: "https://issuer.example.com".to_string(),
             client_id: "client-id".to_string(),
             client_secret: None,
+            client_auth_method: None,
             scopes: vec!["openid".to_string()],
             flow: OAuthFlow::DeviceCode,
             refresh_buffer_secs: None,
@@ -1501,10 +1509,10 @@ mod tests {
         )
         .unwrap();
         let response = TokenResponse {
-            access_token: "access-token".to_string(),
-            refresh_token: Some("refresh-token".to_string()),
+            access_token: AccessToken::new("access-token".to_string()),
+            refresh_token: Some(RefreshToken::new("refresh-token".to_string())),
             expires_in: Some(3600),
-            token_type: Some("Bearer".to_string()),
+            token_type: Some(BasicTokenType::Bearer),
         };
         let record = cache.record_from_response(&response).unwrap();
         let debug = format!("{record:?}");
@@ -1545,8 +1553,8 @@ mod tests {
         .unwrap();
         let record = cache
             .record_from_response(&TokenResponse {
-                access_token: "a".to_string(),
-                refresh_token: Some("r".to_string()),
+                access_token: AccessToken::new("a".to_string()),
+                refresh_token: Some(RefreshToken::new("r".to_string())),
                 expires_in: None,
                 token_type: None,
             })
@@ -1607,8 +1615,8 @@ mod tests {
         // A complete, well-formed record with an unknown schema version.
         let record = cache
             .record_from_response(&TokenResponse {
-                access_token: "a".to_string(),
-                refresh_token: Some("r".to_string()),
+                access_token: AccessToken::new("a".to_string()),
+                refresh_token: Some(RefreshToken::new("r".to_string())),
                 expires_in: None,
                 token_type: None,
             })
@@ -1727,7 +1735,7 @@ mod tests {
         )
         .unwrap();
         let response = TokenResponse {
-            access_token: "access-token".to_string(),
+            access_token: AccessToken::new("access-token".to_string()),
             refresh_token: None,
             expires_in: Some(3600),
             token_type: None,

@@ -22,6 +22,29 @@ class OAuthFlowType(str, Enum):
     """Azure Managed Identity via IMDS."""
 
 
+class ClientAuthMethod(str, Enum):
+    """How the client authenticates to the OAuth token endpoint.
+
+    The method applies to every OAuth request that carries client
+    authentication: client-credentials, authorization-code exchange,
+    refresh-token, and device-authorization requests. The Azure managed
+    identity flow ignores this option.
+    """
+
+    NONE = "none"
+    """No client authentication, for public clients using PKCE or the device
+    flow. Cannot be combined with ``client_secret``."""
+
+    CLIENT_SECRET_BASIC = "client_secret_basic"
+    """HTTP Basic authentication. This is the RFC 6749 recommended method and
+    the normal default for confidential clients, including default Okta
+    applications. Requires ``client_secret``."""
+
+    CLIENT_SECRET_POST = "client_secret_post"
+    """Credentials in the request body, for providers configured to require
+    it. Requires ``client_secret``."""
+
+
 @dataclass
 class TokenCacheOptions:
     """Options for the persistent OAuth token cache.
@@ -77,6 +100,13 @@ class OAuthConfig:
         Authentication flow to use. Default: CLIENT_CREDENTIALS.
     client_secret : Optional[str]
         Client secret (required for CLIENT_CREDENTIALS).
+    client_auth_method : Optional[ClientAuthMethod]
+        How the client authenticates to the token endpoint (default: auto).
+        With a ``client_secret`` the default is
+        ``ClientAuthMethod.CLIENT_SECRET_BASIC``, which matches the RFC 6749
+        recommendation and the default configuration of Okta confidential
+        applications; without a secret the client is public and no client
+        authentication is sent.
     redirect_uri : Optional[str]
         Loopback redirect URI for AUTHORIZATION_CODE. The default is
         ``http://127.0.0.1:{callback_port}/callback``.
@@ -127,8 +157,9 @@ class OAuthConfig:
     ...     flow=OAuthFlowType.AUTHORIZATION_CODE,
     ... )
 
-    Device Authorization with a persistent cache, so later processes reuse
-    the session without a new device prompt:
+    Device Authorization, with a persistent cache so later processes reuse
+    the session without a new device prompt. The verification URL and user
+    code are written to standard error before polling begins:
 
     >>> config = OAuthConfig(
     ...     issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",
@@ -144,6 +175,7 @@ class OAuthConfig:
     scopes: List[str]
     flow: OAuthFlowType = OAuthFlowType.CLIENT_CREDENTIALS
     client_secret: Optional[str] = field(default=None, repr=False)
+    client_auth_method: Optional[ClientAuthMethod] = None
     redirect_uri: Optional[str] = None
     callback_port: Optional[int] = None
     use_pkce: bool = True
