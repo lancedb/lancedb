@@ -130,10 +130,10 @@ fn get_runtime() -> Arc<Tagged> {
     let current_gen = GENERATION.load(Ordering::SeqCst);
     loop {
         let existing = RUNTIME.load_full();
-        if let Some(existing) = &existing {
-            if existing.generation == current_gen {
-                return Arc::clone(existing);
-            }
+        if let Some(existing) = &existing
+            && existing.generation == current_gen
+        {
+            return Arc::clone(existing);
         }
         if !ATFORK_INSTALLED.fetch_or(true, Ordering::SeqCst) {
             install_atfork();
