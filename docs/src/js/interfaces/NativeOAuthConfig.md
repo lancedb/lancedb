@@ -15,6 +15,16 @@ All token acquisition and refresh is handled in the Rust layer.
 
 ## Properties
 
+### audience?
+
+```ts
+optional audience: string;
+```
+
+Optional provider-specific audience for authorization and token requests.
+
+***
+
 ### callbackPort?
 
 ```ts
@@ -96,6 +106,16 @@ optional refreshBufferSecs: number;
 Seconds before expiry to trigger proactive refresh (default: 300).
 Keep this well below the token TTL; if it is greater than or equal to
 the TTL, each request refreshes the token.
+
+***
+
+### resource?
+
+```ts
+optional resource: string;
+```
+
+Optional resource indicator for authorization and token requests.
 
 ***
 

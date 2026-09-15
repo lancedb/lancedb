@@ -188,6 +188,10 @@ pub struct OAuthConfig {
     /// OAuth scopes to request. For Azure managed identity, exactly one scope
     /// or resource is required. For example: `["api://{app_id}/.default"]`
     pub scopes: Vec<String>,
+    /// Optional resource indicator for authorization and token requests.
+    pub resource: Option<String>,
+    /// Optional provider-specific audience for authorization and token requests.
+    pub audience: Option<String>,
     /// Authentication flow: "client_credentials", "authorization_code",
     /// "device_code", or "azure_managed_identity"
     pub flow: Option<String>,
@@ -216,6 +220,8 @@ impl std::fmt::Debug for OAuthConfig {
             .field("issuer_url", &self.issuer_url)
             .field("client_id", &self.client_id)
             .field("scopes", &self.scopes)
+            .field("resource", &self.resource)
+            .field("audience", &self.audience)
             .field("flow", &self.flow)
             .field(
                 "client_secret",
@@ -269,6 +275,8 @@ impl TryFrom<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
             client_id: config.client_id,
             client_secret: config.client_secret,
             scopes: config.scopes,
+            resource: config.resource,
+            audience: config.audience,
             flow,
             refresh_buffer_secs: config.refresh_buffer_secs.map(|v| v as u64),
             token_cache: config.token_cache.map(Into::into),
@@ -290,6 +298,10 @@ pub struct SessionStatus {
     pub client_id: String,
     /// Canonical (sorted, de-duplicated) scopes of the cached session.
     pub scopes: Vec<String>,
+    /// Optional resource indicator for authorization and token requests.
+    pub resource: Option<String>,
+    /// Optional provider-specific audience for authorization and token requests.
+    pub audience: Option<String>,
     /// Flow that produced the cached session.
     pub flow: String,
     /// When the cached session was obtained, as Unix seconds.
@@ -374,6 +386,8 @@ impl From<lancedb::remote::SessionStatus> for SessionStatus {
             issuer_url: status.issuer_url,
             client_id: status.client_id,
             scopes: status.scopes,
+            resource: status.resource,
+            audience: status.audience,
             flow: status.flow,
             obtained_at: status.obtained_at.map(|secs| secs as f64),
         }
@@ -418,6 +432,8 @@ mod tests {
             use_pkce: None,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
 
@@ -442,6 +458,8 @@ mod tests {
             use_pkce: None,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
 
@@ -463,6 +481,8 @@ mod tests {
             use_pkce: Some(false),
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            resource: Some("urn:resource".into()),
+            audience: Some("audience".into()),
             token_cache: None,
         };
 
@@ -476,6 +496,8 @@ mod tests {
         );
         assert_eq!(options.callback_port, Some(9000));
         assert!(!options.use_pkce);
+        assert_eq!(converted.resource.as_deref(), Some("urn:resource"));
+        assert_eq!(converted.audience.as_deref(), Some("audience"));
     }
 
     #[test]
@@ -491,6 +513,8 @@ mod tests {
             use_pkce: None,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         };
 

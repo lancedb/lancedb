@@ -36,6 +36,10 @@ pub struct PyOAuthConfig {
     pub issuer_url: String,
     pub client_id: String,
     pub scopes: Vec<String>,
+    /// Optional resource indicator for authorization and token requests.
+    pub resource: Option<String>,
+    /// Optional provider-specific audience for authorization and token requests.
+    pub audience: Option<String>,
     pub flow: String,
     pub client_secret: Option<String>,
     pub redirect_uri: Option<String>,
@@ -78,6 +82,8 @@ impl TryFrom<PyOAuthConfig> for OAuthConfig {
             client_id: py.client_id,
             client_secret: py.client_secret,
             scopes: py.scopes,
+            resource: py.resource,
+            audience: py.audience,
             flow,
             refresh_buffer_secs: py.refresh_buffer_secs,
             token_cache: py.token_cache.map(TokenCacheOptions::from),
@@ -117,6 +123,18 @@ impl PySessionStatus {
     #[getter]
     pub fn scopes(&self) -> Vec<String> {
         self.inner.scopes.clone()
+    }
+
+    /// Resource indicator used to obtain the cached session.
+    #[getter]
+    pub fn resource(&self) -> Option<String> {
+        self.inner.resource.clone()
+    }
+
+    /// Provider-specific audience used to obtain the cached session.
+    #[getter]
+    pub fn audience(&self) -> Option<String> {
+        self.inner.audience.clone()
     }
 
     /// Flow that produced the cached session.
@@ -242,6 +260,8 @@ mod tests {
             use_pkce: true,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
             token_cache: None,
         }
     }
@@ -269,6 +289,8 @@ mod tests {
             redirect_uri: Some("http://127.0.0.1:9000/callback".to_string()),
             callback_port: Some(9000),
             use_pkce: false,
+            resource: Some("urn:resource".into()),
+            audience: Some("audience".into()),
             ..base_config()
         };
 
@@ -282,6 +304,8 @@ mod tests {
         );
         assert_eq!(options.callback_port, Some(9000));
         assert!(!options.use_pkce);
+        assert_eq!(converted.resource.as_deref(), Some("urn:resource"));
+        assert_eq!(converted.audience.as_deref(), Some("audience"));
     }
 
     #[test]
@@ -294,6 +318,8 @@ mod tests {
     #[test]
     fn test_token_cache_conversion() {
         let config = PyOAuthConfig {
+            resource: None,
+            audience: None,
             token_cache: Some(PyTokenCacheOptions {
                 cache_dir: Some("/tmp/oauth-cache".to_string()),
                 lock_timeout_secs: Some(5),
