@@ -978,6 +978,43 @@ mod tests {
         );
     }
 
+    /// Absolute timestamp pruning applies the same computed-column sidecar
+    /// cleanup as duration-based pruning.
+    #[tokio::test]
+    async fn test_absolute_pruning_drops_the_sidecars_of_pruned_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("x", Int32, [1, 2])).unwrap();
+        let table = conn
+            .create_table("sidecars", batch)
+            .execute()
+            .await
+            .unwrap();
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+        append(&table, vec![5]).await;
+        table.refresh_column("doubled").await.unwrap();
+        let sidecars = || {
+            std::fs::read_dir(dir.path().join("sidecars.lance").join("_computed"))
+                .unwrap()
+                .count()
+        };
+        assert_eq!(sidecars(), 2);
+
+        table
+            .optimize_prune_before(chrono::Utc::now(), Some(true), None)
+            .await
+            .unwrap();
+        assert_eq!(sidecars(), 1);
+        assert_eq!(
+            table.refresh_column("doubled").await.unwrap().rows_filled,
+            0
+        );
+    }
+
     /// A deleted row is never computed and the rows that stay keep their
     /// values: a delete recomputes nothing and stamps nothing.
     #[tokio::test]
