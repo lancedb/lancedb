@@ -659,6 +659,29 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._inner.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
+        )
+        return Job(job)
+
+    @override
     def open_materialized_view(self, name: str) -> "MaterializedView":
         """Open the materialized view named ``name``."""
         view = MaterializedView(self.open_table(name))
@@ -1214,6 +1237,26 @@ class AsyncLanceNamespaceDBConnection:
         # Reopen through the namespace so the view's table carries the
         # namespace client and pushdown configuration a bare inner table lacks.
         return AsyncMaterializedView(await self.open_table(view.name))
+
+    async def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> AsyncJob[None]:
+        """Submit materialized-view creation and return its job."""
+        return await self._inner.create_materialized_view_async(
+            name,
+            source,
+            select=select,
+            where=where,
+            limit=limit,
+            with_no_data=with_no_data,
+        )
 
     async def open_materialized_view(self, name: str) -> "AsyncMaterializedView":
         """Open the materialized view named ``name``."""

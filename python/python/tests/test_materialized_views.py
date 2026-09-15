@@ -54,6 +54,35 @@ def mock_remote_materialized_views():
             thread.join()
 
 
+@contextlib.contextmanager
+def mock_remote_materialized_view_create():
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+            requests.append((self.path, body))
+            encoded = json.dumps({"job_id": "mv-create-123"}).encode()
+            self.send_response(202)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    with http.server.HTTPServer(("localhost", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield f"http://localhost:{server.server_address[1]}", requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
 def test_remote_list_uses_namespace_route():
     with mock_remote_materialized_views() as (host, requests):
         db = lancedb.connect(
@@ -64,6 +93,24 @@ def test_remote_list_uses_namespace_route():
         )
         assert db.list_materialized_views() == ["daily_sales"]
     assert requests == ["/v1/namespace/$/materialized_view/list"]
+
+
+def test_remote_create_async_returns_server_job():
+    with mock_remote_materialized_view_create() as (host, requests):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        job = db.create_materialized_view_async("adults", "people", where="age >= 18")
+        assert job.id == "mv-create-123"
+    assert requests == [
+        (
+            "/v1/materialized_view/adults/create",
+            {"query": 'SELECT * FROM "people" WHERE age >= 18', "with_no_data": False},
+        )
+    ]
 
 
 def test_create_refresh_and_query(tmp_path):
@@ -79,6 +126,23 @@ def test_create_refresh_and_query(tmp_path):
 
     rows = view.table.search().to_list()
     assert sorted(row["shout"] for row in rows) == ["ADA", "GRACE"]
+
+
+def test_create_and_refresh_jobs(tmp_path):
+    db = make_db(tmp_path)
+    create_job = db.create_materialized_view_async(
+        "adults", "people", where="age >= 18", with_no_data=True
+    )
+    assert create_job.id is None
+    assert create_job.wait() is None
+
+    view = db.open_materialized_view("adults")
+    refresh_job = view.refresh_materialized_view_async()
+    assert refresh_job.id is None
+    result = refresh_job.wait()
+    assert result.mode == "rebuild"
+    assert result.rows_written == 2
+    assert view.table.count_rows() == 2
 
 
 def test_definition_round_trips(tmp_path):
@@ -172,6 +236,25 @@ async def test_async_create_refresh_and_open(tmp_path):
     definition = await reopened.definition()
     assert definition.projections == [("shout", "upper(name)")]
     assert await db.list_materialized_views() == ["shouts"]
+
+
+@pytest.mark.asyncio
+async def test_async_create_and_refresh_jobs(tmp_path):
+    db = await lancedb.connect_async(tmp_path, storage_options=STABLE_ROW_IDS)
+    await db.create_table("people", [{"name": "ada", "age": 36}])
+
+    create_job = await db.create_materialized_view_async(
+        "adults", "people", with_no_data=True
+    )
+    assert create_job.id is None
+    assert await create_job.wait() is None
+
+    view = await db.open_materialized_view("adults")
+    refresh_job = await view.refresh_materialized_view_async()
+    assert refresh_job.id is None
+    result = await refresh_job.wait()
+    assert result.mode == "rebuild"
+    assert result.rows_written == 1
 
 
 @pytest.mark.asyncio

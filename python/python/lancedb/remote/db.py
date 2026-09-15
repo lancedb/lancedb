@@ -689,6 +689,29 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._conn.create_materialized_view_async(
+                name,
+                source,
+                projections=normalize_select(select),
+                filter=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
+        )
+        return Job(AsyncJob(job))
+
+    @override
     def open_materialized_view(self, name: str) -> MaterializedView:
         view = MaterializedView(self.open_table(name))
         view.definition

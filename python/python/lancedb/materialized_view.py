@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 
 from .background_loop import LOOP
+from .job import AsyncJob, Job, _typed_job
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -163,6 +164,24 @@ class AsyncMaterializedView:
             full=full, source_version=source_version
         )
 
+    async def refresh_materialized_view_async(
+        self, *, full: bool = False, source_version: Optional[int] = None
+    ) -> "AsyncJob[RefreshMaterializedViewResult]":
+        """Submit a refresh and return its job without waiting.
+
+        The job may already be complete for a local view. On LanceDB Cloud
+        and Enterprise, its ``id`` is the server job identifier returned by
+        the refresh endpoint.
+        """
+        from ._lancedb import RefreshMaterializedViewResult
+
+        return _typed_job(
+            await self._table._inner.refresh_materialized_view_async(
+                full=full, source_version=source_version
+            ),
+            RefreshMaterializedViewResult.from_json,
+        )
+
 
 class MaterializedView:
     """Synchronous variant of
@@ -195,3 +214,19 @@ class MaterializedView:
         """Recompute the view from its source. See
         [AsyncMaterializedView.refresh][lancedb.materialized_view.AsyncMaterializedView.refresh]."""
         return LOOP.run(self._async.refresh(full=full, source_version=source_version))
+
+    def refresh_materialized_view_async(
+        self, *, full: bool = False, source_version: Optional[int] = None
+    ) -> "Job[RefreshMaterializedViewResult]":
+        """Submit a refresh and return its job without waiting.
+
+        See
+        [AsyncMaterializedView.refresh_materialized_view_async][lancedb.materialized_view.AsyncMaterializedView.refresh_materialized_view_async].
+        """
+        return Job(
+            LOOP.run(
+                self._async.refresh_materialized_view_async(
+                    full=full, source_version=source_version
+                )
+            )
+        )

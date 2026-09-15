@@ -568,6 +568,27 @@ class DBConnection(EnforceOverrides):
             "materialized views are not supported on this connection type"
         )
 
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        """Submit materialized-view creation and return its job.
+
+        The job may already be complete for a local database. On LanceDB
+        Cloud and Enterprise, its ``id`` is the server job identifier from
+        the ``202 Accepted`` create response. Wait for the job before opening
+        or querying the view.
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
     def open_materialized_view(self, name: str) -> MaterializedView:
         """Open the materialized view named ``name``.
 
@@ -1308,6 +1329,29 @@ class LanceDBConnection(DBConnection):
             )
         )
         return MaterializedView(self.open_table(name))
+
+    @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._conn.create_materialized_view_async(
+                name,
+                source,
+                projections=normalize_select(select),
+                filter=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
+        )
+        return Job(AsyncJob(job))
 
     @override
     def open_materialized_view(self, name: str) -> MaterializedView:
@@ -2103,6 +2147,30 @@ class AsyncConnection(object):
             with_no_data=with_no_data,
         )
         return AsyncMaterializedView(AsyncTable(inner))
+
+    async def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> AsyncJob[None]:
+        """Submit materialized-view creation and return its job.
+
+        Wait for the returned job before opening or querying the view.
+        """
+        inner = await self._inner.create_materialized_view_async(
+            name,
+            source,
+            projections=normalize_select(select),
+            filter=where,
+            limit=limit,
+            with_no_data=with_no_data,
+        )
+        return AsyncJob(inner)
 
     async def open_materialized_view(self, name: str) -> AsyncMaterializedView:
         """Open the materialized view named ``name``.

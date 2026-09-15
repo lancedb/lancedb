@@ -1267,11 +1267,12 @@ impl CreateMaterializedViewBuilder {
         query
     }
 
-    /// Create and populate the view. The source must keep stable row ids --
+    /// Submit creation and initial population, returning a [`Job`] that
+    /// settles when the view is ready. The source must keep stable row ids --
     /// they hold provenance across compaction, and cannot be enabled later.
-    pub async fn execute(self) -> Result<MaterializedView> {
+    pub async fn execute_async(self) -> Result<crate::job::Job> {
         if self.connection.uri().starts_with("db://") {
-            let job = self
+            return self
                 .connection
                 .database()
                 .create_materialized_view_async(CreateMaterializedViewRequest {
@@ -1280,16 +1281,31 @@ impl CreateMaterializedViewBuilder {
                     query: self.query(),
                     with_no_data: self.with_no_data,
                 })
-                .await?;
-            job.wait().await?;
-            let table = self
-                .connection
-                .open_table(&self.name)
-                .namespace(self.namespace)
-                .execute()
-                .await?;
-            return MaterializedView::from_table(table).await;
+                .await;
         }
+        Ok(crate::job::Job::spawned(tokio::spawn(async move {
+            self.execute_native().await.map(|_| ())
+        })))
+    }
+
+    /// Create and populate the view, waiting until it is ready.
+    pub async fn execute(self) -> Result<MaterializedView> {
+        if !self.connection.uri().starts_with("db://") {
+            return self.execute_native().await;
+        }
+        let connection = self.connection.clone();
+        let name = self.name.clone();
+        let namespace = self.namespace.clone();
+        self.execute_async().await?.wait().await?;
+        let table = connection
+            .open_table(name)
+            .namespace(namespace)
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await
+    }
+
+    async fn execute_native(self) -> Result<MaterializedView> {
         let source = self
             .connection
             .open_table(&self.source)
@@ -1414,7 +1430,8 @@ impl RefreshMaterializedViewBuilder {
         self
     }
 
-    pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
+    /// Submit the refresh and return a job that settles with its result.
+    pub async fn execute_async(self) -> Result<crate::job::Job<RefreshMaterializedViewResult>> {
         if self.view.table.as_native().is_none() {
             return self
                 .view
@@ -1425,17 +1442,31 @@ impl RefreshMaterializedViewBuilder {
                     self.source_version,
                     self.expected_incarnation.as_deref(),
                 )
-                .await?
-                .wait()
                 .await;
         }
-        refresh::execute_refresh(
-            &self.view.table,
-            self.full,
-            self.source_version,
-            self.expected_incarnation.as_deref(),
-        )
-        .await
+        Ok(crate::job::Job::spawned(tokio::spawn(async move {
+            refresh::execute_refresh(
+                &self.view.table,
+                self.full,
+                self.source_version,
+                self.expected_incarnation.as_deref(),
+            )
+            .await
+        })))
+    }
+
+    /// Refresh the view, waiting for the job to finish.
+    pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
+        if self.view.table.as_native().is_some() {
+            return refresh::execute_refresh(
+                &self.view.table,
+                self.full,
+                self.source_version,
+                self.expected_incarnation.as_deref(),
+            )
+            .await;
+        }
+        self.execute_async().await?.wait().await
     }
 }
 
@@ -1605,6 +1636,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_and_refresh_async_jobs() {
+        let conn = people_db().await;
+        let create_job = conn
+            .create_materialized_view("async_view", "people")
+            .with_no_data(true)
+            .execute_async()
+            .await
+            .unwrap();
+        assert!(create_job.id().is_none());
+        create_job.wait().await.unwrap();
+
+        let view = conn.open_materialized_view("async_view").await.unwrap();
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+
+        let refresh_job = view.refresh().execute_async().await.unwrap();
+        assert!(refresh_job.id().is_none());
+        let result = refresh_job.wait().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 3);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
     }
 
     #[tokio::test]
