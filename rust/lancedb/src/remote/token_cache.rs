@@ -1000,6 +1000,7 @@ mod tests {
             let access_tokens_issued = Arc::clone(&server.access_tokens_issued);
             let current_refresh = Arc::clone(&server.current_refresh);
             let fail_refreshes = Arc::clone(&server.fail_refreshes);
+            let issue_refresh_tokens = Arc::clone(&server.issue_refresh_tokens);
 
             tokio::spawn(async move {
                 loop {
