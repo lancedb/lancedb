@@ -200,14 +200,14 @@ impl IndexBuilder {
             parent,
             index,
             columns,
-            replace: true,
+            replace: false,
             train: true,
             wait_timeout: None,
             name: None,
         }
     }
 
-    /// Whether to replace the existing index, the default is `true`.
+    /// Whether to replace the existing index, the default is `false`.
     ///
     /// If this is false, and another index already exists on the same columns
     /// and the same name, then an error will be returned.  This is true even if

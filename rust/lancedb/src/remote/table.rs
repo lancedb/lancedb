@@ -535,12 +535,9 @@ impl<S: HttpSend> RemoteTable<S> {
             _ => resolve_arrow_field_path(&schema, &column)?,
         };
         let mut body = serde_json::json!({
-            "column": canonical_column
+            "column": canonical_column,
+            "replace": index.replace,
         });
-
-        if !index.replace {
-            body["replace"] = false.into();
-        }
 
         // Add name parameter if provided (for backwards compatibility, only include if Some)
         if let Some(ref name) = index.name {
@@ -6320,6 +6317,7 @@ mod tests {
                             let mut expected_body = expected_body.clone();
                             expected_body["column"] = "a".into();
                             expected_body[INDEX_TYPE_KEY] = index_type.into();
+                            expected_body["replace"] = false.into();
 
                             assert_eq!(body, expected_body);
 
@@ -6338,7 +6336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_index_forwards_replace_false_on_existing_route() {
+    async fn test_create_index_forwards_default_replace_false_on_existing_route() {
         let table = Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
             match request.url().path() {
@@ -6365,7 +6363,40 @@ mod tests {
 
         table
             .create_index(&["a"], Index::BTree(Default::default()))
-            .replace(false)
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_index_forwards_explicit_replace_true_on_existing_route() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => {
+                    let body = request.body().unwrap().as_bytes().unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["replace"], json!(true));
+
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .replace(true)
             .execute()
             .await
             .unwrap();
@@ -6596,38 +6627,46 @@ mod tests {
             json!({
                 "column": "rowId",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "`row-id`",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "userId",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "MetaData.userId",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "metadata.user_id",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "image.embedding",
                 "index_type": "IVF_PQ",
                 "metric_type": "l2",
+                "replace": false,
             }),
             {
                 let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
                 body["column"] = "payload.text".into();
                 body["index_type"] = "FTS".into();
+                body["replace"] = false.into();
                 body
             },
             {
                 let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
                 body["column"] = "docs.content".into();
                 body["index_type"] = "FTS".into();
+                body["replace"] = false.into();
                 body
             },
             {
@@ -6635,15 +6674,18 @@ mod tests {
                 body["column"] = "docs.content".into();
                 body["index_type"] = "FTS".into();
                 body["document_granularity"] = "list_element".into();
+                body["replace"] = false.into();
                 body
             },
             json!({
                 "column": "`meta-data`.`user-id`",
                 "index_type": "BTREE",
+                "replace": false,
             }),
             json!({
                 "column": "literal.`a.b`",
                 "index_type": "BTREE",
+                "replace": false,
             }),
         ]);
         let request_idx = Arc::new(AtomicUsize::new(0));
