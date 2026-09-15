@@ -217,10 +217,7 @@ def test_definition_round_trips(tmp_path):
 
     view = db.open_materialized_view("adults")
     assert view.definition == MaterializedViewDefinition(
-        source_table="people",
-        projections=[("name", "`name`"), ("age", "`age`")],
-        filter="age >= 18",
-        inputs=["age", "name"],
+        query="SELECT name, age FROM people WHERE age >= 18"
     )
 
 
@@ -305,7 +302,7 @@ async def test_async_create_refresh_and_open(tmp_path):
 
     reopened = await db.open_materialized_view("shouts")
     definition = await reopened.definition()
-    assert definition.projections == [("shout", "upper(name)")]
+    assert definition.query == "SELECT upper(name) AS shout FROM people"
     assert await db.list_materialized_views() == ["shouts"]
 
 
@@ -423,7 +420,7 @@ def test_namespace_connection_materialized_views(tmp_path):
     assert db.list_materialized_views() == ["adults"]
 
     reopened = db.open_materialized_view("adults")
-    assert reopened.definition.source_table == "people"
+    assert reopened.definition.query.startswith("SELECT name, age FROM ")
     with pytest.raises(ValueError, match="not a materialized view"):
         db.open_materialized_view("people")
 
@@ -458,7 +455,7 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
     assert await db.list_materialized_views() == ["adults"]
 
     reopened = await db.open_materialized_view("adults")
-    assert (await reopened.definition()).source_table == "people"
+    assert (await reopened.definition()).query.startswith("SELECT name, age FROM ")
 
     # The view's table came through the namespace, not straight from the
     # inner connection: a bare inner table carries no namespace context, so
@@ -484,36 +481,49 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
     assert await db.list_materialized_views() == []
 
 
-def test_namespaced_select_kind_is_read_and_unknown_kinds_are_refused():
+def test_stored_queries_and_legacy_layouts_are_read():
     import json
 
     import pyarrow as pa
 
     from lancedb.materialized_view import _definition_from_schema
 
-    def schema_with(definition: dict) -> pa.Schema:
-        return pa.schema([pa.field("id", pa.int32())]).with_metadata(
+    def read(definition: dict) -> MaterializedViewDefinition:
+        schema = pa.schema([pa.field("id", pa.int32())]).with_metadata(
             {b"mv.definition": json.dumps(definition).encode()}
         )
+        return _definition_from_schema(schema, "v")
 
-    # "namespaced_select" is the namespaced form of "select": same shape,
-    # a separate kind so readers that predate it refuse instead of
-    # resolving the source at the root.
-    definition = _definition_from_schema(
-        schema_with(
+    query = "SELECT id, c.chunk FROM ns.docs, UNNEST(chunks) AS c WHERE id > 1"
+    assert read({"format": 1, "query": query}).query == query
+
+    # The structured layout written before the format number reads as the
+    # query it described, under either of its kind tags.
+    assert (
+        read(
             {
                 "kind": "namespaced_select",
                 "source_table": "people",
                 "source_namespace": ["ns"],
-                "projections": [{"output": "name", "expression": "name"}],
+                "projections": [
+                    {"output": "name", "expression": "`name`"},
+                    {"output": "Shout", "expression": "upper(name)"},
+                ],
+                "filter": "age >= 18",
+                "limit": 10,
             }
-        ),
-        "v",
+        ).query
+        == "SELECT `name`, upper(name) AS `Shout` FROM ns.people "
+        "WHERE age >= 18 LIMIT 10"
     )
-    assert definition.source_table == "people"
-    assert definition.source_namespace == ["ns"]
+    assert read({"kind": "select", "source_table": "people"}).query == (
+        "SELECT * FROM people"
+    )
 
-    with pytest.raises(NotImplementedError, match="cannot refresh"):
-        _definition_from_schema(
-            schema_with({"kind": "select_v3", "source_table": "people"}), "v"
-        )
+    # A newer writer's layout is reported, never guessed at.
+    for newer in (
+        {"format": 2, "query": query},
+        {"kind": "select_v3", "source_table": "people"},
+    ):
+        with pytest.raises(NotImplementedError, match="cannot refresh"):
+            read(newer)
