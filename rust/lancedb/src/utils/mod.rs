@@ -129,6 +129,80 @@ pub fn validate_namespace_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The characters a Secret name or a Secret namespace segment may contain, and
+/// the longest one either may be.
+///
+/// Deliberately the set the service admits, and no positional rule on top of
+/// it: a segment may begin with `_`, `-` or `.`, because LanceDB namespaces
+/// already do, and anything narrower would put Secrets out of reach inside
+/// namespaces that already exist.
+static SECRET_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]{1,255}$").unwrap());
+
+/// Validate one component of a Secret identifier: a Secret name, or one segment
+/// of the namespace path holding it.
+///
+/// # Why this is checked here, and not only by the service
+///
+/// A Secret is addressed as `POST /v1/secret/{id}/<action>`, where `{id}` is the
+/// namespace path and the name joined by a delimiter. The client performs that
+/// join. The service can only validate the components the *split* produced, so
+/// by the time it sees anything, the identity has already been decided -- and a
+/// component carrying path or delimiter syntax decides it differently from what
+/// the caller asked for.
+///
+/// `"a$b"` is not a name this service accepts, but joined and split it reads as
+/// the namespace `a` and the name `b`: a different Secret, one that may well
+/// exist. A create files a credential under it and an alter overwrites the
+/// credential already there. Neither is an error the service could have
+/// returned, because it was never asked about `a$b`.
+///
+/// So this is not a second opinion on whether a name is acceptable. It is the
+/// step that makes the service's opinion reachable at all, and it belongs to
+/// whoever builds the URL -- which is this client, for every binding, since
+/// Python and Node both wrap it.
+///
+/// [`validate_table_name`] is called on the local path for the same reason.
+/// This is the remote path catching up.
+pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(Error::InvalidInput {
+            message: format!("{what} must not be empty"),
+        });
+    }
+    if !SECRET_NAME_REGEX.is_match(value) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "invalid {what} '{value}': it may contain only alphanumeric characters, \
+                 underscores, hyphens and periods, and may be at most 255 bytes"
+            ),
+        });
+    }
+    // Every character above is unreserved, so a component needs no escaping to
+    // sit in a path segment -- with one exception that is positional rather
+    // than lexical. `.` and `..` are resolved as relative path segments, and
+    // after percent-decoding, so `%2E%2E` is resolved exactly as `..` is and no
+    // spelling of a dot-only component survives to reach a route. A Secret so
+    // named could be stored and then never addressed again.
+    if value.chars().all(|character| character == '.') {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "invalid {what} '{value}': a component of only periods is read as a relative \
+                 path and cannot address a Secret"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate a Secret name and every segment of the namespace path holding it.
+pub fn validate_secret_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    for segment in namespace_path {
+        validate_secret_component("Secret namespace path segment", segment)?;
+    }
+    validate_secret_component("Secret name", name)
+}
+
 /// Validate all components of a namespace
 ///
 /// Iterates through all namespace components and validates each one.

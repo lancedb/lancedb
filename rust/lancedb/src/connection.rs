@@ -37,6 +37,7 @@ use crate::remote::{
     },
 };
 use crate::secrets::SecretInfo;
+use crate::utils::{validate_secret_component, validate_secret_reference};
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
 #[cfg(feature = "remote")]
@@ -659,6 +660,7 @@ impl Connection {
         value: impl AsRef<str>,
         namespace_path: &[String],
     ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
         self.internal
             .create_secret(name.as_ref(), value.as_ref(), namespace_path)
             .await
@@ -677,6 +679,7 @@ impl Connection {
         value: impl AsRef<str>,
         namespace_path: &[String],
     ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
         self.internal
             .alter_secret(name.as_ref(), value.as_ref(), namespace_path)
             .await
@@ -688,6 +691,9 @@ impl Connection {
     /// construction rather than by policy. Local databases return
     /// [`Error::NotSupported`].
     pub async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        for segment in namespace_path {
+            validate_secret_component("Secret namespace path segment", segment)?;
+        }
         self.internal.list_secrets(namespace_path).await
     }
 
@@ -702,6 +708,7 @@ impl Connection {
         name: impl AsRef<str>,
         namespace_path: &[String],
     ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
         self.internal
             .drop_secret(name.as_ref(), namespace_path)
             .await
@@ -717,6 +724,7 @@ impl Connection {
         name: impl AsRef<str>,
         namespace_path: &[String],
     ) -> Result<SecretInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
         self.internal
             .describe_secret(name.as_ref(), namespace_path)
             .await

@@ -372,16 +372,69 @@ impl<S: HttpSend> RemoteDatabase<S> {
     /// would need escaping, and a `/v1/secret/prod$openai/drop` that reads like
     /// the table and Function routes beside it is worth more than encoding
     /// against a charset that does not exist yet.
+    /// The path segment addressing one Secret.
+    ///
+    /// The shape of each component is settled by then -- [`Connection`] checks
+    /// that before anything reaches a transport. What is left is the one rule
+    /// that cannot be checked there, because it depends on configuration this
+    /// layer owns: a component may not contain the delimiter it is about to be
+    /// joined with.
+    ///
+    /// [`Connection`]: crate::connection::Connection
     fn secret_id(&self, name: &str, namespace_path: &[String]) -> Result<String> {
-        let identifier = build_secret_identifier(name, namespace_path, &self.client.id_delimiter);
-        require_addressable(identifier)
-    }
-
-    fn secret_namespace_id(&self, namespace_path: &[String]) -> Result<String> {
-        require_addressable(build_secret_namespace_identifier(
+        self.reject_delimiter_in_components(
+            namespace_path.iter().map(String::as_str).chain([name]),
+        )?;
+        Ok(build_secret_identifier(
+            name,
             namespace_path,
             &self.client.id_delimiter,
         ))
+    }
+
+    fn secret_namespace_id(&self, namespace_path: &[String]) -> Result<String> {
+        self.reject_delimiter_in_components(namespace_path.iter().map(String::as_str))?;
+        Ok(build_secret_namespace_identifier(
+            namespace_path,
+            &self.client.id_delimiter,
+        ))
+    }
+
+    /// Refuse a component holding the delimiter that is about to separate it
+    /// from the others.
+    ///
+    /// The default `$` is outside the character set a Secret admits, so this
+    /// never fires for it -- [`Connection`] has already refused any component
+    /// that could contain one. It exists for a *configured* delimiter, which
+    /// may be any string at all and is most usefully one that reads well:
+    /// `.`, `-` and `_` are the likely choices and all three are inside that
+    /// set.
+    ///
+    /// Under `id_delimiter="."` the component `prod.vision` and the pair
+    /// `prod`, `vision` join to one string, and the caller who wrote the first
+    /// would address the Secret belonging to the second. Refusing is the only
+    /// answer that keeps the identity the caller wrote: there is no escaping
+    /// of the joined form that recovers a boundary the delimiter has already
+    /// erased.
+    ///
+    /// [`Connection`]: crate::connection::Connection
+    fn reject_delimiter_in_components<'a>(
+        &self,
+        components: impl Iterator<Item = &'a str>,
+    ) -> Result<()> {
+        let delimiter = &self.client.id_delimiter;
+        for component in components {
+            if component.contains(delimiter.as_str()) {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Secret identifier component '{component}' contains the configured \
+                         identifier delimiter '{delimiter}', so the namespace path and the name \
+                         it joins could not be told apart"
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     async fn post_secret_write<T: serde::Serialize>(&self, route: &str, body: &T) -> Result<()> {
@@ -565,65 +618,28 @@ fn build_secret_identifier(name: &str, namespace: &[String], delimiter: &str) ->
         .iter()
         .map(String::as_str)
         .chain(std::iter::once(name))
-        .map(|component| encode_identifier_component(component, delimiter))
+        .map(encode_identifier_component)
         .collect::<Vec<_>>()
         .join(delimiter)
 }
 
-/// One component of an identifier, escaped for a path segment and for the
-/// delimiter that will join it to the others.
+/// One component of an identifier, escaped for a path segment.
 ///
-/// Percent-encoding alone is not enough to make the join reversible. It leaves
-/// the unreserved characters untouched, and `.`, `-` and `_` are both
-/// unreserved and plausible delimiters -- so under `id_delimiter="."` the
-/// component `prod.vision` would join to the same string as the two components
-/// `prod` and `vision`, and the two distinct Secrets would share one route.
-/// Escaping the delimiter inside the component is what keeps the boundaries
-/// the caller drew.
+/// A second line rather than the first. [`Connection`] refuses any component
+/// that is not alphanumerics, `_`, `-` or `.`, and every one of those is
+/// unreserved -- so a component that reaches here encodes to itself and the
+/// route reads exactly as the table and Function routes beside it do. This
+/// stands between a future caller that reaches the transport another way and
+/// a URL whose structure its input chose.
 ///
-/// The default `$` needs no special handling: it is not unreserved, so it is
-/// already escaped inside a component and only ever appears raw as the
-/// separator. Nothing on that path changes shape.
-fn encode_identifier_component(component: &str, delimiter: &str) -> String {
-    let encoded = urlencoding::encode(component).into_owned();
-    if delimiter.is_empty() || !encoded.contains(delimiter) {
-        return encoded;
-    }
-    encoded.replace(delimiter, &percent_encode_every_byte(delimiter))
-}
-
-/// Percent-encode every byte, whether or not it needs it.
+/// It is not sufficient on its own, which is why it is not the only check:
+/// `.` and `..` are unreserved too, and are resolved as relative segments
+/// after decoding, so no escaping of them survives. Those are refused
+/// outright.
 ///
-/// Used for the delimiter, which has to be escaped inside a component precisely
-/// when `urlencoding` would leave it alone.
-fn percent_encode_every_byte(value: &str) -> String {
-    value.bytes().map(|byte| format!("%{byte:02X}")).collect()
-}
-
-/// Refuse an identifier that cannot be a path segment at all.
-///
-/// Percent-encoding handles every character that would end the segment early,
-/// but it cannot help with `.` and `..`. Those are unreserved, so nothing in
-/// them needs escaping character by character, and URL parsing resolves them as
-/// relative path segments *after* decoding -- `%2E%2E` is a double-dot segment
-/// as surely as `..` is. There is no spelling of a dot-only segment that
-/// survives to reach a route.
-///
-/// So this is not name validation, which is the service's: it is the client
-/// reporting that it cannot express the request. The alternative is a URL that
-/// silently resolves to a different route and delivers the body -- on a write
-/// verb, a credential -- to whatever handler is left there.
-fn require_addressable(identifier: String) -> Result<String> {
-    let decoded = identifier.replace("%2E", ".").replace("%2e", ".");
-    if !decoded.is_empty() && decoded.chars().all(|character| character == '.') {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "identifier {identifier:?} cannot be addressed: a path segment of only dots is \
-                 resolved as a relative path and never reaches the route it was built for"
-            ),
-        });
-    }
-    Ok(identifier)
+/// [`Connection`]: crate::connection::Connection
+fn encode_identifier_component(component: &str) -> String {
+    urlencoding::encode(component).into_owned()
 }
 
 /// The namespace a Secret listing is scoped to, encoded the same way.
@@ -635,7 +651,7 @@ fn build_secret_namespace_identifier(namespace: &[String], delimiter: &str) -> S
     }
     namespace
         .iter()
-        .map(|segment| encode_identifier_component(segment, delimiter))
+        .map(|segment| encode_identifier_component(segment))
         .collect::<Vec<_>>()
         .join(delimiter)
 }
@@ -3320,36 +3336,24 @@ mod tests {
         assert_eq!(batches[0].schema(), schema);
     }
 
-    /// A name the service would refuse must still arrive at the Secret route
-    /// for it to refuse. Unencoded, `../jobs` is normalized away by the URL
-    /// builder and the create body -- which holds a credential -- is delivered
-    /// to whatever route is left, with none of the body suppression this one
-    /// has.
+    /// A component that is not a legal Secret component never reaches a
+    /// transport. Before the identifier was checked here, each of these decided
+    /// the route instead of the name: `a/b` and `../jobs` left `/v1/secret/`
+    /// entirely, carrying a create body that holds a credential, and `a$b` read
+    /// as the namespace `a` and the name `b`.
     #[tokio::test]
-    async fn test_a_name_cannot_route_a_request_out_of_the_secret_surface() {
+    async fn test_an_illegal_component_never_reaches_the_transport() {
         use std::sync::{Arc, Mutex};
-        for name in ["../jobs", "a/b", "with space", "q?x", "a#b", "a%2Fb"] {
-            let seen = Arc::new(Mutex::new(String::new()));
-            let captured = seen.clone();
-            let conn = Connection::new_with_handler(move |request| {
-                *captured.lock().unwrap() = request.url().path().to_string();
-                http::Response::builder().status(200).body("{}").unwrap()
-            });
-            let _ = conn.create_secret(name, "sk-live-0001", &[]).await;
-            let path = seen.lock().unwrap().clone();
-            assert!(
-                path.starts_with("/v1/secret/") && path.ends_with("/create"),
-                "name {name:?} left the Secret route: {path}"
-            );
-        }
-    }
-
-    /// A dot-only identifier cannot be a path segment under any encoding, so the
-    /// client says so rather than sending a request that resolves elsewhere.
-    #[tokio::test]
-    async fn test_a_dot_only_identifier_is_refused_before_a_request_is_built() {
-        use std::sync::{Arc, Mutex};
-        for name in [".", "..", "..."] {
+        for name in [
+            "../jobs",
+            "a/b",
+            "a$b",
+            "with space",
+            "q?x",
+            "a#b",
+            "a%2Fb",
+            "",
+        ] {
             let reached = Arc::new(Mutex::new(false));
             let flag = reached.clone();
             let conn = Connection::new_with_handler(move |_| {
@@ -3359,50 +3363,22 @@ mod tests {
             let error = conn
                 .create_secret(name, "sk-live-0001", &[])
                 .await
-                .expect_err("dot-only name must not be addressable");
-            assert!(error.to_string().contains("cannot be addressed"), "{error}");
+                .expect_err("an illegal component must be refused");
             assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
+            assert!(
+                error.to_string().contains("Secret name"),
+                "{name:?}: {error}"
+            );
         }
     }
 
-    /// A delimiter that is an unreserved character survives percent-encoding, so
-    /// it has to be escaped inside a component or two different identities join
-    /// to the same string.
+    /// A component of only periods passes the character set and still cannot
+    /// address anything: it is resolved as a relative path, and after
+    /// percent-decoding, so no spelling of it survives.
     #[tokio::test]
-    async fn test_a_configured_delimiter_cannot_alias_two_identities() {
+    async fn test_a_dot_only_component_is_refused() {
         use std::sync::{Arc, Mutex};
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let captured = seen.clone();
-        let conn = Connection::new_with_handler_and_config(
-            move |request| {
-                captured
-                    .lock()
-                    .unwrap()
-                    .push(request.url().path().to_string());
-                http::Response::builder().status(200).body("{}").unwrap()
-            },
-            ClientConfig {
-                id_delimiter: Some(".".to_string()),
-                ..Default::default()
-            },
-        );
-        conn.drop_secret("openai", &["prod.vision".to_string()])
-            .await
-            .unwrap();
-        conn.drop_secret("openai", &["prod".to_string(), "vision".to_string()])
-            .await
-            .unwrap();
-        let seen = seen.lock().unwrap();
-        assert_ne!(seen[0], seen[1], "identities collided: {seen:?}");
-    }
-
-    /// Listing is addressed by a namespace identifier and needs the same
-    /// admission the Secret identifier gets: a dot-only namespace resolves away
-    /// and leaves the listing route entirely.
-    #[tokio::test]
-    async fn test_a_dot_only_namespace_cannot_leave_the_listing_route() {
-        use std::sync::{Arc, Mutex};
-        for namespace in [".", "..", "..."] {
+        for component in [".", "..", "..."] {
             let reached = Arc::new(Mutex::new(false));
             let flag = reached.clone();
             let conn = Connection::new_with_handler(move |_| {
@@ -3412,47 +3388,63 @@ mod tests {
                     .body(r#"{"secrets":[]}"#)
                     .unwrap()
             });
-            let error = conn
-                .list_secrets(&[namespace.to_string()])
+            let by_name = conn
+                .drop_secret(component, &[])
                 .await
-                .expect_err("a dot-only namespace must not be addressable");
-            assert!(error.to_string().contains("cannot be addressed"), "{error}");
+                .expect_err("a dot-only name must be refused");
+            assert!(by_name.to_string().contains("only periods"), "{by_name}");
+
+            let by_segment = conn
+                .list_secrets(&[component.to_string()])
+                .await
+                .expect_err("a dot-only namespace segment must be refused");
+            assert!(
+                by_segment.to_string().contains("only periods"),
+                "{by_segment}"
+            );
             assert!(
                 !*reached.lock().unwrap(),
-                "{namespace:?} reached the transport"
+                "{component:?} reached the transport"
             );
         }
     }
 
-    /// Two different Secrets must not share one URL. Encoding the components
-    /// rather than the joined string is what keeps a segment containing the
-    /// delimiter from reading as two segments.
+    /// The default delimiter is outside the character set, so a component can
+    /// never hold one. A configured delimiter can be anything, and the readable
+    /// choices are all inside it -- under `.` the component `prod.vision` and
+    /// the pair `prod`, `vision` would join to one identifier.
     #[tokio::test]
-    async fn test_distinct_secret_identities_produce_distinct_routes() {
+    async fn test_a_configured_delimiter_is_refused_inside_a_component() {
         use std::sync::{Arc, Mutex};
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let captured = seen.clone();
-        let conn = Connection::new_with_handler(move |request| {
-            captured
-                .lock()
-                .unwrap()
-                .push(request.url().path().to_string());
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        conn.drop_secret("openai", &["prod$vision".to_string()])
+        let reached = Arc::new(Mutex::new(false));
+        let flag = reached.clone();
+        let conn = Connection::new_with_handler_and_config(
+            move |_| {
+                *flag.lock().unwrap() = true;
+                http::Response::builder().status(200).body("{}").unwrap()
+            },
+            ClientConfig {
+                id_delimiter: Some(".".to_string()),
+                ..Default::default()
+            },
+        );
+        let error = conn
+            .drop_secret("openai", &["prod.vision".to_string()])
             .await
-            .unwrap();
+            .expect_err("a component holding the delimiter must be refused");
+        assert!(error.to_string().contains("delimiter"), "{error}");
+        assert!(!*reached.lock().unwrap(), "the request was sent anyway");
+
+        // The same two names as separate segments are the ordinary case.
         conn.drop_secret("openai", &["prod".to_string(), "vision".to_string()])
             .await
             .unwrap();
-        let seen = seen.lock().unwrap();
-        assert_ne!(seen[0], seen[1], "distinct identities collided: {seen:?}");
     }
 
-    /// An identifier the service would accept is untouched by the encoding, so
-    /// the ordinary route reads like the table and Function routes beside it.
+    /// An identifier the service accepts is untouched by the encoding, so the
+    /// route reads like the table and Function routes beside it.
     #[tokio::test]
-    async fn test_an_admissible_name_is_not_encoded() {
+    async fn test_an_admissible_identifier_is_not_encoded() {
         use std::sync::{Arc, Mutex};
         let seen = Arc::new(Mutex::new(String::new()));
         let captured = seen.clone();
