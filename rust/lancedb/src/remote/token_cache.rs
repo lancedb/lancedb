@@ -1584,6 +1584,16 @@ mod tests {
         );
     }
 
+    /// Write a record file that passes the permission hardening checks.
+    fn write_record_file(path: &Path, contents: &str) {
+        std::fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn test_record_rejects_unknown_version_and_corruption() {
         let dir = cache_tempdir();
@@ -1605,17 +1615,17 @@ mod tests {
             .unwrap();
         let mut json = serde_json::to_value(&record).unwrap();
         json["version"] = serde_json::json!(99);
-        std::fs::write(&path, json.to_string()).unwrap();
+        write_record_file(&path, &json.to_string());
         let err = cache.load().await.unwrap_err();
         assert!(
             matches!(err, Error::Runtime { message } if message.contains("unsupported version"))
         );
 
-        std::fs::write(&path, r#"{"version":1,"issuer_url":"x""#).unwrap();
+        write_record_file(&path, r#"{"version":1,"issuer_url":"x""#);
         let err = cache.load().await.unwrap_err();
         assert!(matches!(err, Error::Runtime { message } if message.contains("corrupt")));
 
-        std::fs::write(&path, "").unwrap();
+        write_record_file(&path, "");
         assert!(
             cache
                 .load()

@@ -336,6 +336,7 @@ impl OAuthSession {
     /// identity; if the provider does not issue a refresh token (for example
     /// without `offline_access`), the previous record is removed and the
     /// status reports `refreshable == false`.
+    #[napi(catch_unwind)]
     pub async fn login(&self) -> napi::Result<SessionStatus> {
         let status = self.inner.login().await.default_error()?;
         Ok(SessionStatus::from(status))
@@ -345,6 +346,7 @@ impl OAuthSession {
     ///
     /// This never contacts the identity provider and never exposes token
     /// values.
+    #[napi(catch_unwind)]
     pub async fn status(&self) -> napi::Result<SessionStatus> {
         let status = self.inner.status().await.default_error()?;
         Ok(SessionStatus::from(status))
@@ -356,6 +358,7 @@ impl OAuthSession {
     /// refresh token with the provider and does not sign out of a browser
     /// SSO session. Repeated calls succeed; `removed` reports whether a
     /// credential existed.
+    #[napi(catch_unwind)]
     pub async fn logout(&self) -> napi::Result<SessionLogout> {
         let logout = self.inner.logout().await.default_error()?;
         Ok(SessionLogout {
