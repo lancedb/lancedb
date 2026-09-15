@@ -194,6 +194,14 @@ pub struct OAuthConfig {
     /// Keep this well below the token TTL; if it is greater than or equal to
     /// the TTL, each request refreshes the token.
     pub refresh_buffer_secs: Option<u64>,
+
+    /// Opt in to the persistent token cache so short-lived processes can
+    /// reuse an authenticated session instead of re-prompting.
+    ///
+    /// When unset (the default), tokens stay in process memory only. Only
+    /// refresh tokens are persisted; see
+    /// [`TokenCacheOptions`](crate::remote::TokenCacheOptions).
+    pub token_cache: Option<crate::remote::token_cache::TokenCacheOptions>,
 }
 
 impl std::fmt::Debug for OAuthConfig {
@@ -208,6 +216,7 @@ impl std::fmt::Debug for OAuthConfig {
             .field("scopes", &self.scopes)
             .field("flow", &self.flow)
             .field("refresh_buffer_secs", &self.refresh_buffer_secs)
+            .field("token_cache", &self.token_cache)
             .finish()
     }
 }
@@ -224,17 +233,17 @@ struct OidcDiscovery {
 // -- Token Response --
 
 #[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
+pub(crate) struct TokenResponse {
+    pub(crate) access_token: String,
     #[serde(default)]
-    refresh_token: Option<String>,
+    pub(crate) refresh_token: Option<String>,
     /// Token lifetime in seconds.
     /// Some providers (Azure IMDS) return this as a string, so we accept both.
     #[serde(default, deserialize_with = "deserialize_optional_u64_or_string")]
-    expires_in: Option<u64>,
+    pub(crate) expires_in: Option<u64>,
     #[serde(default)]
     #[allow(dead_code)]
-    token_type: Option<String>,
+    pub(crate) token_type: Option<String>,
 }
 
 impl std::fmt::Debug for TokenResponse {
@@ -337,7 +346,7 @@ impl TokenState {
 }
 
 #[async_trait]
-trait TokenSource: Send + Sync + std::fmt::Debug {
+pub(crate) trait TokenSource: Send + Sync + std::fmt::Debug {
     async fn fetch_token(&self) -> Result<TokenResponse>;
 
     async fn refresh_token(&self, _refresh_token: &str) -> Result<RefreshResult> {
@@ -346,7 +355,7 @@ trait TokenSource: Send + Sync + std::fmt::Debug {
 }
 
 #[derive(Debug)]
-enum RefreshResult {
+pub(crate) enum RefreshResult {
     Refreshed(TokenResponse),
     Reauthenticate,
     Unsupported,
@@ -1273,22 +1282,66 @@ impl TokenSource for AzureImdsSource {
     }
 }
 
+/// Build the token source for a configuration.
+///
+/// Shared by [`OAuthHeaderProvider`] and
+/// [`OAuthSession`](crate::remote::OAuthSession).
+pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSource>> {
+    if config.scopes.is_empty() {
+        return Err(Error::InvalidInput {
+            message: "At least one OAuth scope is required".to_string(),
+        });
+    }
+    Ok(match &config.flow {
+        OAuthFlow::ClientCredentials => Box::new(ClientCredentialsSource::new(
+            config.issuer_url.clone(),
+            config.client_id.clone(),
+            config.client_secret.clone(),
+            config.scopes.clone(),
+        )?),
+        OAuthFlow::AuthorizationCode(options) => Box::new(AuthorizationCodeSource::new(
+            config.issuer_url.clone(),
+            config.client_id.clone(),
+            config.client_secret.clone(),
+            config.scopes.clone(),
+            options.clone(),
+        )?),
+        OAuthFlow::DeviceCode => Box::new(DeviceCodeSource::new(
+            config.issuer_url.clone(),
+            config.client_id.clone(),
+            config.client_secret.clone(),
+            config.scopes.clone(),
+        )?),
+        OAuthFlow::AzureManagedIdentity { client_id } => Box::new(AzureImdsSource::new(
+            config.scopes.clone(),
+            client_id.clone(),
+        )?),
+    })
+}
+
 /// OAuth header provider that manages the full token lifecycle.
 ///
 /// Implements [`HeaderProvider`] to inject `Authorization: Bearer <token>`
 /// headers into every LanceDB request, with automatic token refresh. It also
 /// identifies the bearer credential as OIDC so LanceDB's SQL service selects
 /// OIDC validation instead of API-key validation.
+///
+/// When the configuration enables
+/// [`token_cache`](OAuthConfig::token_cache), tokens are additionally shared
+/// through a hardened on-disk cache so separate processes reuse one session;
+/// see [`crate::remote::token_cache`].
 pub struct OAuthHeaderProvider {
     token_source: Box<dyn TokenSource>,
     token_state: Arc<RwLock<TokenState>>,
     refresh_buffer: Duration,
+    token_cache: Option<Arc<crate::remote::token_cache::TokenCache>>,
 }
 
 impl std::fmt::Debug for OAuthHeaderProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OAuthHeaderProvider")
             .field("token_source", &self.token_source)
+            .field("token_cache", &self.token_cache)
             .finish()
     }
 }
@@ -1296,52 +1349,19 @@ impl std::fmt::Debug for OAuthHeaderProvider {
 impl OAuthHeaderProvider {
     /// Create a new OAuth header provider from configuration.
     pub fn new(config: OAuthConfig) -> Result<Self> {
-        let OAuthConfig {
-            issuer_url,
-            client_id,
-            client_secret,
-            scopes,
-            flow,
-            refresh_buffer_secs,
-        } = config;
-
-        if scopes.is_empty() {
-            return Err(Error::InvalidInput {
-                message: "At least one OAuth scope is required".to_string(),
-            });
-        }
-
-        let refresh_buffer =
-            Duration::from_secs(refresh_buffer_secs.unwrap_or(DEFAULT_REFRESH_BUFFER_SECS));
-        let token_source: Box<dyn TokenSource> = match flow {
-            OAuthFlow::ClientCredentials => Box::new(ClientCredentialsSource::new(
-                issuer_url,
-                client_id,
-                client_secret,
-                scopes,
-            )?),
-            OAuthFlow::AuthorizationCode(options) => Box::new(AuthorizationCodeSource::new(
-                issuer_url,
-                client_id,
-                client_secret,
-                scopes,
-                options,
-            )?),
-            OAuthFlow::DeviceCode => Box::new(DeviceCodeSource::new(
-                issuer_url,
-                client_id,
-                client_secret,
-                scopes,
-            )?),
-            OAuthFlow::AzureManagedIdentity { client_id } => {
-                Box::new(AzureImdsSource::new(scopes, client_id)?)
-            }
-        };
+        let refresh_buffer = Duration::from_secs(
+            config
+                .refresh_buffer_secs
+                .unwrap_or(DEFAULT_REFRESH_BUFFER_SECS),
+        );
+        let token_source = build_token_source(&config)?;
+        let token_cache = crate::remote::token_cache::token_cache_for_config(&config)?;
 
         Ok(Self {
             token_source,
             token_state: Arc::new(RwLock::new(TokenState::new())),
             refresh_buffer,
+            token_cache,
         })
     }
 
@@ -1365,6 +1385,15 @@ impl OAuthHeaderProvider {
             && let Some(ref token) = state.access_token
         {
             return Ok(token.clone());
+        }
+
+        if let Some(cache) = &self.token_cache {
+            // Cross-process critical section: serialize with other processes,
+            // reread the durable record, refresh or acquire exactly once, and
+            // persist the rotated refresh token.
+            let resp = cache.refresh_or_acquire(self.token_source.as_ref()).await?;
+            state.update(&resp);
+            return Ok(resp.access_token);
         }
 
         let refresh_token = state.refresh_token.clone();
@@ -2038,6 +2067,7 @@ mod tests {
             }),
             token_state: Arc::new(RwLock::new(TokenState::new())),
             refresh_buffer: Duration::ZERO,
+            token_cache: None,
         };
 
         assert_eq!(provider.get_valid_token().await.unwrap(), "initial");
@@ -2092,6 +2122,7 @@ mod tests {
                 expires_at: Some(Instant::now() - Duration::from_secs(1)),
             })),
             refresh_buffer: Duration::ZERO,
+            token_cache: None,
         };
 
         assert_eq!(provider.get_valid_token().await.unwrap(), "reauthenticated");
@@ -2136,6 +2167,7 @@ mod tests {
                 expires_at: Some(Instant::now() - Duration::from_secs(1)),
             })),
             refresh_buffer: Duration::ZERO,
+            token_cache: None,
         };
 
         let err = provider.get_valid_token().await.unwrap_err();
@@ -2160,6 +2192,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
 
         let debug = format!("{config:?}");
@@ -2176,6 +2209,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
 
         let provider = OAuthHeaderProvider::new(config).unwrap();
@@ -2212,6 +2246,7 @@ mod tests {
             ],
             flow: OAuthFlow::AzureManagedIdentity { client_id: None },
             refresh_buffer_secs: None,
+            token_cache: None,
         };
         assert!(OAuthHeaderProvider::new(config).is_err());
     }
@@ -2245,6 +2280,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
         assert!(OAuthHeaderProvider::new(config).is_err());
     }
@@ -2258,6 +2294,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
 
         let err = OAuthHeaderProvider::new(config).unwrap_err();
@@ -2278,6 +2315,7 @@ mod tests {
             scopes: vec![],
             flow: OAuthFlow::AzureManagedIdentity { client_id: None },
             refresh_buffer_secs: None,
+            token_cache: None,
         };
         assert!(OAuthHeaderProvider::new(config).is_err());
     }
@@ -2292,6 +2330,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: OAuthFlow::ClientCredentials,
             refresh_buffer_secs: Some(0),
+            token_cache: None,
         };
         let provider = OAuthHeaderProvider::new(config).unwrap();
 

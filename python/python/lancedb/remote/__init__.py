@@ -9,7 +9,7 @@ from typing import List, Optional
 from lancedb import __version__
 
 from .header import HeaderProvider
-from .oauth import OAuthConfig, OAuthFlowType
+from .oauth import OAuthConfig, OAuthFlowType, OAuthSession, TokenCacheOptions
 
 # The API reference renders this module with a single mkdocstrings directive,
 # which only picks up names listed here. New public names must be added to this
@@ -22,6 +22,8 @@ __all__ = [
     "HeaderProvider",
     "OAuthConfig",
     "OAuthFlowType",
+    "OAuthSession",
+    "TokenCacheOptions",
 ]
 
 

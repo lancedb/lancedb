@@ -23,6 +23,39 @@ class OAuthFlowType(str, Enum):
 
 
 @dataclass
+class TokenCacheOptions:
+    """Options for the persistent OAuth token cache.
+
+    The cache is opt-in: it is only used when set as ``token_cache`` on
+    :class:`OAuthConfig`. Only refresh tokens are persisted, in a private
+    directory with owner-only permissions, so short-lived processes can reuse
+    an authenticated session instead of re-prompting on every start.
+
+    Parameters
+    ----------
+    cache_dir : Optional[str]
+        Directory that holds cached credentials. Defaults to
+        ``$XDG_CACHE_HOME/lancedb/oauth``, ``$HOME/.cache/lancedb/oauth`` on
+        Unix, or ``%LOCALAPPDATA%\\lancedb\\oauth`` on Windows. The directory
+        is created with owner-only permissions (``0700``) when missing.
+    lock_timeout_secs : Optional[int]
+        How long to wait for the cross-process refresh lock before failing
+        (default: 30 seconds).
+
+    Examples
+    --------
+    >>> opts = TokenCacheOptions(cache_dir="/tmp/my-app/oauth-cache")
+
+    Multiple identities (issuer, client, scopes, flow, client
+    authentication) get separate cache entries. Within one identity the most
+    recent login wins.
+    """
+
+    cache_dir: Optional[str] = None
+    lock_timeout_secs: Optional[int] = None
+
+
+@dataclass
 class OAuthConfig:
     """OAuth configuration for LanceDB authentication.
 
@@ -57,6 +90,10 @@ class OAuthConfig:
         Seconds before expiry to trigger proactive refresh (default: 300).
         Keep this well below the token TTL; if it is greater than or equal to
         the TTL, each request refreshes the token.
+    token_cache : Optional[TokenCacheOptions]
+        Opt in to the persistent token cache so short-lived processes reuse
+        one session. Only supported by AUTHORIZATION_CODE and DEVICE_CODE;
+        azure managed identity is rejected. Default: None (memory only).
 
     Examples
     --------
@@ -90,16 +127,15 @@ class OAuthConfig:
     ...     flow=OAuthFlowType.AUTHORIZATION_CODE,
     ... )
 
-    Device Authorization:
-
-    The verification URL and user code are written to standard error before
-    polling begins.
+    Device Authorization with a persistent cache, so later processes reuse
+    the session without a new device prompt:
 
     >>> config = OAuthConfig(
     ...     issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",
     ...     client_id="app-id",
-    ...     scopes=["openid", "api://lancedb-api/access"],
+    ...     scopes=["openid", "offline_access", "api://lancedb-api/access"],
     ...     flow=OAuthFlowType.DEVICE_CODE,
+    ...     token_cache=TokenCacheOptions(),
     ... )
     """
 
@@ -113,3 +149,64 @@ class OAuthConfig:
     use_pkce: bool = True
     managed_identity_client_id: Optional[str] = None
     refresh_buffer_secs: Optional[int] = None
+    token_cache: Optional[TokenCacheOptions] = None
+
+
+class OAuthSession:
+    """Explicit OAuth session lifecycle for the persistent token cache.
+
+    Built from the same :class:`OAuthConfig` used for
+    :func:`lancedb.connect_async` (including its ``token_cache`` options).
+    A connection created with the same configuration shares the cache, so
+    logging in here prepares tokens for later processes without any database
+    request.
+
+    ``login`` always runs the configured interactive flow and replaces the
+    cached session (the most recent login wins). ``logout`` removes only the
+    local credential; it does not revoke anything with the provider and does
+    not sign out of a browser SSO session.
+
+    Examples
+    --------
+    >>> config = OAuthConfig(
+    ...     issuer_url="https://issuer.example.com",
+    ...     client_id="my-app",
+    ...     scopes=["openid", "offline_access"],
+    ...     flow=OAuthFlowType.DEVICE_CODE,
+    ...     token_cache=TokenCacheOptions(),
+    ... )
+    >>> session = OAuthSession(config)  # doctest: +SKIP
+    >>> status = await session.login()  # doctest: +SKIP
+    >>> status.refreshable  # doctest: +SKIP
+    True
+    """
+
+    def __init__(self, config: OAuthConfig):
+        from lancedb._lancedb import OAuthSession as PyOAuthSession
+
+        self._inner: PyOAuthSession = PyOAuthSession(config)
+
+    async def login(self):
+        """Eagerly run the configured flow and store the session.
+
+        Returns a :class:`lancedb._lancedb.SessionStatus` describing the
+        cached session. If the provider does not issue a refresh token (for
+        example without ``offline_access``), nothing is cached and
+        ``refreshable`` is ``False``.
+        """
+        return await self._inner.login()
+
+    async def status(self):
+        """Report whether a cached session exists, with safe metadata.
+
+        Never contacts the identity provider and never exposes token values.
+        """
+        return await self._inner.status()
+
+    async def logout(self):
+        """Remove the matching local cached credential.
+
+        Returns a :class:`lancedb._lancedb.SessionLogout` whose ``removed``
+        flag reports whether a credential existed. Logout is idempotent.
+        """
+        return await self._inner.logout()

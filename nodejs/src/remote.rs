@@ -141,6 +141,34 @@ impl From<TlsConfig> for lancedb::remote::TlsConfig {
     }
 }
 
+/// Options for the persistent OAuth token cache.
+///
+/// The cache is opt-in: it is only used when set as `tokenCache` on
+/// `OAuthConfig`. Only refresh tokens are persisted, in a private directory
+/// with owner-only permissions, so short-lived processes can reuse an
+/// authenticated session instead of re-prompting on every start.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct TokenCacheOptions {
+    /// Directory that holds cached credentials. Defaults to
+    /// `$XDG_CACHE_HOME/lancedb/oauth`, `$HOME/.cache/lancedb/oauth` on Unix,
+    /// or `%LOCALAPPDATA%\lancedb\oauth` on Windows. The directory is created
+    /// with owner-only permissions (`0700`) when missing.
+    pub cache_dir: Option<String>,
+    /// How long to wait for the cross-process refresh lock before failing,
+    /// in seconds (default: 30).
+    pub lock_timeout_secs: Option<u32>,
+}
+
+impl From<TokenCacheOptions> for lancedb::remote::TokenCacheOptions {
+    fn from(options: TokenCacheOptions) -> Self {
+        Self {
+            cache_dir: options.cache_dir.map(std::path::PathBuf::from),
+            lock_timeout_secs: options.lock_timeout_secs.map(|secs| secs as u64),
+        }
+    }
+}
+
 /// OAuth configuration for LanceDB authentication.
 ///
 /// This is the generated napi-rs binding shape. TypeScript users should prefer
@@ -175,6 +203,9 @@ pub struct OAuthConfig {
     /// Keep this well below the token TTL; if it is greater than or equal to
     /// the TTL, each request refreshes the token.
     pub refresh_buffer_secs: Option<u32>,
+    /// Opt in to the persistent token cache so short-lived processes reuse
+    /// one session. Only refresh tokens are persisted.
+    pub token_cache: Option<TokenCacheOptions>,
 }
 
 impl std::fmt::Debug for OAuthConfig {
@@ -196,6 +227,7 @@ impl std::fmt::Debug for OAuthConfig {
                 &self.managed_identity_client_id,
             )
             .field("refresh_buffer_secs", &self.refresh_buffer_secs)
+            .field("token_cache", &self.token_cache)
             .finish()
     }
 }
@@ -237,7 +269,108 @@ impl TryFrom<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
             scopes: config.scopes,
             flow,
             refresh_buffer_secs: config.refresh_buffer_secs.map(|v| v as u64),
+            token_cache: config.token_cache.map(Into::into),
         })
+    }
+}
+
+/// Safe, non-secret view of a cached OAuth session, returned by
+/// `OAuthSession.status()` and `OAuthSession.login()`.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct SessionStatus {
+    /// Whether a cached session exists that can obtain tokens without
+    /// interactive authentication.
+    pub refreshable: bool,
+    /// Canonical issuer URL of the cached session.
+    pub issuer_url: String,
+    /// Client ID of the cached session.
+    pub client_id: String,
+    /// Canonical (sorted, de-duplicated) scopes of the cached session.
+    pub scopes: Vec<String>,
+    /// Flow that produced the cached session.
+    pub flow: String,
+    /// When the cached session was obtained, as Unix seconds.
+    pub obtained_at: Option<f64>,
+}
+
+/// Result of `OAuthSession.logout()`.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct SessionLogout {
+    /// Whether a cached credential was removed. `false` means no matching
+    /// session was cached; logout is idempotent.
+    pub removed: bool,
+}
+
+/// Explicit OAuth session lifecycle for the persistent token cache: eager
+/// `login`, non-secret `status`, and local `logout`.
+///
+/// A session is built from the same `OAuthConfig` used to connect (including
+/// its `tokenCache` options). A connection created with the same
+/// configuration shares the cache, so logging in here prepares tokens for
+/// later processes without any database request.
+#[napi]
+pub struct OAuthSession {
+    inner: lancedb::remote::OAuthSession,
+}
+
+#[napi]
+impl OAuthSession {
+    /// Create a session manager for the given OAuth configuration.
+    ///
+    /// The configuration must enable `tokenCache` options and use a flow that
+    /// supports persistent sessions (authorization code or device code).
+    #[napi(constructor)]
+    pub fn new(config: OAuthConfig) -> napi::Result<Self> {
+        let config: lancedb::remote::oauth::OAuthConfig = config.try_into().default_error()?;
+        let inner = lancedb::remote::OAuthSession::new(config).default_error()?;
+        Ok(Self { inner })
+    }
+
+    /// Eagerly run the configured authentication flow and store the session.
+    ///
+    /// If the provider does not issue a refresh token (for example without
+    /// `offline_access`), nothing is cached and the status reports
+    /// `refreshable == false`.
+    pub async fn login(&self) -> napi::Result<SessionStatus> {
+        let status = self.inner.login().await.default_error()?;
+        Ok(SessionStatus::from(status))
+    }
+
+    /// Report whether a matching cached session exists, with safe metadata.
+    ///
+    /// This never contacts the identity provider and never exposes token
+    /// values.
+    pub async fn status(&self) -> napi::Result<SessionStatus> {
+        let status = self.inner.status().await.default_error()?;
+        Ok(SessionStatus::from(status))
+    }
+
+    /// Remove the matching local cached credential.
+    ///
+    /// This only deletes the local cache entry. It does not revoke the
+    /// refresh token with the provider and does not sign out of a browser
+    /// SSO session. Repeated calls succeed; `removed` reports whether a
+    /// credential existed.
+    pub async fn logout(&self) -> napi::Result<SessionLogout> {
+        let logout = self.inner.logout().await.default_error()?;
+        Ok(SessionLogout {
+            removed: logout.removed,
+        })
+    }
+}
+
+impl From<lancedb::remote::SessionStatus> for SessionStatus {
+    fn from(status: lancedb::remote::SessionStatus) -> Self {
+        Self {
+            refreshable: status.refreshable,
+            issuer_url: status.issuer_url,
+            client_id: status.client_id,
+            scopes: status.scopes,
+            flow: status.flow,
+            obtained_at: status.obtained_at.map(|secs| secs as f64),
+        }
     }
 }
 
@@ -279,6 +412,7 @@ mod tests {
             use_pkce: None,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
 
         let err = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap_err();
@@ -302,6 +436,7 @@ mod tests {
             use_pkce: None,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
 
         let debug = format!("{config:?}");
@@ -322,6 +457,7 @@ mod tests {
             use_pkce: Some(false),
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
 
         let converted = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap();
@@ -349,6 +485,7 @@ mod tests {
             use_pkce: None,
             managed_identity_client_id: None,
             refresh_buffer_secs: None,
+            token_cache: None,
         };
 
         let converted = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap();

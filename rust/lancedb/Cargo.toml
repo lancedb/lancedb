@@ -83,6 +83,7 @@ tonic = { workspace = true, optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
 urlencoding = { version = "2", optional = true }
 base64 = { version = "0.22", optional = true }
+fs4 = { version = "0.13", optional = true }
 webbrowser = { version = "1", optional = true }
 uuid = { workspace = true, features = ["v5"] }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
@@ -163,6 +164,7 @@ remote = [
     "dep:urlencoding",
     "dep:base64",
     "dep:webbrowser",
+    "dep:fs4",
     "lance-namespace-impls/rest",
     "lance-namespace-impls/rest-adapter",
 ]
