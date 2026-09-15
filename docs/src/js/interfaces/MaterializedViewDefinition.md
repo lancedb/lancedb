@@ -6,64 +6,15 @@
 
 # Interface: MaterializedViewDefinition
 
-The query that defines a materialized view.
+The query that defines a materialized view, as stored:
+`SELECT columns FROM [ns.]table [, UNNEST(column) AS alias] [WHERE predicate] [LIMIT n]`.
 
 ## Properties
 
-### filter?
+### query
 
 ```ts
-optional filter: string;
+query: string;
 ```
 
-SQL predicate selecting the source rows the view holds.
-
-***
-
-### inputs
-
-```ts
-inputs: string[];
-```
-
-Source columns the projections and filter read.
-
-***
-
-### limit?
-
-```ts
-optional limit: number;
-```
-
-Cap on the number of rows the view holds.
-
-***
-
-### projections
-
-```ts
-projections: [string, string][];
-```
-
-`[output column, SQL expression]` pairs, in view schema order.
-
-***
-
-### sourceNamespace
-
-```ts
-sourceNamespace: string[];
-```
-
-Namespace holding the source table; empty is the root namespace.
-
-***
-
-### sourceTable
-
-```ts
-sourceTable: string;
-```
-
-Name of the source table, in the same database as the view.
+The defining query, in the canonical spelling the server stores.
