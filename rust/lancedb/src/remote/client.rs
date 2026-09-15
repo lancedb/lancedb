@@ -15,9 +15,14 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
-fn mark_authentication_header_sensitive(name: &HeaderName, value: &mut HeaderValue) {
-    if name == http::header::AUTHORIZATION || name.as_str() == "x-api-key" {
-        value.set_sensitive(true);
+pub(crate) fn redact_sensitive_headers(headers: &mut HeaderMap) {
+    for (name, value) in headers.iter_mut() {
+        if matches!(
+            name.as_str(),
+            "authorization" | "proxy-authorization" | "cookie" | "set-cookie" | "x-api-key"
+        ) {
+            value.set_sensitive(true);
+        }
     }
 }
 
@@ -616,12 +621,12 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         if !api_key.is_empty() {
-            let name = HeaderName::from_static("x-api-key");
-            let mut value = HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
-                message: "non-ascii api key provided".to_string(),
-            })?;
-            mark_authentication_header_sensitive(&name, &mut value);
-            headers.insert(name, value);
+            headers.insert(
+                HeaderName::from_static("x-api-key"),
+                HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
+                    message: "non-ascii api key provided".to_string(),
+                })?,
+            );
         }
         if region == "local" {
             let host = format!("{}.local.api.lancedb.com", db_name);
@@ -670,12 +675,12 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             let key_parsed = HeaderName::from_str(key).map_err(|_| Error::InvalidInput {
                 message: format!("non-ascii value for header '{}' provided", key),
             })?;
-            let mut value_parsed =
+            headers.insert(
+                key_parsed,
                 HeaderValue::from_str(value).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii value for header '{}' provided", key),
-                })?;
-            mark_authentication_header_sensitive(&key_parsed, &mut value_parsed);
-            headers.insert(key_parsed, value_parsed);
+                })?,
+            );
         }
 
         if let Some(user_id) = config.resolve_user_id() {
@@ -687,6 +692,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             );
         }
 
+        redact_sensitive_headers(&mut headers);
         Ok(headers)
     }
 
@@ -717,8 +723,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             let request_headers = request.headers_mut();
             for (key, value) in headers {
                 if let Ok(header_name) = HeaderName::from_str(&key) {
-                    if let Ok(mut header_value) = HeaderValue::from_str(&value) {
-                        mark_authentication_header_sensitive(&header_name, &mut header_value);
+                    if let Ok(header_value) = HeaderValue::from_str(&value) {
                         request_headers.insert(header_name, header_value);
                     } else {
                         debug!("Invalid header value for key {}", key);
@@ -728,6 +733,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 }
             }
         }
+        redact_sensitive_headers(request.headers_mut());
         Ok(request)
     }
 
@@ -1211,6 +1217,14 @@ mod tests {
                     "Bearer configured-secret".to_string(),
                 ),
                 ("X-API-Key".to_string(), "configured-api-key".to_string()),
+                (
+                    "Cookie".to_string(),
+                    "session=configured-cookie".to_string(),
+                ),
+                (
+                    "Proxy-Authorization".to_string(),
+                    "Basic configured-proxy-secret".to_string(),
+                ),
                 ("X-Custom".to_string(), "visible-value".to_string()),
             ]),
             ..Default::default()
@@ -1228,10 +1242,14 @@ mod tests {
 
         assert!(headers.get("authorization").unwrap().is_sensitive());
         assert!(headers.get("x-api-key").unwrap().is_sensitive());
+        assert!(headers.get("cookie").unwrap().is_sensitive());
+        assert!(headers.get("proxy-authorization").unwrap().is_sensitive());
         assert!(!headers.get("x-custom").unwrap().is_sensitive());
         let debug = format!("{headers:?}");
         assert!(!debug.contains("configured-secret"));
         assert!(!debug.contains("configured-api-key"));
+        assert!(!debug.contains("configured-cookie"));
+        assert!(!debug.contains("configured-proxy-secret"));
         assert!(debug.contains("visible-value"));
     }
 
