@@ -34,7 +34,7 @@ use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
-use crate::utils::{validate_namespace_name, validate_table_name};
+use crate::utils::{reject_relative_segment, validate_namespace_name, validate_table_name};
 
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
@@ -366,78 +366,6 @@ impl<S: HttpSend> RemoteDatabase<S> {
     ///
     /// The value is a request field and never a path segment or query
     /// parameter, which keeps it out of access logs and proxy traces.
-    /// The path segment addressing one Secret.
-    ///
-    /// Written into the path as-is, the way a table identifier is. The charset
-    /// a Secret name and a namespace segment admit excludes everything that
-    /// would need escaping, and a `/v1/secret/prod$openai/drop` that reads like
-    /// the table and Function routes beside it is worth more than encoding
-    /// against a charset that does not exist yet.
-    /// The path segment addressing one Secret.
-    ///
-    /// The shape of each component is settled by then -- [`Connection`] checks
-    /// that before anything reaches a transport. What is left is the one rule
-    /// that cannot be checked there, because it depends on configuration this
-    /// layer owns: a component may not contain the delimiter it is about to be
-    /// joined with.
-    ///
-    /// [`Connection`]: crate::connection::Connection
-    fn secret_id(&self, name: &str, namespace_path: &[String]) -> Result<String> {
-        self.reject_delimiter_in_components(
-            namespace_path.iter().map(String::as_str).chain([name]),
-        )?;
-        Ok(build_secret_identifier(
-            name,
-            namespace_path,
-            &self.client.id_delimiter,
-        ))
-    }
-
-    fn secret_namespace_id(&self, namespace_path: &[String]) -> Result<String> {
-        self.reject_delimiter_in_components(namespace_path.iter().map(String::as_str))?;
-        Ok(build_secret_namespace_identifier(
-            namespace_path,
-            &self.client.id_delimiter,
-        ))
-    }
-
-    /// Refuse a component holding the delimiter that is about to separate it
-    /// from the others.
-    ///
-    /// The default `$` is outside the character set a Secret admits, so this
-    /// never fires for it -- [`Connection`] has already refused any component
-    /// that could contain one. It exists for a *configured* delimiter, which
-    /// may be any string at all and is most usefully one that reads well:
-    /// `.`, `-` and `_` are the likely choices and all three are inside that
-    /// set.
-    ///
-    /// Under `id_delimiter="."` the component `prod.vision` and the pair
-    /// `prod`, `vision` join to one string, and the caller who wrote the first
-    /// would address the Secret belonging to the second. Refusing is the only
-    /// answer that keeps the identity the caller wrote: there is no escaping
-    /// of the joined form that recovers a boundary the delimiter has already
-    /// erased.
-    ///
-    /// [`Connection`]: crate::connection::Connection
-    fn reject_delimiter_in_components<'a>(
-        &self,
-        components: impl Iterator<Item = &'a str>,
-    ) -> Result<()> {
-        let delimiter = &self.client.id_delimiter;
-        for component in components {
-            if component.contains(delimiter.as_str()) {
-                return Err(Error::InvalidInput {
-                    message: format!(
-                        "Secret identifier component '{component}' contains the configured \
-                         identifier delimiter '{delimiter}', so the namespace path and the name \
-                         it joins could not be told apart"
-                    ),
-                });
-            }
-        }
-        Ok(())
-    }
-
     async fn post_secret_write<T: serde::Serialize>(&self, route: &str, body: &T) -> Result<()> {
         let req = self.client.post(route).json(body);
         // This call is what says the body is a credential. Nothing downstream
@@ -585,6 +513,7 @@ impl From<&CreateTableMode> for &'static str {
     }
 }
 
+/// The path segment addressing one table: its namespace path and name.
 fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> Result<String> {
     for segment in namespace {
         validate_namespace_name(segment)?;
@@ -592,43 +521,20 @@ fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> 
     }
     validate_table_name(name)?;
     reject_delimiter(name, delimiter, "table name")?;
-    if namespace.is_empty() {
-        return Ok(name.to_string());
-    }
-    let mut parts = namespace.to_vec();
-    parts.push(name.to_string());
-    Ok(parts.join(delimiter))
+    Ok(join_identifier(
+        namespace.iter().map(String::as_str).chain([name]),
+        delimiter,
+    ))
 }
 
 /// The path segment addressing one Function.
 ///
-/// A Function has no namespace yet, so there is no join to reverse and nothing
-/// a delimiter could split wrongly. What remains is the part encoding cannot
-/// fix: `..` is unreserved, so it survives percent-encoding untouched and is
-/// then resolved as a relative path segment -- `create_function` for a Function
-/// so named would post its registration body to `/v1/create`.
+/// A Function has no namespace, so there is one component and no join to
+/// reverse. What encoding cannot fix is `..`: unreserved, so it survives
+/// untouched and is then resolved away.
 fn build_function_identifier(name: &str) -> Result<String> {
-    reject_relative_segment_component("Function name", name)?;
-    Ok(urlencoding::encode(name).into_owned())
-}
-
-/// The relative-segment rule, for identifiers that have no other validator to
-/// hang it on.
-///
-/// Table and namespace names reach this through [`validate_table_name`] and
-/// [`validate_namespace_name`], which own the rest of their grammar. A Function
-/// name has no client-side grammar, so only this part applies.
-fn reject_relative_segment_component(what: &str, value: &str) -> Result<()> {
-    let decoded = value.replace("%2e", ".").replace("%2E", ".");
-    if decoded == "." || decoded == ".." {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "invalid {what} '{value}': '.' and '..' are read as relative path segments and \
-                 cannot address an object"
-            ),
-        });
-    }
-    Ok(())
+    reject_relative_segment("Function name", name)?;
+    Ok(join_identifier([name].into_iter(), ""))
 }
 
 /// Refuse a component holding the delimiter that is about to separate it from
@@ -657,68 +563,61 @@ fn reject_delimiter(component: &str, delimiter: &str, what: &str) -> Result<()> 
     Ok(())
 }
 
-/// A Secret's path identifier: its namespace path and name, each percent-encoded,
-/// joined by the delimiter.
+/// The path segment addressing one Secret: its namespace path and name.
 ///
-/// The grammar is the namespace spec's, shared with tables and Functions. What
-/// differs is that the components are encoded before they are joined, rather
-/// than the joined string being encoded or nothing being encoded at all.
-///
-/// Encoding per component is what keeps a component from becoming two. The
-/// delimiter is joined raw, so it stays a delimiter; anything inside a
-/// component that would otherwise end the path segment does not survive to do
-/// it. `..` and `/` in a name are the cases that matter: unencoded they leave
-/// `/v1/secret/` entirely and carry the request body -- a credential, on the
-/// write verbs -- to whatever route the normalized path lands on.
-///
-/// This is not name validation, which belongs to the service. Every character
-/// a Secret name and a namespace segment may hold is already unreserved, so an
-/// identifier the service would accept passes through byte-identical and reads
-/// like the table and Function identifiers beside it. One the service would
-/// refuse is merely made to arrive, so that it can be refused.
-fn build_secret_identifier(name: &str, namespace: &[String], delimiter: &str) -> String {
-    namespace
-        .iter()
-        .map(String::as_str)
-        .chain(std::iter::once(name))
-        .map(encode_identifier_component)
-        .collect::<Vec<_>>()
-        .join(delimiter)
-}
-
-/// One component of an identifier, escaped for a path segment.
-///
-/// A second line rather than the first. [`Connection`] refuses any component
-/// that is not alphanumerics, `_`, `-` or `.`, and every one of those is
-/// unreserved -- so a component that reaches here encodes to itself and the
-/// route reads exactly as the table and Function routes beside it do. This
-/// stands between a future caller that reaches the transport another way and
-/// a URL whose structure its input chose.
-///
-/// It is not sufficient on its own, which is why it is not the only check:
-/// `.` and `..` are unreserved too, and are resolved as relative segments
-/// after decoding, so no escaping of them survives. Those are refused
-/// outright.
+/// Component shape is settled before this, by [`Connection`], rather than here
+/// as it is for a table -- a Secret is reached only through that one entry
+/// point.
 ///
 /// [`Connection`]: crate::connection::Connection
-fn encode_identifier_component(component: &str) -> String {
-    urlencoding::encode(component).into_owned()
+fn build_secret_identifier(name: &str, namespace: &[String], delimiter: &str) -> Result<String> {
+    for segment in namespace {
+        reject_delimiter(segment, delimiter, "Secret namespace path segment")?;
+    }
+    reject_delimiter(name, delimiter, "Secret name")?;
+    Ok(join_identifier(
+        namespace.iter().map(String::as_str).chain([name]),
+        delimiter,
+    ))
 }
 
-/// The namespace a Secret listing is scoped to, encoded the same way.
+/// Join validated components into the `{id}` a route addresses: each
+/// percent-encoded, then joined by the delimiter.
 ///
-/// The root is the bare delimiter, as it is for every other object's listing.
-fn build_secret_namespace_identifier(namespace: &[String], delimiter: &str) -> String {
-    if namespace.is_empty() {
-        return delimiter.to_string();
-    }
-    namespace
-        .iter()
-        .map(|segment| encode_identifier_component(segment))
+/// Encoded per component rather than over the joined string, so the delimiter
+/// stays a delimiter and nothing inside a component can end the path segment.
+///
+/// It is a second line, not the first. Every character the name charset admits
+/// is unreserved, so a component that reached here encodes to itself and the
+/// route reads exactly as the caller wrote it; what the encoding covers is a
+/// component that arrives some other way, so that its content cannot choose the
+/// URL's shape. It does not cover `.` and `..`, which are unreserved too and
+/// are resolved after decoding -- those are refused outright, by the validator
+/// each object has.
+fn join_identifier<'a>(components: impl Iterator<Item = &'a str>, delimiter: &str) -> String {
+    components
+        .map(|component| urlencoding::encode(component).into_owned())
         .collect::<Vec<_>>()
         .join(delimiter)
 }
 
+/// The namespace a Secret listing is scoped to.
+///
+/// The root is the bare delimiter, as it is for every other object's listing.
+fn build_secret_namespace_identifier(namespace: &[String], delimiter: &str) -> Result<String> {
+    for segment in namespace {
+        reject_delimiter(segment, delimiter, "Secret namespace path segment")?;
+    }
+    if namespace.is_empty() {
+        return Ok(delimiter.to_string());
+    }
+    Ok(join_identifier(
+        namespace.iter().map(String::as_str),
+        delimiter,
+    ))
+}
+
+/// The path segment addressing one namespace.
 fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> Result<String> {
     for segment in namespace {
         validate_namespace_name(segment)?;
@@ -728,7 +627,10 @@ fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> Result<S
         // According to the namespace spec, use delimiter to represent root namespace
         return Ok(delimiter.to_string());
     }
-    Ok(namespace.join(delimiter))
+    Ok(join_identifier(
+        namespace.iter().map(String::as_str),
+        delimiter,
+    ))
 }
 
 /// Build a secure cache key using length prefixes.
@@ -1085,7 +987,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         value: &str,
         namespace_path: &[String],
     ) -> Result<()> {
-        let secret_id = self.secret_id(name, namespace_path)?;
+        let secret_id = build_secret_identifier(name, namespace_path, &self.client.id_delimiter)?;
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/create"),
             &RemoteCreateSecretRequest { value },
@@ -1094,7 +996,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = self.secret_id(name, namespace_path)?;
+        let secret_id = build_secret_identifier(name, namespace_path, &self.client.id_delimiter)?;
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/alter"),
             &RemoteAlterSecretRequest { value },
@@ -1103,7 +1005,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        let namespace_id = self.secret_namespace_id(namespace_path)?;
+        let namespace_id =
+            build_secret_namespace_identifier(namespace_path, &self.client.id_delimiter)?;
         let path = format!("/v1/namespace/{namespace_id}/secret/list");
         let mut names = Vec::new();
         let mut page_token: Option<String> = None;
@@ -1136,7 +1039,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = self.secret_id(name, namespace_path)?;
+        let secret_id = build_secret_identifier(name, namespace_path, &self.client.id_delimiter)?;
         let req = self.client.post(&format!("/v1/secret/{secret_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
         self.client.check_response(&request_id, response).await?;
@@ -1144,7 +1047,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
-        let secret_id = self.secret_id(name, namespace_path)?;
+        let secret_id = build_secret_identifier(name, namespace_path, &self.client.id_delimiter)?;
         let req = self
             .client
             .post(&format!("/v1/secret/{secret_id}/describe"));
@@ -3486,38 +3389,6 @@ mod tests {
         }
     }
 
-    /// The default delimiter is outside the character set, so a component can
-    /// never hold one. A configured delimiter can be anything, and the readable
-    /// choices are all inside it -- under `.` the component `prod.vision` and
-    /// the pair `prod`, `vision` would join to one identifier.
-    #[tokio::test]
-    async fn test_a_configured_delimiter_is_refused_inside_a_component() {
-        use std::sync::{Arc, Mutex};
-        let reached = Arc::new(Mutex::new(false));
-        let flag = reached.clone();
-        let conn = Connection::new_with_handler_and_config(
-            move |_| {
-                *flag.lock().unwrap() = true;
-                http::Response::builder().status(200).body("{}").unwrap()
-            },
-            ClientConfig {
-                id_delimiter: Some(".".to_string()),
-                ..Default::default()
-            },
-        );
-        let error = conn
-            .drop_secret("openai", &["prod.vision".to_string()])
-            .await
-            .expect_err("a component holding the delimiter must be refused");
-        assert!(error.to_string().contains("delimiter"), "{error}");
-        assert!(!*reached.lock().unwrap(), "the request was sent anyway");
-
-        // The same two names as separate segments are the ordinary case.
-        conn.drop_secret("openai", &["prod".to_string(), "vision".to_string()])
-            .await
-            .unwrap();
-    }
-
     /// An identifier the service accepts is untouched by the encoding, so the
     /// route reads like the table and Function routes beside it.
     #[tokio::test]
@@ -3587,32 +3458,6 @@ mod tests {
         }
     }
 
-    /// Under a configured delimiter that is inside the name charset, the one
-    /// segment `prod.vision` and the pair `prod`, `vision` would join to one
-    /// identifier. Refusing the first is what keeps them distinct.
-    #[tokio::test]
-    async fn test_a_configured_delimiter_is_refused_inside_a_table_component() {
-        use std::sync::{Arc, Mutex};
-        let reached = Arc::new(Mutex::new(false));
-        let flag = reached.clone();
-        let conn = Connection::new_with_handler_and_config(
-            move |_| {
-                *flag.lock().unwrap() = true;
-                http::Response::builder().status(200).body("{}").unwrap()
-            },
-            ClientConfig {
-                id_delimiter: Some(".".to_string()),
-                ..Default::default()
-            },
-        );
-        let error = conn
-            .drop_table("t", &["prod.vision".to_string()])
-            .await
-            .expect_err("a segment holding the delimiter must be refused");
-        assert!(error.to_string().contains("delimiter"), "{error}");
-        assert!(!*reached.lock().unwrap(), "the request was sent anyway");
-    }
-
     /// A Function name is percent-encoded, which covers everything but the
     /// relative segment: `..` is unreserved, so it survives encoding and is
     /// then resolved away, posting a registration body to `/v1/create`.
@@ -3660,6 +3505,57 @@ mod tests {
                 "{name:?} did not reach its own route"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_a_configured_delimiter_is_refused_inside_a_component() {
+        use std::sync::{Arc, Mutex};
+        let reached = Arc::new(Mutex::new(false));
+        let flag = reached.clone();
+        let conn = Connection::new_with_handler_and_config(
+            move |_| {
+                *flag.lock().unwrap() = true;
+                http::Response::builder().status(200).body("{}").unwrap()
+            },
+            ClientConfig {
+                id_delimiter: Some(".".to_string()),
+                ..Default::default()
+            },
+        );
+        let error = conn
+            .drop_secret("openai", &["prod.vision".to_string()])
+            .await
+            .expect_err("a component holding the delimiter must be refused");
+        assert!(error.to_string().contains("delimiter"), "{error}");
+        assert!(!*reached.lock().unwrap(), "the request was sent anyway");
+
+        // The same two names as separate segments are the ordinary case.
+        conn.drop_secret("openai", &["prod".to_string(), "vision".to_string()])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_a_configured_delimiter_is_refused_inside_a_table_component() {
+        use std::sync::{Arc, Mutex};
+        let reached = Arc::new(Mutex::new(false));
+        let flag = reached.clone();
+        let conn = Connection::new_with_handler_and_config(
+            move |_| {
+                *flag.lock().unwrap() = true;
+                http::Response::builder().status(200).body("{}").unwrap()
+            },
+            ClientConfig {
+                id_delimiter: Some(".".to_string()),
+                ..Default::default()
+            },
+        );
+        let error = conn
+            .drop_table("t", &["prod.vision".to_string()])
+            .await
+            .expect_err("a segment holding the delimiter must be refused");
+        assert!(error.to_string().contains("delimiter"), "{error}");
+        assert!(!*reached.lock().unwrap(), "the request was sent anyway");
     }
 
     #[tokio::test]
