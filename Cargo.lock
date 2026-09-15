@@ -5574,6 +5574,7 @@ dependencies = [
 name = "lancedb-python"
 version = "0.39.0-beta.8"
 dependencies = [
+ "arc-swap",
  "arrow",
  "async-trait",
  "bytes",
