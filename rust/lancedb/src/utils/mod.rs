@@ -19,10 +19,25 @@ use std::pin::Pin;
 use crate::error::{Error, Result};
 use datafusion_physical_plan::SendableRecordBatchStream;
 
-static TABLE_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
-static NAMESPACE_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
+/// The characters any object name may contain: a table, a namespace segment, a
+/// Secret, a materialized view.
+///
+/// One set rather than one per object type. They were separate and identical,
+/// which is worse than either having one or having a reason to differ -- a
+/// reader had to compare them to find out, and they could drift without anyone
+/// noticing.
+///
+/// No positional rule on top of it: a name may begin with `_`, `-` or `.`,
+/// because LanceDB namespaces already do, and anything narrower would put
+/// objects out of reach inside namespaces that already exist. `.` and `..` are
+/// excluded separately, by [`reject_relative_segment`], because that is a
+/// property of where a name sits in a URL rather than of the name itself.
+///
+/// No length bound. How long a name may be is the service's to decide, and a
+/// bound here could only disagree with it -- one that is shorter refuses names
+/// the catalog would hold, and one that is longer says nothing.
+static OBJECT_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]+$").unwrap());
 
 pub trait PatchStoreParam {
     fn patch_with_store_wrapper(
@@ -115,7 +130,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
             reason: "Table names cannot be empty strings".to_string(),
         });
     }
-    if !TABLE_NAME_REGEX.is_match(name) {
+    if !OBJECT_NAME_REGEX.is_match(name) {
         return Err(Error::InvalidTableName {
             name: name.to_string(),
             reason:
@@ -145,7 +160,7 @@ pub fn validate_namespace_name(name: &str) -> Result<()> {
             message: "Namespace names cannot be empty strings".to_string(),
         });
     }
-    if !NAMESPACE_NAME_REGEX.is_match(name) {
+    if !OBJECT_NAME_REGEX.is_match(name) {
         return Err(Error::InvalidInput {
             message: format!(
                 "Invalid namespace name '{}': Namespace names can only contain alphanumeric characters, underscores, hyphens, and periods",
@@ -156,20 +171,6 @@ pub fn validate_namespace_name(name: &str) -> Result<()> {
     reject_relative_segment("namespace name", name)?;
     Ok(())
 }
-
-/// The characters a Secret name or a Secret namespace segment may contain.
-///
-/// Deliberately the set the service admits, and no positional rule on top of
-/// it: a segment may begin with `_`, `-` or `.`, because LanceDB namespaces
-/// already do, and anything narrower would put Secrets out of reach inside
-/// namespaces that already exist.
-///
-/// No length bound either. How long a name may be is the service's to decide,
-/// the way it is for a table, and a bound here could only disagree with it --
-/// one that is shorter refuses names the catalog would hold, and one that is
-/// longer says nothing.
-static SECRET_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]+$").unwrap());
 
 /// Validate one component of a Secret identifier: a Secret name, or one segment
 /// of the namespace path holding it.
@@ -202,7 +203,7 @@ pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
             message: format!("{what} must not be empty"),
         });
     }
-    if !SECRET_NAME_REGEX.is_match(value) {
+    if !OBJECT_NAME_REGEX.is_match(value) {
         return Err(Error::InvalidInput {
             message: format!(
                 "invalid {what} '{value}': it may contain only alphanumeric characters, \
