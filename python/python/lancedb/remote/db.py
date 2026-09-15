@@ -28,7 +28,7 @@ from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription
-from ..materialized_view import MaterializedView, SelectArg, normalize_select
+from ..materialized_view import MaterializedView, SelectArg
 
 if TYPE_CHECKING:
     from .._lancedb import JobInfo
@@ -669,19 +669,19 @@ class RemoteDBConnection(DBConnection):
     ) -> MaterializedView:
         from .table import RemoteTable
 
-        table = LOOP.run(
+        view = LOOP.run(
             self._conn.create_materialized_view(
                 name,
                 source,
-                projections=normalize_select(select),
-                filter=where,
+                select=select,
+                where=where,
                 limit=limit,
                 with_no_data=with_no_data,
             )
         )
         return MaterializedView(
             RemoteTable(
-                table,
+                view.table,
                 self.db_name,
                 connection_state=self.serialize,
                 namespace_path=[],
@@ -703,13 +703,13 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_materialized_view_async(
                 name,
                 source,
-                projections=normalize_select(select),
-                filter=where,
+                select=select,
+                where=where,
                 limit=limit,
                 with_no_data=with_no_data,
             )
         )
-        return Job(AsyncJob(job))
+        return Job(job)
 
     @override
     def open_materialized_view(self, name: str) -> MaterializedView:

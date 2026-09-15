@@ -454,11 +454,12 @@ pub struct RefreshMaterializedViewResult {
 impl RefreshMaterializedViewResult {
     #[staticmethod]
     pub fn from_json(value: &str) -> PyResult<Self> {
-        let result = serde_json::from_str(value).map_err(|err| {
-            PyValueError::new_err(format!(
-                "failed to decode materialized-view refresh result: {err}"
-            ))
-        })?;
+        let result: lancedb::RefreshMaterializedViewResult =
+            serde_json::from_str(value).map_err(|err| {
+                PyValueError::new_err(format!(
+                    "failed to decode materialized-view refresh result: {err}"
+                ))
+            })?;
         Ok(Self::from(result))
     }
 

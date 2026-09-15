@@ -9,6 +9,7 @@ import threading
 import lancedb
 import pytest
 from lancedb.materialized_view import MaterializedViewDefinition
+from lancedb.remote.db import RemoteDBConnection
 
 
 STABLE_ROW_IDS = {"new_table_enable_stable_row_ids": "true"}
@@ -111,6 +112,46 @@ def test_remote_create_async_returns_server_job():
             {"query": 'SELECT * FROM "people" WHERE age >= 18', "with_no_data": False},
         )
     ]
+
+
+def test_sync_remote_create_uses_public_async_connection():
+    calls = []
+
+    class StubAsyncTable:
+        name = "adults"
+
+    class StubAsyncMaterializedView:
+        table = StubAsyncTable()
+
+    class StrictAsyncConnection:
+        async def create_materialized_view(
+            self,
+            name,
+            source,
+            *,
+            select=None,
+            where=None,
+            limit=None,
+            with_no_data=False,
+        ):
+            calls.append((name, source, select, where, limit, with_no_data))
+            return StubAsyncMaterializedView()
+
+    db = RemoteDBConnection.__new__(RemoteDBConnection)
+    db._conn = StrictAsyncConnection()
+    db.db_name = "example"
+    db.serialize = lambda: "{}"
+
+    view = db.create_materialized_view(
+        "adults",
+        "people",
+        select=["name"],
+        where="age >= 18",
+        limit=10,
+        with_no_data=True,
+    )
+    assert view.name == "adults"
+    assert calls == [("adults", "people", ["name"], "age >= 18", 10, True)]
 
 
 def test_create_refresh_and_query(tmp_path):
