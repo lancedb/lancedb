@@ -313,6 +313,16 @@ pub trait Database:
     ) -> Result<Job> {
         job_op_not_supported("remote materialized-view creation")
     }
+    /// Drop a materialized view through its resource endpoint and return its
+    /// cleanup job. Local connections validate the view and use table drop.
+    #[doc(hidden)]
+    async fn drop_materialized_view_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view drop")
+    }
     /// List materialized-view names in a namespace.
     #[doc(hidden)]
     async fn list_materialized_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {

@@ -694,6 +694,30 @@ class LanceNamespaceDBConnection(DBConnection):
         return LOOP.run(self._inner.list_materialized_views())
 
     @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(
+            self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        return Job(
+            LOOP.run(
+                self._inner.drop_materialized_view_async(
+                    name, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         if namespace_path is None:
             namespace_path = []
@@ -1267,6 +1291,24 @@ class AsyncLanceNamespaceDBConnection:
     async def list_materialized_views(self) -> List[str]:
         """The names of the materialized views in the root namespace."""
         return await self._inner.list_materialized_views()
+
+    async def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized view from the namespace."""
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+
+    async def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> AsyncJob[None]:
+        """Start dropping a materialized view and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.drop_materialized_view_async(
+            name, namespace_path=namespace_path
+        )
 
     async def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the namespace."""

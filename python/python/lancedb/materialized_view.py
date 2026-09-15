@@ -164,7 +164,7 @@ class AsyncMaterializedView:
             full=full, source_version=source_version
         )
 
-    async def refresh_materialized_view_async(
+    async def refresh_async(
         self, *, full: bool = False, source_version: Optional[int] = None
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
@@ -215,18 +215,16 @@ class MaterializedView:
         [AsyncMaterializedView.refresh][lancedb.materialized_view.AsyncMaterializedView.refresh]."""
         return LOOP.run(self._async.refresh(full=full, source_version=source_version))
 
-    def refresh_materialized_view_async(
+    def refresh_async(
         self, *, full: bool = False, source_version: Optional[int] = None
     ) -> "Job[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
         See
-        [AsyncMaterializedView.refresh_materialized_view_async][lancedb.materialized_view.AsyncMaterializedView.refresh_materialized_view_async].
+        [AsyncMaterializedView.refresh_async][lancedb.materialized_view.AsyncMaterializedView.refresh_async].
         """
         return Job(
             LOOP.run(
-                self._async.refresh_materialized_view_async(
-                    full=full, source_version=source_version
-                )
+                self._async.refresh_async(full=full, source_version=source_version)
             )
         )

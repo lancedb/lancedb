@@ -722,6 +722,25 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.list_materialized_views())
 
     @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_materialized_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._conn.drop_materialized_view_async(name, namespace_path=namespace_path)
+        )
+        return Job(job)
+
+    @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the database.
 

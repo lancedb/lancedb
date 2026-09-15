@@ -121,6 +121,21 @@ describe("materialized views", () => {
     await expect(db.openMaterializedView("people")).rejects.toThrow(
       "not a materialized view",
     );
+    await expect(db.dropMaterializedView("people")).rejects.toThrow(
+      "not a materialized view",
+    );
+
+    await db.dropMaterializedView("adults");
+    expect(await db.listMaterializedViews()).toEqual([]);
+  });
+
+  it("returns a job when dropping a view asynchronously", async () => {
+    await db.createMaterializedView("adults", "people");
+
+    const job = await db.dropMaterializedViewAsync("adults");
+    expect(job.id).toBeNull();
+    await job.wait();
+    expect(await db.listMaterializedViews()).toEqual([]);
   });
 
   it("rejects an invalid expression at create time", async () => {

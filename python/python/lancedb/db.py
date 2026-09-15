@@ -609,6 +609,22 @@ class DBConnection(EnforceOverrides):
             "materialized views are not supported on this connection type"
         )
 
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized view."""
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        """Start dropping a materialized view and return its cleanup job."""
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the database.
 
@@ -1364,6 +1380,25 @@ class LanceDBConnection(DBConnection):
     def list_materialized_views(self) -> List[str]:
         """The names of the materialized views in this database."""
         return LOOP.run(self._conn.list_materialized_views())
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_materialized_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._conn.drop_materialized_view_async(name, namespace_path=namespace_path)
+        )
+        return Job(job)
 
     def clone_table(
         self,
@@ -2189,6 +2224,32 @@ class AsyncConnection(object):
         table.
         """
         return await self._inner.list_materialized_views()
+
+    async def drop_materialized_view(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> None:
+        """Drop a materialized view."""
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+
+    async def drop_materialized_view_async(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncJob[None]:
+        """Start dropping a materialized view and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return AsyncJob(
+            await self._inner.drop_materialized_view_async(
+                name, namespace_path=namespace_path
+            )
+        )
 
     async def clone_table(
         self,

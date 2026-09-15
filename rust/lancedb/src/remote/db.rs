@@ -634,6 +634,40 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         ))))
     }
 
+    async fn drop_materialized_view_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
+        let request = self
+            .client
+            .post(&format!("/v1/materialized_view/{identifier}/drop"));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        if status != StatusCode::ACCEPTED {
+            return Err(Error::Http {
+                source: "materialized-view drop must return 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            });
+        }
+        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+            source: "materialized-view drop response did not contain a valid job_id".into(),
+            request_id,
+            status_code: Some(status),
+        })?;
+        self.table_cache
+            .remove(&build_cache_key(name, namespace_path))
+            .await;
+        Ok(Job::new(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
     async fn list_materialized_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
         #[derive(serde::Deserialize)]
         struct ListMaterializedViewsResponse {
@@ -1455,6 +1489,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(job.id(), Some("j1-mv-create"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_materialized_view_uses_item_route_and_job() {
+        let db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/materialized_view/analytics$adults/drop"
+            );
+            assert!(request.body().is_none());
+            http::Response::builder()
+                .status(202)
+                .body(serde_json::json!({"job_id": "j1-mv-drop"}).to_string())
+                .unwrap()
+        });
+        let job = db
+            .drop_materialized_view_async("adults", &["analytics".into()])
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j1-mv-drop"));
     }
 
     #[tokio::test]

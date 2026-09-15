@@ -353,6 +353,27 @@ export abstract class Connection {
    */
   abstract listMaterializedViews(): Promise<string[]>;
 
+  /**
+   * Drop the materialized view named `name`.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract dropMaterializedView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<void>;
+
+  /**
+   * Start dropping the materialized view named `name` and return its cleanup
+   * job without waiting for completion.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract dropMaterializedViewAsync(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<Job>;
+
   abstract openTable(
     name: string,
     namespacePath?: string[],
@@ -654,6 +675,22 @@ export class LocalConnection extends Connection {
 
   async listMaterializedViews(): Promise<string[]> {
     return await this.inner.listMaterializedViews();
+  }
+
+  async dropMaterializedView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<void> {
+    return this.inner.dropMaterializedView(name, namespacePath ?? []);
+  }
+
+  async dropMaterializedViewAsync(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<Job> {
+    return new Job(
+      await this.inner.dropMaterializedViewAsync(name, namespacePath ?? []),
+    );
   }
 
   async listTables(

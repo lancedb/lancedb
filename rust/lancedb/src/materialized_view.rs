@@ -1513,6 +1513,55 @@ impl Connection {
     pub async fn list_materialized_views(&self) -> Result<Vec<String>> {
         self.database().list_materialized_views(&[]).await
     }
+
+    /// Drop a materialized view.
+    pub async fn drop_materialized_view(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        let name = name.as_ref();
+        if self.uri().starts_with("db://") {
+            return self
+                .database()
+                .drop_materialized_view_async(name, namespace_path)
+                .await
+                .map(|_| ());
+        }
+        let table = self
+            .open_table(name)
+            .namespace(namespace_path.to_vec())
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await?;
+        self.drop_table(name, namespace_path).await
+    }
+
+    /// Start dropping a materialized view and return its cleanup job.
+    ///
+    /// This validates that the named resource is a materialized view rather
+    /// than an ordinary table. Call [`Job::wait`] before assuming physical
+    /// cleanup has finished.
+    pub async fn drop_materialized_view_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let name = name.as_ref();
+        if self.uri().starts_with("db://") {
+            return self
+                .database()
+                .drop_materialized_view_async(name, namespace_path)
+                .await;
+        }
+        let table = self
+            .open_table(name)
+            .namespace(namespace_path.to_vec())
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await?;
+        self.drop_table_async(name, namespace_path).await
+    }
 }
 
 #[cfg(test)]
@@ -1660,6 +1709,32 @@ mod tests {
         assert_eq!(result.mode, RefreshMode::Rebuild);
         assert_eq!(result.rows_written, 3);
         assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
+
+        let drop_job = conn
+            .drop_materialized_view_async("async_view", &[])
+            .await
+            .unwrap();
+        assert!(drop_job.id().is_none());
+        drop_job.wait().await.unwrap();
+        assert!(conn.open_table("async_view").execute().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_drop_materialized_view_rejects_plain_tables() {
+        let conn = people_db().await;
+        let error = conn
+            .drop_materialized_view("people", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NotAMaterializedView { .. }));
+
+        conn.create_materialized_view("drop_me", "people")
+            .with_no_data(true)
+            .execute()
+            .await
+            .unwrap();
+        conn.drop_materialized_view("drop_me", &[]).await.unwrap();
+        assert!(conn.open_table("drop_me").execute().await.is_err());
     }
 
     #[tokio::test]

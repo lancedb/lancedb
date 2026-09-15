@@ -67,7 +67,8 @@ def mock_remote_materialized_view_create():
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
             requests.append((self.path, body))
-            encoded = json.dumps({"job_id": "mv-create-123"}).encode()
+            job_id = "mv-drop-123" if self.path.endswith("/drop") else "mv-create-123"
+            encoded = json.dumps({"job_id": job_id}).encode()
             self.send_response(202)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
@@ -114,6 +115,19 @@ def test_remote_create_async_returns_server_job():
     ]
 
 
+def test_remote_drop_async_returns_server_job():
+    with mock_remote_materialized_view_create() as (host, requests):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        job = db.drop_materialized_view_async("adults")
+        assert job.id == "mv-drop-123"
+    assert requests == [("/v1/materialized_view/adults/drop", {})]
+
+
 def test_sync_remote_create_uses_public_async_connection():
     calls = []
 
@@ -137,6 +151,9 @@ def test_sync_remote_create_uses_public_async_connection():
             calls.append((name, source, select, where, limit, with_no_data))
             return StubAsyncMaterializedView()
 
+        async def drop_materialized_view(self, name, *, namespace_path=None):
+            calls.append(("drop", name, namespace_path))
+
     db = RemoteDBConnection.__new__(RemoteDBConnection)
     db._conn = StrictAsyncConnection()
     db.db_name = "example"
@@ -152,6 +169,9 @@ def test_sync_remote_create_uses_public_async_connection():
     )
     assert view.name == "adults"
     assert calls == [("adults", "people", ["name"], "age >= 18", 10, True)]
+
+    db.drop_materialized_view("adults", namespace_path=["analytics"])
+    assert calls[-1] == ("drop", "adults", ["analytics"])
 
 
 def test_create_refresh_and_query(tmp_path):
@@ -178,12 +198,17 @@ def test_create_and_refresh_jobs(tmp_path):
     assert create_job.wait() is None
 
     view = db.open_materialized_view("adults")
-    refresh_job = view.refresh_materialized_view_async()
+    refresh_job = view.refresh_async()
     assert refresh_job.id is None
     result = refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 2
     assert view.table.count_rows() == 2
+
+    drop_job = db.drop_materialized_view_async("adults")
+    assert drop_job.id is None
+    assert drop_job.wait() is None
+    assert "adults" not in db.list_materialized_views()
 
 
 def test_definition_round_trips(tmp_path):
@@ -249,6 +274,11 @@ def test_list_and_not_a_view(tmp_path):
     assert db.list_materialized_views() == ["adults"]
     with pytest.raises(ValueError, match="not a materialized view"):
         db.open_materialized_view("people")
+    with pytest.raises(ValueError, match="not a materialized view"):
+        db.drop_materialized_view("people")
+
+    db.drop_materialized_view("adults")
+    assert db.list_materialized_views() == []
 
 
 def test_invalid_expression_fails_at_create(tmp_path):
@@ -291,11 +321,16 @@ async def test_async_create_and_refresh_jobs(tmp_path):
     assert await create_job.wait() is None
 
     view = await db.open_materialized_view("adults")
-    refresh_job = await view.refresh_materialized_view_async()
+    refresh_job = await view.refresh_async()
     assert refresh_job.id is None
     result = await refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 1
+
+    drop_job = await db.drop_materialized_view_async("adults")
+    assert drop_job.id is None
+    assert await drop_job.wait() is None
+    assert "adults" not in await db.list_materialized_views()
 
 
 @pytest.mark.asyncio
@@ -396,10 +431,12 @@ def test_namespace_connection_materialized_views(tmp_path):
         "job_view", "people", with_no_data=True
     )
     assert create_job.wait() is None
-    refresh_job = db.open_materialized_view(
-        "job_view"
-    ).refresh_materialized_view_async()
+    refresh_job = db.open_materialized_view("job_view").refresh_async()
     assert refresh_job.wait().rows_written == 2
+
+    assert db.drop_materialized_view_async("job_view").wait() is None
+    db.drop_materialized_view("adults")
+    assert db.list_materialized_views() == []
 
 
 @pytest.mark.asyncio
@@ -438,8 +475,13 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
     )
     assert await create_job.wait() is None
     job_view = await db.open_materialized_view("job_view")
-    refresh_job = await job_view.refresh_materialized_view_async()
+    refresh_job = await job_view.refresh_async()
     assert (await refresh_job.wait()).rows_written == 2
+
+    drop_job = await db.drop_materialized_view_async("job_view")
+    assert await drop_job.wait() is None
+    await db.drop_materialized_view("adults")
+    assert await db.list_materialized_views() == []
 
 
 def test_namespaced_select_kind_is_read_and_unknown_kinds_are_refused():
