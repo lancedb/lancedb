@@ -16,11 +16,19 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
 pub(crate) fn redact_sensitive_headers(headers: &mut HeaderMap) {
+    const SENSITIVE_HEADERS: [&str; 5] = [
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+    ];
+
     for (name, value) in headers.iter_mut() {
-        if matches!(
-            name.as_str(),
-            "authorization" | "proxy-authorization" | "cookie" | "set-cookie" | "x-api-key"
-        ) {
+        if SENSITIVE_HEADERS
+            .iter()
+            .any(|sensitive| name.as_str().eq_ignore_ascii_case(sensitive))
+        {
             value.set_sensitive(true);
         }
     }
