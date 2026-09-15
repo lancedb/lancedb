@@ -465,6 +465,18 @@ fn validate_id_delimiter(delimiter: String) -> Result<String> {
                 .to_string(),
         });
     }
+    // The root namespace is addressed by the bare delimiter, so a delimiter that
+    // is itself a relative segment makes the root listing route disappear:
+    // `/v1/namespace/./secret/list` resolves to `/v1/namespace/secret/list`.
+    if delimiter == "." || delimiter == ".." {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "id_delimiter '{delimiter}' is a relative path segment: the root namespace is \
+                 addressed by the delimiter alone, so a request for it would resolve to a \
+                 different route"
+            ),
+        });
+    }
     if let Some(unsafe_character) = delimiter
         .chars()
         .find(|character| matches!(character, '/' | '?' | '#' | '%' | '\\'))
@@ -478,6 +490,19 @@ fn validate_id_delimiter(delimiter: String) -> Result<String> {
         });
     }
     Ok(delimiter)
+}
+
+impl ClientConfig {
+    /// Check the settings that a request cannot be built correctly without.
+    ///
+    /// Called before a client is constructed from this, so a configuration
+    /// mistake is reported where it was made rather than as a confusing
+    /// response later. Public so a caller assembling a config can ask the same
+    /// question without connecting.
+    pub fn validate(&self) -> Result<()> {
+        validate_id_delimiter(self.id_delimiter.clone().unwrap_or_else(|| "$".to_string()))?;
+        Ok(())
+    }
 }
 
 impl RestfulLanceDbClient<Sender> {
@@ -505,6 +530,10 @@ impl RestfulLanceDbClient<Sender> {
         client_config: ClientConfig,
         read_consistency_interval: Option<Duration>,
     ) -> Result<Self> {
+        // Before anything is built from it: a bad delimiter is a mistake in the
+        // caller's configuration, and saying so here names it as one.
+        client_config.validate()?;
+
         // Get the timeouts
         let timeout =
             Self::get_timeout(client_config.timeout_config.timeout, "LANCE_CLIENT_TIMEOUT")?;
@@ -604,12 +633,10 @@ impl RestfulLanceDbClient<Sender> {
             host,
             retry_config,
             sender: Sender,
-            id_delimiter: validate_id_delimiter(
-                client_config
-                    .id_delimiter
-                    .clone()
-                    .unwrap_or("$".to_string()),
-            )?,
+            id_delimiter: client_config
+                .id_delimiter
+                .clone()
+                .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
             read_consistency_interval,
             max_bytes_per_request,
@@ -1173,7 +1200,7 @@ mod tests {
     /// component contains one.
     #[test]
     fn test_a_delimiter_that_is_path_syntax_is_refused() {
-        for delimiter in ["/", "?", "#", "%", "a/b", ""] {
+        for delimiter in ["/", "?", "#", "%", "a/b", "", ".", "..", "/../../function/"] {
             let error = super::validate_id_delimiter(delimiter.to_string())
                 .expect_err("a delimiter that is path syntax must be refused");
             assert!(
@@ -1182,7 +1209,9 @@ mod tests {
             );
         }
         // The default, and other separators that are not path syntax, stand.
-        for delimiter in ["$", ".", "-", "_", "|", "::"] {
+        // A period is fine inside a longer delimiter -- only the exact relative
+        // segments are a problem.
+        for delimiter in ["$", "-", "_", "|", "::", ".x.", "..."] {
             super::validate_id_delimiter(delimiter.to_string())
                 .unwrap_or_else(|error| panic!("{delimiter:?} must be accepted: {error}"));
         }

@@ -169,15 +169,19 @@ pub fn validate_namespace_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// The characters a Secret name or a Secret namespace segment may contain, and
-/// the longest one either may be.
+/// The characters a Secret name or a Secret namespace segment may contain.
 ///
 /// Deliberately the set the service admits, and no positional rule on top of
 /// it: a segment may begin with `_`, `-` or `.`, because LanceDB namespaces
 /// already do, and anything narrower would put Secrets out of reach inside
 /// namespaces that already exist.
+///
+/// No length bound either. How long a name may be is the service's to decide,
+/// the way it is for a table, and a bound here could only disagree with it --
+/// one that is shorter refuses names the catalog would hold, and one that is
+/// longer says nothing.
 static SECRET_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]{1,255}$").unwrap());
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]+$").unwrap());
 
 /// Validate one component of a Secret identifier: a Secret name, or one segment
 /// of the namespace path holding it.
@@ -214,7 +218,7 @@ pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
         return Err(Error::InvalidInput {
             message: format!(
                 "invalid {what} '{value}': it may contain only alphanumeric characters, \
-                 underscores, hyphens and periods, and may be at most 255 bytes"
+                 underscores, hyphens and periods"
             ),
         });
     }
