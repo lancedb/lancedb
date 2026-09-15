@@ -305,7 +305,7 @@ struct LockGuard {
 }
 
 /// The persistent token cache engine for one [`OAuthConfig`].
-struct TokenCache {
+pub(crate) struct TokenCache {
     dir: PathBuf,
     key: CacheKey,
     lock_timeout: Duration,
@@ -493,7 +493,10 @@ impl TokenCache {
     /// serialized by the per-key cross-process lock; interactive flows (first
     /// login or reauthentication) run outside it so a slow human-in-the-loop
     /// flow never blocks refreshes in other processes.
-    async fn refresh_or_acquire(&self, source: &dyn TokenSource) -> Result<TokenResponse> {
+    pub(crate) async fn refresh_or_acquire(
+        &self,
+        source: &dyn TokenSource,
+    ) -> Result<TokenResponse> {
         // Fast path under the lock: refresh from the durable record.
         {
             let _guard = self.acquire_lock().await?;
