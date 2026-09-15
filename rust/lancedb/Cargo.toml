@@ -55,6 +55,7 @@ moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { workspace = true }
 log.workspace = true
+tracing.workspace = true
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures.workspace = true

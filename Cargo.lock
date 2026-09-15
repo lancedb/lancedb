@@ -5538,6 +5538,7 @@ dependencies = [
  "tokenizers",
  "tokio",
  "tonic",
+ "tracing",
  "url",
  "urlencoding",
  "uuid",

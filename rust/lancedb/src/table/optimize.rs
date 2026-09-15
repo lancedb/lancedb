@@ -6,7 +6,10 @@
 //! This module contains the implementation of optimization operations that help
 //! maintain good performance for LanceDB tables.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 
 use arrow_schema::DataType;
 use chrono::{DateTime, Utc};
@@ -16,6 +19,7 @@ use lance::dataset::optimize::{
     compact_files_with_planner, plan_compaction,
 };
 use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
+use lance_core::utils::tracing::{DATASET_COMPACTING_EVENT, TRACE_DATASET_EVENTS};
 use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::optimize::OptimizeOptions;
@@ -29,14 +33,30 @@ pub use lance::dataset::optimize::CompactionOptions;
 const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
 
 struct PrecomputedCompactionPlanner {
-    plan: CompactionPlan,
+    plan: Mutex<Option<CompactionPlan>>,
+}
+
+impl PrecomputedCompactionPlanner {
+    fn new(plan: CompactionPlan) -> Self {
+        Self {
+            plan: Mutex::new(Some(plan)),
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl CompactionPlanner for PrecomputedCompactionPlanner {
     async fn plan(&self, dataset: &lance::Dataset) -> lance::Result<CompactionPlan> {
-        debug_assert_eq!(dataset.manifest().version, self.plan.read_version());
-        Ok(self.plan.clone())
+        let plan = self
+            .plan
+            .lock()
+            .map_err(|_| lance_core::Error::internal("precomputed compaction plan lock poisoned"))?
+            .take()
+            .ok_or_else(|| {
+                lance_core::Error::internal("precomputed compaction plan was already consumed")
+            })?;
+        debug_assert_eq!(dataset.manifest().version, plan.read_version());
+        Ok(plan)
     }
 }
 
@@ -331,8 +351,9 @@ pub(crate) async fn compact_files_impl(
 ) -> Result<CompactionMetrics> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    tracing::info!(target: TRACE_DATASET_EVENTS, event=DATASET_COMPACTING_EVENT, uri = dataset.uri());
     let plan = validate_sq_index_remapping(&dataset, &options, remap_options.is_some()).await?;
-    let planner = PrecomputedCompactionPlanner { plan };
+    let planner = PrecomputedCompactionPlanner::new(plan);
     let metrics = compact_files_with_planner(&mut dataset, remap_options, &planner).await?;
     table.dataset.update(dataset);
     Ok(metrics)
