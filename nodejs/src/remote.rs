@@ -193,6 +193,11 @@ pub struct OAuthConfig {
     pub flow: Option<String>,
     /// Client secret (required for client_credentials).
     pub client_secret: Option<String>,
+    /// How the client authenticates to the token endpoint: "none",
+    /// "client_secret_basic", or "client_secret_post". Defaults to
+    /// "client_secret_basic" when a client secret is set, and "none" for
+    /// public clients.
+    pub client_auth_method: Option<String>,
     /// Loopback redirect URI for authorization_code.
     pub redirect_uri: Option<String>,
     /// Port for the authorization_code loopback callback server.
@@ -221,6 +226,7 @@ impl std::fmt::Debug for OAuthConfig {
                 "client_secret",
                 &self.client_secret.as_deref().map(|_| "<redacted>"),
             )
+            .field("client_auth_method", &self.client_auth_method)
             .field("redirect_uri", &self.redirect_uri)
             .field("callback_port", &self.callback_port)
             .field("use_pkce", &self.use_pkce)
@@ -264,10 +270,27 @@ impl TryFrom<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
             }
         };
 
+        let client_auth_method = match config.client_auth_method.as_deref() {
+            Some("none") => Some(lancedb::remote::oauth::ClientAuthMethod::None),
+            Some("client_secret_basic") => {
+                Some(lancedb::remote::oauth::ClientAuthMethod::ClientSecretBasic)
+            }
+            Some("client_secret_post") => {
+                Some(lancedb::remote::oauth::ClientAuthMethod::ClientSecretPost)
+            }
+            None => None,
+            Some(other) => {
+                return Err(Error::InvalidInput {
+                    message: format!("Unknown OAuth client auth method: {other}"),
+                });
+            }
+        };
+
         Ok(Self {
             issuer_url: config.issuer_url,
             client_id: config.client_id,
             client_secret: config.client_secret,
+            client_auth_method,
             scopes: config.scopes,
             flow,
             refresh_buffer_secs: config.refresh_buffer_secs.map(|v| v as u64),
@@ -413,6 +436,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: Some("typo".to_string()),
             client_secret: None,
+            client_auth_method: None,
             redirect_uri: None,
             callback_port: None,
             use_pkce: None,
@@ -437,6 +461,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: Some("client_credentials".to_string()),
             client_secret: Some("super-secret".to_string()),
+            client_auth_method: None,
             redirect_uri: None,
             callback_port: None,
             use_pkce: None,
@@ -458,6 +483,7 @@ mod tests {
             scopes: vec!["openid".to_string()],
             flow: Some("authorization_code".to_string()),
             client_secret: Some("secret".to_string()),
+            client_auth_method: None,
             redirect_uri: Some("http://127.0.0.1:9000/callback".to_string()),
             callback_port: Some(9000),
             use_pkce: Some(false),
@@ -486,6 +512,7 @@ mod tests {
             scopes: vec!["openid".to_string()],
             flow: Some("device_code".to_string()),
             client_secret: None,
+            client_auth_method: None,
             redirect_uri: None,
             callback_port: None,
             use_pkce: None,
@@ -498,6 +525,60 @@ mod tests {
         assert!(matches!(
             converted.flow,
             lancedb::remote::oauth::OAuthFlow::DeviceCode
+        ));
+    }
+
+    #[test]
+    fn test_client_auth_method_conversion() {
+        use lancedb::remote::oauth::ClientAuthMethod;
+
+        for (value, expected) in [
+            ("none", ClientAuthMethod::None),
+            ("client_secret_basic", ClientAuthMethod::ClientSecretBasic),
+            ("client_secret_post", ClientAuthMethod::ClientSecretPost),
+        ] {
+            let config = OAuthConfig {
+                issuer_url: "https://issuer.example.com".to_string(),
+                client_id: "client-id".to_string(),
+                scopes: vec!["openid".to_string()],
+                flow: Some("device_code".to_string()),
+                client_secret: None,
+                client_auth_method: Some(value.to_string()),
+                redirect_uri: None,
+                callback_port: None,
+                use_pkce: None,
+                managed_identity_client_id: None,
+                refresh_buffer_secs: None,
+                token_cache: None,
+            };
+
+            let converted = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap();
+            assert_eq!(converted.client_auth_method, Some(expected));
+        }
+    }
+
+    #[test]
+    fn test_unknown_client_auth_method_returns_invalid_input() {
+        let config = OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            scopes: vec!["openid".to_string()],
+            flow: Some("device_code".to_string()),
+            client_secret: None,
+            client_auth_method: Some("typo".to_string()),
+            redirect_uri: None,
+            callback_port: None,
+            use_pkce: None,
+            managed_identity_client_id: None,
+            refresh_buffer_secs: None,
+            token_cache: None,
+        };
+
+        let err = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message == "Unknown OAuth client auth method: typo"
         ));
     }
 }

@@ -25,6 +25,19 @@ Port for the authorization_code loopback callback server.
 
 ***
 
+### clientAuthMethod?
+
+```ts
+optional clientAuthMethod: string;
+```
+
+How the client authenticates to the token endpoint: "none",
+"client_secret_basic", or "client_secret_post". Defaults to
+"client_secret_basic" when a client secret is set, and "none" for
+public clients.
+
+***
+
 ### clientId
 
 ```ts
