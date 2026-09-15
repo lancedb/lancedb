@@ -114,6 +114,18 @@ ignore = [
     # The old copy is pulled in by aws-smithy's legacy hyper 0.14 client.
     # https://rustsec.org/advisories/RUSTSEC-2026-0258
     { id = "RUSTSEC-2026-0258", reason = "h2 0.3 via legacy aws-smithy/hyper 0.14; no patched 0.3 release" },
+
+    # rustls 0.23.40: TLS 1.3 handshake messages incorrectly accepted across
+    # encryption level boundaries. Fixed in 0.23.45, but the copy in our
+    # lockfile is pinned by aws-smithy-http-client's dependency range and
+    # `cargo update --precise` to 0.23.45 fails to resolve against the rest
+    # of the AWS SDK chain as of this writing. The handshake transcript is
+    # still authenticated (per the advisory, this cannot be used to alter or
+    # complete a handshake), so this is a hardening gap, not a known
+    # exploitable path in how we use it. Clearing requires the aws-sdk chain
+    # to move to a newer aws-smithy-http-client.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0285
+    { id = "RUSTSEC-2026-0285", reason = "rustls 0.23.40 via aws-smithy-http-client; precise bump to 0.23.45 blocked by aws-sdk chain" },
 ]
 
 # ---------------------------------------------------------------------------
