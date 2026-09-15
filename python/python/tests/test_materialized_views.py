@@ -392,6 +392,15 @@ def test_namespace_connection_materialized_views(tmp_path):
     with pytest.raises(ValueError, match="not a materialized view"):
         db.open_materialized_view("people")
 
+    create_job = db.create_materialized_view_async(
+        "job_view", "people", with_no_data=True
+    )
+    assert create_job.wait() is None
+    refresh_job = db.open_materialized_view(
+        "job_view"
+    ).refresh_materialized_view_async()
+    assert refresh_job.wait().rows_written == 2
+
 
 @pytest.mark.asyncio
 async def test_async_namespace_connection_materialized_views(tmp_path):
@@ -423,6 +432,14 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
             handle._route_pushdown_to_rust == through_namespace._route_pushdown_to_rust
         )
         assert handle._namespace_path == through_namespace._namespace_path
+
+    create_job = await db.create_materialized_view_async(
+        "job_view", "people", with_no_data=True
+    )
+    assert await create_job.wait() is None
+    job_view = await db.open_materialized_view("job_view")
+    refresh_job = await job_view.refresh_materialized_view_async()
+    assert (await refresh_job.wait()).rows_written == 2
 
 
 def test_namespaced_select_kind_is_read_and_unknown_kinds_are_refused():

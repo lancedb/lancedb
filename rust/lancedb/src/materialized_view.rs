@@ -29,6 +29,7 @@ use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
 use crate::database::{CreateTableRequest, Database, OpenTableRequest};
 use crate::embeddings::EmbeddingDefinition;
 use crate::function::FunctionBinding;
+use crate::job::Job;
 use crate::table::Table;
 use crate::table::computed_columns::{
     FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,
@@ -1270,7 +1271,7 @@ impl CreateMaterializedViewBuilder {
     /// Submit creation and initial population, returning a [`Job`] that
     /// settles when the view is ready. The source must keep stable row ids --
     /// they hold provenance across compaction, and cannot be enabled later.
-    pub async fn execute_async(self) -> Result<crate::job::Job> {
+    pub async fn execute_async(self) -> Result<Job> {
         if self.connection.uri().starts_with("db://") {
             return self
                 .connection
@@ -1283,7 +1284,7 @@ impl CreateMaterializedViewBuilder {
                 })
                 .await;
         }
-        Ok(crate::job::Job::spawned(tokio::spawn(async move {
+        Ok(Job::spawned(tokio::spawn(async move {
             self.execute_native().await.map(|_| ())
         })))
     }
@@ -1431,7 +1432,7 @@ impl RefreshMaterializedViewBuilder {
     }
 
     /// Submit the refresh and return a job that settles with its result.
-    pub async fn execute_async(self) -> Result<crate::job::Job<RefreshMaterializedViewResult>> {
+    pub async fn execute_async(self) -> Result<Job<RefreshMaterializedViewResult>> {
         if self.view.table.as_native().is_none() {
             return self
                 .view
@@ -1444,7 +1445,7 @@ impl RefreshMaterializedViewBuilder {
                 )
                 .await;
         }
-        Ok(crate::job::Job::spawned(tokio::spawn(async move {
+        Ok(Job::spawned(tokio::spawn(async move {
             refresh::execute_refresh(
                 &self.view.table,
                 self.full,
