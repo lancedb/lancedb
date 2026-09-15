@@ -1904,7 +1904,9 @@ mod tests {
         )
         .unwrap();
 
-        let err = source.request_device_authorization().await.unwrap_err();
+        let Err(err) = source.request_device_authorization().await else {
+            panic!("expected insecure verification URI to be rejected");
+        };
         assert!(matches!(
             err,
             Error::InvalidInput { message }
