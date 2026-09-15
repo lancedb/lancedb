@@ -32,6 +32,7 @@ use lance::dataset::mem_wal::{
     validate_maintained_indexes,
 };
 use lance::index::DatasetIndexExt;
+use lance_arrow::json::convert_json_columns;
 use lance_core::datatypes::Schema as LanceSchema;
 use lance_index::mem_wal::{MemWalIndexDetails, ShardingField, ShardingSpec};
 use tokio::sync::RwLock;
@@ -683,6 +684,7 @@ pub(crate) async fn execute_lsm_merge_insert(
         if batch.num_rows() == 0 {
             continue;
         }
+        let batch = convert_json_columns(&batch).map_err(|e| Error::Arrow { source: e })?;
         let batch = align_batch_schema(batch, &target_schema)?;
         total_rows += batch.num_rows() as u64;
         batches.push(batch);

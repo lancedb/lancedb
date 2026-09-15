@@ -654,3 +654,57 @@ def test_lsm_read_fts_optimized_index_not_rejected(tmp_path):
         .to_pylist()
     )
     assert ids == set(range(1, 11))
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_lsm_merge_insert_encodes_string_json(tmp_path):
+    json_type = pa.json_()
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("j", json_type),
+        ]
+    )
+
+    json_values = pa.ExtensionArray.from_storage(
+        json_type,
+        pa.array(['{"k": 1}'], type=json_type.storage_type),
+    )
+    initial = pa.Table.from_arrays(
+        [
+            pa.array([1], type=pa.int64()),
+            json_values,
+        ],
+        schema=schema,
+    )
+
+    db = lancedb.connect(
+        tmp_path,
+        read_consistency_interval=timedelta(seconds=0),
+    )
+    table = db.create_table("json_lsm", initial)
+    table.set_unenforced_primary_key("id")
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+
+    source = pa.table(
+        {
+            "id": pa.array([1, 2], type=pa.int64()),
+            "j": pa.array(
+                ['{"k": 9}', '{"k": 2}'],
+                type=pa.string(),
+            ),
+        }
+    )
+
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(source)
+    )
+    assert result.num_rows == 2
+
+    rows = table.search().to_arrow().sort_by("id")
+
+    assert rows["id"].to_pylist() == [1, 2]
+    assert rows["j"].to_pylist() == ['{"k":9}', '{"k":2}']
