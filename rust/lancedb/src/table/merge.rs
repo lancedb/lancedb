@@ -1431,4 +1431,195 @@ mod lsm_tests {
             "LSM vector search must rank the memtable row first"
         );
     }
+
+    #[tokio::test]
+    async fn lsm_cosine_distance_scale_and_mixed_tier_ordering() {
+        use arrow::array::{FixedSizeListBuilder, Float32Builder};
+        use arrow::datatypes::Float32Type;
+
+        use crate::index::Index;
+        use crate::index::vector::IvfPqIndexBuilder;
+
+        const DIM: usize = 8;
+        const N: usize = 256;
+
+        fn normalized_vector(state: &mut u64) -> Vec<f32> {
+            let mut vector = (0..DIM)
+                .map(|_| {
+                    *state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1);
+                    ((*state >> 32) as u32 as f32 / u32::MAX as f32) * 2.0 - 1.0
+                })
+                .collect::<Vec<_>>();
+            let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+            vector.iter_mut().for_each(|value| *value /= norm);
+            vector
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    DIM as i32,
+                ),
+                false,
+            ),
+        ]));
+        let make_batch = |rows: Vec<(i64, Vec<f32>)>| {
+            let ids = rows.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+            let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), DIM as i32);
+            for (_, vector) in &rows {
+                vectors.values().append_slice(vector);
+                vectors.append(true);
+            }
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from(ids)), Arc::new(vectors.finish())],
+            )
+            .unwrap()
+        };
+        let first_result = |batches: &[RecordBatch]| {
+            let batch = &batches[0];
+            let id = batch["id"].as_primitive::<Int64Type>().value(0);
+            let distance = batch["_distance"].as_primitive::<Float32Type>().value(0);
+            (id, distance)
+        };
+
+        let mut state = 42;
+        let base_rows = (0..N)
+            .map(|id| (id as i64, normalized_vector(&mut state)))
+            .collect::<Vec<_>>();
+        let query = normalized_vector(&mut state);
+
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let base = make_batch(base_rows);
+        let reader: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(base)], schema.clone()));
+        let table = conn
+            .create_table("cosine_lsm", reader)
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .create_index(
+                &["vec"],
+                Index::IvfPq(
+                    IvfPqIndexBuilder::default()
+                        .distance_type(crate::DistanceType::Cosine)
+                        .num_partitions(1)
+                        .num_sub_vectors(1),
+                ),
+            )
+            .name("vec_cosine".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .set_lsm_write_spec(
+                LsmWriteSpec::unsharded().with_maintained_indexes(vec!["vec_cosine".to_string()]),
+            )
+            .await
+            .unwrap();
+
+        let base_only = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .use_lsm(false)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (base_id, public_distance) = first_result(&base_only);
+
+        let lsm = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (lsm_id, lsm_distance) = first_result(&lsm);
+        assert_eq!(lsm_id, base_id);
+        assert!(
+            (lsm_distance - public_distance).abs() < 1e-5,
+            "LSM cosine distance {lsm_distance} did not use the public scale {public_distance}"
+        );
+
+        // Add an exact memtable result whose distance lies between the public ANN
+        // score and its doubled internal score. Correctly normalized plans still
+        // rank the ANN row first; mixed units would incorrectly rank this row first.
+        assert!(public_distance > 0.0 && public_distance < 4.0 / 3.0);
+        let memtable_distance = public_distance * 1.5;
+        let cosine_similarity = 1.0 - memtable_distance;
+        let mut orthogonal = normalized_vector(&mut state);
+        let projection = orthogonal
+            .iter()
+            .zip(&query)
+            .map(|(left, right)| left * right)
+            .sum::<f32>();
+        for (value, query_value) in orthogonal.iter_mut().zip(&query) {
+            *value -= projection * query_value;
+        }
+        let norm = orthogonal
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        orthogonal.iter_mut().for_each(|value| *value /= norm);
+        let sine = (1.0 - cosine_similarity * cosine_similarity).sqrt();
+        let memtable_vector = query
+            .iter()
+            .zip(&orthogonal)
+            .map(|(query_value, orthogonal_value)| {
+                cosine_similarity * query_value + sine * orthogonal_value
+            })
+            .collect::<Vec<_>>();
+
+        let mut merge = table.merge_insert(&[]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let memtable = make_batch(vec![(N as i64, memtable_vector)]);
+        merge
+            .execute(Box::new(RecordBatchIterator::new(
+                vec![Ok(memtable)],
+                schema,
+            )))
+            .await
+            .unwrap();
+
+        let mixed = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (mixed_id, mixed_distance) = first_result(&mixed);
+        assert_eq!(
+            mixed_id, base_id,
+            "mixed LSM tiers must compare ANN and exact distances in public units"
+        );
+        assert!((mixed_distance - public_distance).abs() < 1e-5);
+    }
 }
