@@ -81,24 +81,26 @@ impl PatchReadParam for ReadParams {
     }
 }
 
-/// Refuse a path component that is periods alone.
+/// Refuse a path component that URL parsing resolves as a relative segment.
 ///
-/// Every character these names admit is unreserved, so a component needs no
-/// escaping to sit in a URL path segment -- with one exception that is
-/// positional rather than lexical. `.` and `..` are resolved as relative path
-/// segments, and *after* percent-decoding, so `%2E%2E` is resolved exactly as
-/// `..` is and no spelling of a dot-only component survives to reach a route.
+/// Exactly `.` and `..`, and the percent-encoded spellings of them. Those are
+/// the only segments the URL Standard resolves, and it resolves them *after*
+/// decoding -- `%2E%2E` is a double-dot segment as surely as `..` is, so no
+/// escaping of one survives to reach a route. An object so named could be
+/// created and then never addressed again, and on the way there the request
+/// goes somewhere else: `drop_table("..")` resolves to `/v1/drop/`, delivering
+/// a body meant for one route to whatever handler is left at the other.
 ///
-/// An object so named could be created and then never addressed again, and on
-/// the way there the request goes somewhere else: `drop_table("..")` resolves
-/// to `/v1/drop/`, and a body meant for one route is delivered to whatever
-/// handler is left at the other.
-fn reject_dot_only(what: &str, value: &str) -> Result<()> {
-    if !value.is_empty() && value.chars().all(|character| character == '.') {
+/// Deliberately no wider than that. `...` is an ordinary segment and addresses
+/// perfectly well; refusing it would make an object that works today stop
+/// working on upgrade, for a hazard it does not have.
+fn reject_relative_segment(what: &str, value: &str) -> Result<()> {
+    let decoded = value.replace("%2e", ".").replace("%2E", ".");
+    if decoded == "." || decoded == ".." {
         return Err(Error::InvalidInput {
             message: format!(
-                "invalid {what} '{value}': a component of only periods is read as a relative \
-                 path and cannot address an object"
+                "invalid {what} '{value}': '.' and '..' are read as relative path segments and \
+                 cannot address an object"
             ),
         });
     }
@@ -133,7 +135,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
                     .to_string(),
         });
     }
-    reject_dot_only("table name", name)?;
+    reject_relative_segment("table name", name)?;
     Ok(())
 }
 
@@ -163,7 +165,7 @@ pub fn validate_namespace_name(name: &str) -> Result<()> {
             ),
         });
     }
-    reject_dot_only("namespace name", name)?;
+    reject_relative_segment("namespace name", name)?;
     Ok(())
 }
 
@@ -216,7 +218,7 @@ pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
             ),
         });
     }
-    reject_dot_only(what, value)?;
+    reject_relative_segment(what, value)?;
     Ok(())
 }
 
