@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import contextlib
+import http.server
+import json
+import threading
+
 import lancedb
 import pytest
 from lancedb.materialized_view import MaterializedViewDefinition
@@ -22,6 +27,45 @@ def make_db(tmp_path):
     return db
 
 
+@contextlib.contextmanager
+def mock_remote_materialized_views():
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            requests.append(self.path)
+            encoded = json.dumps({"views": ["daily_sales"]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    with http.server.HTTPServer(("localhost", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield f"http://localhost:{server.server_address[1]}", requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def test_remote_list_uses_namespace_route():
+    with mock_remote_materialized_views() as (host, requests):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        assert db.list_materialized_views() == ["daily_sales"]
+    assert requests == ["/v1/namespace/$/materialized_view/list"]
+
+
 def test_create_refresh_and_query(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view(
@@ -31,11 +75,7 @@ def test_create_refresh_and_query(tmp_path):
         where="age >= 18",
     )
     assert view.name == "adults"
-    assert view.table.count_rows() == 0
-
-    result = view.refresh()
-    assert result.mode == "rebuild"
-    assert result.rows_written == 2
+    assert view.table.count_rows() == 2
 
     rows = view.table.search().to_list()
     assert sorted(row["shout"] for row in rows) == ["ADA", "GRACE"]
@@ -56,7 +96,7 @@ def test_definition_round_trips(tmp_path):
 
 def test_incremental_refresh_after_append(tmp_path):
     db = make_db(tmp_path)
-    view = db.create_materialized_view("copy", "people")
+    view = db.create_materialized_view("copy", "people", with_no_data=True)
     view.refresh()
 
     db.open_table("people").add([{"name": "alan", "age": 41}])
@@ -70,7 +110,7 @@ def test_incremental_refresh_after_append(tmp_path):
 
 def test_incremental_refresh_after_update(tmp_path):
     db = make_db(tmp_path)
-    view = db.create_materialized_view("copy", "people")
+    view = db.create_materialized_view("copy", "people", with_no_data=True)
     view.refresh()
 
     db.open_table("people").update(where="name = 'kid'", values={"age": 8})
@@ -87,7 +127,7 @@ def test_legacy_storage_source_update_rebuilds(tmp_path):
         storage_options={**STABLE_ROW_IDS, "new_table_data_storage_version": "legacy"},
     )
     db.create_table("people", [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}])
-    view = db.create_materialized_view("copy", "people")
+    view = db.create_materialized_view("copy", "people", with_no_data=True)
     view.refresh()
 
     db.open_table("people").update(where="name = 'kid'", values={"age": 8})
@@ -119,7 +159,10 @@ async def test_async_create_refresh_and_open(tmp_path):
     await db.create_table("people", [{"name": "ada", "age": 36}])
 
     view = await db.create_materialized_view(
-        "shouts", "people", select=[("shout", "upper(name)")]
+        "shouts",
+        "people",
+        select=[("shout", "upper(name)")],
+        with_no_data=True,
     )
     result = await view.refresh()
     assert result.mode == "rebuild"
@@ -135,7 +178,7 @@ async def test_async_create_refresh_and_open(tmp_path):
 async def test_async_incremental(tmp_path):
     db = await lancedb.connect_async(tmp_path, storage_options=STABLE_ROW_IDS)
     await db.create_table("people", [{"name": "ada", "age": 36}])
-    view = await db.create_materialized_view("copy", "people")
+    view = await db.create_materialized_view("copy", "people", with_no_data=True)
     await view.refresh()
 
     table = await db.open_table("people")
@@ -157,26 +200,16 @@ def test_bare_select_names_are_quoted(tmp_path):
     db.create_table("odd_names", [{"order item": "widget", "select": 2}])
 
     view = db.create_materialized_view(
-        "quoted", "odd_names", select=["order item", "select"]
+        "quoted",
+        "odd_names",
+        select=["order item", "select"],
+        with_no_data=True,
     )
     result = view.refresh()
     assert result.rows_written == 1
     rows = view.table.search().to_list()
     assert rows[0]["order item"] == "widget"
     assert rows[0]["select"] == 2
-
-
-@pytest.mark.asyncio
-async def test_async_remote_is_refused_without_network():
-    db = await lancedb.connect_async(
-        "db://nowhere", api_key="sk_test", region="us-east-1"
-    )
-    with pytest.raises(NotImplementedError, match="local"):
-        await db.create_materialized_view("v", "src")
-    with pytest.raises(NotImplementedError, match="local"):
-        await db.open_materialized_view("v")
-    with pytest.raises(NotImplementedError, match="local"):
-        await db.list_materialized_views()
 
 
 def test_scalar_select_is_one_column(tmp_path):

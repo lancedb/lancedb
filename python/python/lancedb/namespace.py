@@ -637,6 +637,7 @@ class LanceNamespaceDBConnection(DBConnection):
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> "MaterializedView":
         """Define a materialized view over a table in the root namespace.
         See
@@ -646,7 +647,12 @@ class LanceNamespaceDBConnection(DBConnection):
             self.open_table(
                 LOOP.run(
                     self._inner.create_materialized_view(
-                        name, source, select=select, where=where, limit=limit
+                        name,
+                        source,
+                        select=select,
+                        where=where,
+                        limit=limit,
+                        with_no_data=with_no_data,
                     )
                 ).name
             )
@@ -1194,10 +1200,16 @@ class AsyncLanceNamespaceDBConnection:
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> "AsyncMaterializedView":
         """Define a materialized view over a table in the root namespace."""
         view = await self._inner.create_materialized_view(
-            name, source, select=select, where=where, limit=limit
+            name,
+            source,
+            select=select,
+            where=where,
+            limit=limit,
+            with_no_data=with_no_data,
         )
         # Reopen through the namespace so the view's table carries the
         # namespace client and pushdown configuration a bare inner table lacks.

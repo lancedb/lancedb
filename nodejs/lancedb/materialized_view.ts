@@ -78,10 +78,22 @@ export function definitionFromMetadata(
   if (raw === undefined) {
     throw new Error(`Table '${name}' is not a materialized view`);
   }
+  return definitionFromJson(raw, name);
+}
+
+/** @internal Parse the backend-independent definition returned by native code. */
+export function definitionFromJson(
+  raw: string,
+  name: string,
+): MaterializedViewDefinition {
   // biome-ignore lint/suspicious/noExplicitAny: raw JSON
   const value: any = JSON.parse(raw);
   // "namespaced_select" keeps older readers from resolving the source at root.
-  if (value.kind !== "select" && value.kind !== "namespaced_select") {
+  if (
+    value.kind !== undefined &&
+    value.kind !== "select" &&
+    value.kind !== "namespaced_select"
+  ) {
     throw new Error(
       `materialized view '${name}' is defined by '${value.kind}', which this ` +
         "version of lancedb cannot refresh",
@@ -134,10 +146,12 @@ export class MaterializedView {
     return this.inner;
   }
 
-  /** The query that defines the view, read from its stored schema. */
+  /** The query that defines the view. */
   async definition(): Promise<MaterializedViewDefinition> {
-    const schema = await this.inner.schema();
-    return definitionFromMetadata(schema.metadata, this.name);
+    return definitionFromJson(
+      await this.inner.materializedViewDefinition(),
+      this.name,
+    );
   }
 
   /**

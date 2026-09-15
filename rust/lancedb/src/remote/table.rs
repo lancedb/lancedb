@@ -17,6 +17,9 @@ use crate::index::IndexStatistics;
 use crate::index::scalar::FtsQuery;
 use crate::index::waiter::wait_for_index;
 use crate::job::Job;
+use crate::materialized_view::{
+    MaterializedViewDefinition, MaterializedViewInfo, RefreshMaterializedViewResult, ViewProjection,
+};
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::remote::job::RemoteJob;
 use crate::table::AddColumnsResult;
@@ -250,8 +253,15 @@ struct FreshnessJob<S: HttpSend> {
     inner: RemoteJob<S>,
     freshness: Arc<Mutex<FreshnessState>>,
     version: Arc<RwLock<Option<u64>>>,
-    track_refresh_result: bool,
+    tracked_result: TrackedJobResult,
     freshness_request: FreshnessHeaders,
+}
+
+#[derive(Clone, Copy)]
+enum TrackedJobResult {
+    None,
+    RefreshColumn,
+    MaterializedView,
 }
 
 #[async_trait]
@@ -279,22 +289,26 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         let result = crate::job::JobHandle::wait(&self.inner).await?;
         let version = self.version.read().await;
         if version.is_none() {
-            let result_version = self
-                .track_refresh_result
-                .then(|| result.value())
-                .flatten()
-                .and_then(|value| {
+            let result_version = match self.tracked_result {
+                TrackedJobResult::None => None,
+                TrackedJobResult::RefreshColumn => result.value().and_then(|value| {
                     serde_json::from_value::<crate::function::RefreshColumnResult>(value.clone())
                         .ok()
-                })
-                .map(|result| {
-                    result
-                        .published_version
-                        .map_or(result.source_version, |version| {
-                            version.max(result.source_version)
+                        .map(|result| {
+                            result
+                                .published_version
+                                .map_or(result.source_version, |version| {
+                                    version.max(result.source_version)
+                                })
                         })
-                })
-                .filter(|version| *version != 0);
+                }),
+                TrackedJobResult::MaterializedView => result.value().and_then(|value| {
+                    serde_json::from_value::<RefreshMaterializedViewResult>(value.clone())
+                        .ok()
+                        .map(|result| result.version)
+                }),
+            }
+            .filter(|version| *version != 0);
             if let Some(version) = result_version {
                 self.freshness_request
                     .observe_version(&self.freshness, version);
@@ -2051,6 +2065,106 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn id(&self) -> &str {
         &self.identifier
     }
+    async fn materialized_view_info(&self) -> Result<MaterializedViewInfo> {
+        #[derive(Deserialize)]
+        struct Projection {
+            output_column: String,
+            expression: String,
+        }
+
+        #[derive(Deserialize)]
+        struct DescribeMaterializedViewResponse {
+            source_table: String,
+            #[serde(default)]
+            source_namespace: Vec<String>,
+            #[serde(default)]
+            projections: Vec<Projection>,
+            #[serde(default)]
+            filter: Option<String>,
+            #[serde(default)]
+            limit: Option<u64>,
+            #[serde(default)]
+            inputs: Vec<String>,
+            #[serde(default)]
+            incarnation: Option<String>,
+        }
+
+        let request = self.client.post(&format!(
+            "/v1/materialized_view/{}/describe",
+            self.identifier
+        ));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let response: DescribeMaterializedViewResponse =
+            response.json().await.err_to_http(request_id)?;
+        Ok(MaterializedViewInfo {
+            definition: MaterializedViewDefinition {
+                source_table: response.source_table,
+                source_namespace: response.source_namespace,
+                projections: response
+                    .projections
+                    .into_iter()
+                    .map(|projection| ViewProjection {
+                        output: projection.output_column,
+                        expression: projection.expression,
+                    })
+                    .collect(),
+                filter: response.filter,
+                limit: response.limit,
+                inputs: response.inputs,
+            },
+            incarnation: response.incarnation,
+        })
+    }
+
+    async fn refresh_materialized_view_async(
+        &self,
+        full: bool,
+        source_version: Option<u64>,
+        expected_incarnation: Option<&str>,
+    ) -> Result<Job<RefreshMaterializedViewResult>> {
+        self.check_mutable().await?;
+        let mut body = serde_json::json!({ "full": full });
+        if let Some(source_version) = source_version {
+            body["source_version"] = source_version.into();
+        }
+        if let Some(expected_incarnation) = expected_incarnation {
+            body["expected_incarnation"] = expected_incarnation.into();
+        }
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/materialized_view/{}/refresh",
+                self.identifier
+            ))
+            .json(&body);
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        if status != StatusCode::ACCEPTED {
+            return Err(Error::Http {
+                source: "materialized-view refresh must return 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            });
+        }
+        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+            source: "materialized-view refresh response did not contain a valid job_id".into(),
+            request_id,
+            status_code: Some(status),
+        })?;
+        Ok(Job::new_typed(Box::new(FreshnessJob {
+            inner: RemoteJob::new(self.client.clone(), job_id),
+            freshness: self.freshness.clone(),
+            version: self.version.clone(),
+            tracked_result: TrackedJobResult::MaterializedView,
+            freshness_request,
+        })))
+    }
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let description = self.describe().await?;
         let TableDescription {
@@ -2901,7 +3015,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 inner: RemoteJob::new(self.client.clone(), job_id),
                 freshness: self.freshness.clone(),
                 version: self.version.clone(),
-                track_refresh_result: false,
+                tracked_result: TrackedJobResult::None,
                 freshness_request: self.snapshot_freshness_headers(),
             })),
             None => Job::new_done(),
@@ -3384,7 +3498,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             inner: RemoteJob::new(self.client.clone(), response.job_id),
             freshness: self.freshness.clone(),
             version: self.version.clone(),
-            track_refresh_result: true,
+            tracked_result: TrackedJobResult::RefreshColumn,
             freshness_request: self.snapshot_freshness_headers(),
         })))
     }
@@ -12017,17 +12131,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_materialized_view_refused_without_a_request() {
-        // Materialized views are local-only. The table-level entry the
-        // bindings use must refuse a remote table before reading its schema,
-        // so the panicking handler is the assertion.
-        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
-            panic!("unexpected request: {}", request.url().path())
+    async fn test_materialized_view_describe_and_refresh() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/materialized_view/my_table/describe" => http::Response::builder()
+                .status(200)
+                .body(
+                    json!({
+                        "name": "my_table",
+                        "source_table": "source",
+                        "source_namespace": ["analytics"],
+                        "projections": [{
+                            "output_column": "double_x",
+                            "expression": "x * 2"
+                        }],
+                        "filter": "x > 0",
+                        "limit": 10,
+                        "inputs": ["x"],
+                        "incarnation": "inc-1"
+                    })
+                    .to_string(),
+                )
+                .unwrap(),
+            "/v1/materialized_view/my_table/refresh" => {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request_body_json(&request),
+                    json!({
+                        "full": true,
+                        "source_version": 7,
+                        "expected_incarnation": "inc-1"
+                    })
+                );
+                http::Response::builder()
+                    .status(202)
+                    .body(json!({"job_id": "j1-mv-refresh"}).to_string())
+                    .unwrap()
+            }
+            "/v1/jobs/describe" => http::Response::builder()
+                .status(200)
+                .body(
+                    json!({
+                        "job_id": "j1-mv-refresh",
+                        "job_state": "DONE",
+                        "result": {
+                            "mode": "rebuild",
+                            "rows_written": 2,
+                            "source_version": 7,
+                            "version": 9
+                        }
+                    })
+                    .to_string(),
+                )
+                .unwrap(),
+            path => panic!("unexpected request: {path}"),
         });
-        let err = crate::MaterializedView::from_table(table)
+        let view = crate::MaterializedView::from_table(table).await.unwrap();
+        assert_eq!(view.definition().source_table, "source");
+        assert_eq!(view.definition().source_namespace, ["analytics"]);
+        assert_eq!(view.definition().inputs, ["x"]);
+        assert_eq!(view.incarnation(), Some("inc-1"));
+
+        let result = view
+            .refresh()
+            .full(true)
+            .source_version(7)
+            .expect_incarnation("inc-1")
+            .execute()
             .await
-            .unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
+            .unwrap();
+        assert_eq!(result.mode, crate::RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 2);
+        assert_eq!(result.version, 9);
     }
 
     #[tokio::test]

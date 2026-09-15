@@ -76,11 +76,7 @@ describe("materialized views", () => {
       where: "age >= 18",
     });
     expect(view.name).toBe("adults");
-    expect(await view.table().countRows()).toBe(0);
-
-    const result = await view.refresh();
-    expect(result.mode).toBe("rebuild");
-    expect(Number(result.rowsWritten)).toBe(2);
+    expect(await view.table().countRows()).toBe(2);
 
     const rows = await view.table().query().toArray();
     expect(rows.map((r) => r.shout).sort()).toEqual(["ADA", "GRACE"]);
@@ -102,7 +98,9 @@ describe("materialized views", () => {
   });
 
   it("refreshes incrementally after an append", async () => {
-    const view = await db.createMaterializedView("copy", "people");
+    const view = await db.createMaterializedView("copy", "people", {
+      withNoData: true,
+    });
     await view.refresh();
 
     const people = await db.openTable("people");
@@ -155,6 +153,7 @@ describe("materialized views", () => {
     });
     const view = await db.createMaterializedView("quoted", "odd_names", {
       select: ["order item"],
+      withNoData: true,
     });
     const result = await view.refresh();
     expect(Number(result.rowsWritten)).toBe(1);

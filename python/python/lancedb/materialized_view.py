@@ -73,6 +73,20 @@ def _definition_from_schema(
     )
 
 
+def _definition_from_json(raw: str) -> MaterializedViewDefinition:
+    value = json.loads(raw)
+    return MaterializedViewDefinition(
+        source_table=value["source_table"],
+        projections=[
+            (p["output"], p["expression"]) for p in value.get("projections", [])
+        ],
+        filter=value.get("filter"),
+        limit=value.get("limit"),
+        inputs=value.get("inputs", []),
+        source_namespace=value.get("source_namespace", []),
+    )
+
+
 def _quote_identifier(name: str) -> str:
     """Quote a column name as a Lance SQL identifier (backticks)."""
     escaped = name.replace("`", "``")
@@ -126,8 +140,9 @@ class AsyncMaterializedView:
         return self._table
 
     async def definition(self) -> MaterializedViewDefinition:
-        """The query that defines the view, read from its stored schema."""
-        return _definition_from_schema(await self._table.schema(), self.name)
+        """The query that defines the view."""
+        raw = await self._table._inner.materialized_view_definition()
+        return _definition_from_json(raw)
 
     async def refresh(
         self, *, full: bool = False, source_version: Optional[int] = None
@@ -171,8 +186,8 @@ class MaterializedView:
 
     @property
     def definition(self) -> MaterializedViewDefinition:
-        """The query that defines the view, read from its stored schema."""
-        return _definition_from_schema(self._table.schema, self.name)
+        """The query that defines the view."""
+        return LOOP.run(self._async.definition())
 
     def refresh(
         self, *, full: bool = False, source_version: Optional[int] = None

@@ -1647,6 +1647,20 @@ impl Table {
         })
     }
 
+    pub fn materialized_view_definition(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            serde_json::to_string(view.definition()).map_err(|err| {
+                PyRuntimeError::new_err(format!(
+                    "failed to serialize materialized-view definition: {err}"
+                ))
+            })
+        })
+    }
+
     pub fn add_columns_with_schema(
         self_: PyRef<'_, Self>,
         schema: PyArrowType<Schema>,

@@ -320,13 +320,13 @@ export abstract class Connection {
   /**
    * Define a materialized view named `name` over the table `source`.
    *
-   * The view is created empty, with the query recorded in its schema
-   * metadata; `view.refresh()` computes the rows. The view is a normal
-   * table: it can be queried, indexed and searched, and it appears in
-   * `tableNames`. The source table must have stable row ids (create it with
+   * The view is populated before creation returns. Set `withNoData` to create
+   * only its definition and empty backing table. The view is a normal table:
+   * it can be queried, indexed and searched, and it appears in `tableNames`.
+   * The source table must have stable row ids (create it with
    * the `newTableEnableStableRowIds` storage option); they keep the view's
    * provenance valid across source compactions and cannot be enabled after
-   * a table exists. Local databases only.
+   * a table exists.
    */
   abstract createMaterializedView(
     name: string,
@@ -335,6 +335,7 @@ export abstract class Connection {
       select?: MaterializedViewSelect;
       where?: string;
       limit?: number;
+      withNoData?: boolean;
     },
   ): Promise<MaterializedView>;
 
@@ -631,6 +632,7 @@ export class LocalConnection extends Connection {
       select?: MaterializedViewSelect;
       where?: string;
       limit?: number;
+      withNoData?: boolean;
     },
   ): Promise<MaterializedView> {
     validateNonNegativeInteger(options?.limit, "limit");
@@ -640,6 +642,7 @@ export class LocalConnection extends Connection {
       normalizeSelect(options?.select),
       options?.where,
       options?.limit,
+      options?.withNoData ?? false,
     );
     return new MaterializedView(new LocalTable(innerTable));
   }

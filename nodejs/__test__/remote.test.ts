@@ -82,21 +82,17 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
-  it("refuses materialized views before issuing any request", async () => {
-    const paths: string[] = [];
+  it("lists materialized views through the namespace route", async () => {
     await withMockDatabase(
       (req, res) => {
-        paths.push(req.url ?? "");
-        res.writeHead(404).end();
+        expect(req.method).toBe("GET");
+        expect(req.url).toBe("/v1/namespace/$/materialized_view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["daily_sales"] }));
       },
       async (db) => {
-        await expect(db.openMaterializedView("secret_table")).rejects.toThrow(
-          /only on local databases/,
-        );
-        await expect(db.listMaterializedViews()).rejects.toThrow(
-          /only on local databases/,
-        );
-        expect(paths).toEqual([]);
+        expect(await db.listMaterializedViews()).toEqual(["daily_sales"]);
       },
     );
   });

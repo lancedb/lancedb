@@ -448,6 +448,19 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn materialized_view_definition(&self) -> napi::Result<String> {
+        let inner = self.inner_ref()?.clone();
+        let view = lancedb::MaterializedView::from_table(inner)
+            .await
+            .default_error()?;
+        serde_json::to_string(view.definition()).map_err(|err| {
+            napi::Error::from_reason(format!(
+                "failed to serialize materialized-view definition: {err}"
+            ))
+        })
+    }
+
+    #[napi(catch_unwind)]
     pub async fn add_columns_with_schema(
         &self,
         schema_buf: Buffer,

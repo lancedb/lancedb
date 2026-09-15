@@ -563,6 +563,29 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Read this table's materialized-view definition and incarnation.
+    #[doc(hidden)]
+    async fn materialized_view_info(
+        &self,
+    ) -> Result<crate::materialized_view::MaterializedViewInfo> {
+        let schema = self.schema().await?;
+        crate::materialized_view::materialized_view_info_from_metadata(
+            self.name(),
+            schema.metadata(),
+        )
+    }
+    /// Submit a materialized-view refresh.
+    #[doc(hidden)]
+    async fn refresh_materialized_view_async(
+        &self,
+        _full: bool,
+        _source_version: Option<u64>,
+        _expected_incarnation: Option<&str>,
+    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
+        Err(Error::NotSupported {
+            message: "remote materialized-view refresh is not supported on this table type".into(),
+        })
+    }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
     /// The returned handle is independent from later refreshes or checkouts on

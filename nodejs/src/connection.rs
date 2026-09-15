@@ -308,6 +308,7 @@ impl Connection {
         projections: Option<Vec<Vec<String>>>,
         filter: Option<String>,
         limit: Option<i64>,
+        with_no_data: bool,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.create_materialized_view(name, source);
         if let Some(projections) = projections {
@@ -328,6 +329,7 @@ impl Connection {
                 .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))?;
             builder = builder.limit(limit);
         }
+        builder = builder.with_no_data(with_no_data);
         let view = builder.execute().await.default_error()?;
         Ok(Table::new(view.table().clone()))
     }
@@ -349,7 +351,7 @@ impl Connection {
             .list_materialized_views()
             .await
             .default_error()?;
-        Ok(views.into_iter().map(|v| v.name).collect())
+        Ok(views)
     }
 
     #[napi(catch_unwind)]

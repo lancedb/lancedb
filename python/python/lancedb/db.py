@@ -529,13 +529,14 @@ class DBConnection(EnforceOverrides):
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
-        The view is created empty, with the query recorded in its schema
-        metadata; ``view.refresh()`` computes the rows. The view is a normal
-        table: it can be queried, indexed and searched, and it appears in
-        ``table_names``. Local databases only.
+        The view is populated before creation returns. Pass
+        ``with_no_data=True`` to create only its definition and empty backing
+        table. The view is a normal table: it can be queried, indexed and
+        searched, and it appears in ``table_names``.
 
         The source table must have stable row ids (create it with the
         ``new_table_enable_stable_row_ids`` storage option): they keep the
@@ -556,6 +557,8 @@ class DBConnection(EnforceOverrides):
             SQL predicate; only matching source rows appear in the view.
         limit: int, optional
             Cap the view at this many rows, in materialization order.
+        with_no_data: bool, default False
+            Skip the initial refresh and leave the backing table empty.
 
         Returns
         -------
@@ -1270,6 +1273,7 @@ class LanceDBConnection(DBConnection):
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -1290,13 +1294,17 @@ class LanceDBConnection(DBConnection):
         ...     select=["name", ("shout", "upper(name)")],
         ...     where="age >= 18",
         ... )
-        >>> result = view.refresh()
-        >>> result.rows_written
+        >>> view.table.count_rows()
         1
         """
         LOOP.run(
             self._conn.create_materialized_view(
-                name, source, select=select, where=where, limit=limit
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
             )
         )
         return MaterializedView(self.open_table(name))
@@ -2080,6 +2088,7 @@ class AsyncConnection(object):
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -2091,6 +2100,7 @@ class AsyncConnection(object):
             projections=normalize_select(select),
             filter=where,
             limit=limit,
+            with_no_data=with_no_data,
         )
         return AsyncMaterializedView(AsyncTable(inner))
 
@@ -2100,10 +2110,6 @@ class AsyncConnection(object):
         Raises ``ValueError`` if the table exists but is not a materialized
         view.
         """
-        if self.uri.startswith("db://"):
-            raise NotImplementedError(
-                "materialized views are supported only on local databases"
-            )
         view = AsyncMaterializedView(await self.open_table(name))
         await view.definition()
         return view

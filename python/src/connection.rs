@@ -381,7 +381,7 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None))]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -389,6 +389,7 @@ impl Connection {
         projections: Option<Vec<(String, String)>>,
         filter: Option<String>,
         limit: Option<u64>,
+        with_no_data: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
@@ -402,6 +403,7 @@ impl Connection {
             if let Some(limit) = limit {
                 builder = builder.limit(limit);
             }
+            builder = builder.with_no_data(with_no_data);
             let view = builder.execute().await.infer_error()?;
             Ok(Table::new(view.table().clone()))
         })
@@ -411,7 +413,7 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let views = inner.list_materialized_views().await.infer_error()?;
-            Ok(views.into_iter().map(|view| view.name).collect::<Vec<_>>())
+            Ok(views)
         })
     }
 
