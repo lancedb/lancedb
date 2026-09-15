@@ -8,8 +8,8 @@ use expr::{PyExpr, expr_col, expr_func, expr_lit};
 use index::IndexConfig;
 use permutation::{PyAsyncPermutationBuilder, PyPermutationReader};
 use pyo3::{
-    Bound, PyResult, Python, pymodule,
-    types::{PyModule, PyModuleMethods},
+    Bound, PyResult, Python, pyfunction, pymodule,
+    types::{PyAnyMethods, PyModule, PyModuleMethods},
     wrap_pyfunction,
 };
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
@@ -38,8 +38,24 @@ pub mod sql;
 pub mod table;
 pub mod util;
 
+/// Shut down the shared Tokio runtime (see `runtime::shutdown`).
+///
+/// Registered below as a Python `atexit` callback rather than called
+/// directly: `atexit` runs while the interpreter is still fully valid,
+/// which is the coordinated, bounded exit the runtime otherwise never gets.
+///
+/// Runs the actual wait with the GIL released (`Python::detach`): shutdown
+/// blocks the calling thread waiting on the runtime's own worker threads,
+/// and if any in-flight task needs the GIL to finish (e.g. one that calls
+/// back into Python), holding it here while waiting on that same task would
+/// deadlock rather than time out.
+#[pyfunction]
+fn shutdown_runtime(py: Python<'_>) {
+    py.detach(|| runtime::shutdown(std::time::Duration::from_secs(5)));
+}
+
 #[pymodule]
-pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     let env = Env::new()
         .filter_or("LANCEDB_LOG", "warn")
         .write_style("LANCEDB_LOG_STYLE");
@@ -95,5 +111,9 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(expr_lit, m)?)?;
     m.add_function(wrap_pyfunction!(expr_func, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // Give the shared runtime a coordinated, bounded shutdown at normal
+    // process exit -- see `shutdown_runtime` and `runtime::shutdown` for why.
+    py.import("atexit")?
+        .call_method1("register", (wrap_pyfunction!(shutdown_runtime, m)?,))?;
     Ok(())
 }
