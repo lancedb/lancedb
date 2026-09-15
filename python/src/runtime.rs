@@ -363,7 +363,9 @@ mod tests {
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn lock_runtime_state_for_test() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     // A task's own completion must never be the final drop of the shared
