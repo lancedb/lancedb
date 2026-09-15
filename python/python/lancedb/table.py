@@ -2188,10 +2188,10 @@ class Table(ABC):
             Declaring one therefore costs the same on a large table as on an
             empty one.
 
-            A refresh does not revisit rows it has already filled, so mutating
-            an input leaves the value computed at fill time; recomputing means
-            dropping the column and declaring it again. While a declaration
-            reads a column, that column cannot be renamed, retyped or dropped.
+            A refresh also recomputes the rows whose inputs changed since they
+            were computed, so a mutated input is reflected by the next refresh.
+            While a declaration reads a column, that column cannot be renamed,
+            retyped or dropped.
 
             On LanceDB Cloud and Enterprise the expression is planned by the
             server, and the refresh runs as a server job -- see
@@ -2211,7 +2211,7 @@ class Table(ABC):
         >>> table.add_columns(computed={"doubled": "x * 2"})
         AddColumnsResult(version=2)
         >>> table.refresh_column("doubled")
-        RefreshColumnResult(rows_filled=2, version=3)
+        RefreshColumnResult(rows_filled=2, version=4)
         >>> table.to_arrow().sort_by("x").to_pandas()
            x  doubled
         0  1        2
@@ -2225,8 +2225,8 @@ class Table(ABC):
 
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
-        by the next one; rows already filled are left as they are, so the call
-        is idempotent and does not observe a mutated input.
+        by the next one, and rows whose inputs changed since they were computed
+        are recomputed; everything else is left as it is.
 
         Local tables only: a remote refresh runs as a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
@@ -4318,13 +4318,14 @@ class LanceTable(Table):
         return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
     def refresh_column(self, column: str) -> "RefreshColumnResult":
-        """Fill a computed column's unfilled rows. See
+        """Fill a computed column's unfilled rows and recompute those whose
+        inputs changed. See
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
         return LOOP.run(self._table.refresh_column(column))
 
     def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
-        """Fill a computed column's unfilled rows, returning a handle to the
-        refresh job. See
+        """Fill a computed column's unfilled rows and recompute those whose
+        inputs changed, returning a handle to the refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
         return Job(LOOP.run(self._table.refresh_column_async(column)))
@@ -6312,10 +6313,10 @@ class AsyncTable:
             them from
             [`refresh_column`][lancedb.table.AsyncTable.refresh_column].
 
-            A refresh does not revisit rows it has already filled, so mutating
-            an input leaves the value computed at fill time. While a
-            declaration reads a column, that column cannot be renamed, retyped
-            or dropped.
+            A refresh also recomputes the rows whose inputs changed since they
+            were computed, so a mutated input is reflected by the next refresh.
+            While a declaration reads a column, that column cannot be renamed,
+            retyped or dropped.
 
             On LanceDB Cloud and Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
@@ -6377,8 +6378,8 @@ class AsyncTable:
 
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
-        by the next one; rows already filled are left as they are, so the call
-        is idempotent and does not observe a mutated input.
+        by the next one, and rows whose inputs changed since they were computed
+        are recomputed; everything else is left as it is.
 
         Local tables only: a remote refresh runs as a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].

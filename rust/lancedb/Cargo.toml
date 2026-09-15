@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.39.0-beta.7"
+version = "0.39.0-beta.8"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -95,13 +95,14 @@ candle-transformers = { version = "0.9.1", optional = true }
 candle-nn = { version = "0.9.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
+roaring = "0.11.4"
+sha2 = "0.10"
 
 [dev-dependencies]
 anyhow = "1"
 lance-testing = { workspace = true }
 tempfile = { workspace = true }
 random_word = { version = "0.4.3", features = ["en"] }
-roaring = "0.11.4"
 tokio = { workspace = true, features = ["io-util", "macros", "net", "test-util"] }
 uuid = { workspace = true }
 walkdir = "2"
@@ -110,6 +111,10 @@ aws-sdk-s3 = { version = "1.55.0" }
 aws-sdk-kms = { version = "1.48.0" }
 aws-config = { version = "1.5.10" }
 aws-smithy-runtime = { version = "1.9.1" }
+# Constraint only: types 1.7 breaks aws-smithy-json 0.63, which aws-config still
+# requires. Bounds must stay inside 1.x and allow the MSRV job's 1.3.6 pin.
+# Drop once aws-config moves to aws-smithy-json 0.64.
+aws-smithy-types = { version = ">=1.0, <1.7" }
 datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
 rstest = "0.23.0"
