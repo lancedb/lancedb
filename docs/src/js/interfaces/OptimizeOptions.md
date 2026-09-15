@@ -26,7 +26,8 @@ const olderThan = new Date();
 olderThan.setDate(olderThan.getDate() - 1));
 tbl.optimize({cleanupOlderThan: olderThan});
 
-// Delete all versions except the current version
+// Delete versions committed before this point. Versions created by the
+// optimize call itself are newer than the cutoff and will be retained.
 tbl.optimize({cleanupOlderThan: new Date()});
 ```
 
