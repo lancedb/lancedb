@@ -296,6 +296,9 @@ pub async fn create_plan(
             scanner.approx_mode(approx_mode.into());
         }
 
+        if let Some(nprobes) = query.nprobes {
+            scanner.nprobes(nprobes);
+        }
         if let Some(minimum_nprobes) = query.minimum_nprobes {
             scanner.minimum_nprobes(minimum_nprobes);
         }
@@ -632,7 +635,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 columns,
                 offset: vq.base.offset.map(|o| o as i32),
                 distance_type: vq.distance_type.map(|dt| dt.to_string()),
-                nprobes: vq.minimum_nprobes.map(|nprobes| nprobes as i32),
+                nprobes: vq.nprobes.map(|nprobes| nprobes as i32),
                 ef: vq.ef.map(|e| e as i32),
                 refine_factor: vq.refine_factor.map(|r| r as i32),
                 lower_bound: vq.lower_bound,
@@ -955,6 +958,16 @@ mod tests {
     fn test_namespace_query_probe_pushdown_compatibility() {
         let default_query = AnyQuery::VectorQuery(VectorQueryRequest::default());
         assert!(!requires_local_namespace_execution(&default_query));
+
+        let nprobes_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            nprobes: Some(20),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&nprobes_query));
+        assert_eq!(
+            convert_to_namespace_query(&nprobes_query).unwrap().nprobes,
+            Some(20)
+        );
 
         let minimum_query = AnyQuery::VectorQuery(VectorQueryRequest {
             minimum_nprobes: Some(5),

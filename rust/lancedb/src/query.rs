@@ -1114,6 +1114,10 @@ pub struct VectorQueryRequest {
     pub column: Option<String>,
     /// The vector(s) to search for
     pub query_vector: Vec<Arc<dyn Array>>,
+    /// The legacy number of partitions to search.
+    ///
+    /// Lance interprets this as a maximum unless `maximum_nprobes` is also set.
+    pub nprobes: Option<usize>,
     /// The minimum number of partitions to search.
     ///
     /// If unset, Lance's default is used.
@@ -1145,6 +1149,7 @@ impl Default for VectorQueryRequest {
             base: QueryRequest::default(),
             column: None,
             query_vector: Vec::new(),
+            nprobes: None,
             minimum_nprobes: None,
             maximum_nprobes: None,
             lower_bound: None,
@@ -1252,7 +1257,7 @@ impl VectorQuery {
         Ok(self)
     }
 
-    /// Set the maximum number of partitions to search (probe)
+    /// Set the legacy IVF probe parameter
     ///
     /// This argument is only used when the vector column has an IVF PQ index.
     /// If there is no index then this value is ignored.
@@ -1272,9 +1277,10 @@ impl VectorQuery {
     /// your actual data to find the smallest possible value that will still give
     /// you the desired recall.
     ///
-    /// This method sets only the maximum number of partitions to search. Unless
-    /// configured separately, the minimum remains at Lance's adaptive default. For
-    /// more fine-grained control see [`VectorQuery::minimum_nprobes`] and
+    /// LanceDB retains this as `nprobes` through local and remote request
+    /// construction. Lance interprets it as a maximum, so unless configured
+    /// separately, the minimum remains at Lance's adaptive default. For more
+    /// fine-grained control see [`VectorQuery::minimum_nprobes`] and
     /// [`VectorQuery::maximum_nprobes`].
     ///
     /// Returns an error if `nprobes` is not greater than 0.
@@ -1284,7 +1290,7 @@ impl VectorQuery {
                 message: "nprobes must be greater than 0".to_string(),
             });
         }
-        self.request.maximum_nprobes = Some(nprobes);
+        self.request.nprobes = Some(nprobes);
         Ok(self)
     }
 
@@ -2436,6 +2442,7 @@ mod tests {
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
+        assert_eq!(query.request.nprobes, None);
         assert_eq!(query.request.minimum_nprobes, None);
         assert_eq!(query.request.maximum_nprobes, None);
         assert_eq!(
@@ -2464,8 +2471,9 @@ mod tests {
             .minimum_nprobes(5)
             .unwrap()
             .nprobes(20);
+        assert_eq!(bounded_query.request.nprobes, Some(20));
         assert_eq!(bounded_query.request.minimum_nprobes, Some(5));
-        assert_eq!(bounded_query.request.maximum_nprobes, Some(20));
+        assert_eq!(bounded_query.request.maximum_nprobes, None);
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
@@ -2494,8 +2502,9 @@ mod tests {
         );
         assert_eq!(query.request.base.limit.unwrap(), 100);
         assert_eq!(query.request.base.offset.unwrap(), 1);
+        assert_eq!(query.request.nprobes, Some(20));
         assert_eq!(query.request.minimum_nprobes, None);
-        assert_eq!(query.request.maximum_nprobes, Some(20));
+        assert_eq!(query.request.maximum_nprobes, None);
         assert!(query.request.use_index);
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
         assert_eq!(query.request.approx_mode, Some(ApproxMode::Accurate));

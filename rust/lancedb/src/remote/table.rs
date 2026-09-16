@@ -1146,6 +1146,9 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(approx_mode) = query.approx_mode {
             body["approx_mode"] = serde_json::json!(approx_mode);
         }
+        if let Some(nprobes) = query.nprobes {
+            body["nprobes"] = nprobes.into();
+        }
         if let Some(minimum_nprobes) = query.minimum_nprobes {
             body["minimum_nprobes"] = minimum_nprobes.into();
         }
@@ -6265,7 +6268,9 @@ mod tests {
                         "nulls_first": false,
                     }
                 ],
-                "maximum_nprobes": 12,
+                "nprobes": 12,
+                "minimum_nprobes": 3,
+                "maximum_nprobes": 10,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
@@ -6304,6 +6309,10 @@ mod tests {
             .postfilter()
             .distance_type(crate::DistanceType::Cosine)
             .nprobes(12)
+            .unwrap()
+            .minimum_nprobes(3)
+            .unwrap()
+            .maximum_nprobes(Some(10))
             .unwrap()
             .refine_factor(2)
             .bypass_vector_index()

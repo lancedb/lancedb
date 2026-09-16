@@ -2430,7 +2430,7 @@ async def test_query_async_nprobes_zero(hybrid):
     assert requests == ["/v1/table/test/describe/"]
 
 
-def test_query_sync_nprobes():
+def test_query_sync_probe_bounds():
     def handler(body):
         assert body == {
             "k": 10,
@@ -2456,6 +2456,17 @@ def test_query_sync_nprobes():
             .maximum_nprobes(15)
             .to_list()
         )
+
+
+def test_query_sync_nprobes_passthrough():
+    def handler(body):
+        assert body["nprobes"] == 20
+        assert "minimum_nprobes" not in body
+        assert "maximum_nprobes" not in body
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        table.search([1, 2, 3]).nprobes(20).to_list()
 
 
 def test_query_sync_minimum_nprobes_only():
