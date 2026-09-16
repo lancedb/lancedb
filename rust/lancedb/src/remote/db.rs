@@ -597,14 +597,26 @@ fn build_object_identifier(what: &str, name: &str, namespace: &[String]) -> Resu
 }
 
 /// What a component may not be if the join is to survive being split back
-/// apart: a segment URL parsing resolves away, or the delimiter doing the
-/// joining.
+/// apart: empty, a segment URL parsing resolves away, or the delimiter doing
+/// the joining.
 ///
 /// Deliberately not a character set. Percent-encoding per component is what
 /// makes the wider set safe -- a `/` in a name reaches the service as `%2F`,
-/// still one segment -- while a delimiter inside a component erases a boundary
-/// that no encoding of the joined form can recover.
+/// still one segment -- while these three erase a boundary that no encoding of
+/// the joined form can recover. An empty component leaves two delimiters
+/// running together, and a split that drops what lies between them yields a
+/// shorter path that addresses a different object: `["prod", ""]` joins to
+/// `prod$`, which reads back as `["prod"]`, so a drop would reach the parent of
+/// the namespace the caller named.
 fn reject_unaddressable_component(what: &str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "{what} must not be empty: the identifier would carry two delimiters in a row, \
+                 and splitting it back apart would name a different object"
+            ),
+        });
+    }
     reject_relative_segment(what, value)?;
     if value.contains(ID_DELIMITER) {
         return Err(Error::InvalidInput {
@@ -3442,7 +3454,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_namespace_segment_cannot_choose_its_own_route() {
         use std::sync::{Arc, Mutex};
-        for segment in ["..", "a$b"] {
+        for segment in ["..", "a$b", ""] {
             let reached = Arc::new(Mutex::new(false));
             let flag = reached.clone();
             let conn = Connection::new_with_handler(move |_| {
