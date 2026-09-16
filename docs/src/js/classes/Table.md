@@ -578,6 +578,41 @@ so this is safe to call repeatedly.
 
 ***
 
+### functionErrors()
+
+```ts
+abstract functionErrors(options?): Promise<FunctionErrors>
+```
+
+The per-row errors Function refreshes recorded on this table.
+
+A refresh running under a skip policy records each row it skipped with
+the input that failed and the error. This lists those records, newest
+job first, plus a summary for any fragment whose per-row detail was
+capped. LanceDB Cloud and Enterprise only; reading errors needs read
+access to the table, since a message carries the value that failed.
+
+#### Parameters
+
+* **options?**: [`FunctionErrorsOptions`](../interfaces/FunctionErrorsOptions.md)
+    Optional filters: `jobId`,
+    `column`, and `limit` (server default 10000, cap 100000).
+
+#### Returns
+
+`Promise`&lt;[`FunctionErrors`](../interfaces/FunctionErrors.md)&gt;
+
+The records, the capped fragments,
+and whether the listing stopped at its limit.
+
+#### Example
+
+```ts
+const { records, truncated } = await table.functionErrors({ column: "embedding" });
+```
+
+***
+
 ### getLsmStats()
 
 ```ts

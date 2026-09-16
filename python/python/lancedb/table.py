@@ -186,6 +186,7 @@ if TYPE_CHECKING:
         CompactionStats,
         Tag,
         AddColumnsResult,
+        FunctionErrors,
         RefreshColumnResult,
         AddResult,
         AlterColumnsResult,
@@ -2309,6 +2310,47 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """
+        The per-row errors Function refreshes recorded on this table.
+
+        A refresh running under a skip policy records each row it skipped
+        with the input that failed and the error. This lists those records,
+        newest job first, plus a summary for any fragment whose per-row
+        detail was capped. LanceDB Cloud and Enterprise only; reading errors
+        needs read access to the table, since a message carries the value
+        that failed.
+
+        Parameters
+        ----------
+        job_id: str, optional
+            Only errors recorded by this job.
+        column: str, optional
+            Only errors on this column.
+        limit: int, optional
+            At most this many records (server default 10000, cap 100000).
+
+        Returns
+        -------
+        FunctionErrors
+            ``records``, ``fragments`` and ``truncated``, the last saying
+            whether the listing stopped at its limit.
+
+        Examples
+        --------
+        >>> errors = table.function_errors(column="embedding")  # doctest: +SKIP
+        >>> for record in errors.records:  # doctest: +SKIP
+        ...     print(record.job_id, record.row_offset, record.error_message)
+        >>> if errors.truncated:  # doctest: +SKIP
+        ...     print("listing stopped at the limit")
+        """
+
+    @abstractmethod
     def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
         """
         Alter column names and nullability.
@@ -4361,6 +4403,18 @@ class LanceTable(Table):
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
         return Job(LOOP.run(self._table.refresh_column_async(column)))
+
+    def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """The per-row errors Function refreshes recorded on this table. See
+        [`Table.function_errors`][lancedb.table.Table.function_errors]."""
+        return LOOP.run(
+            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+        )
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -6427,6 +6481,49 @@ class AsyncTable:
             The number of rows filled and the new version of the table.
         """
         return await self._inner.refresh_column(column)
+
+    async def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """
+        The per-row errors Function refreshes recorded on this table.
+
+        A refresh running under a skip policy records each row it skipped
+        with the input that failed and the error. This lists those records,
+        newest job first, plus a summary for any fragment whose per-row
+        detail was capped. LanceDB Cloud and Enterprise only; reading errors
+        needs read access to the table, since a message carries the value
+        that failed.
+
+        Parameters
+        ----------
+        job_id: str, optional
+            Only errors recorded by this job.
+        column: str, optional
+            Only errors on this column.
+        limit: int, optional
+            At most this many records (server default 10000, cap 100000).
+
+        Returns
+        -------
+        FunctionErrors
+            ``records``, ``fragments`` and ``truncated``, the last saying
+            whether the listing stopped at its limit.
+
+        Examples
+        --------
+        >>> errors = await table.function_errors(column="embedding")  # doctest: +SKIP
+        >>> for record in errors.records:  # doctest: +SKIP
+        ...     print(record.job_id, record.row_offset, record.error_message)
+        >>> if errors.truncated:  # doctest: +SKIP
+        ...     print("listing stopped at the limit")
+        """
+        return await self._inner.function_errors(
+            job_id=job_id, column=column, limit=limit
+        )
 
     async def refresh_column_async(
         self, column: str

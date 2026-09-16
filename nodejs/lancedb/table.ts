@@ -21,6 +21,7 @@ import { BlobFile } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
+import { validateNonNegativeInteger } from "./materialized_view";
 import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsResult,
@@ -30,6 +31,8 @@ import {
   BranchContents,
   DeleteResult,
   DropColumnsResult,
+  FunctionErrors,
+  FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
   LsmStats,
@@ -635,6 +638,27 @@ export abstract class Table {
    * ```
    */
   abstract refreshColumnAsync(column: string): Promise<Job>;
+
+  /**
+   * The per-row errors Function refreshes recorded on this table.
+   *
+   * A refresh running under a skip policy records each row it skipped with
+   * the input that failed and the error. This lists those records, newest
+   * job first, plus a summary for any fragment whose per-row detail was
+   * capped. LanceDB Cloud and Enterprise only; reading errors needs read
+   * access to the table, since a message carries the value that failed.
+   * @param {FunctionErrorsOptions} options Optional filters: `jobId`,
+   * `column`, and `limit` (server default 10000, cap 100000).
+   * @returns {Promise<FunctionErrors>} The records, the capped fragments,
+   * and whether the listing stopped at its limit.
+   * @example
+   * ```ts
+   * const { records, truncated } = await table.functionErrors({ column: "embedding" });
+   * ```
+   */
+  abstract functionErrors(
+    options?: FunctionErrorsOptions,
+  ): Promise<FunctionErrors>;
 
   /**
    * Recompute this table's contents from its materialized-view definition.
@@ -1361,6 +1385,13 @@ export class LocalTable extends Table {
 
   async refreshColumnAsync(column: string): Promise<Job> {
     return new Job(await this.inner.refreshColumnAsync(column));
+  }
+
+  async functionErrors(
+    options?: FunctionErrorsOptions,
+  ): Promise<FunctionErrors> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    return await this.inner.functionErrors(options);
   }
 
   async refreshMaterializedView(
