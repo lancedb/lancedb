@@ -90,8 +90,9 @@ pub struct ClientConfig {
     pub user_agent: String,
     // TODO: how to configure request ids?
     pub extra_headers: HashMap<String, String>,
-    /// The delimiter to use when constructing object identifiers.
-    /// If not default, passes as query parameter.
+    /// The delimiter joining a namespace path and a name into one object
+    /// identifier. [`ID_DELIMITER`] is the only accepted value; any other is
+    /// refused by [`ClientConfig::validate`].
     pub id_delimiter: Option<String>,
     /// TLS configuration for mTLS support
     pub tls_config: Option<TlsConfig>,
@@ -307,7 +308,6 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
     pub(crate) sender: S,
-    pub(crate) id_delimiter: String,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
     /// Connection-level read consistency interval. Drives the
     /// `x-lancedb-min-timestamp` freshness header sent on read requests.
@@ -330,7 +330,6 @@ impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
             .field("host", &self.host)
             .field("retry_config", &self.retry_config)
             .field("sender", &self.sender)
-            .field("id_delimiter", &self.id_delimiter)
             .field(
                 "header_provider",
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
@@ -457,39 +456,26 @@ enum BodyLogging {
 ///
 /// An empty delimiter is refused for the same reason from the other side: it
 /// joins `["a", "b"]` into `ab`, which no split recovers.
-fn validate_id_delimiter(delimiter: String) -> Result<String> {
-    if delimiter.is_empty() {
-        return Err(Error::InvalidInput {
-            message: "id_delimiter must not be empty: an identifier joined by nothing cannot be \
-                      split back into a namespace path and a name"
-                .to_string(),
-        });
-    }
-    // The root namespace is addressed by the bare delimiter, so a delimiter that
-    // is itself a relative segment makes the root listing route disappear:
-    // `/v1/namespace/./secret/list` resolves to `/v1/namespace/secret/list`.
-    if delimiter == "." || delimiter == ".." {
+/// The delimiter joining a namespace path and a name into the `{id}` a route
+/// addresses, and the only one a LanceDB service splits on.
+///
+/// The identifier grammar comes from the Lance REST catalog standard, which
+/// carries a delimiter setting so other catalogs can adopt it; LanceDB itself
+/// has one value. Fixing it here is what lets an identifier be joined and split
+/// back apart without further checks: `$` is outside the character set every
+/// object name admits, so no name can contain one.
+pub(crate) const ID_DELIMITER: &str = "$";
+
+fn validate_id_delimiter(delimiter: &str) -> Result<()> {
+    if delimiter != ID_DELIMITER {
         return Err(Error::InvalidInput {
             message: format!(
-                "id_delimiter '{delimiter}' is a relative path segment: the root namespace is \
-                 addressed by the delimiter alone, so a request for it would resolve to a \
-                 different route"
+                "id_delimiter '{delimiter}' is not supported: '{ID_DELIMITER}' is the only \
+                 delimiter LanceDB services split an identifier on"
             ),
         });
     }
-    if let Some(unsafe_character) = delimiter
-        .chars()
-        .find(|character| matches!(character, '/' | '?' | '#' | '%' | '\\'))
-    {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "id_delimiter '{delimiter}' contains {unsafe_character:?}, which is URL path \
-                 syntax: a delimiter is written into the path raw, so one that divides or ends \
-                 the path changes which route a request reaches"
-            ),
-        });
-    }
-    Ok(delimiter)
+    Ok(())
 }
 
 impl ClientConfig {
@@ -500,7 +486,9 @@ impl ClientConfig {
     /// response later. Public so a caller assembling a config can ask the same
     /// question without connecting.
     pub fn validate(&self) -> Result<()> {
-        validate_id_delimiter(self.id_delimiter.clone().unwrap_or_else(|| "$".to_string()))?;
+        if let Some(delimiter) = &self.id_delimiter {
+            validate_id_delimiter(delimiter)?;
+        }
         Ok(())
     }
 }
@@ -633,10 +621,6 @@ impl RestfulLanceDbClient<Sender> {
             host,
             retry_config,
             sender: Sender,
-            id_delimiter: client_config
-                .id_delimiter
-                .clone()
-                .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
             read_consistency_interval,
             max_bytes_per_request,
@@ -794,22 +778,12 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
 
     pub fn get(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
-        let builder = self.client.get(full_uri);
-        self.add_id_delimiter_query_param(builder)
+        self.client.get(full_uri)
     }
 
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
-        let builder = self.client.post(full_uri);
-        self.add_id_delimiter_query_param(builder)
-    }
-
-    fn add_id_delimiter_query_param(&self, req: RequestBuilder) -> RequestBuilder {
-        if self.id_delimiter != "$" {
-            req.query(&[("delimiter", self.id_delimiter.clone())])
-        } else {
-            req
-        }
+        self.client.post(full_uri)
     }
 
     /// Apply dynamic headers from the header provider if configured
@@ -1152,7 +1126,6 @@ pub mod test_utils {
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
-            id_delimiter: "$".to_string(),
             header_provider: None,
             read_consistency_interval,
             max_bytes_per_request: None,
@@ -1179,7 +1152,6 @@ pub mod test_utils {
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
-            id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
             header_provider: config.header_provider,
             read_consistency_interval: None,
             max_bytes_per_request: config
@@ -1194,27 +1166,38 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    /// A delimiter is written into the path raw, so one that is path syntax
-    /// changes the shape of a route rather than its content. Refusing a
-    /// component that contains the delimiter cannot catch this: neither
-    /// component contains one.
+    /// The identifier grammar has one delimiter. A configuration naming any
+    /// other is refused where it was written, rather than producing identifiers
+    /// no service would split the way the caller meant.
     #[test]
-    fn test_a_delimiter_that_is_path_syntax_is_refused() {
-        for delimiter in ["/", "?", "#", "%", "a/b", "", ".", "..", "/../../function/"] {
-            let error = super::validate_id_delimiter(delimiter.to_string())
-                .expect_err("a delimiter that is path syntax must be refused");
+    fn test_a_delimiter_other_than_the_supported_one_is_refused() {
+        for delimiter in ["/", "?", "#", "%", "", ".", "..", "-", "_", "|", "::", "$$"] {
+            let error = super::validate_id_delimiter(delimiter)
+                .expect_err("only the supported delimiter may be configured");
             assert!(
                 error.to_string().contains("id_delimiter"),
                 "{delimiter:?}: {error}"
             );
         }
-        // The default, and other separators that are not path syntax, stand.
-        // A period is fine inside a longer delimiter -- only the exact relative
-        // segments are a problem.
-        for delimiter in ["$", "-", "_", "|", "::", ".x.", "..."] {
-            super::validate_id_delimiter(delimiter.to_string())
-                .unwrap_or_else(|error| panic!("{delimiter:?} must be accepted: {error}"));
+        super::validate_id_delimiter(super::ID_DELIMITER).unwrap();
+    }
+
+    /// Leaving it unset is how nearly every caller reaches the same delimiter.
+    #[test]
+    fn test_an_unset_delimiter_is_the_supported_one() {
+        super::ClientConfig::default().validate().unwrap();
+        super::ClientConfig {
+            id_delimiter: Some(super::ID_DELIMITER.to_string()),
+            ..Default::default()
         }
+        .validate()
+        .unwrap();
+        super::ClientConfig {
+            id_delimiter: Some("-".to_string()),
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("a configured delimiter other than the supported one must be refused");
     }
 
     use super::*;
@@ -1527,7 +1510,6 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             sender: Sender,
-            id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,
@@ -1566,7 +1548,6 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             sender: Sender,
-            id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,
@@ -1631,7 +1612,6 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             sender: Sender,
-            id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,

@@ -37,7 +37,8 @@ use crate::table::BaseTable;
 use crate::utils::{reject_relative_segment, validate_namespace_name, validate_table_name};
 
 use super::client::{
-    ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
+    ClientConfig, HeaderProvider, HttpSend, ID_DELIMITER, RequestResultExt, RestfulLanceDbClient,
+    Sender,
 };
 use super::sql::SqlClient;
 use super::table::RemoteTable;
@@ -441,7 +442,7 @@ impl<S: HttpSend> RemoteDatabase<S> {
         name: &str,
         namespace_path: &[String],
     ) -> Result<(String, Response)> {
-        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter)?;
+        let identifier = build_table_identifier(name, namespace_path)?;
         let cache_key = build_cache_key(name, namespace_path);
         let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
@@ -465,8 +466,7 @@ impl<S: HttpSend> RemoteDatabase<S> {
         &self,
         request: &TableNamesRequest,
     ) -> Result<(Vec<String>, ServerVersion)> {
-        let namespace_id =
-            build_namespace_identifier(&request.namespace_path, &self.client.id_delimiter)?;
+        let namespace_id = build_namespace_identifier(&request.namespace_path)?;
         let path = format!("/v1/namespace/{}/table/list", namespace_id);
 
         let mut names = Vec::new();
@@ -574,16 +574,13 @@ impl From<&CreateTableMode> for &'static str {
 }
 
 /// The path segment addressing one table: its namespace path and name.
-fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> Result<String> {
+fn build_table_identifier(name: &str, namespace: &[String]) -> Result<String> {
     for segment in namespace {
         validate_namespace_name(segment)?;
-        reject_delimiter(segment, delimiter, "namespace segment")?;
     }
     validate_table_name(name)?;
-    reject_delimiter(name, delimiter, "table name")?;
     Ok(join_identifier(
         namespace.iter().map(String::as_str).chain([name]),
-        delimiter,
     ))
 }
 
@@ -594,33 +591,7 @@ fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> 
 /// untouched and is then resolved away.
 fn build_function_identifier(name: &str) -> Result<String> {
     reject_relative_segment("Function name", name)?;
-    Ok(join_identifier([name].into_iter(), ""))
-}
-
-/// Refuse a component holding the delimiter that is about to separate it from
-/// the others.
-///
-/// The join is what decides identity, and it is only reversible while no
-/// component contains the separator. The default `$` is outside every name
-/// charset here, so this never fires for it. A *configured* delimiter may be
-/// any string, and the readable choices -- `.`, `-`, `_` -- are all inside
-/// those charsets: under `id_delimiter="."` the namespace `["prod.vision"]`
-/// and the namespace `["prod", "vision"]` join to one identifier, and a caller
-/// addressing the first would reach the object belonging to the second.
-///
-/// There is no escaping of the joined form that recovers a boundary the
-/// delimiter has already erased, so this refuses rather than encodes.
-fn reject_delimiter(component: &str, delimiter: &str, what: &str) -> Result<()> {
-    if !delimiter.is_empty() && component.contains(delimiter) {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "{what} '{component}' contains the configured identifier delimiter \
-                 '{delimiter}', so the namespace path and the name it joins could not be told \
-                 apart"
-            ),
-        });
-    }
-    Ok(())
+    Ok(join_identifier([name].into_iter()))
 }
 
 /// The path segment addressing one Secret: its namespace path and name.
@@ -630,15 +601,8 @@ fn reject_delimiter(component: &str, delimiter: &str, what: &str) -> Result<()> 
 /// point.
 ///
 /// [`Connection`]: crate::connection::Connection
-fn build_secret_identifier(name: &str, namespace: &[String], delimiter: &str) -> Result<String> {
-    for segment in namespace {
-        reject_delimiter(segment, delimiter, "Secret namespace path segment")?;
-    }
-    reject_delimiter(name, delimiter, "Secret name")?;
-    Ok(join_identifier(
-        namespace.iter().map(String::as_str).chain([name]),
-        delimiter,
-    ))
+fn build_secret_identifier(name: &str, namespace: &[String]) -> String {
+    join_identifier(namespace.iter().map(String::as_str).chain([name]))
 }
 
 /// Join validated components into the `{id}` a route addresses: each
@@ -654,43 +618,33 @@ fn build_secret_identifier(name: &str, namespace: &[String], delimiter: &str) ->
 /// URL's shape. It does not cover `.` and `..`, which are unreserved too and
 /// are resolved after decoding -- those are refused outright, by the validator
 /// each object has.
-fn join_identifier<'a>(components: impl Iterator<Item = &'a str>, delimiter: &str) -> String {
+fn join_identifier<'a>(components: impl Iterator<Item = &'a str>) -> String {
     components
         .map(|component| urlencoding::encode(component).into_owned())
         .collect::<Vec<_>>()
-        .join(delimiter)
+        .join(ID_DELIMITER)
 }
 
 /// The namespace a Secret listing is scoped to.
 ///
 /// The root is the bare delimiter, as it is for every other object's listing.
-fn build_secret_namespace_identifier(namespace: &[String], delimiter: &str) -> Result<String> {
-    for segment in namespace {
-        reject_delimiter(segment, delimiter, "Secret namespace path segment")?;
-    }
+fn build_secret_namespace_identifier(namespace: &[String]) -> String {
     if namespace.is_empty() {
-        return Ok(delimiter.to_string());
+        return ID_DELIMITER.to_string();
     }
-    Ok(join_identifier(
-        namespace.iter().map(String::as_str),
-        delimiter,
-    ))
+    join_identifier(namespace.iter().map(String::as_str))
 }
 
 /// The path segment addressing one namespace.
-fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> Result<String> {
+fn build_namespace_identifier(namespace: &[String]) -> Result<String> {
     for segment in namespace {
         validate_namespace_name(segment)?;
-        reject_delimiter(segment, delimiter, "namespace segment")?;
     }
     if namespace.is_empty() {
         // According to the namespace spec, use delimiter to represent root namespace
-        return Ok(delimiter.to_string());
+        return Ok(ID_DELIMITER.to_string());
     }
-    Ok(join_identifier(
-        namespace.iter().map(String::as_str),
-        delimiter,
-    ))
+    Ok(join_identifier(namespace.iter().map(String::as_str)))
 }
 
 /// Build a secure cache key using length prefixes.
@@ -827,11 +781,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         &self,
         request: CreateMaterializedViewRequest,
     ) -> Result<Job> {
-        let identifier = build_table_identifier(
-            &request.name,
-            &request.namespace_path,
-            &self.client.id_delimiter,
-        )?;
+        let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/materialized_view/{identifier}/create"))
@@ -874,7 +824,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         name: &str,
         namespace_path: &[String],
     ) -> Result<Job> {
-        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter)?;
+        let identifier = build_table_identifier(name, namespace_path)?;
         let request = self
             .client
             .post(&format!("/v1/materialized_view/{identifier}/drop"));
@@ -912,7 +862,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             page_token: Option<String>,
         }
 
-        let namespace_id = build_namespace_identifier(namespace_path, &self.client.id_delimiter)?;
+        let namespace_id = build_namespace_identifier(namespace_path)?;
         let path = format!("/v1/namespace/{namespace_id}/materialized_view/list");
         let mut views = Vec::new();
         let mut page_token: Option<String> = None;
@@ -987,7 +937,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn list_functions(&self) -> Result<Vec<FunctionVersion>> {
-        let namespace_id = build_namespace_identifier(&[], &self.client.id_delimiter)?;
+        let namespace_id = build_namespace_identifier(&[])?;
         let path = format!("/v1/namespace/{namespace_id}/function/list");
         let mut functions = Vec::new();
         let mut page_token: Option<String> = None;
@@ -1047,7 +997,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         value: &str,
         namespace_path: &[String],
     ) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path, &self.client.id_delimiter)?;
+        let secret_id = build_secret_identifier(name, namespace_path);
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/create"),
             &RemoteCreateSecretRequest { value },
@@ -1056,7 +1006,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path, &self.client.id_delimiter)?;
+        let secret_id = build_secret_identifier(name, namespace_path);
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/alter"),
             &RemoteAlterSecretRequest { value },
@@ -1065,8 +1015,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        let namespace_id =
-            build_secret_namespace_identifier(namespace_path, &self.client.id_delimiter)?;
+        let namespace_id = build_secret_namespace_identifier(namespace_path);
         let path = format!("/v1/namespace/{namespace_id}/secret/list");
         let mut names = Vec::new();
         let mut page_token: Option<String> = None;
@@ -1099,7 +1048,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path, &self.client.id_delimiter)?;
+        let secret_id = build_secret_identifier(name, namespace_path);
         let req = self.client.post(&format!("/v1/secret/{secret_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
         self.client.check_response(&request_id, response).await?;
@@ -1107,7 +1056,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
-        let secret_id = build_secret_identifier(name, namespace_path, &self.client.id_delimiter)?;
+        let secret_id = build_secret_identifier(name, namespace_path);
         let req = self
             .client
             .post(&format!("/v1/secret/{secret_id}/describe"));
@@ -1238,8 +1187,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         };
 
         for table in &tables {
-            let table_identifier =
-                build_table_identifier(table, &request.namespace_path, &self.client.id_delimiter)?;
+            let table_identifier = build_table_identifier(table, &request.namespace_path)?;
             let cache_key = build_cache_key(table, &request.namespace_path);
             let remote_table = Arc::new(RemoteTable::new(
                 self.client.clone(),
@@ -1255,7 +1203,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter)?;
+        let namespace_id = build_namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .get(&format!("/v1/namespace/{}/table/list", namespace_id));
@@ -1275,8 +1223,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // Cache the tables for future use
         let namespace_vec = namespace_parts.to_vec();
         for table in &response.tables {
-            let table_identifier =
-                build_table_identifier(table, &namespace_vec, &self.client.id_delimiter)?;
+            let table_identifier = build_table_identifier(table, &namespace_vec)?;
             let cache_key = build_cache_key(table, &namespace_vec);
             let remote_table = Arc::new(RemoteTable::new(
                 self.client.clone(),
@@ -1294,11 +1241,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         let body = stream_as_body(request.data.scan_as_stream())?;
 
-        let identifier = build_table_identifier(
-            &request.name,
-            &request.namespace_path,
-            &self.client.id_delimiter,
-        )?;
+        let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/table/{}/create/", identifier))
@@ -1350,11 +1293,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let version = parse_server_version(&request_id, &rsp)?;
-        let table_identifier = build_table_identifier(
-            &request.name,
-            &request.namespace_path,
-            &self.client.id_delimiter,
-        )?;
+        let table_identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
         let table = Arc::new(RemoteTable::new(
             self.client.clone(),
@@ -1369,11 +1308,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let table_identifier = build_table_identifier(
-            &request.target_table_name,
-            &request.target_namespace_path,
-            &self.client.id_delimiter,
-        )?;
+        let table_identifier =
+            build_table_identifier(&request.target_table_name, &request.target_namespace_path)?;
 
         let remote_request = RemoteCloneTableRequest {
             source_location: request.source_uri,
@@ -1414,11 +1350,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let identifier = build_table_identifier(
-            &request.name,
-            &request.namespace_path,
-            &self.client.id_delimiter,
-        )?;
+        let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
         // We describe the table to confirm it exists before moving on.
@@ -1434,11 +1366,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
             let describe_body = rsp.text().await.ok();
-            let table_identifier = build_table_identifier(
-                &request.name,
-                &request.namespace_path,
-                &self.client.id_delimiter,
-            )?;
+            let table_identifier = build_table_identifier(&request.name, &request.namespace_path)?;
             let table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 request.name.clone(),
@@ -1465,8 +1393,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         cur_namespace_path: &[String],
         new_namespace_path: &[String],
     ) -> Result<()> {
-        let current_identifier =
-            build_table_identifier(current_name, cur_namespace_path, &self.client.id_delimiter)?;
+        let current_identifier = build_table_identifier(current_name, cur_namespace_path)?;
         let current_cache_key = build_cache_key(current_name, cur_namespace_path);
         let new_cache_key = build_cache_key(new_name, new_namespace_path);
 
@@ -1530,7 +1457,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: ListNamespacesRequest,
     ) -> Result<ListNamespacesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter)?;
+        let namespace_id = build_namespace_identifier(namespace_parts)?;
         let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
@@ -1553,7 +1480,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: CreateNamespaceRequest,
     ) -> Result<CreateNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter)?;
+        let namespace_id = build_namespace_identifier(namespace_parts)?;
         let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
@@ -1585,7 +1512,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter)?;
+        let namespace_id = build_namespace_identifier(namespace_parts)?;
         let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
@@ -1620,7 +1547,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: DescribeNamespaceRequest,
     ) -> Result<DescribeNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter)?;
+        let namespace_id = build_namespace_identifier(namespace_parts)?;
         let namespace_id = urlencoding::encode(&namespace_id);
         let req = self
             .client
@@ -1640,7 +1567,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         // Create a RestNamespace pointing to the same remote host with the same authentication headers
         let mut builder = lance_namespace_impls::RestNamespaceBuilder::new(self.client.host())
-            .delimiter(&self.client.id_delimiter)
+            .delimiter(ID_DELIMITER)
             .headers(self.namespace_headers.clone());
 
         if let Some(context_provider) = &self.namespace_context_provider {
@@ -1676,7 +1603,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         let mut properties = HashMap::new();
         properties.insert("uri".to_string(), self.client.host().to_string());
-        properties.insert("delimiter".to_string(), self.client.id_delimiter.clone());
+        properties.insert("delimiter".to_string(), ID_DELIMITER.to_string());
         for (key, value) in &self.namespace_headers {
             properties.insert(format!("header.{}", key), value.clone());
         }
@@ -3575,57 +3502,6 @@ mod tests {
                 "{name:?} did not reach its own route"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn test_a_configured_delimiter_is_refused_inside_a_component() {
-        use std::sync::{Arc, Mutex};
-        let reached = Arc::new(Mutex::new(false));
-        let flag = reached.clone();
-        let conn = Connection::new_with_handler_and_config(
-            move |_| {
-                *flag.lock().unwrap() = true;
-                http::Response::builder().status(200).body("{}").unwrap()
-            },
-            ClientConfig {
-                id_delimiter: Some(".".to_string()),
-                ..Default::default()
-            },
-        );
-        let error = conn
-            .drop_secret("openai", &["prod.vision".to_string()])
-            .await
-            .expect_err("a component holding the delimiter must be refused");
-        assert!(error.to_string().contains("delimiter"), "{error}");
-        assert!(!*reached.lock().unwrap(), "the request was sent anyway");
-
-        // The same two names as separate segments are the ordinary case.
-        conn.drop_secret("openai", &["prod".to_string(), "vision".to_string()])
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_a_configured_delimiter_is_refused_inside_a_table_component() {
-        use std::sync::{Arc, Mutex};
-        let reached = Arc::new(Mutex::new(false));
-        let flag = reached.clone();
-        let conn = Connection::new_with_handler_and_config(
-            move |_| {
-                *flag.lock().unwrap() = true;
-                http::Response::builder().status(200).body("{}").unwrap()
-            },
-            ClientConfig {
-                id_delimiter: Some(".".to_string()),
-                ..Default::default()
-            },
-        );
-        let error = conn
-            .drop_table("t", &["prod.vision".to_string()])
-            .await
-            .expect_err("a segment holding the delimiter must be refused");
-        assert!(error.to_string().contains("delimiter"), "{error}");
-        assert!(!*reached.lock().unwrap(), "the request was sent anyway");
     }
 
     #[tokio::test]
