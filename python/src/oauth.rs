@@ -9,7 +9,7 @@ use pyo3::{FromPyObject, PyResult, Python, pyclass, pymethods};
 use crate::error::PythonErrorExt;
 use crate::runtime::future_into_py;
 use lancedb::error::Error;
-use lancedb::remote::oauth::{AuthorizationCodeOptions, OAuthConfig, OAuthFlow};
+use lancedb::remote::oauth::{AuthorizationCodeOptions, ClientAuthMethod, OAuthConfig, OAuthFlow};
 use lancedb::remote::{OAuthSession, SessionLogout, SessionStatus, TokenCacheOptions};
 
 /// Python-side persistent token cache options, extracted via FromPyObject.
@@ -22,7 +22,7 @@ pub struct PyTokenCacheOptions {
 
 impl From<PyTokenCacheOptions> for TokenCacheOptions {
     fn from(py: PyTokenCacheOptions) -> Self {
-        TokenCacheOptions {
+        Self {
             cache_dir: py.cache_dir.map(PathBuf::from),
             lock_timeout_secs: py.lock_timeout_secs,
         }
@@ -42,6 +42,7 @@ pub struct PyOAuthConfig {
     pub audience: Option<String>,
     pub flow: String,
     pub client_secret: Option<String>,
+    pub client_auth_method: Option<String>,
     pub redirect_uri: Option<String>,
     pub callback_port: Option<u16>,
     pub use_pkce: bool,
@@ -77,10 +78,23 @@ impl TryFrom<PyOAuthConfig> for OAuthConfig {
             }
         };
 
+        let client_auth_method = match py.client_auth_method.as_deref() {
+            Some("none") => Some(ClientAuthMethod::None),
+            Some("client_secret_basic") => Some(ClientAuthMethod::ClientSecretBasic),
+            Some("client_secret_post") => Some(ClientAuthMethod::ClientSecretPost),
+            None => None,
+            Some(other) => {
+                return Err(Error::InvalidInput {
+                    message: format!("Unknown OAuth client auth method: {other}"),
+                });
+            }
+        };
+
         Ok(Self {
             issuer_url: py.issuer_url,
             client_id: py.client_id,
             client_secret: py.client_secret,
+            client_auth_method,
             scopes: py.scopes,
             resource: py.resource,
             audience: py.audience,
@@ -255,6 +269,7 @@ mod tests {
             scopes: vec!["scope".to_string()],
             flow: "device_code".to_string(),
             client_secret: None,
+            client_auth_method: None,
             redirect_uri: None,
             callback_port: None,
             use_pkce: true,
@@ -313,6 +328,38 @@ mod tests {
         let config = base_config();
         let converted = OAuthConfig::try_from(config).unwrap();
         assert!(matches!(converted.flow, OAuthFlow::DeviceCode));
+    }
+
+    #[test]
+    fn test_client_auth_method_conversion() {
+        for (value, expected) in [
+            ("none", ClientAuthMethod::None),
+            ("client_secret_basic", ClientAuthMethod::ClientSecretBasic),
+            ("client_secret_post", ClientAuthMethod::ClientSecretPost),
+        ] {
+            let config = PyOAuthConfig {
+                client_auth_method: Some(value.to_string()),
+                ..base_config()
+            };
+
+            let converted = OAuthConfig::try_from(config).unwrap();
+            assert_eq!(converted.client_auth_method, Some(expected));
+        }
+    }
+
+    #[test]
+    fn test_unknown_client_auth_method_returns_invalid_input() {
+        let config = PyOAuthConfig {
+            client_auth_method: Some("typo".to_string()),
+            ..base_config()
+        };
+
+        let err = OAuthConfig::try_from(config).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message == "Unknown OAuth client auth method: typo"
+        ));
     }
 
     #[test]

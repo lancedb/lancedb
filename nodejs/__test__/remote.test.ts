@@ -5,9 +5,12 @@ import * as http from "http";
 import { RequestListener } from "http";
 import packageJson = require("../package.json");
 import {
+  ClientAuthMethod,
   ClientConfig,
   Connection,
   ConnectionOptions,
+  OAuthConfig,
+  OAuthFlowType,
   TlsConfig,
   connect,
 } from "../lancedb";
@@ -436,6 +439,40 @@ describe("remote connection", () => {
       // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
       { from_branch: "exp", dry_run: true },
     ]);
+  });
+
+  describe("OAuthConfig", () => {
+    it("should expose client auth method values", () => {
+      expect(ClientAuthMethod.None).toBe("none");
+      expect(ClientAuthMethod.ClientSecretBasic).toBe("client_secret_basic");
+      expect(ClientAuthMethod.ClientSecretPost).toBe("client_secret_post");
+    });
+
+    it("should accept a confidential client with basic auth", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        clientSecret: "secret",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        clientAuthMethod: ClientAuthMethod.ClientSecretBasic,
+      };
+
+      expect(config.clientAuthMethod).toBe(ClientAuthMethod.ClientSecretBasic);
+    });
+
+    it("should accept a public PKCE client without auth method or secret", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        usePkce: true,
+      };
+
+      expect(config.clientSecret).toBeUndefined();
+      expect(config.clientAuthMethod).toBeUndefined();
+    });
   });
 
   describe("TlsConfig", () => {

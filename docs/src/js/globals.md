@@ -11,6 +11,7 @@
 
 ## Enumerations
 
+- [ClientAuthMethod](enumerations/ClientAuthMethod.md)
 - [FullTextQueryType](enumerations/FullTextQueryType.md)
 - [OAuthFlowType](enumerations/OAuthFlowType.md)
 - [Occur](enumerations/Occur.md)

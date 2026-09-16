@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.39.0-beta.9"
+version = "0.39.0-beta.10"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -82,6 +82,7 @@ reqwest = { version = "0.12.0", default-features = false, features = [
 ], optional = true }
 tonic = { workspace = true, optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
+oauth2 = { workspace = true, optional = true }
 urlencoding = { version = "2", optional = true }
 base64 = { version = "0.22", optional = true }
 fs4 = { version = "0.13", optional = true }
@@ -159,6 +160,7 @@ remote = [
     "dep:prost",
     "dep:reqwest",
     "dep:http",
+    "dep:oauth2",
     "dep:tonic",
     "dep:urlencoding",
     "dep:base64",

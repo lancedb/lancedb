@@ -33,7 +33,9 @@ fn extract_job_id(body: &str) -> Option<String> {
 
 pub use client::{ClientConfig, HeaderProvider, RetryConfig, TimeoutConfig, TlsConfig};
 pub use db::{RemoteDatabaseOptions, RemoteDatabaseOptionsBuilder};
-pub use oauth::{AuthorizationCodeOptions, OAuthConfig, OAuthFlow, OAuthHeaderProvider};
+pub use oauth::{
+    AuthorizationCodeOptions, ClientAuthMethod, OAuthConfig, OAuthFlow, OAuthHeaderProvider,
+};
 pub use token_cache::{OAuthSession, SessionLogout, SessionStatus, TokenCacheOptions};
 
 pub use catalog::{RemoteCatalog, RemoteCatalogOptions};

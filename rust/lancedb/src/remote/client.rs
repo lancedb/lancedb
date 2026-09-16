@@ -15,7 +15,7 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
-pub(crate) fn redact_sensitive_headers(headers: &mut HeaderMap) {
+pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
     const SENSITIVE_HEADERS: [&str; 5] = [
         "authorization",
         "proxy-authorization",

@@ -172,6 +172,7 @@ export {
 } from "./header";
 
 export {
+  ClientAuthMethod,
   OAuthConfig,
   OAuthFlowType,
   OAuthSession,
