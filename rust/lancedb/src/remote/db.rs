@@ -513,36 +513,35 @@ impl From<&CreateTableMode> for &'static str {
     }
 }
 
-/// The path segment addressing one table: its namespace path and name.
-fn build_table_identifier(name: &str, namespace: &[String]) -> Result<String> {
+/// The path segment addressing one object: its namespace path and its name.
+///
+/// One builder for tables, Secrets, Functions and materialized views, because
+/// the identifier grammar belongs to the namespace spec rather than to any one
+/// object type. A caller passing an empty path addresses an object that has no
+/// namespace yet.
+///
+/// Every namespace segment is checked here. The name's own grammar is the
+/// caller's, so that a table can report [`Error::InvalidTableName`] and a
+/// Function can admit names a table may not. What is checked for all of them is
+/// the relative segment, which is a property of the URL rather than of any
+/// grammar.
+fn build_object_identifier(what: &str, name: &str, namespace: &[String]) -> Result<String> {
     for segment in namespace {
         validate_namespace_name(segment)?;
     }
-    validate_table_name(name)?;
+    reject_relative_segment(what, name)?;
     Ok(join_identifier(
         namespace.iter().map(String::as_str).chain([name]),
     ))
 }
 
-/// The path segment addressing one Function.
+/// The path segment addressing one table.
 ///
-/// A Function has no namespace, so there is one component and no join to
-/// reverse. What encoding cannot fix is `..`: unreserved, so it survives
-/// untouched and is then resolved away.
-fn build_function_identifier(name: &str) -> Result<String> {
-    reject_relative_segment("Function name", name)?;
-    Ok(join_identifier([name].into_iter()))
-}
-
-/// The path segment addressing one Secret: its namespace path and name.
-///
-/// Component shape is settled before this, by [`Connection`], rather than here
-/// as it is for a table -- a Secret is reached only through that one entry
-/// point.
-///
-/// [`Connection`]: crate::connection::Connection
-fn build_secret_identifier(name: &str, namespace: &[String]) -> String {
-    join_identifier(namespace.iter().map(String::as_str).chain([name]))
+/// A wrapper for the sake of the error: an invalid table name is reported as
+/// [`Error::InvalidTableName`], which callers match on.
+fn build_table_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_table_name(name)?;
+    build_object_identifier("table name", name, namespace)
 }
 
 /// Join validated components into the `{id}` a route addresses: each
@@ -551,28 +550,17 @@ fn build_secret_identifier(name: &str, namespace: &[String]) -> String {
 /// Encoded per component rather than over the joined string, so the delimiter
 /// stays a delimiter and nothing inside a component can end the path segment.
 ///
-/// It is a second line, not the first. Every character the name charset admits
-/// is unreserved, so a component that reached here encodes to itself and the
-/// route reads exactly as the caller wrote it; what the encoding covers is a
-/// component that arrives some other way, so that its content cannot choose the
-/// URL's shape. It does not cover `.` and `..`, which are unreserved too and
-/// are resolved after decoding -- those are refused outright, by the validator
-/// each object has.
+/// It is a second line, not the first. Every character a name may hold is
+/// unreserved, so a validated component encodes to itself and the route reads
+/// exactly as the caller wrote it; what the encoding covers is a component that
+/// arrives some other way, so that its content cannot choose the URL's shape.
+/// It does not cover `.` and `..`, which are unreserved too and are resolved
+/// after decoding -- [`build_object_identifier`] refuses those outright.
 fn join_identifier<'a>(components: impl Iterator<Item = &'a str>) -> String {
     components
         .map(|component| urlencoding::encode(component).into_owned())
         .collect::<Vec<_>>()
         .join(ID_DELIMITER)
-}
-
-/// The namespace a Secret listing is scoped to.
-///
-/// The root is the bare delimiter, as it is for every other object's listing.
-fn build_secret_namespace_identifier(namespace: &[String]) -> String {
-    if namespace.is_empty() {
-        return ID_DELIMITER.to_string();
-    }
-    join_identifier(namespace.iter().map(String::as_str))
 }
 
 /// The path segment addressing one namespace.
@@ -838,7 +826,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         &self,
         request: FunctionRegistrationRequest,
     ) -> Result<Job<FunctionVersion>> {
-        let function_id = build_function_identifier(&request.name)?;
+        let function_id = build_object_identifier("Function name", &request.name, &[])?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/create"))
@@ -864,7 +852,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
-        let function_id = build_function_identifier(name)?;
+        let function_id = build_object_identifier("Function name", name, &[])?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/describe"))
@@ -918,7 +906,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
-        let function_id = build_function_identifier(name)?;
+        let function_id = build_object_identifier("Function name", name, &[])?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/drop"))
@@ -937,7 +925,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         value: &str,
         namespace_path: &[String],
     ) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path);
+        let secret_id = build_object_identifier("Secret name", name, namespace_path)?;
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/create"),
             &RemoteCreateSecretRequest { value },
@@ -946,7 +934,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path);
+        let secret_id = build_object_identifier("Secret name", name, namespace_path)?;
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/alter"),
             &RemoteAlterSecretRequest { value },
@@ -955,7 +943,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        let namespace_id = build_secret_namespace_identifier(namespace_path);
+        let namespace_id = build_namespace_identifier(namespace_path)?;
         let path = format!("/v1/namespace/{namespace_id}/secret/list");
         let mut names = Vec::new();
         let mut page_token: Option<String> = None;
@@ -988,7 +976,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path);
+        let secret_id = build_object_identifier("Secret name", name, namespace_path)?;
         let req = self.client.post(&format!("/v1/secret/{secret_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
         self.client.check_response(&request_id, response).await?;
@@ -996,7 +984,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
-        let secret_id = build_secret_identifier(name, namespace_path);
+        let secret_id = build_object_identifier("Secret name", name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/secret/{secret_id}/describe"));
