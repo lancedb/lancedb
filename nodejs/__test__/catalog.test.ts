@@ -87,7 +87,7 @@ describe("remote catalog", () => {
         expect(requests[0].url).toBe("/v1/namespace/team%2Fsearch/create");
         expect(requests[0].body).toEqual({ mode: "ExistOk" });
         expect(requests[5].url).toBe(
-          "/v1/namespace/%24/list?limit=1&page_token=a%2Fb",
+          "/v1/namespace/$/list?limit=1&page_token=a%2Fb",
         );
         expect(requests[6].body).toEqual({
           mode: "Skip",

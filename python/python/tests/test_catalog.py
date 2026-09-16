@@ -91,7 +91,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
     assert requests[0][0] == "/v1/namespace/team%2Fsearch/create"
     assert requests[0][2] == {"mode": "ExistOk"}
     assert requests[1][0] == "/v1/namespace/team%2Fsearch/describe"
-    assert requests[4][0] == "/v1/namespace/%24/list?limit=1&page_token=a%2Fb"
+    assert requests[4][0] == "/v1/namespace/$/list?limit=1&page_token=a%2Fb"
     assert requests[5][2] == {"mode": "Skip", "behavior": "Restrict"}
     for i, (_, headers, _) in enumerate(requests):
         headers = {key.lower(): value for key, value in headers.items()}
