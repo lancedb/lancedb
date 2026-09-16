@@ -406,6 +406,14 @@ pub fn supported_btree_data_type(dtype: &DataType) -> bool {
         )
 }
 
+pub fn supported_zonemap_data_type(dtype: &DataType) -> bool {
+    supported_btree_data_type(dtype)
+        || matches!(
+            dtype,
+            DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+        )
+}
+
 pub fn supported_bitmap_data_type(dtype: &DataType) -> bool {
     dtype.is_integer()
         || matches!(
