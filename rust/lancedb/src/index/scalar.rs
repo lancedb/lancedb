@@ -60,6 +60,13 @@ pub struct LabelListIndexBuilder {}
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct FmIndexBuilder {}
 
+/// Builder for a ZoneMap index.
+///
+/// A ZoneMap index stores min/max summaries for ranges of rows and can
+/// accelerate range predicates by pruning zones that cannot match.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ZoneMapIndexBuilder {}
+
 pub use lance_index::scalar::FullTextSearchQuery;
 pub use lance_index::scalar::InvertedIndexParams as FtsIndexBuilder;
 pub use lance_index::scalar::InvertedIndexParams;
