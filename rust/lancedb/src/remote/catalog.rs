@@ -29,6 +29,9 @@ pub struct RemoteCatalogOptions {
     pub api_key: Option<String>,
     /// Shared transport and authentication settings.
     pub client_config: ClientConfig,
+    /// SQL service endpoint used by returned database connections.
+    /// Required for SQL when the catalog endpoint uses HTTPS.
+    pub sql_host_override: Option<String>,
     /// Read consistency interval for tables opened in returned databases.
     pub read_consistency_interval: Option<Duration>,
     /// OAuth authentication, mutually exclusive with an API key or header provider.

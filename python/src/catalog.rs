@@ -85,12 +85,13 @@ impl Catalog {
 }
 
 #[pyfunction]
-#[pyo3(signature = (endpoint, *, api_key=None, client_config=None, read_consistency_interval=None, oauth_config=None))]
+#[pyo3(signature = (endpoint, *, api_key=None, client_config=None, sql_host_override=None, read_consistency_interval=None, oauth_config=None))]
 pub fn connect_catalog(
     py: Python<'_>,
     endpoint: String,
     api_key: Option<String>,
     client_config: Option<PyClientConfig>,
+    sql_host_override: Option<String>,
     read_consistency_interval: Option<f64>,
     oauth_config: Option<crate::oauth::PyOAuthConfig>,
 ) -> PyResult<Bound<'_, PyAny>> {
@@ -107,6 +108,9 @@ pub fn connect_catalog(
         }
         if let Some(config) = client_config {
             builder = builder.client_config(config.into());
+        }
+        if let Some(endpoint) = sql_host_override {
+            builder = builder.sql_host_override(endpoint);
         }
         if let Some(interval) = interval {
             builder = builder.read_consistency_interval(interval);

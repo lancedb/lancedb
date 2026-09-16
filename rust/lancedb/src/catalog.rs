@@ -232,6 +232,14 @@ impl ConnectCatalogBuilder {
         self.options.client_config = config;
         self
     }
+    /// Set the SQL service endpoint inherited by database connections.
+    ///
+    /// Required to execute SQL when the catalog endpoint uses HTTPS. The SQL
+    /// connection is initialized lazily, using the ordinary remote SQL client.
+    pub fn sql_host_override(mut self, endpoint: impl Into<String>) -> Self {
+        self.options.sql_host_override = Some(endpoint.into());
+        self
+    }
     /// Configure table read consistency for opened databases.
     pub fn read_consistency_interval(mut self, interval: std::time::Duration) -> Self {
         self.options.read_consistency_interval = Some(interval);

@@ -19,6 +19,8 @@ use crate::remote::{ClientConfig, OAuthConfig};
 pub struct CatalogOptions {
     pub api_key: Option<String>,
     pub client_config: Option<ClientConfig>,
+    /// SQL service endpoint inherited by database connections.
+    pub sql_host_override: Option<String>,
     pub read_consistency_interval: Option<f64>,
     pub oauth_config: Option<OAuthConfig>,
 }
@@ -52,6 +54,9 @@ impl Catalog {
             config.header_provider = Some(Arc::new(provider.clone()));
         }
         builder = builder.client_config(config);
+        if let Some(endpoint) = options.sql_host_override {
+            builder = builder.sql_host_override(endpoint);
+        }
         if let Some(interval) = options.read_consistency_interval {
             let interval = Duration::try_from_secs_f64(interval).map_err(|err| {
                 Error::from_reason(format!("Invalid read consistency interval: {err}"))

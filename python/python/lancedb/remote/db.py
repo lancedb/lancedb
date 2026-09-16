@@ -189,7 +189,16 @@ class RemoteDBConnection(DBConnection):
         )
 
     @classmethod
-    def _from_catalog(cls, inner, name, endpoint, api_key, client_config, oauth_config):
+    def _from_catalog(
+        cls,
+        inner,
+        name,
+        endpoint,
+        api_key,
+        client_config,
+        oauth_config,
+        sql_host_override,
+    ):
         config = (
             ClientConfig(**client_config)
             if isinstance(client_config, dict)
@@ -207,7 +216,7 @@ class RemoteDBConnection(DBConnection):
         result.api_key = api_key or ""
         result.region = "us-east-1"
         result.host_override = endpoint
-        result.sql_host_override = None
+        result.sql_host_override = sql_host_override
         result.storage_options = None
         result.client_config = replace(config, extra_headers=headers)
         result._catalog_oauth = oauth_config is not None

@@ -876,6 +876,7 @@ async def connect_catalog(
     *,
     api_key: Optional[str] = None,
     client_config: Optional[Any] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[float] = None,
     oauth_config: Optional[Any] = None,
 ) -> Catalog: ...

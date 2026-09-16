@@ -83,11 +83,13 @@ class Catalog:
         *,
         api_key=None,
         client_config=None,
+        sql_host_override: Optional[str] = None,
         oauth_config: Optional[OAuthConfig] = None,
     ):
         self._inner = inner
         self._api_key = api_key
         self._client_config = client_config
+        self._sql_host_override = sql_host_override
         self._oauth_config = oauth_config
 
     @property
@@ -112,6 +114,7 @@ class Catalog:
             self._api_key,
             self._client_config,
             self._oauth_config,
+            self._sql_host_override,
         )
 
     def list_databases(
@@ -130,6 +133,7 @@ async def connect_catalog_async(
     *,
     api_key: Optional[str] = None,
     client_config: Optional[Union[ClientConfig, dict[str, Any]]] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     oauth_config: Optional[OAuthConfig] = None,
 ) -> AsyncCatalog:
@@ -138,6 +142,8 @@ async def connect_catalog_async(
     Root requests omit database-selection headers. API key, client configuration,
     OAuth, and table read consistency settings are inherited by opened databases.
     Database names containing slashes remain single logical names.
+    Set ``sql_host_override`` to the SQL service endpoint to execute SQL through
+    returned connections when the catalog endpoint uses HTTPS.
     """
     if isinstance(client_config, dict):
         client_config = ClientConfig(**client_config)
@@ -147,6 +153,7 @@ async def connect_catalog_async(
         endpoint,
         api_key=api_key,
         client_config=client_config,
+        sql_host_override=sql_host_override,
         read_consistency_interval=(
             read_consistency_interval.total_seconds()
             if read_consistency_interval is not None
@@ -162,6 +169,7 @@ def connect_catalog(
     *,
     api_key: Optional[str] = None,
     client_config: Optional[Union[ClientConfig, dict[str, Any]]] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     oauth_config: Optional[OAuthConfig] = None,
 ) -> Catalog:
@@ -176,11 +184,13 @@ def connect_catalog(
                 endpoint,
                 api_key=api_key,
                 client_config=client_config,
+                sql_host_override=sql_host_override,
                 read_consistency_interval=read_consistency_interval,
                 oauth_config=oauth_config,
             )
         ),
         api_key=api_key,
         client_config=client_config,
+        sql_host_override=sql_host_override,
         oauth_config=oauth_config,
     )

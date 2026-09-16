@@ -38,6 +38,7 @@ async function withCatalog(
   try {
     const catalog = await connectCatalog(`http://127.0.0.1:${address.port}`, {
       apiKey: "secret",
+      sqlHostOverride: "grpc+tls://sql.example.com:10026",
       clientConfig: {
         extraHeaders: {
           "X-LanceDB-Database": "wrong-static",

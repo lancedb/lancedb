@@ -62,6 +62,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
     catalog = lancedb.connect_catalog(
         endpoint,
         api_key="secret",
+        sql_host_override="invalid://localhost",
         client_config={
             "extra_headers": {
                 "X-LanceDB-Database": "wrong",
@@ -73,10 +74,16 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
     assert catalog.uri == endpoint
     db = catalog.create_database("team/search", exist_ok=True)
     assert isinstance(db, DBConnection)
+    with pytest.raises(ValueError, match="sql_host_override must use"):
+        db.execute_query_async("SELECT 1")
     db = catalog.connect_database("team/search")
     assert isinstance(db, DBConnection)
     assert db.table_names() == []
     restored = lancedb.deserialize_conn(db.serialize())
+    assert restored.sql_host_override == "invalid://localhost"
+    for connection in (db, restored):
+        with pytest.raises(ValueError, match="sql_host_override must use"):
+            connection.execute_query_async("SELECT 1")
     assert restored.table_names() == []
     page = catalog.list_databases(limit=1, page_token="a/b")
     assert page == lancedb.ListDatabasesResponse(["team/search"], "next")
@@ -108,10 +115,14 @@ async def test_catalog_async_and_errors(catalog_server):
             (404, {"error": "missing"}),
         ]
     )
-    catalog = await lancedb.connect_catalog_async(endpoint)
+    catalog = await lancedb.connect_catalog_async(
+        endpoint, sql_host_override="invalid://localhost"
+    )
     assert isinstance(catalog, lancedb.AsyncCatalog)
     db = await catalog.connect_database("analytics")
     assert isinstance(db, AsyncConnection)
+    with pytest.raises(ValueError, match="sql_host_override must use"):
+        await db.execute_query_async("SELECT 1")
     assert await db.table_names() == []
     with pytest.raises(ValueError, match="missing"):
         await catalog.connect_database("missing")

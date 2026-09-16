@@ -322,7 +322,7 @@ impl RemoteDatabase {
             "us-east-1",
             RemoteHostOverrides {
                 rest: Some(endpoint.to_string()),
-                sql: None,
+                sql: options.sql_host_override.clone(),
             },
             config,
             RemoteOptions::default(),

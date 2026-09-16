@@ -65,3 +65,17 @@ optional readConsistencyInterval: number;
 #### Inherited from
 
 `Omit.readConsistencyInterval`
+
+***
+
+### sqlHostOverride?
+
+```ts
+optional sqlHostOverride: string;
+```
+
+SQL service endpoint inherited by database connections.
+
+#### Inherited from
+
+`Omit.sqlHostOverride`
