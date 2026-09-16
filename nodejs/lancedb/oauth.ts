@@ -48,6 +48,33 @@ export interface TokenCacheOptions {
 }
 
 /**
+ * How the client authenticates to the OAuth token endpoint.
+ *
+ * The method applies to every OAuth request that carries client
+ * authentication: client-credentials, authorization-code exchange,
+ * refresh-token, and device-authorization requests. The Azure managed
+ * identity flow ignores this option.
+ */
+export enum ClientAuthMethod {
+  /**
+   * No client authentication, for public clients using PKCE or the device
+   * flow. Cannot be combined with `clientSecret`.
+   */
+  None = "none",
+  /**
+   * HTTP Basic authentication. This is the RFC 6749 recommended method and
+   * the normal default for confidential clients, including default Okta
+   * applications. Requires `clientSecret`.
+   */
+  ClientSecretBasic = "client_secret_basic",
+  /**
+   * Credentials in the request body, for providers configured to require it.
+   * Requires `clientSecret`.
+   */
+  ClientSecretPost = "client_secret_post",
+}
+
+/**
  * OAuth configuration for LanceDB authentication.
  *
  * This is the public TypeScript OAuth configuration type. The generated
@@ -139,6 +166,15 @@ export interface OAuthConfig {
 
   /** Client secret (required for ClientCredentials). */
   clientSecret?: string;
+
+  /**
+   * How the client authenticates to the token endpoint (default: auto).
+   * With a `clientSecret` the default is `ClientAuthMethod.ClientSecretBasic`,
+   * which matches the RFC 6749 recommendation and the default configuration
+   * of Okta confidential applications; without a secret the client is public
+   * and no client authentication is sent.
+   */
+  clientAuthMethod?: ClientAuthMethod;
 
   /** Loopback redirect URI for AuthorizationCode. */
   redirectUri?: string;

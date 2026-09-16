@@ -68,6 +68,7 @@ rand = "0.9"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"
+oauth2 = { version = "5.0", default-features = false }
 regex = "1.10"
 semver = "1.0.25"
 serde = "1"

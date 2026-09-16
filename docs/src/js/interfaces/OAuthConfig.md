@@ -84,6 +84,20 @@ Port for the AuthorizationCode loopback callback server (default: 8400).
 
 ***
 
+### clientAuthMethod?
+
+```ts
+optional clientAuthMethod: ClientAuthMethod;
+```
+
+How the client authenticates to the token endpoint (default: auto).
+With a `clientSecret` the default is `ClientAuthMethod.ClientSecretBasic`,
+which matches the RFC 6749 recommendation and the default configuration
+of Okta confidential applications; without a secret the client is public
+and no client authentication is sent.
+
+***
+
 ### clientId
 
 ```ts

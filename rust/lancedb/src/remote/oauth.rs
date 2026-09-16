@@ -1,19 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+//! OAuth authentication for LanceDB Cloud connections.
+//!
+//! Protocol mechanics (authorization URL and CSRF state, PKCE, token
+//! exchanges, refresh, device authorization and polling, standard response
+//! parsing, and token-endpoint client authentication) are delegated to the
+//! [`oauth2`] crate. LanceDB owns the orchestration: OIDC discovery, endpoint
+//! validation, the loopback callback server, browser and terminal
+//! interaction, timeouts, token caching, and the Azure managed-identity
+//! (IMDS) flow.
+
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use base64::Engine;
 use log::{debug, warn};
-use rand::Rng;
+use oauth2::basic::BasicTokenType;
+use oauth2::http::{Method, StatusCode};
+use oauth2::{
+    AccessToken, AuthType, AuthUrl, ClientId, ClientSecret, CsrfToken, DeviceAuthorizationUrl,
+    DeviceCodeErrorResponseType, EndpointNotSet, EndpointSet, HttpRequest, HttpResponse,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, RequestTokenError, Scope,
+    StandardDeviceAuthorizationResponse, StandardTokenIntrospectionResponse, TokenUrl,
+};
 use reqwest::Client;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
@@ -166,6 +183,90 @@ pub enum OAuthFlow {
     },
 }
 
+/// How the client authenticates to the OAuth token endpoint.
+///
+/// The method applies to every OAuth request that carries client
+/// authentication: client-credentials, authorization-code exchange,
+/// refresh-token, and device-authorization requests. The Azure managed
+/// identity flow ignores this option because it uses its own IMDS protocol.
+///
+/// The default (`None` in [`OAuthConfig`]) resolves to
+/// [`ClientAuthMethod::ClientSecretBasic`] when a `client_secret` is
+/// configured, matching [RFC 6749 section 2.3.1](https://datatracker.ietf.org/doc/html/rfc6749#section-2.3.1)
+/// and the default configuration of Okta confidential applications, and to
+/// [`ClientAuthMethod::None`] for public clients (no secret), such as
+/// authorization-code-with-PKCE or typical device applications.
+///
+/// # Example
+///
+/// ```
+/// use lancedb::remote::{AuthorizationCodeOptions, ClientAuthMethod, OAuthConfig, OAuthFlow};
+///
+/// let config = OAuthConfig {
+///     issuer_url: "https://idp.example.com".to_string(),
+///     client_id: "client-id".to_string(),
+///     client_secret: Some("secret".to_string()),
+///     client_auth_method: Some(ClientAuthMethod::ClientSecretPost),
+///     scopes: vec!["openid".to_string()],
+///     resource: None,
+///     audience: None,
+///     flow: OAuthFlow::AuthorizationCode(AuthorizationCodeOptions::new()),
+///     refresh_buffer_secs: None,
+///     token_cache: None,
+/// };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientAuthMethod {
+    /// No client authentication (`none`). For public clients such as
+    /// browser/CLI applications using PKCE or the device flow. Requires that
+    /// no `client_secret` is configured.
+    None,
+
+    /// HTTP Basic authentication (`client_secret_basic`), the RFC 6749
+    /// recommended method and the normal default for confidential clients,
+    /// including default Okta applications. Requires a `client_secret`.
+    ClientSecretBasic,
+
+    /// Credentials in the request body (`client_secret_post`). Some
+    /// providers are configured to require this method. Requires a
+    /// `client_secret`.
+    ClientSecretPost,
+}
+
+impl ClientAuthMethod {
+    fn auth_type(self) -> AuthType {
+        match self {
+            // Without a secret the crate always falls back to sending the
+            // client_id in the request body, which is the desired behavior
+            // for public clients.
+            Self::None | Self::ClientSecretPost => AuthType::RequestBody,
+            Self::ClientSecretBasic => AuthType::BasicAuth,
+        }
+    }
+}
+
+fn resolve_client_auth_method(
+    method: Option<ClientAuthMethod>,
+    client_secret: Option<&str>,
+) -> Result<ClientAuthMethod> {
+    match (method, client_secret) {
+        (Some(ClientAuthMethod::None), Some(_)) => Err(Error::InvalidInput {
+            message: "client_auth_method None cannot be combined with client_secret".to_string(),
+        }),
+        (
+            Some(
+                method @ (ClientAuthMethod::ClientSecretBasic | ClientAuthMethod::ClientSecretPost),
+            ),
+            None,
+        ) => Err(Error::InvalidInput {
+            message: format!("client_auth_method {method:?} requires client_secret to be set"),
+        }),
+        (Some(method), _) => Ok(method),
+        (None, Some(_)) => Ok(ClientAuthMethod::ClientSecretBasic),
+        (None, None) => Ok(ClientAuthMethod::None),
+    }
+}
+
 /// OAuth configuration for LanceDB authentication.
 ///
 /// All token acquisition and refresh is handled in the Rust layer.
@@ -201,6 +302,11 @@ pub struct OAuthConfig {
     /// Authentication flow to use.
     pub flow: OAuthFlow,
 
+    /// How the client authenticates to the token endpoint. See
+    /// [`ClientAuthMethod`] for the resolution rules that apply when this is
+    /// `None` (the default).
+    pub client_auth_method: Option<ClientAuthMethod>,
+
     /// Seconds before token expiry to trigger proactive refresh (default: 300).
     /// Keep this well below the token TTL; if it is greater than or equal to
     /// the TTL, each request refreshes the token.
@@ -228,6 +334,7 @@ impl std::fmt::Debug for OAuthConfig {
             .field("resource", &self.resource)
             .field("audience", &self.audience)
             .field("flow", &self.flow)
+            .field("client_auth_method", &self.client_auth_method)
             .field("refresh_buffer_secs", &self.refresh_buffer_secs)
             .field("token_cache", &self.token_cache)
             .finish()
@@ -245,18 +352,71 @@ struct OidcDiscovery {
 
 // -- Token Response --
 
+/// A token endpoint success response.
+///
+/// This implements [`oauth2::TokenResponse`] so the `oauth2` crate can parse
+/// provider responses directly, while keeping LanceDB's lenient field
+/// handling: `expires_in` may be an integer, an integer-valued float, or a
+/// numeric string, and `token_type` is optional.
 #[derive(Deserialize)]
 pub(crate) struct TokenResponse {
-    pub(crate) access_token: String,
+    pub(crate) access_token: AccessToken,
     #[serde(default)]
-    pub(crate) refresh_token: Option<String>,
+    pub(crate) refresh_token: Option<RefreshToken>,
     /// Token lifetime in seconds.
     /// Some providers (Azure IMDS) return this as a string, so we accept both.
     #[serde(default, deserialize_with = "deserialize_optional_u64_or_string")]
     pub(crate) expires_in: Option<u64>,
     #[serde(default)]
-    #[allow(dead_code)]
-    pub(crate) token_type: Option<String>,
+    pub(crate) token_type: Option<BasicTokenType>,
+}
+
+const BEARER: BasicTokenType = BasicTokenType::Bearer;
+
+impl oauth2::TokenResponse for TokenResponse {
+    type TokenType = BasicTokenType;
+
+    fn access_token(&self) -> &AccessToken {
+        &self.access_token
+    }
+
+    fn token_type(&self) -> &BasicTokenType {
+        self.token_type.as_ref().unwrap_or(&BEARER)
+    }
+
+    fn expires_in(&self) -> Option<Duration> {
+        self.expires_in.map(Duration::from_secs)
+    }
+
+    fn refresh_token(&self) -> Option<&RefreshToken> {
+        self.refresh_token.as_ref()
+    }
+
+    fn scopes(&self) -> Option<&Vec<Scope>> {
+        None
+    }
+}
+
+// The oauth2::TokenResponse trait requires Serialize; LanceDB never
+// serializes token responses, so redact every credential-bearing field rather
+// than risk leaking one through an accidental serialization.
+impl serde::Serialize for TokenResponse {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("TokenResponse", 4)?;
+        state.serialize_field("access_token", "<redacted>")?;
+        state.serialize_field(
+            "refresh_token",
+            &self.refresh_token.as_ref().map(|_| "<redacted>"),
+        )?;
+        state.serialize_field("expires_in", &self.expires_in)?;
+        state.serialize_field("token_type", &self.token_type)?;
+        state.end()
+    }
 }
 
 impl std::fmt::Debug for TokenResponse {
@@ -349,9 +509,9 @@ impl TokenState {
     }
 
     fn update(&mut self, resp: &TokenResponse) {
-        self.access_token = Some(resp.access_token.clone());
-        if resp.refresh_token.is_some() {
-            self.refresh_token = resp.refresh_token.clone();
+        self.access_token = Some(resp.access_token.secret().clone());
+        if let Some(token) = resp.refresh_token.as_ref() {
+            self.refresh_token = Some(token.secret().clone());
         }
         let expires_in = resp.expires_in.unwrap_or(DEFAULT_TOKEN_TTL_SECS);
         self.expires_at = Some(Instant::now() + Duration::from_secs(expires_in));
@@ -374,14 +534,203 @@ pub(crate) enum RefreshResult {
     Unsupported,
 }
 
+// -- OAuth HTTP transport --
+
+/// Errors raised by [`OAuthHttpClient`].
+#[derive(Debug)]
+enum OAuthHttpError {
+    /// The request could not be built (invalid method, URL, or headers).
+    Build(String),
+    /// The request failed at the transport layer. This includes redirects
+    /// rejected by the hardened client redirect policy.
+    Transport(reqwest::Error),
+    /// The server reported a transient condition: HTTP 429, a 5xx status, or
+    /// an OAuth `temporarily_unavailable` error. The device-code poll loop
+    /// treats these as retryable; single-shot requests surface them as errors.
+    Transient(StatusCode),
+}
+
+impl std::fmt::Display for OAuthHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Build(message) => write!(f, "could not build OAuth request: {message}"),
+            Self::Transport(error) => {
+                write!(f, "OAuth HTTP request failed: {error}")?;
+                // Include the underlying cause (e.g. a redirect rejected by
+                // the hardened client policy) without ever including bodies.
+                if let Some(source) = std::error::Error::source(error) {
+                    write!(f, ": {source}")?;
+                }
+                Ok(())
+            }
+            Self::Transient(status) => {
+                write!(f, "OAuth server returned a transient response ({status})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OAuthHttpError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Transport(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct OAuthHttpClient {
+    inner: Client,
+}
+
+impl OAuthHttpClient {
+    fn is_retryable_status_or_body(status: StatusCode, body: &[u8]) -> bool {
+        if status.as_u16() == 429 || status.is_server_error() {
+            return true;
+        }
+        serde_json::from_slice::<OAuthErrorResponse>(body)
+            .map(|error| error.error == "temporarily_unavailable")
+            .unwrap_or(false)
+    }
+}
+
+impl<'c> oauth2::AsyncHttpClient<'c> for OAuthHttpClient {
+    type Error = OAuthHttpError;
+    type Future = Pin<
+        Box<
+            dyn Future<Output = std::result::Result<HttpResponse, OAuthHttpError>>
+                + Send
+                + Sync
+                + 'c,
+        >,
+    >;
+
+    fn call(&'c self, request: HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            let (parts, body) = request.into_parts();
+            let method = Method::from_bytes(parts.method.as_str().as_bytes())
+                .map_err(|e| OAuthHttpError::Build(e.to_string()))?;
+            let url: Url = parts
+                .uri
+                .to_string()
+                .parse()
+                .map_err(|e| OAuthHttpError::Build(format!("invalid request URL: {e}")))?;
+
+            let response = self
+                .inner
+                .request(method, url)
+                .headers(parts.headers)
+                .body(body)
+                .send()
+                .await
+                .map_err(OAuthHttpError::Transport)?;
+
+            let status = response.status();
+            let mut builder = oauth2::http::Response::builder().status(status);
+            for (name, value) in response.headers().iter() {
+                builder = builder.header(name, value);
+            }
+            let body = response
+                .bytes()
+                .await
+                .map_err(OAuthHttpError::Transport)?
+                .to_vec();
+            let response = builder
+                .body(body)
+                .map_err(|e| OAuthHttpError::Build(e.to_string()))?;
+
+            if !status.is_success() && Self::is_retryable_status_or_body(status, response.body()) {
+                debug!("OAuth token endpoint returned a transient response ({status})");
+                return Err(OAuthHttpError::Transient(status));
+            }
+            Ok(response)
+        })
+    }
+}
+
+// -- OAuth client construction --
+
+type OauthClient<HasAuthUrl, HasDeviceAuthUrl, HasTokenUrl> = oauth2::Client<
+    oauth2::basic::BasicErrorResponse,
+    TokenResponse,
+    StandardTokenIntrospectionResponse<oauth2::EmptyExtraTokenFields, BasicTokenType>,
+    oauth2::StandardRevocableToken,
+    oauth2::basic::BasicErrorResponse,
+    HasAuthUrl,
+    HasDeviceAuthUrl,
+    EndpointNotSet,
+    EndpointNotSet,
+    HasTokenUrl,
+>;
+
+type BaseOauthClient = OauthClient<EndpointNotSet, EndpointNotSet, EndpointNotSet>;
+
+type TokenEndpointClient = OauthClient<EndpointNotSet, EndpointNotSet, EndpointSet>;
+
+fn token_error_context<T: oauth2::ErrorResponse>(context: &str, response: &T) -> String {
+    // StandardErrorResponse's Display renders only the provider's error code,
+    // description, and error URI; it never includes credential material.
+    format!("{context} failed: {response}")
+}
+
+fn map_token_error(
+    error: RequestTokenError<OAuthHttpError, oauth2::basic::BasicErrorResponse>,
+    context: &str,
+) -> Error {
+    match error {
+        RequestTokenError::ServerResponse(response) => Error::Runtime {
+            message: token_error_context(context, &response),
+        },
+        RequestTokenError::Request(error) => Error::Runtime {
+            message: format!("{context} failed: {error}"),
+        },
+        // Never include the raw body: it may contain credential material.
+        RequestTokenError::Parse(error, _) => Error::Runtime {
+            message: format!("{context} response could not be parsed: {error}"),
+        },
+        RequestTokenError::Other(message) => Error::Runtime {
+            message: format!("{context} failed: {message}"),
+        },
+    }
+}
+
+fn map_device_token_error(
+    error: RequestTokenError<OAuthHttpError, oauth2::DeviceCodeErrorResponse>,
+) -> Error {
+    match error {
+        RequestTokenError::ServerResponse(response) => match response.error() {
+            DeviceCodeErrorResponseType::AccessDenied => Error::Runtime {
+                message: "Device authorization was denied by the user".to_string(),
+            },
+            DeviceCodeErrorResponseType::ExpiredToken => Error::Runtime {
+                message: "Device authorization expired before authentication completed".to_string(),
+            },
+            _ => Error::Runtime {
+                message: token_error_context("Device token request", &response),
+            },
+        },
+        RequestTokenError::Request(error) => Error::Runtime {
+            message: format!("Device token request failed: {error}"),
+        },
+        RequestTokenError::Parse(error, _) => Error::Runtime {
+            message: format!("Device token response could not be parsed: {error}"),
+        },
+        RequestTokenError::Other(message) => Error::Runtime {
+            message: format!("Device token request failed: {message}"),
+        },
+    }
+}
+
 struct OidcClient {
     issuer_url: String,
     client_id: String,
     client_secret: Option<String>,
+    client_auth_method: ClientAuthMethod,
     scopes: Vec<String>,
     resource: Option<String>,
     audience: Option<String>,
-    http_client: Client,
+    http_client: OAuthHttpClient,
     discovery: RwLock<Option<OidcDiscovery>>,
 }
 
@@ -394,6 +743,7 @@ impl std::fmt::Debug for OidcClient {
                 "client_secret",
                 &self.client_secret.as_ref().map(|_| "<redacted>"),
             )
+            .field("client_auth_method", &self.client_auth_method)
             .field("scopes", &self.scopes)
             .field("resource", &self.resource)
             .field("audience", &self.audience)
@@ -406,6 +756,7 @@ impl OidcClient {
         issuer_url: String,
         client_id: String,
         client_secret: Option<String>,
+        client_auth_method: ClientAuthMethod,
         scopes: Vec<String>,
         resource: Option<String>,
         audience: Option<String>,
@@ -431,10 +782,11 @@ impl OidcClient {
             issuer_url,
             client_id,
             client_secret,
+            client_auth_method,
             scopes,
             resource,
             audience,
-            http_client,
+            http_client: OAuthHttpClient { inner: http_client },
             discovery: RwLock::new(None),
         })
     }
@@ -466,6 +818,7 @@ impl OidcClient {
 
         let resp = self
             .http_client
+            .inner
             .get(&discovery_url)
             .send()
             .await
@@ -504,7 +857,9 @@ impl OidcClient {
         self.get_discovery().await.map(|disc| disc.token_endpoint)
     }
 
-    fn target_params(&self) -> impl Iterator<Item = (&str, &str)> {
+    /// Resource/audience parameters forwarded to every authorization and
+    /// token request.
+    fn target_params(&self) -> impl Iterator<Item = (&'static str, &str)> {
         self.resource
             .as_deref()
             .map(|value| ("resource", value))
@@ -512,92 +867,39 @@ impl OidcClient {
             .chain(self.audience.as_deref().map(|value| ("audience", value)))
     }
 
-    fn scopes_string(&self) -> String {
-        self.scopes.join(" ")
+    fn base_client(&self) -> BaseOauthClient {
+        let mut client = oauth2::Client::new(ClientId::new(self.client_id.clone()))
+            .set_auth_type(self.client_auth_method.auth_type());
+        if let Some(secret) = self.client_secret.as_ref() {
+            client = client.set_client_secret(ClientSecret::new(secret.clone()));
+        }
+        client
     }
 
-    async fn post_token_request(
-        &self,
-        endpoint: &str,
-        params: &[(String, String)],
-    ) -> Result<TokenResponse> {
-        let mut params = params.to_vec();
-        params.extend(
-            self.target_params()
-                .map(|(key, value)| (key.to_owned(), value.to_owned())),
-        );
-        let resp = self
-            .http_client
-            .post(endpoint)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Token request to {endpoint} failed: {e}"),
-            })?;
-
-        if !resp.status().is_success() {
-            return Err(Error::Runtime {
-                message: format!(
-                    "Token request failed with status {}: {}",
-                    resp.status(),
-                    resp.text().await.unwrap_or_default()
-                ),
-            });
-        }
-
-        resp.json().await.map_err(|e| Error::Runtime {
-            message: format!("Failed to parse token response: {e}"),
-        })
+    async fn token_client(&self) -> Result<(TokenEndpointClient, String)> {
+        let endpoint = self.get_token_endpoint().await?;
+        let token_url = TokenUrl::new(endpoint.clone()).map_err(|e| Error::InvalidInput {
+            message: format!("Invalid OAuth token_endpoint: {e}"),
+        })?;
+        Ok((self.base_client().set_token_uri(token_url), endpoint))
     }
 
     async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
-        let endpoint = self.get_token_endpoint().await?;
-        let mut params = vec![
-            ("grant_type".to_string(), "refresh_token".to_string()),
-            ("client_id".to_string(), self.client_id.clone()),
-            ("refresh_token".to_string(), refresh_token.to_string()),
-        ];
-        if let Some(secret) = self.client_secret.as_ref() {
-            params.push(("client_secret".to_string(), secret.clone()));
+        let (client, _) = self.token_client().await?;
+        let refresh_token = RefreshToken::new(refresh_token.to_string());
+        let mut request = client.exchange_refresh_token(&refresh_token);
+        for (name, value) in self.target_params() {
+            request = request.add_extra_param(name, value);
         }
-        params.extend(
-            self.target_params()
-                .map(|(key, value)| (key.to_owned(), value.to_owned())),
-        );
-        let response = self
-            .http_client
-            .post(&endpoint)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Refresh token request to {endpoint} failed: {e}"),
-            })?;
-        if response.status().is_success() {
-            return response
-                .json()
-                .await
-                .map(RefreshResult::Refreshed)
-                .map_err(|e| Error::Runtime {
-                    message: format!("Failed to parse refresh token response: {e}"),
-                });
+        match request.request_async(&self.http_client).await {
+            Ok(response) => Ok(RefreshResult::Refreshed(response)),
+            Err(RequestTokenError::ServerResponse(response))
+                if matches!(response.error().as_ref(), "invalid_grant" | "invalid_token") =>
+            {
+                Ok(RefreshResult::Reauthenticate)
+            }
+            Err(error) => Err(map_token_error(error, "Refresh token request")),
         }
-
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let error_code = serde_json::from_str::<OAuthErrorResponse>(&body)
-            .ok()
-            .map(|error| error.error);
-        if matches!(
-            error_code.as_deref(),
-            Some("invalid_grant" | "invalid_token")
-        ) {
-            return Ok(RefreshResult::Reauthenticate);
-        }
-        Err(Error::Runtime {
-            message: format!("Refresh token request failed with status {status}: {body}"),
-        })
     }
 }
 
@@ -618,6 +920,7 @@ impl ClientCredentialsSource {
         issuer_url: String,
         client_id: String,
         client_secret: Option<String>,
+        client_auth_method: ClientAuthMethod,
         scopes: Vec<String>,
         resource: Option<String>,
         audience: Option<String>,
@@ -632,6 +935,7 @@ impl ClientCredentialsSource {
                 issuer_url,
                 client_id,
                 client_secret,
+                client_auth_method,
                 scopes,
                 resource,
                 audience,
@@ -643,18 +947,19 @@ impl ClientCredentialsSource {
 #[async_trait]
 impl TokenSource for ClientCredentialsSource {
     async fn fetch_token(&self) -> Result<TokenResponse> {
-        let token_endpoint = self.oidc.get_token_endpoint().await?;
-        let params = [
-            ("grant_type".to_string(), "client_credentials".to_string()),
-            ("client_id".to_string(), self.oidc.client_id.clone()),
-            (
-                "client_secret".to_string(),
-                self.oidc.client_secret.clone().expect("validated in new"),
-            ),
-            ("scope".to_string(), self.oidc.scopes_string()),
-        ];
+        let (client, endpoint) = self.oidc.token_client().await?;
+        let mut request = client.exchange_client_credentials();
+        for scope in &self.oidc.scopes {
+            request = request.add_scope(Scope::new(scope.clone()));
+        }
+        for (name, value) in self.oidc.target_params() {
+            request = request.add_extra_param(name, value);
+        }
 
-        self.oidc.post_token_request(&token_endpoint, &params).await
+        request
+            .request_async(&self.oidc.http_client)
+            .await
+            .map_err(|e| map_token_error(e, &format!("Token request to {endpoint}")))
     }
 }
 
@@ -735,7 +1040,7 @@ impl ResolvedRedirect {
 struct AuthorizationRequest {
     url: Url,
     state: String,
-    code_verifier: Option<String>,
+    code_verifier: Option<PkceCodeVerifier>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -761,10 +1066,12 @@ impl std::fmt::Debug for AuthorizationCodeSource {
 }
 
 impl AuthorizationCodeSource {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         issuer_url: String,
         client_id: String,
         client_secret: Option<String>,
+        client_auth_method: ClientAuthMethod,
         scopes: Vec<String>,
         resource: Option<String>,
         audience: Option<String>,
@@ -776,6 +1083,7 @@ impl AuthorizationCodeSource {
                 issuer_url,
                 client_id,
                 client_secret,
+                client_auth_method,
                 scopes,
                 resource,
                 audience,
@@ -794,32 +1102,40 @@ impl AuthorizationCodeSource {
             .ok_or(Error::Runtime {
                 message: "OIDC discovery did not provide authorization_endpoint".to_string(),
             })?;
-        let mut url = validate_oauth_url(&endpoint, "authorization_endpoint")?;
-        let state = random_urlsafe_string(32);
-        let code_verifier = self.options.use_pkce.then(|| random_urlsafe_string(64));
+        let auth_url = AuthUrl::new(endpoint).map_err(|e| Error::InvalidInput {
+            message: format!("Invalid OAuth authorization_endpoint: {e}"),
+        })?;
+        let redirect_url =
+            RedirectUrl::new(self.redirect.uri.clone()).map_err(|e| Error::InvalidInput {
+                message: format!("Invalid OAuth redirect_uri: {e}"),
+            })?;
 
-        {
-            let mut query = url.query_pairs_mut();
-            query
-                .append_pair("response_type", "code")
-                .append_pair("client_id", &self.oidc.client_id)
-                .append_pair("redirect_uri", &self.redirect.uri)
-                .append_pair("scope", &self.oidc.scopes_string())
-                .append_pair("state", &state);
-            query.extend_pairs(self.oidc.target_params());
-            if let Some(verifier) = code_verifier.as_ref() {
-                let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .encode(Sha256::digest(verifier.as_bytes()));
-                query
-                    .append_pair("code_challenge", &challenge)
-                    .append_pair("code_challenge_method", "S256");
-            }
+        let pkce = self
+            .options
+            .use_pkce
+            .then(PkceCodeChallenge::new_random_sha256);
+
+        let client = self
+            .oidc
+            .base_client()
+            .set_auth_uri(auth_url)
+            .set_redirect_uri(redirect_url);
+        let mut request = client.authorize_url(CsrfToken::new_random);
+        for scope in &self.oidc.scopes {
+            request = request.add_scope(Scope::new(scope.clone()));
         }
+        for (name, value) in self.oidc.target_params() {
+            request = request.add_extra_param(name, value);
+        }
+        if let Some((challenge, _)) = pkce.as_ref() {
+            request = request.set_pkce_challenge(challenge.clone());
+        }
+        let (url, state) = request.url();
 
         Ok(AuthorizationRequest {
             url,
-            state,
-            code_verifier,
+            state: state.secret().clone(),
+            code_verifier: pkce.map(|(_, verifier)| verifier),
         })
     }
 
@@ -872,22 +1188,27 @@ impl AuthorizationCodeSource {
     async fn exchange_code(
         &self,
         code: &str,
-        code_verifier: Option<&str>,
+        code_verifier: Option<PkceCodeVerifier>,
     ) -> Result<TokenResponse> {
-        let endpoint = self.oidc.get_token_endpoint().await?;
-        let mut params = vec![
-            ("grant_type".to_string(), "authorization_code".to_string()),
-            ("client_id".to_string(), self.oidc.client_id.clone()),
-            ("code".to_string(), code.to_string()),
-            ("redirect_uri".to_string(), self.redirect.uri.clone()),
-        ];
+        let (client, endpoint) = self.oidc.token_client().await?;
+        let redirect_url =
+            RedirectUrl::new(self.redirect.uri.clone()).map_err(|e| Error::InvalidInput {
+                message: format!("Invalid OAuth redirect_uri: {e}"),
+            })?;
+        let mut request = client
+            .exchange_code(oauth2::AuthorizationCode::new(code.to_string()))
+            .set_redirect_uri(Cow::Owned(redirect_url));
+        for (name, value) in self.oidc.target_params() {
+            request = request.add_extra_param(name, value);
+        }
         if let Some(verifier) = code_verifier {
-            params.push(("code_verifier".to_string(), verifier.to_string()));
+            request = request.set_pkce_verifier(verifier);
         }
-        if let Some(secret) = self.oidc.client_secret.as_ref() {
-            params.push(("client_secret".to_string(), secret.clone()));
-        }
-        self.oidc.post_token_request(&endpoint, &params).await
+
+        request
+            .request_async(&self.oidc.http_client)
+            .await
+            .map_err(|e| map_token_error(e, &format!("Token request to {endpoint}")))
     }
 }
 
@@ -906,8 +1227,7 @@ impl TokenSource for AuthorizationCodeSource {
         show_oauth_prompt(&authorization_prompt(&request.url));
         launch_browser(request.url.clone());
         let code = self.wait_for_callback(&listener, &request.state).await?;
-        self.exchange_code(&code, request.code_verifier.as_deref())
-            .await
+        self.exchange_code(&code, request.code_verifier).await
     }
 
     async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
@@ -915,23 +1235,11 @@ impl TokenSource for AuthorizationCodeSource {
     }
 }
 
-#[derive(Deserialize)]
-struct DeviceAuthorizationResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    #[serde(default)]
-    verification_uri_complete: Option<String>,
-    expires_in: u64,
-    #[serde(default)]
-    interval: Option<u64>,
-}
-
+/// A minimal OAuth error body, used to sniff retryable `temporarily_unavailable`
+/// responses in [`OAuthHttpClient`]. Unknown fields are ignored.
 #[derive(Debug, Deserialize)]
 struct OAuthErrorResponse {
     error: String,
-    #[serde(default)]
-    error_description: Option<String>,
 }
 
 struct DeviceCodeSource {
@@ -951,6 +1259,7 @@ impl DeviceCodeSource {
         issuer_url: String,
         client_id: String,
         client_secret: Option<String>,
+        client_auth_method: ClientAuthMethod,
         scopes: Vec<String>,
         resource: Option<String>,
         audience: Option<String>,
@@ -960,6 +1269,7 @@ impl DeviceCodeSource {
                 issuer_url,
                 client_id,
                 client_secret,
+                client_auth_method,
                 scopes,
                 resource,
                 audience,
@@ -967,7 +1277,7 @@ impl DeviceCodeSource {
         })
     }
 
-    async fn request_device_authorization(&self) -> Result<DeviceAuthorizationResponse> {
+    async fn request_device_authorization(&self) -> Result<StandardDeviceAuthorizationResponse> {
         let endpoint = self
             .oidc
             .get_discovery()
@@ -976,145 +1286,57 @@ impl DeviceCodeSource {
             .ok_or(Error::Runtime {
                 message: "OIDC discovery did not provide device_authorization_endpoint".to_string(),
             })?;
-        let mut params = vec![
-            ("client_id".to_string(), self.oidc.client_id.clone()),
-            ("scope".to_string(), self.oidc.scopes_string()),
-        ];
-        if let Some(secret) = self.oidc.client_secret.as_ref() {
-            params.push(("client_secret".to_string(), secret.clone()));
-        }
-        params.extend(
-            self.oidc
-                .target_params()
-                .map(|(key, value)| (key.to_owned(), value.to_owned())),
-        );
-        let response = self
+        let device_url =
+            DeviceAuthorizationUrl::new(endpoint.clone()).map_err(|e| Error::InvalidInput {
+                message: format!("Invalid OAuth device_authorization_endpoint: {e}"),
+            })?;
+
+        let client = self
             .oidc
-            .http_client
-            .post(&endpoint)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Device authorization request to {endpoint} failed: {e}"),
-            })?;
-        if !response.status().is_success() {
-            return Err(Error::Runtime {
-                message: format!(
-                    "Device authorization request failed with status {}: {}",
-                    response.status(),
-                    response.text().await.unwrap_or_default()
-                ),
-            });
+            .base_client()
+            .set_device_authorization_url(device_url);
+        let mut request = client.exchange_device_code();
+        for scope in &self.oidc.scopes {
+            request = request.add_scope(Scope::new(scope.clone()));
         }
-        let device: DeviceAuthorizationResponse =
-            response.json().await.map_err(|e| Error::Runtime {
-                message: format!("Failed to parse device authorization response: {e}"),
+        for (name, value) in self.oidc.target_params() {
+            request = request.add_extra_param(name, value);
+        }
+        let device: StandardDeviceAuthorizationResponse = request
+            .request_async(&self.oidc.http_client)
+            .await
+            .map_err(|e| {
+                map_token_error(e, &format!("Device authorization request to {endpoint}"))
             })?;
-        validate_oauth_url(&device.verification_uri, "verification_uri")?;
-        if let Some(uri) = device.verification_uri_complete.as_deref() {
-            validate_oauth_url(uri, "verification_uri_complete")?;
+
+        validate_oauth_url(device.verification_uri().as_str(), "verification_uri")?;
+        if let Some(uri) = device.verification_uri_complete() {
+            validate_oauth_url(uri.secret(), "verification_uri_complete")?;
         }
         Ok(device)
     }
 
-    async fn poll_for_token(&self, device: &DeviceAuthorizationResponse) -> Result<TokenResponse> {
-        let endpoint = self.oidc.get_token_endpoint().await?;
-        let deadline = TokioInstant::now() + Duration::from_secs(device.expires_in);
-        let mut interval = Duration::from_secs(device.interval.unwrap_or(5).max(1));
-
-        loop {
-            let now = TokioInstant::now();
-            if now >= deadline {
-                return Err(Error::Runtime {
-                    message: "Device authorization expired before authentication completed"
-                        .to_string(),
-                });
-            }
-            tokio::time::sleep_until(std::cmp::min(now + interval, deadline)).await;
-            if TokioInstant::now() >= deadline {
-                return Err(Error::Runtime {
-                    message: "Device authorization expired before authentication completed"
-                        .to_string(),
-                });
-            }
-
-            let mut params = vec![
-                (
-                    "grant_type".to_string(),
-                    "urn:ietf:params:oauth:grant-type:device_code".to_string(),
-                ),
-                ("client_id".to_string(), self.oidc.client_id.clone()),
-                ("device_code".to_string(), device.device_code.clone()),
-            ];
-            if let Some(secret) = self.oidc.client_secret.as_ref() {
-                params.push(("client_secret".to_string(), secret.clone()));
-            }
-
-            params.extend(
-                self.oidc
-                    .target_params()
-                    .map(|(key, value)| (key.to_owned(), value.to_owned())),
-            );
-            let response = match self
-                .oidc
-                .http_client
-                .post(&endpoint)
-                .form(&params)
-                .send()
-                .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    warn!("Device token request to {endpoint} failed; retrying: {error}");
-                    continue;
-                }
-            };
-            if response.status().is_success() {
-                return response.json().await.map_err(|e| Error::Runtime {
-                    message: format!("Failed to parse device token response: {e}"),
-                });
-            }
-
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            let oauth_error = serde_json::from_str::<OAuthErrorResponse>(&body).ok();
-            match oauth_error.as_ref().map(|error| error.error.as_str()) {
-                Some("authorization_pending") => continue,
-                Some("slow_down") => {
-                    interval += Duration::from_secs(5);
-                    continue;
-                }
-                Some("temporarily_unavailable") => continue,
-                Some("access_denied") => {
-                    return Err(Error::Runtime {
-                        message: "Device authorization was denied by the user".to_string(),
-                    });
-                }
-                Some("expired_token") => {
-                    return Err(Error::Runtime {
-                        message: "Device authorization expired before authentication completed"
-                            .to_string(),
-                    });
-                }
-                _ if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                    || status.is_server_error() =>
-                {
-                    warn!("Device token endpoint returned {status}; retrying");
-                    continue;
-                }
-                _ => {
-                    let detail = oauth_error
-                        .and_then(|error| error.error_description)
-                        .unwrap_or(body);
-                    return Err(Error::Runtime {
-                        message: format!(
-                            "Device token request failed with status {status}: {detail}"
-                        ),
-                    });
-                }
-            }
+    async fn poll_for_token(
+        &self,
+        device: &StandardDeviceAuthorizationResponse,
+    ) -> Result<TokenResponse> {
+        let (client, _) = self.oidc.token_client().await?;
+        let mut request = client
+            .exchange_device_access_token(device)
+            .set_max_backoff_interval(Duration::from_secs(10));
+        for (name, value) in self.oidc.target_params() {
+            request = request.add_extra_param(name, value);
         }
+        request
+            .request_async(
+                &self.oidc.http_client,
+                // RFC 8628: poll slowly; never spin faster than once a second
+                // even if a misbehaving server reports a zero interval.
+                |interval: Duration| tokio::time::sleep(interval.max(Duration::from_secs(1))),
+                None,
+            )
+            .await
+            .map_err(map_device_token_error)
     }
 }
 
@@ -1122,12 +1344,14 @@ impl DeviceCodeSource {
 impl TokenSource for DeviceCodeSource {
     async fn fetch_token(&self) -> Result<TokenResponse> {
         let device = self.request_device_authorization().await?;
-        show_oauth_prompt(&device_prompt(&device.verification_uri, &device.user_code));
+        show_oauth_prompt(&device_prompt(
+            device.verification_uri().as_str(),
+            device.user_code().secret(),
+        ));
         let (browser_url, name) = device
-            .verification_uri_complete
-            .as_deref()
-            .map(|url| (url, "verification_uri_complete"))
-            .unwrap_or((&device.verification_uri, "verification_uri"));
+            .verification_uri_complete()
+            .map(|uri| (uri.secret().as_str(), "verification_uri_complete"))
+            .unwrap_or((device.verification_uri().as_str(), "verification_uri"));
         launch_browser(validate_oauth_url(browser_url, name)?);
         self.poll_for_token(&device).await
     }
@@ -1135,14 +1359,6 @@ impl TokenSource for DeviceCodeSource {
     async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
         self.oidc.refresh_token(refresh_token).await
     }
-}
-
-fn random_urlsafe_string(length: usize) -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    let mut rng = rand::rng();
-    (0..length)
-        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
-        .collect()
 }
 
 fn launch_browser(url: Url) {
@@ -1375,11 +1591,14 @@ pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSo
             message: "At least one OAuth scope is required".to_string(),
         });
     }
+    let client_auth_method =
+        resolve_client_auth_method(config.client_auth_method, config.client_secret.as_deref())?;
     Ok(match &config.flow {
         OAuthFlow::ClientCredentials => Box::new(ClientCredentialsSource::new(
             config.issuer_url.clone(),
             config.client_id.clone(),
             config.client_secret.clone(),
+            client_auth_method,
             config.scopes.clone(),
             config.resource.clone(),
             config.audience.clone(),
@@ -1388,6 +1607,7 @@ pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSo
             config.issuer_url.clone(),
             config.client_id.clone(),
             config.client_secret.clone(),
+            client_auth_method,
             config.scopes.clone(),
             config.resource.clone(),
             config.audience.clone(),
@@ -1397,6 +1617,7 @@ pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSo
             config.issuer_url.clone(),
             config.client_id.clone(),
             config.client_secret.clone(),
+            client_auth_method,
             config.scopes.clone(),
             config.resource.clone(),
             config.audience.clone(),
@@ -1482,7 +1703,7 @@ impl OAuthHeaderProvider {
             // persist the rotated refresh token.
             let resp = cache.refresh_or_acquire(self.token_source.as_ref()).await?;
             state.update(&resp);
-            return Ok(resp.access_token);
+            return Ok(resp.access_token.secret().clone());
         }
 
         let refresh_token = state.refresh_token.clone();
@@ -1506,7 +1727,7 @@ impl OAuthHeaderProvider {
         };
 
         state.update(&resp);
-        Ok(resp.access_token)
+        Ok(resp.access_token.secret().clone())
     }
 }
 
@@ -1526,9 +1747,49 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use base64::Engine;
+    use oauth2::TokenResponse as _;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinHandle;
+
+    fn token_response(
+        access_token: &str,
+        refresh_token: Option<&str>,
+        expires_in: Option<u64>,
+    ) -> TokenResponse {
+        TokenResponse {
+            access_token: AccessToken::new(access_token.to_string()),
+            refresh_token: refresh_token.map(|token| RefreshToken::new(token.to_string())),
+            expires_in,
+            token_type: None,
+        }
+    }
+
+    fn basic_authorization(client_id: &str, client_secret: &str) -> String {
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD
+                .encode(format!("{client_id}:{client_secret}"))
+        )
+    }
+
+    struct CapturedRequest {
+        line: String,
+        headers: String,
+        body: String,
+    }
+
+    impl CapturedRequest {
+        fn header(&self, name: &str) -> Option<String> {
+            self.headers.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.trim()
+                    .eq_ignore_ascii_case(name)
+                    .then(|| value.trim().to_string())
+            })
+        }
+    }
 
     #[tokio::test]
     async fn test_target_parameters_across_oauth_flows() {
@@ -1546,15 +1807,16 @@ mod tests {
                 // Three discovery requests and six form submissions.
                 for _ in 0..9 {
                     let (mut stream, _) = listener.accept().await.unwrap();
-                    let (line, body) = read_http_request(&mut stream).await;
-                    let response = if line.starts_with("GET ") {
+                    let request = read_http_request(&mut stream).await;
+                    let response = if request.line.starts_with("GET ") {
                         serde_json::json!({
                             "token_endpoint": format!("http://{addr}/token"),
                             "authorization_endpoint": format!("http://{addr}/authorize"),
                             "device_authorization_endpoint": format!("http://{addr}/device"),
                         })
                     } else {
-                        let params: Vec<_> = url::form_urlencoded::parse(body.as_bytes()).collect();
+                        let params: Vec<_> =
+                            url::form_urlencoded::parse(request.body.as_bytes()).collect();
                         for (key, expected) in [("resource", resource), ("audience", audience)] {
                             let values: Vec<_> = params
                                 .iter()
@@ -1563,7 +1825,7 @@ mod tests {
                                 .collect();
                             assert_eq!(values, expected.into_iter().collect::<Vec<_>>());
                         }
-                        if line.starts_with("POST /device ") {
+                        if request.line.starts_with("POST /device ") {
                             serde_json::json!({
                                 "device_code": "device-code", "user_code": "ABCD",
                                 "verification_uri": format!("http://{addr}/verify"),
@@ -1598,6 +1860,7 @@ mod tests {
                 issuer.clone(),
                 "client".into(),
                 Some("secret".into()),
+                ClientAuthMethod::ClientSecretBasic,
                 vec!["scope".into()],
                 resource.map(str::to_owned),
                 audience.map(str::to_owned),
@@ -1608,6 +1871,7 @@ mod tests {
                 issuer.clone(),
                 "client".into(),
                 None,
+                ClientAuthMethod::None,
                 vec!["scope".into()],
                 resource.map(str::to_owned),
                 audience.map(str::to_owned),
@@ -1628,7 +1892,7 @@ mod tests {
                 );
             }
             browser
-                .exchange_code("code", Some("verifier"))
+                .exchange_code("code", Some(PkceCodeVerifier::new("verifier".to_string())))
                 .await
                 .unwrap();
             browser.refresh_token("refresh").await.unwrap();
@@ -1636,6 +1900,7 @@ mod tests {
                 issuer,
                 "client".into(),
                 None,
+                ClientAuthMethod::None,
                 vec!["scope".into()],
                 resource.map(str::to_owned),
                 audience.map(str::to_owned),
@@ -1656,9 +1921,10 @@ mod tests {
                 client_id: "client".into(),
                 client_secret: None,
                 scopes: vec!["api://app/.default".into()],
-                flow: OAuthFlow::AzureManagedIdentity { client_id: None },
                 resource: resource.map(str::to_owned),
                 audience: audience.map(str::to_owned),
+                flow: OAuthFlow::AzureManagedIdentity { client_id: None },
+                client_auth_method: None,
                 refresh_buffer_secs: None,
                 token_cache: None,
             };
@@ -1686,14 +1952,7 @@ mod tests {
     #[test]
     fn test_token_state_uses_default_expiry() {
         let mut state = TokenState::new();
-        let response = TokenResponse {
-            access_token: "tok".to_string(),
-            refresh_token: None,
-            expires_in: None,
-            token_type: None,
-        };
-
-        state.update(&response);
+        state.update(&token_response("tok", None, None));
 
         assert!(!state.is_expired(Duration::from_secs(DEFAULT_TOKEN_TTL_SECS - 1)));
         assert!(state.is_expired(Duration::from_secs(DEFAULT_TOKEN_TTL_SECS + 1)));
@@ -1702,18 +1961,8 @@ mod tests {
     #[test]
     fn test_token_state_retains_refresh_token_when_not_rotated() {
         let mut state = TokenState::new();
-        state.update(&TokenResponse {
-            access_token: "token-1".to_string(),
-            refresh_token: Some("refresh-1".to_string()),
-            expires_in: Some(60),
-            token_type: None,
-        });
-        state.update(&TokenResponse {
-            access_token: "token-2".to_string(),
-            refresh_token: None,
-            expires_in: Some(60),
-            token_type: None,
-        });
+        state.update(&token_response("token-1", Some("refresh-1"), Some(60)));
+        state.update(&token_response("token-2", None, Some(60)));
 
         assert_eq!(state.refresh_token.as_deref(), Some("refresh-1"));
     }
@@ -1738,10 +1987,10 @@ mod tests {
     #[test]
     fn test_token_response_debug_redacts_access_token() {
         let response = TokenResponse {
-            access_token: "secret-token".to_string(),
-            refresh_token: Some("secret-refresh-token".to_string()),
+            access_token: AccessToken::new("secret-token".to_string()),
+            refresh_token: Some(RefreshToken::new("secret-refresh-token".to_string())),
             expires_in: Some(3600),
-            token_type: Some("Bearer".to_string()),
+            token_type: Some(BasicTokenType::Bearer),
         };
 
         let debug = format!("{response:?}");
@@ -1751,18 +2000,53 @@ mod tests {
     }
 
     #[test]
-    fn test_scopes_string() {
-        let source = ClientCredentialsSource::new(
-            "https://login.microsoftonline.com/tenant/v2.0".to_string(),
-            "app-id".to_string(),
-            Some("secret".to_string()),
-            vec!["scope1".to_string(), "scope2".to_string()],
-            None,
-            None,
-        )
-        .unwrap();
+    fn test_client_auth_method_defaults() {
+        assert_eq!(
+            resolve_client_auth_method(None, Some("secret")).unwrap(),
+            ClientAuthMethod::ClientSecretBasic
+        );
+        assert_eq!(
+            resolve_client_auth_method(None, None).unwrap(),
+            ClientAuthMethod::None
+        );
+    }
 
-        assert_eq!(source.oidc.scopes_string(), "scope1 scope2");
+    #[test]
+    fn test_client_auth_method_explicit_values() {
+        for method in [
+            ClientAuthMethod::None,
+            ClientAuthMethod::ClientSecretBasic,
+            ClientAuthMethod::ClientSecretPost,
+        ] {
+            let secret = (method != ClientAuthMethod::None).then_some("secret");
+            assert_eq!(
+                resolve_client_auth_method(Some(method), secret).unwrap(),
+                method
+            );
+        }
+    }
+
+    #[test]
+    fn test_client_auth_method_rejects_inconsistent_configuration() {
+        let err =
+            resolve_client_auth_method(Some(ClientAuthMethod::None), Some("secret")).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message == "client_auth_method None cannot be combined with client_secret"
+        ));
+
+        for method in [
+            ClientAuthMethod::ClientSecretBasic,
+            ClientAuthMethod::ClientSecretPost,
+        ] {
+            let err = resolve_client_auth_method(Some(method), None).unwrap_err();
+            assert!(matches!(
+                err,
+                Error::InvalidInput { message }
+                    if message == format!("client_auth_method {method:?} requires client_secret to be set")
+            ));
+        }
     }
 
     #[test]
@@ -1921,6 +2205,7 @@ mod tests {
             "http://127.0.0.1:1".to_string(),
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
@@ -1999,6 +2284,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string(), "profile".to_string()],
             None,
             None,
@@ -2013,9 +2299,18 @@ mod tests {
             Some("code")
         );
         assert_eq!(
+            params.get("client_id").map(String::as_str),
+            Some("client-id")
+        );
+        assert_eq!(
+            params.get("redirect_uri").map(String::as_str),
+            Some("http://127.0.0.1:8400/callback")
+        );
+        assert_eq!(
             params.get("scope").map(String::as_str),
             Some("openid profile")
         );
+        assert!(params.get("state").is_some_and(|state| state.len() >= 16));
         assert_eq!(
             params.get("code_challenge_method").map(String::as_str),
             Some("S256")
@@ -2032,6 +2327,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
@@ -2055,6 +2351,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretBasic,
             vec!["openid".to_string()],
             None,
             None,
@@ -2071,12 +2368,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_authorization_code_exchange_includes_optional_credentials() {
-        let (issuer_url, request_body, server) = spawn_token_exchange_server().await;
+    async fn test_authorization_code_exchange_public_client_sends_client_id_only() {
+        let (issuer_url, request, server) = spawn_captured_token_server().await;
         let source = AuthorizationCodeSource::new(
             issuer_url,
             "client-id".to_string(),
-            Some("secret".to_string()),
+            None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
@@ -2085,15 +2383,147 @@ mod tests {
         .unwrap();
 
         let response = source
-            .exchange_code("auth-code", Some("verifier"))
+            .exchange_code(
+                "auth-code",
+                Some(PkceCodeVerifier::new("verifier".to_string())),
+            )
             .await
             .unwrap();
-        assert_eq!(response.access_token, "token");
-        let body = request_body.lock().unwrap().clone().unwrap();
-        assert!(body.contains("grant_type=authorization_code"));
-        assert!(body.contains("code=auth-code"));
-        assert!(body.contains("code_verifier=verifier"));
-        assert!(body.contains("client_secret=secret"));
+        assert_eq!(response.access_token.secret(), "token");
+
+        let request = request.lock().unwrap().take().unwrap();
+        assert_eq!(request.header("authorization"), None);
+        assert!(request.body.contains("grant_type=authorization_code"));
+        assert!(request.body.contains("code=auth-code"));
+        assert!(request.body.contains("code_verifier=verifier"));
+        assert!(request.body.contains("client_id=client-id"));
+        assert!(!request.body.contains("client_secret"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_exchange_uses_basic_auth_by_default() {
+        let (issuer_url, request, server) = spawn_captured_token_server().await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretBasic,
+            vec!["openid".to_string()],
+            None,
+            None,
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        source
+            .exchange_code(
+                "auth-code",
+                Some(PkceCodeVerifier::new("verifier".to_string())),
+            )
+            .await
+            .unwrap();
+
+        let request = request.lock().unwrap().take().unwrap();
+        assert_eq!(
+            request.header("authorization").as_deref(),
+            Some(basic_authorization("client-id", "secret").as_str())
+        );
+        assert!(request.body.contains("grant_type=authorization_code"));
+        assert!(request.body.contains("code=auth-code"));
+        assert!(request.body.contains("code_verifier=verifier"));
+        assert!(!request.body.contains("client_secret"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_exchange_supports_client_secret_post() {
+        let (issuer_url, request, server) = spawn_captured_token_server().await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretPost,
+            vec!["openid".to_string()],
+            None,
+            None,
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        source
+            .exchange_code(
+                "auth-code",
+                Some(PkceCodeVerifier::new("verifier".to_string())),
+            )
+            .await
+            .unwrap();
+
+        let request = request.lock().unwrap().take().unwrap();
+        assert_eq!(request.header("authorization"), None);
+        assert!(request.body.contains("client_id=client-id"));
+        assert!(request.body.contains("client_secret=secret"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_refresh_uses_basic_auth_by_default() {
+        let (issuer_url, request, server) = spawn_captured_token_server().await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretBasic,
+            vec!["openid".to_string()],
+            None,
+            None,
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            source.oidc.refresh_token("refresh-token").await.unwrap(),
+            RefreshResult::Refreshed(_)
+        ));
+
+        let request = request.lock().unwrap().take().unwrap();
+        assert_eq!(
+            request.header("authorization").as_deref(),
+            Some(basic_authorization("client-id", "secret").as_str())
+        );
+        assert!(request.body.contains("grant_type=refresh_token"));
+        assert!(request.body.contains("refresh_token=refresh-token"));
+        assert!(!request.body.contains("client_secret"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_refresh_supports_client_secret_post_and_rotation() {
+        let (issuer_url, request, server) = spawn_captured_token_server().await;
+        let source = AuthorizationCodeSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretPost,
+            vec!["openid".to_string()],
+            None,
+            None,
+            AuthorizationCodeOptions::new(),
+        )
+        .unwrap();
+
+        let response = match source.oidc.refresh_token("old-refresh").await.unwrap() {
+            RefreshResult::Refreshed(response) => response,
+            other => panic!("expected refresh, got {other:?}"),
+        };
+        assert_eq!(response.refresh_token().unwrap().secret(), "refresh");
+
+        let request = request.lock().unwrap().take().unwrap();
+        assert_eq!(request.header("authorization"), None);
+        assert!(request.body.contains("grant_type=refresh_token"));
+        assert!(request.body.contains("refresh_token=old-refresh"));
+        assert!(request.body.contains("client_id=client-id"));
+        assert!(request.body.contains("client_secret=secret"));
         server.await.unwrap();
     }
 
@@ -2105,6 +2535,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
@@ -2130,6 +2561,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
@@ -2141,7 +2573,56 @@ mod tests {
         assert!(matches!(
             err,
             Error::Runtime { message }
-                if message.contains("503 Service Unavailable")
+                if message.contains("503 Service Unavailable") && message.contains("transient")
+        ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_token_request_rejects_insecure_redirect() {
+        let (issuer_url, server) = spawn_redirecting_token_server().await;
+        let source = ClientCredentialsSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretBasic,
+            vec!["scope".to_string()],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let err = TokenSource::fetch_token(&source).await.unwrap_err();
+        let Error::Runtime { message } = &err else {
+            panic!("expected runtime error, got {err:?}");
+        };
+        assert!(message.contains("redirect"));
+        // The insecure redirect target must never be contacted.
+        assert!(!message.contains("idp.example.com"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_malformed_token_response_error_does_not_leak_body() {
+        let (issuer_url, server) = spawn_malformed_token_server().await;
+        let source = ClientCredentialsSource::new(
+            issuer_url,
+            "client-id".to_string(),
+            Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretBasic,
+            vec!["scope".to_string()],
+            None,
+            None,
+        )
+        .unwrap();
+
+        let err = TokenSource::fetch_token(&source).await.unwrap_err();
+        let message = format!("{err:?}");
+        assert!(!message.contains("leak-marker"));
+        assert!(matches!(
+            err,
+            Error::Runtime { message }
+                if message.contains("could not be parsed") || message.contains("Content-Type")
         ));
         server.await.unwrap();
     }
@@ -2153,6 +2634,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretBasic,
             vec!["openid".to_string()],
             None,
             None,
@@ -2162,8 +2644,13 @@ mod tests {
         let device = source.request_device_authorization().await.unwrap();
         let response = source.poll_for_token(&device).await.unwrap();
 
-        assert_eq!(response.access_token, "device-token");
-        assert_eq!(response.refresh_token.as_deref(), Some("device-refresh"));
+        assert_eq!(response.access_token.secret(), "device-token");
+        assert_eq!(
+            response
+                .refresh_token()
+                .map(|token| token.secret().as_str()),
+            Some("device-refresh")
+        );
         assert_eq!(token_requests.load(Ordering::SeqCst), 3);
         server.await.unwrap();
     }
@@ -2175,6 +2662,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
@@ -2199,16 +2687,17 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
         )
         .unwrap();
-        let device = test_device_authorization_response(10, 1);
+        let device = test_device_authorization_response(60, 1);
 
         let response = source.poll_for_token(&device).await.unwrap();
 
-        assert_eq!(response.access_token, "device-token");
+        assert_eq!(response.access_token.secret(), "device-token");
         assert_eq!(token_requests.load(Ordering::SeqCst), 4);
         server.await.unwrap();
     }
@@ -2220,6 +2709,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
@@ -2243,6 +2733,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
@@ -2266,12 +2757,13 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             None,
+            ClientAuthMethod::None,
             vec!["openid".to_string()],
             None,
             None,
         )
         .unwrap();
-        let device = test_device_authorization_response(1, 5);
+        let device = test_device_authorization_response(1, 1);
 
         let err = source.poll_for_token(&device).await.unwrap_err();
         assert!(matches!(
@@ -2292,23 +2784,17 @@ mod tests {
     impl TokenSource for RefreshingTokenSource {
         async fn fetch_token(&self) -> Result<TokenResponse> {
             self.fetches.fetch_add(1, Ordering::SeqCst);
-            Ok(TokenResponse {
-                access_token: "initial".to_string(),
-                refresh_token: Some("refresh".to_string()),
-                expires_in: Some(3600),
-                token_type: Some("Bearer".to_string()),
-            })
+            Ok(token_response("initial", Some("refresh"), Some(3600)))
         }
 
         async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
             assert_eq!(refresh_token, "refresh");
             self.refreshes.fetch_add(1, Ordering::SeqCst);
-            Ok(RefreshResult::Refreshed(TokenResponse {
-                access_token: "refreshed".to_string(),
-                refresh_token: None,
-                expires_in: Some(3600),
-                token_type: Some("Bearer".to_string()),
-            }))
+            Ok(RefreshResult::Refreshed(token_response(
+                "refreshed",
+                None,
+                Some(3600),
+            )))
         }
     }
 
@@ -2348,12 +2834,11 @@ mod tests {
     impl TokenSource for FailedRefreshTokenSource {
         async fn fetch_token(&self) -> Result<TokenResponse> {
             self.fetches.fetch_add(1, Ordering::SeqCst);
-            Ok(TokenResponse {
-                access_token: "reauthenticated".to_string(),
-                refresh_token: Some("new-refresh".to_string()),
-                expires_in: Some(3600),
-                token_type: Some("Bearer".to_string()),
-            })
+            Ok(token_response(
+                "reauthenticated",
+                Some("new-refresh"),
+                Some(3600),
+            ))
         }
 
         async fn refresh_token(&self, refresh_token: &str) -> Result<RefreshResult> {
@@ -2439,38 +2924,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_oauth_config_debug_redacts_client_secret() {
-        let config = OAuthConfig {
+    fn test_config(flow: OAuthFlow, client_secret: Option<String>) -> OAuthConfig {
+        OAuthConfig {
             issuer_url: "https://issuer.example.com".to_string(),
             client_id: "client-id".to_string(),
-            client_secret: Some("super-secret".to_string()),
+            client_secret,
             scopes: vec!["scope".to_string()],
-            flow: OAuthFlow::ClientCredentials,
-            refresh_buffer_secs: None,
             resource: None,
             audience: None,
+            flow,
+            client_auth_method: None,
+            refresh_buffer_secs: None,
             token_cache: None,
-        };
+        }
+    }
+
+    #[test]
+    fn test_oauth_config_debug_redacts_client_secret() {
+        let mut config = test_config(
+            OAuthFlow::ClientCredentials,
+            Some("super-secret".to_string()),
+        );
+        config.client_auth_method = Some(ClientAuthMethod::ClientSecretBasic);
 
         let debug = format!("{config:?}");
         assert!(!debug.contains("super-secret"));
         assert!(debug.contains("client_secret: Some(\"<redacted>\")"));
+        assert!(debug.contains("client_auth_method"));
     }
 
     #[test]
     fn test_oauth_header_provider_debug_redacts_client_secret() {
-        let config = OAuthConfig {
-            issuer_url: "https://issuer.example.com".to_string(),
-            client_id: "client-id".to_string(),
-            client_secret: Some("super-secret".to_string()),
-            scopes: vec!["scope".to_string()],
-            flow: OAuthFlow::ClientCredentials,
-            refresh_buffer_secs: None,
-            resource: None,
-            audience: None,
-            token_cache: None,
-        };
+        let config = test_config(
+            OAuthFlow::ClientCredentials,
+            Some("super-secret".to_string()),
+        );
 
         let provider = OAuthHeaderProvider::new(config).unwrap();
         let debug = format!("{provider:?}");
@@ -2504,10 +2992,11 @@ mod tests {
                 "api://test-a/.default".to_string(),
                 "api://test-b/.default".to_string(),
             ],
-            flow: OAuthFlow::AzureManagedIdentity { client_id: None },
-            refresh_buffer_secs: None,
             resource: None,
             audience: None,
+            flow: OAuthFlow::AzureManagedIdentity { client_id: None },
+            client_auth_method: None,
+            refresh_buffer_secs: None,
             token_cache: None,
         };
         assert!(OAuthHeaderProvider::new(config).is_err());
@@ -2520,6 +3009,7 @@ mod tests {
             issuer_url,
             "client-id".to_string(),
             Some("secret".to_string()),
+            ClientAuthMethod::ClientSecretBasic,
             vec!["scope".to_string()],
             None,
             None,
@@ -2537,33 +3027,14 @@ mod tests {
 
     #[test]
     fn test_client_credentials_requires_secret() {
-        let config = OAuthConfig {
-            issuer_url: "https://login.microsoftonline.com/tenant/v2.0".to_string(),
-            client_id: "app-id".to_string(),
-            client_secret: None,
-            scopes: vec!["scope".to_string()],
-            flow: OAuthFlow::ClientCredentials,
-            refresh_buffer_secs: None,
-            resource: None,
-            audience: None,
-            token_cache: None,
-        };
+        let config = test_config(OAuthFlow::ClientCredentials, None);
         assert!(OAuthHeaderProvider::new(config).is_err());
     }
 
     #[test]
     fn test_client_credentials_rejects_insecure_non_loopback_issuer() {
-        let config = OAuthConfig {
-            issuer_url: "http://issuer.example.com".to_string(),
-            client_id: "app-id".to_string(),
-            client_secret: Some("secret".to_string()),
-            scopes: vec!["scope".to_string()],
-            flow: OAuthFlow::ClientCredentials,
-            refresh_buffer_secs: None,
-            resource: None,
-            audience: None,
-            token_cache: None,
-        };
+        let mut config = test_config(OAuthFlow::ClientCredentials, Some("secret".to_string()));
+        config.issuer_url = "http://issuer.example.com".to_string();
 
         let err = OAuthHeaderProvider::new(config).unwrap_err();
         assert!(matches!(
@@ -2576,17 +3047,8 @@ mod tests {
 
     #[test]
     fn test_empty_scopes_rejected() {
-        let config = OAuthConfig {
-            issuer_url: "https://login.microsoftonline.com/tenant/v2.0".to_string(),
-            client_id: "app-id".to_string(),
-            client_secret: None,
-            scopes: vec![],
-            flow: OAuthFlow::AzureManagedIdentity { client_id: None },
-            refresh_buffer_secs: None,
-            resource: None,
-            audience: None,
-            token_cache: None,
-        };
+        let mut config = test_config(OAuthFlow::AzureManagedIdentity { client_id: None }, None);
+        config.scopes = vec![];
         assert!(OAuthHeaderProvider::new(config).is_err());
     }
 
@@ -2598,10 +3060,11 @@ mod tests {
             client_id: "client-id".to_string(),
             client_secret: Some("secret".to_string()),
             scopes: vec!["scope".to_string()],
-            flow: OAuthFlow::ClientCredentials,
-            refresh_buffer_secs: Some(0),
             resource: None,
             audience: None,
+            flow: OAuthFlow::ClientCredentials,
+            client_auth_method: None,
+            refresh_buffer_secs: Some(0),
             token_cache: None,
         };
         let provider = OAuthHeaderProvider::new(config).unwrap();
@@ -2624,6 +3087,34 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn test_client_credentials_supports_client_secret_post() {
+        let (issuer_url, request, server) = spawn_captured_token_server().await;
+        let config = OAuthConfig {
+            issuer_url,
+            client_id: "client-id".to_string(),
+            client_secret: Some("secret".to_string()),
+            scopes: vec!["scope".to_string()],
+            resource: None,
+            audience: None,
+            flow: OAuthFlow::ClientCredentials,
+            client_auth_method: Some(ClientAuthMethod::ClientSecretPost),
+            refresh_buffer_secs: None,
+            token_cache: None,
+        };
+        let provider = OAuthHeaderProvider::new(config).unwrap();
+
+        provider.get_headers().await.unwrap();
+
+        let request = request.lock().unwrap().take().unwrap();
+        assert_eq!(request.header("authorization"), None);
+        assert!(request.body.contains("grant_type=client_credentials"));
+        assert!(request.body.contains("client_id=client-id"));
+        assert!(request.body.contains("client_secret=secret"));
+        assert!(request.body.contains("scope=scope"));
+        server.await.unwrap();
+    }
+
     async fn spawn_discovery_server(expected_requests: usize) -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2632,8 +3123,12 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..expected_requests {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (request_line, _) = read_http_request(&mut stream).await;
-                assert!(request_line.starts_with("GET /.well-known/openid-configuration "));
+                let request = read_http_request(&mut stream).await;
+                assert!(
+                    request
+                        .line
+                        .starts_with("GET /.well-known/openid-configuration ")
+                );
                 let discovery = format!(
                     r#"{{"token_endpoint":"http://{addr}/token","authorization_endpoint":"http://{addr}/authorize","device_authorization_endpoint":"http://{addr}/device"}}"#
                 );
@@ -2650,8 +3145,12 @@ mod tests {
         let issuer_url = format!("http://{addr}");
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let (request_line, _) = read_http_request(&mut stream).await;
-            assert!(request_line.starts_with("GET /.well-known/openid-configuration "));
+            let request = read_http_request(&mut stream).await;
+            assert!(
+                request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+            );
             write_json_response(
                 &mut stream,
                 "200 OK",
@@ -2670,14 +3169,17 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (request_line, _) = read_http_request(&mut stream).await;
-                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                let request = read_http_request(&mut stream).await;
+                if request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
                     let discovery = format!(
                         r#"{{"token_endpoint":"http://{addr}/token","device_authorization_endpoint":"http://{addr}/device"}}"#
                     );
                     write_json_response(&mut stream, "200 OK", &discovery).await;
                 } else {
-                    assert!(request_line.starts_with("POST /device "));
+                    assert!(request.line.starts_with("POST /device "));
                     write_json_response(
                         &mut stream,
                         "200 OK",
@@ -2691,32 +3193,33 @@ mod tests {
         (issuer_url, server)
     }
 
-    async fn spawn_token_exchange_server() -> (
+    async fn spawn_captured_token_server() -> (
         String,
-        Arc<std::sync::Mutex<Option<String>>>,
+        Arc<std::sync::Mutex<Option<CapturedRequest>>>,
         JoinHandle<()>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let issuer_url = format!("http://{addr}");
-        let request_body = Arc::new(std::sync::Mutex::new(None));
-        let server_request_body = Arc::clone(&request_body);
+        let request = Arc::new(std::sync::Mutex::new(None));
+        let server_request = Arc::clone(&request);
 
         let server = tokio::spawn(async move {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (request_line, body) = read_http_request(&mut stream).await;
-                if request_line.starts_with("GET /.well-known/openid-configuration ") {
-                    let discovery = format!(
-                        r#"{{"token_endpoint":"http://{addr}/token","authorization_endpoint":"http://{addr}/authorize"}}"#
-                    );
+                let captured = read_http_request(&mut stream).await;
+                if captured
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
+                    let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
                     write_json_response(&mut stream, "200 OK", &discovery).await;
-                } else if request_line.starts_with("POST /token ") {
-                    *server_request_body.lock().unwrap() = Some(body);
+                } else if captured.line.starts_with("POST /token ") {
+                    *server_request.lock().unwrap() = Some(captured);
                     write_json_response(
                         &mut stream,
                         "200 OK",
-                        r#"{"access_token":"token","refresh_token":"refresh","expires_in":3600}"#,
+                        r#"{"access_token":"token","refresh_token":"refresh","expires_in":3600,"token_type":"Bearer"}"#,
                     )
                     .await;
                 } else {
@@ -2725,7 +3228,63 @@ mod tests {
             }
         });
 
-        (issuer_url, request_body, server)
+        (issuer_url, request, server)
+    }
+
+    async fn spawn_redirecting_token_server() -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                if request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
+                    let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
+                    write_json_response(&mut stream, "200 OK", &discovery).await;
+                } else {
+                    assert!(request.line.starts_with("POST /token "));
+                    let response = "HTTP/1.1 302 Found\r\nlocation: http://idp.example.com/steal\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string();
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        });
+
+        (issuer_url, server)
+    }
+
+    async fn spawn_malformed_token_server() -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let issuer_url = format!("http://{addr}");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                if request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
+                    let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
+                    write_json_response(&mut stream, "200 OK", &discovery).await;
+                } else {
+                    assert!(request.line.starts_with("POST /token "));
+                    write_json_response(
+                        &mut stream,
+                        "200 OK",
+                        r#"{"access_token":{"nested":"leak-marker-12345"}}"#,
+                    )
+                    .await;
+                }
+            }
+        });
+
+        (issuer_url, server)
     }
 
     async fn spawn_refresh_error_server(
@@ -2739,13 +3298,16 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (request_line, body) = read_http_request(&mut stream).await;
-                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                let request = read_http_request(&mut stream).await;
+                if request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
                     let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
                     write_json_response(&mut stream, "200 OK", &discovery).await;
-                } else if request_line.starts_with("POST /token ") {
-                    assert!(body.contains("grant_type=refresh_token"));
-                    assert!(body.contains("refresh_token="));
+                } else if request.line.starts_with("POST /token ") {
+                    assert!(request.body.contains("grant_type=refresh_token"));
+                    assert!(request.body.contains("refresh_token="));
                     write_json_response(&mut stream, status, response_body).await;
                 } else {
                     write_json_response(&mut stream, "404 Not Found", "{}").await;
@@ -2766,26 +3328,37 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..5 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (request_line, body) = read_http_request(&mut stream).await;
-                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                let request = read_http_request(&mut stream).await;
+                if request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
                     let discovery = format!(
                         r#"{{"token_endpoint":"http://{addr}/token","device_authorization_endpoint":"http://{addr}/device"}}"#
                     );
                     write_json_response(&mut stream, "200 OK", &discovery).await;
-                } else if request_line.starts_with("POST /device ") {
-                    assert!(body.contains("client_id=client-id"));
-                    assert!(body.contains("client_secret=secret"));
-                    assert!(body.contains("scope=openid"));
+                } else if request.line.starts_with("POST /device ") {
+                    // The resolved default for a confidential client is HTTP Basic.
+                    assert_eq!(
+                        request.header("authorization").as_deref(),
+                        Some(basic_authorization("client-id", "secret").as_str())
+                    );
+                    assert!(request.body.contains("scope=openid"));
+                    assert!(!request.body.contains("client_secret"));
                     let device = format!(
                         r#"{{"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"http://{addr}/verify","verification_uri_complete":"http://{addr}/verify?user_code=ABCD-EFGH","expires_in":60,"interval":1}}"#
                     );
                     write_json_response(&mut stream, "200 OK", &device).await;
-                } else if request_line.starts_with("POST /token ") {
-                    assert!(body.contains(
+                } else if request.line.starts_with("POST /token ") {
+                    assert_eq!(
+                        request.header("authorization").as_deref(),
+                        Some(basic_authorization("client-id", "secret").as_str())
+                    );
+                    assert!(request.body.contains(
                         "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"
                     ));
-                    assert!(body.contains("device_code=device-code"));
-                    assert!(body.contains("client_secret=secret"));
+                    assert!(request.body.contains("device_code=device-code"));
+                    assert!(!request.body.contains("client_secret"));
                     let request = server_token_requests.fetch_add(1, Ordering::SeqCst);
                     match request {
                         0 => {
@@ -2808,7 +3381,7 @@ mod tests {
                             write_json_response(
                                 &mut stream,
                                 "200 OK",
-                                r#"{"access_token":"device-token","refresh_token":"device-refresh","expires_in":3600}"#,
+                                r#"{"access_token":"device-token","refresh_token":"device-refresh","expires_in":3600,"token_type":"Bearer"}"#,
                             )
                             .await;
                         }
@@ -2832,14 +3405,17 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..5 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (request_line, _) = read_http_request(&mut stream).await;
-                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                let request = read_http_request(&mut stream).await;
+                if request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
                     let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
                     write_json_response(&mut stream, "200 OK", &discovery).await;
                     continue;
                 }
 
-                assert!(request_line.starts_with("POST /token "));
+                assert!(request.line.starts_with("POST /token "));
                 match server_token_requests.fetch_add(1, Ordering::SeqCst) {
                     0 => drop(stream),
                     1 => {
@@ -2862,7 +3438,7 @@ mod tests {
                         write_json_response(
                             &mut stream,
                             "200 OK",
-                            r#"{"access_token":"device-token","expires_in":3600}"#,
+                            r#"{"access_token":"device-token","expires_in":3600,"token_type":"Bearer"}"#,
                         )
                         .await;
                     }
@@ -2876,15 +3452,11 @@ mod tests {
     fn test_device_authorization_response(
         expires_in: u64,
         interval: u64,
-    ) -> DeviceAuthorizationResponse {
-        DeviceAuthorizationResponse {
-            device_code: "device-code".to_string(),
-            user_code: "ABCD-EFGH".to_string(),
-            verification_uri: "http://127.0.0.1/verify".to_string(),
-            verification_uri_complete: None,
-            expires_in,
-            interval: Some(interval),
-        }
+    ) -> StandardDeviceAuthorizationResponse {
+        serde_json::from_str(&format!(
+            r#"{{"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"http://127.0.0.1/verify","expires_in":{expires_in},"interval":{interval}}}"#
+        ))
+        .unwrap()
     }
 
     async fn spawn_device_error_server(error: &'static str) -> (String, JoinHandle<()>) {
@@ -2895,11 +3467,14 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (request_line, _) = read_http_request(&mut stream).await;
-                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                let request = read_http_request(&mut stream).await;
+                if request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
                     let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
                     write_json_response(&mut stream, "200 OK", &discovery).await;
-                } else if request_line.starts_with("POST /token ") {
+                } else if request.line.starts_with("POST /token ") {
                     write_json_response(
                         &mut stream,
                         "400 Bad Request",
@@ -2925,16 +3500,23 @@ mod tests {
         let server = tokio::spawn(async move {
             for _ in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (request_line, body) = read_http_request(&mut stream).await;
+                let request = read_http_request(&mut stream).await;
 
-                if request_line.starts_with("GET /.well-known/openid-configuration ") {
+                if request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+                {
                     let discovery = format!(r#"{{"token_endpoint":"http://{addr}/token"}}"#);
                     write_json_response(&mut stream, "200 OK", &discovery).await;
-                } else if request_line.starts_with("POST /token ") {
-                    assert!(body.contains("grant_type=client_credentials"));
-                    assert!(body.contains("client_id=client-id"));
-                    assert!(body.contains("client_secret=secret"));
-                    assert!(body.contains("scope=scope"));
+                } else if request.line.starts_with("POST /token ") {
+                    assert_eq!(
+                        request.header("authorization").as_deref(),
+                        Some(basic_authorization("client-id", "secret").as_str())
+                    );
+                    assert!(request.body.contains("grant_type=client_credentials"));
+                    assert!(request.body.contains("scope=scope"));
+                    assert!(!request.body.contains("client_secret"));
+                    assert!(!request.body.contains("client_id"));
 
                     let token_num = server_token_requests.fetch_add(1, Ordering::SeqCst) + 1;
                     let token = format!(
@@ -2957,15 +3539,19 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let (request_line, _) = read_http_request(&mut stream).await;
-            assert!(request_line.starts_with("GET /.well-known/openid-configuration "));
+            let request = read_http_request(&mut stream).await;
+            assert!(
+                request
+                    .line
+                    .starts_with("GET /.well-known/openid-configuration ")
+            );
             write_json_response(&mut stream, "503 Service Unavailable", "{}").await;
         });
 
         (issuer_url, server)
     }
 
-    async fn read_http_request(stream: &mut TcpStream) -> (String, String) {
+    async fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
         let mut buffer = Vec::new();
         let mut header_end = None;
 
@@ -2979,7 +3565,7 @@ mod tests {
 
         let header_end = header_end.unwrap();
         let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
-        let request_line = headers.lines().next().unwrap_or_default().to_string();
+        let line = headers.lines().next().unwrap_or_default().to_string();
         let content_length = headers
             .lines()
             .find_map(|line| {
@@ -3000,7 +3586,11 @@ mod tests {
         let body =
             String::from_utf8_lossy(&buffer[header_end..header_end + content_length]).to_string();
 
-        (request_line, body)
+        CapturedRequest {
+            line,
+            headers,
+            body,
+        }
     }
 
     fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {

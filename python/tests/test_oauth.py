@@ -63,6 +63,34 @@ def test_device_code_flow_value():
     assert oauth.OAuthFlowType.DEVICE_CODE.value == "device_code"
 
 
+def test_client_auth_method_values():
+    oauth = _load_oauth_module()
+
+    assert oauth.ClientAuthMethod.NONE.value == "none"
+    assert oauth.ClientAuthMethod.CLIENT_SECRET_BASIC.value == "client_secret_basic"
+    assert oauth.ClientAuthMethod.CLIENT_SECRET_POST.value == "client_secret_post"
+
+
+def test_client_auth_method_defaults_to_none():
+    oauth = _load_oauth_module()
+
+    config = oauth.OAuthConfig(
+        issuer_url="https://issuer.example.com",
+        client_id="client-id",
+        scopes=["openid"],
+        client_auth_method=oauth.ClientAuthMethod.CLIENT_SECRET_POST,
+    )
+
+    assert config.client_auth_method is oauth.ClientAuthMethod.CLIENT_SECRET_POST
+
+    default_config = oauth.OAuthConfig(
+        issuer_url="https://issuer.example.com",
+        client_id="client-id",
+        scopes=["openid"],
+    )
+    assert default_config.client_auth_method is None
+
+
 def test_token_cache_options_default_to_memory_only():
     oauth = _load_oauth_module()
 
