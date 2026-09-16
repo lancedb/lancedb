@@ -88,10 +88,18 @@ fn application_has_unknown_nested_fields(value: &Value) -> bool {
     let Some(application) = value.as_object() else {
         return false;
     };
-    if application
-        .get("function")
-        .is_some_and(|value| has_unknown_keys(value, &["name", "version"]))
-    {
+    if application.get("function").is_some_and(|value| {
+        has_unknown_keys(
+            value,
+            &[
+                "name",
+                "object_id",
+                "location",
+                "version",
+                "manifest_digest",
+            ],
+        )
+    }) {
         return true;
     }
     if application
@@ -396,51 +404,75 @@ impl Serialize for PythonRuntimeSpec {
     }
 }
 
-/// Immutable Function version returned by the Enterprise catalog.
-///
-/// The GPU execution requirement is part of this identity. CPU and memory sizing,
-/// priority, concurrency, and retry policy belong to the execution platform.
+/// A complete OCI Function image. Its digest is independent of catalog names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionImage {
+    pub manifest_digest: String,
+    pub descriptor: Value,
+    pub source: bool,
+}
+
+fn deserialize_object_version<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    match value.parse::<u64>() {
+        Ok(number) if number > 0 && number.to_string() == value => Ok(value),
+        _ => Err(de::Error::custom(
+            "Function version must be a canonical positive uint64",
+        )),
+    }
+}
+
+/// One immutable Function object revision and its executable artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
+    object_id: String,
+    location: String,
+    #[serde(deserialize_with = "deserialize_object_version")]
     version: String,
-    artifact: FunctionArtifact,
+    image: FunctionImage,
     signature: FunctionSignature,
-    runtime: PythonRuntimeSpec,
-    runtime_digest: String,
-    environment_digest: String,
     created_at: String,
+    metadata: BTreeMap<String, String>,
+    disabled: bool,
 }
 
 impl FunctionVersion {
+    pub fn object_id(&self) -> &str {
+        &self.object_id
+    }
+    pub fn location(&self) -> &str {
+        &self.location
+    }
+    pub fn metadata(&self) -> &BTreeMap<String, String> {
+        &self.metadata
+    }
+    pub fn disabled(&self) -> bool {
+        self.disabled
+    }
+    pub fn reference(&self) -> FunctionVersionRef {
+        FunctionVersionRef {
+            name: self.name.clone(),
+            object_id: self.object_id.clone(),
+            location: self.location.clone(),
+            version: self.version.clone(),
+            manifest_digest: self.image.manifest_digest.clone(),
+        }
+    }
     pub fn name(&self) -> &str {
         &self.name
     }
-
     pub fn version(&self) -> &str {
         &self.version
     }
-
-    pub fn artifact(&self) -> &FunctionArtifact {
-        &self.artifact
+    pub fn image(&self) -> &FunctionImage {
+        &self.image
     }
-
     pub fn signature(&self) -> &FunctionSignature {
         &self.signature
     }
-
-    pub fn runtime(&self) -> &PythonRuntimeSpec {
-        &self.runtime
-    }
-
-    pub fn runtime_digest(&self) -> &str {
-        &self.runtime_digest
-    }
-
-    pub fn environment_digest(&self) -> &str {
-        &self.environment_digest
-    }
-
     pub fn created_at(&self) -> &str {
         &self.created_at
     }
@@ -496,7 +528,11 @@ impl_json!(FunctionRegistrationRequest);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersionRef {
     pub name: String,
+    pub object_id: String,
+    pub location: String,
+    #[serde(deserialize_with = "deserialize_object_version")]
     pub version: String,
+    pub manifest_digest: String,
 }
 
 /// Parameter binding in a FunctionApplication.

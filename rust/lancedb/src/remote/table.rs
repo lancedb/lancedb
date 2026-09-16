@@ -7856,7 +7856,7 @@ mod tests {
         });
         let application = crate::function::FunctionApplication::from_json(
             r#"{
-                "function":{"name":"embed","version":"fv_01K3EXACT"},
+                "function":{"name":"embed","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
                 "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false}
             }"#,
@@ -7933,7 +7933,7 @@ mod tests {
             });
         let application = crate::function::FunctionApplication::from_json(
             r#"{
-                "function":{"name":"text_features","version":"fv_01K3TEXT"},
+                "function":{"name":"text_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[
                     {"parameter":"title","kind":"column","value":{"path":"title"}},
                     {"parameter":"body","kind":"column","value":{"path":"body"}}
@@ -7989,7 +7989,7 @@ mod tests {
         });
         let application = crate::function::FunctionApplication::from_json(
             r#"{
-                "function":{"name":"embed","version":"fv_01K3EXACT"},
+                "function":{"name":"embed","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
                 "output":{"kind":"scalar","arrow_type":"fixed_size_list<float32, 3>","nullable":false}
             }"#,
@@ -8034,7 +8034,7 @@ mod tests {
         });
         let application = crate::function::FunctionApplication::from_json(
             r#"{
-                "function":{"name":"text_features","version":"fv_01K3TEXT"},
+                "function":{"name":"text_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[
                     {"parameter":"title","kind":"column","value":{"path":"title"}},
                     {"parameter":"body","kind":"column","value":{"path":"body"}}
