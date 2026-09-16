@@ -259,6 +259,12 @@ impl NativeTable {
                     BuiltinIndexType::Fm,
                 )))
             }
+            Index::ZoneMap(_) => {
+                Self::validate_index_type(field, "ZoneMap", supported_btree_data_type)?;
+                Ok(Box::new(ScalarIndexParams::for_builtin(
+                    BuiltinIndexType::ZoneMap,
+                )))
+            }
             Index::FTS(fts_opts) => {
                 Self::validate_index_type(field, "FTS", supported_fts_data_type)?;
                 Ok(Box::new(fts_opts))
@@ -418,6 +424,7 @@ impl NativeTable {
             Index::Bitmap(_) => IndexType::Bitmap,
             Index::LabelList(_) => IndexType::LabelList,
             Index::Fm(_) => IndexType::Fm,
+            Index::ZoneMap(_) => IndexType::ZoneMap,
             Index::FTS(_) => IndexType::Inverted,
             Index::IvfFlat(_)
             | Index::IvfSq(_)
@@ -451,7 +458,8 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::index::Index;
     use crate::index::scalar::{
-        BTreeIndexBuilder, BitmapIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder,
+        BTreeIndexBuilder, BitmapIndexBuilder, DocumentGranularity, FmIndexBuilder,
+        FtsIndexBuilder, ZoneMapIndexBuilder,
     };
     use crate::index::vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
@@ -1194,6 +1202,53 @@ mod tests {
         assert_eq!(stats.num_indexed_rows, 1);
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::Fm);
+        assert_eq!(stats.distance_type, None);
+    }
+
+    #[tokio::test]
+    async fn test_create_zonemap_index() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("i", Int32, [1, 2, 3, 4, 5])).unwrap();
+        let table = conn
+            .create_table("zonemap_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["i"], Index::ZoneMap(ZoneMapIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .wait_for_index(&["i_idx"], Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::ZoneMap);
+        assert_eq!(index.columns, vec!["i".to_string()]);
+
+        let count = table
+            .query()
+            .only_if("i >= 2 AND i < 5")
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum::<usize>();
+        assert_eq!(count, 3);
+
+        let stats = table.index_stats("i_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 5);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::ZoneMap);
         assert_eq!(stats.distance_type, None);
     }
 

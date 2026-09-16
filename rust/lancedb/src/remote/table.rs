@@ -587,6 +587,7 @@ impl<S: HttpSend> RemoteTable<S> {
             Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
             Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
             Index::Fm(p) => ("FM", Some(to_json(p)?)),
+            Index::ZoneMap(p) => ("ZONEMAP", Some(to_json(p)?)),
             Index::FTS(p) => {
                 let mut params = to_json(p)?;
                 if p.get_document_granularity().is_list_element() {
@@ -6376,6 +6377,7 @@ mod tests {
             // HNSW_PQ isn't yet supported on SaaS
             ("BTREE", json!({}), Index::BTree(Default::default())),
             ("BITMAP", json!({}), Index::Bitmap(Default::default())),
+            ("ZONEMAP", json!({}), Index::ZoneMap(Default::default())),
             (
                 "LABEL_LIST",
                 json!({}),
