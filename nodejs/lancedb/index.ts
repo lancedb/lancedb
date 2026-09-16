@@ -72,6 +72,7 @@ export {
 
 export {
   makeArrowTable,
+  makeJsonField,
   MakeArrowTableOptions,
   Data,
   VectorColumnOptions,

@@ -170,6 +170,7 @@
 - [instrumentLanceDbMetrics](functions/instrumentLanceDbMetrics.md)
 - [isBlobField](functions/isBlobField.md)
 - [makeArrowTable](functions/makeArrowTable.md)
+- [makeJsonField](functions/makeJsonField.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)
 - [tokenize](functions/tokenize.md)
