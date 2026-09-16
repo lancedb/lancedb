@@ -43,8 +43,8 @@ use crate::table::{
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
-    MaxBatchLengthStream, TimeoutStream, resolve_arrow_field_path, resolve_arrow_fts_field_path,
-    supported_btree_data_type, supported_vector_data_type,
+    MaxBatchLengthStream, TimeoutStream, public_fts_field_path_by_id, resolve_arrow_field_path,
+    resolve_arrow_fts_field_path, supported_btree_data_type, supported_vector_data_type,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -2042,7 +2042,19 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         }
 
         let results = futures::future::try_join_all(futures).await?;
-        Ok(results.into_iter().flatten().collect())
+        let mut indices: Vec<IndexConfig> = results.into_iter().flatten().collect();
+        let lance_schema = lance_core::datatypes::Schema::try_from(schema.as_ref())?;
+        for index in &mut indices {
+            if index.index_type == IndexType::FTS {
+                // The wire format uses physical paths for schema resolution. Match
+                // native tables by exposing list-transparent paths to callers.
+                for column in &mut index.columns {
+                    let field_id = lance_schema.field_id(column)?;
+                    *column = public_fts_field_path_by_id(&lance_schema, field_id)?;
+                }
+            }
+        }
+        Ok(indices)
     }
 }
 
@@ -6984,6 +6996,43 @@ mod tests {
         assert_eq!(indices, expected);
     }
 
+    #[rstest]
+    #[case::legacy(false)]
+    #[case::enriched(true)]
+    #[tokio::test]
+    async fn test_list_indices_fts_public_list_path(#[case] enriched: bool) {
+        let schema = nested_index_schema();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => describe_response(&schema),
+                "/v1/table/my_table/index/list/" => serde_json::json!({
+                    "indexes": [{
+                        "index_name": "docs_idx",
+                        "columns": ["docs.item.content"],
+                        "index_type": enriched.then_some("FTS"),
+                    }],
+                })
+                .to_string(),
+                "/v1/table/my_table/index/docs_idx/stats/" => {
+                    assert!(!enriched, "enriched responses must not fetch index stats");
+                    serde_json::json!({
+                        "num_indexed_rows": 1,
+                        "num_unindexed_rows": 0,
+                        "index_type": "FTS",
+                    })
+                    .to_string()
+                }
+                path => panic!("Unexpected path: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].index_type, IndexType::FTS);
+        assert_eq!(indices[0].columns, vec!["docs.content"]);
+    }
+
     #[tokio::test]
     async fn test_list_indices_nested_field_paths() {
         let schema = nested_index_schema();
@@ -7856,7 +7905,7 @@ mod tests {
         });
         let application = crate::function::FunctionApplication::from_json(
             r#"{
-                "function":{"name":"embed","version":"fv_01K3EXACT"},
+                "function":{"name":"embed","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
                 "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false}
             }"#,
@@ -7933,7 +7982,7 @@ mod tests {
             });
         let application = crate::function::FunctionApplication::from_json(
             r#"{
-                "function":{"name":"text_features","version":"fv_01K3TEXT"},
+                "function":{"name":"text_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[
                     {"parameter":"title","kind":"column","value":{"path":"title"}},
                     {"parameter":"body","kind":"column","value":{"path":"body"}}
@@ -7989,7 +8038,7 @@ mod tests {
         });
         let application = crate::function::FunctionApplication::from_json(
             r#"{
-                "function":{"name":"embed","version":"fv_01K3EXACT"},
+                "function":{"name":"embed","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
                 "output":{"kind":"scalar","arrow_type":"fixed_size_list<float32, 3>","nullable":false}
             }"#,
@@ -8034,7 +8083,7 @@ mod tests {
         });
         let application = crate::function::FunctionApplication::from_json(
             r#"{
-                "function":{"name":"text_features","version":"fv_01K3TEXT"},
+                "function":{"name":"text_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[
                     {"parameter":"title","kind":"column","value":{"path":"title"}},
                     {"parameter":"body","kind":"column","value":{"path":"body"}}

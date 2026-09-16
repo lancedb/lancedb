@@ -133,6 +133,8 @@ listing a storage directory.
 
 ::: lancedb.functions.PythonAdapterSpec
 
+::: lancedb.functions.FunctionImage
+
 ::: lancedb.functions.FunctionVersion
 
 ::: lancedb.functions.PythonRuntimeSpec

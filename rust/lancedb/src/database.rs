@@ -296,7 +296,7 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
-    /// Register an immutable Function version through the remote catalog.
+    /// Submit a Function creation job that builds an image and registers it.
     async fn create_function_async(
         &self,
         _request: crate::function::FunctionRegistrationRequest,
@@ -382,7 +382,7 @@ pub trait Database:
     async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
-    /// Drop one exact immutable Function version from the remote catalog.
+    /// Remove the current Function name binding, retaining the object history.
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
     }

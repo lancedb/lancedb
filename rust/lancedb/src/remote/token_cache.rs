@@ -338,7 +338,7 @@ struct LockGuard {
 }
 
 /// The persistent token cache engine for one [`OAuthConfig`].
-pub(crate) struct TokenCache {
+pub struct TokenCache {
     dir: PathBuf,
     key: CacheKey,
     lock_timeout: Duration,
@@ -956,7 +956,7 @@ impl OAuthSession {
 /// client-credentials flow, which has no refresh token to persist (a debug
 /// note is logged). The Azure managed-identity flow is rejected because
 /// machine identity must not enter a user token cache.
-pub(crate) fn token_cache_for_config(config: &OAuthConfig) -> Result<Option<Arc<TokenCache>>> {
+pub fn token_cache_for_config(config: &OAuthConfig) -> Result<Option<Arc<TokenCache>>> {
     let Some(options) = &config.token_cache else {
         return Ok(None);
     };
