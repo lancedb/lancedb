@@ -22,7 +22,7 @@ pub struct PyTokenCacheOptions {
 
 impl From<PyTokenCacheOptions> for TokenCacheOptions {
     fn from(py: PyTokenCacheOptions) -> Self {
-        TokenCacheOptions {
+        Self {
             cache_dir: py.cache_dir.map(PathBuf::from),
             lock_timeout_secs: py.lock_timeout_secs,
         }
