@@ -166,7 +166,10 @@ class ClientConfig:
     extra_headers: Optional[dict]
         Additional headers to include in requests.
     id_delimiter: Optional[str]
-        The delimiter to use when constructing object identifiers.
+        The delimiter joining a namespace path and a name into one object
+        identifier. ``"$"`` is the only supported value, and leaving this
+        unset is how to get it; anything else is rejected when the connection
+        is created.
     tls_config: Optional[TlsConfig]
         TLS/mTLS configuration for secure connections.
     header_provider: Optional[HeaderProvider]
