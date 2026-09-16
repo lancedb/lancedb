@@ -2775,7 +2775,8 @@ mod tests {
         FunctionBinding::from_json(
             &serde_json::json!({
                 "binding_id": binding_id,
-                "function": {"name": "embed", "version": "fv_test"},
+                "function": {"name": "embed", "version": "1", "object_id": "fixture", "location": "memory:///fixture",
+                    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [{
                     "parameter": "text", "field_id": -1, "field_path": input,
                     "arrow_type": input_type, "nullable": true,
@@ -3052,7 +3053,8 @@ mod tests {
         let binding = FunctionBinding::from_json(
             &serde_json::json!({
                 "binding_id": "fb_pair",
-                "function": {"name": "pair", "version": "fv_test"},
+                "function": {"name": "pair", "version": "1", "object_id": "fixture", "location": "memory:///fixture",
+                    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [{"parameter": "value", "field_id": -1, "field_path": "id",
                             "arrow_type": int, "nullable": true}],
                 "outputs": [

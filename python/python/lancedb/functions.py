@@ -41,6 +41,7 @@ from typing import (
 
 import pyarrow as pa
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -295,21 +296,39 @@ class PythonRuntimeSpec(_RemoteValue):
         return self
 
 
-class FunctionVersion(_RemoteValue):
-    """An exact immutable Function version returned by Enterprise.
+class FunctionImage(_RemoteValue):
+    """A complete OCI Function image identified by its exact manifest digest."""
 
-    The GPU execution requirement is part of this identity. CPU and memory sizing,
-    priority, concurrency, and retry policy belong to the execution platform.
-    """
+    manifest_digest: str
+    descriptor: Mapping[str, Any]
+    source: bool
+
+
+def _validate_object_version(value: str) -> str:
+    if int(value) > 2**64 - 1:
+        raise ValueError("Function version exceeds uint64")
+    return value
+
+
+_ObjectVersion = Annotated[
+    str,
+    Field(strict=True, pattern=r"^[1-9][0-9]*$"),
+    AfterValidator(_validate_object_version),
+]
+
+
+class FunctionVersion(_RemoteValue):
+    """A pinned object revision, independent of its executable image digest."""
 
     name: str
-    version: str
-    artifact: FunctionArtifact
+    object_id: str
+    location: str
+    version: _ObjectVersion
+    image: FunctionImage
     signature: FunctionSignature
-    runtime: PythonRuntimeSpec
-    runtime_digest: str
-    environment_digest: str
     created_at: str
+    metadata: Mapping[str, str]
+    disabled: bool
 
     def __call__(self, **inputs: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.
@@ -363,7 +382,13 @@ class FunctionVersion(_RemoteValue):
                 )
             )
         return FunctionApplication(
-            function=FunctionVersionRef(name=self.name, version=self.version),
+            function=FunctionVersionRef(
+                name=self.name,
+                object_id=self.object_id,
+                location=self.location,
+                version=self.version,
+                manifest_digest=self.image.manifest_digest,
+            ),
             inputs=tuple(bindings),
             output=self.signature.output,
         )
@@ -380,7 +405,10 @@ class FunctionRegistrationRequest(_RemoteValue):
 
 class FunctionVersionRef(_OpenRemoteValue):
     name: str
-    version: str
+    object_id: str
+    location: str
+    version: _ObjectVersion
+    manifest_digest: str
 
 
 class ApplicationInput(_OpenRemoteValue):
@@ -1402,6 +1430,7 @@ __all__ = [
     "FunctionRegistrationRequest",
     "FunctionResultField",
     "FunctionSignature",
+    "FunctionImage",
     "FunctionVersion",
     "FunctionVersionRef",
     "InputBinding",

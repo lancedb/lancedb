@@ -539,7 +539,13 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
         object
             .get("function")
             .ok_or_else(|| invalid_function("Function binding is missing its exact version"))?,
-        &["name", "version"],
+        &[
+            "name",
+            "object_id",
+            "location",
+            "version",
+            "manifest_digest",
+        ],
         "version reference",
     )?;
     for input in object
@@ -3022,7 +3028,7 @@ mod tests {
     fn named_struct_application(columns: &str) -> FunctionApplication {
         FunctionApplication::from_json(&format!(
             r#"{{
-                "function":{{"name":"text_features","version":"fv_exact"}},
+                "function":{{"name":"text_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"}},
                 "inputs":[
                     {{"parameter":"title","kind":"column","value":{{"path":"title"}}}},
                     {{"parameter":"body","kind":"column","value":{{"path":"body"}}}}
@@ -3040,7 +3046,7 @@ mod tests {
     fn blob_application(output: &str) -> FunctionApplication {
         FunctionApplication::from_json(&format!(
             r#"{{
-                "function":{{"name":"blob_features","version":"fv_blob"}},
+                "function":{{"name":"blob_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"}},
                 "inputs":[
                     {{"parameter":"image","kind":"column","value":{{"path":"image"}}}}
                 ],
@@ -3059,7 +3065,7 @@ mod tests {
     fn single_input_application(path: &str) -> FunctionApplication {
         FunctionApplication::from_json(
             &serde_json::json!({
-                "function": {"name": "inspect", "version": "fv_nested_blob"},
+                "function": {"name": "inspect", "version": "1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [{
                     "parameter": "value",
                     "kind": "column",
@@ -3401,7 +3407,7 @@ mod tests {
         ));
         let dependent_application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"dependent","version":"fv_dependent"},
+                "function":{"name":"dependent","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[
                     {"parameter":"text","kind":"column","value":{"path":"search_text"}}
                 ],
@@ -3532,7 +3538,7 @@ mod tests {
         let input = ArrowField::new("value", DataType::Int64, false);
         let application = FunctionApplication::from_json(
             &serde_json::json!({
-                "function": {"name": "embed", "version": "fv_embed"},
+                "function": {"name": "embed", "version": "1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [{
                     "parameter": "value",
                     "kind": "column",
@@ -3737,7 +3743,7 @@ mod tests {
         ));
         let application = FunctionApplication::from_json(
             &serde_json::json!({
-                "function": {"name": "inspect", "version": "fv_nested_blob"},
+                "function": {"name": "inspect", "version": "1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [],
                 "output": {
                     "kind": "named_struct",
@@ -3869,7 +3875,7 @@ mod tests {
     fn test_unknown_and_mixed_version_function_contracts_fail_closed() {
         let application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"f","version":"fv"},
+                "function":{"name":"f","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[{"parameter":"title","kind":"future_source","value":{"path":"title"}}],
                 "output":{"kind":"scalar","arrow_type":"int64","nullable":false}
             }"#,
@@ -3881,7 +3887,7 @@ mod tests {
 
         let future_application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"f","version":"fv"},
+                "function":{"name":"f","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[],
                 "output":{"kind":"scalar","arrow_type":"int64","nullable":false},
                 "future_declaration":{"mode":"managed"}
@@ -3895,7 +3901,7 @@ mod tests {
 
         let nested_future_application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"f","version":"fv"},
+                "function":{"name":"f","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[],
                 "output":{"kind":"scalar","arrow_type":"int64","nullable":false,"assignment":"cell_flag"}
             }"#,
@@ -3961,7 +3967,7 @@ mod tests {
         let nested_schema = ArrowSchema::new(vec![nested_title, schema.field(1).as_ref().clone()]);
         let nested_application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"text_features","version":"fv_exact"},
+                "function":{"name":"text_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[
                     {"parameter":"title","kind":"column","value":{"path":"title.value"}},
                     {"parameter":"body","kind":"column","value":{"path":"body"}}
