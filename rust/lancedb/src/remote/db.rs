@@ -743,7 +743,17 @@ struct RemoteCreateFunctionRequest<'a> {
     signature: &'a FunctionSignature,
     runtime: &'a PythonRuntimeSpec,
     /// Absent when the Function binds nothing, so the body carries a binding
-    /// list only when there is one to carry.
+    /// list only when there is one to carry, and a client that binds nothing
+    /// sends what a client without bindings sends.
+    ///
+    /// A service that does not know the field ignores it: the registration
+    /// succeeds, the version it returns carries no bindings, and the Function
+    /// fails when it runs with the variable unset, far from the call that asked
+    /// for it. [`ServerVersion`] is how this codebase refuses a feature the
+    /// service is too old for, and it does not gate this one yet -- it is held
+    /// per table, and registering a Function is a database-level call.
+    ///
+    /// [`ServerVersion`]: super::db::ServerVersion
     #[serde(skip_serializing_if = "<[SecretBinding]>::is_empty")]
     secret_bindings: &'a [SecretBinding],
 }
