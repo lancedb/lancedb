@@ -26,12 +26,13 @@ use crate::database::{
 use crate::error::Result;
 use crate::function::{
     FunctionArtifactRequest, FunctionRegistrationRequest, FunctionSignature, FunctionVersion,
-    PythonRuntimeSpec, SecretBinding,
+    PythonRuntimeSpec,
 };
 use crate::job::Job;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
+use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 use crate::utils::{reject_relative_segment, validate_table_name};
@@ -575,15 +576,14 @@ impl From<&CreateTableMode> for &'static str {
 
 /// The path segment addressing one object: its namespace path and its name.
 ///
-/// One builder for tables, Secrets, Functions and materialized views, because
-/// the identifier grammar belongs to the namespace spec rather than to any one
-/// object type. A caller passing an empty path addresses an object that has no
-/// namespace yet.
+/// One builder for tables, Secrets, Functions and materialized views: the
+/// identifier grammar belongs to the namespace spec, not to an object type. An
+/// empty path addresses an object with no namespace.
 ///
-/// What every component is checked for here is addressability, not a character
-/// set: the name's own grammar is the caller's, so that a table can report
-/// [`Error::InvalidTableName`], a Function can admit names a table may not, and
-/// a catalog database can carry a `/` the way [`RemoteCatalog`] allows.
+/// Components are checked for addressability, not a character set. The name's
+/// grammar is the caller's, so a table reports [`Error::InvalidTableName`], a
+/// Function admits names a table may not, and a catalog database carries the
+/// `/` that [`RemoteCatalog`] allows.
 ///
 /// [`RemoteCatalog`]: super::catalog::RemoteCatalog
 fn build_object_identifier(what: &str, name: &str, namespace: &[String]) -> Result<String> {
@@ -597,17 +597,15 @@ fn build_object_identifier(what: &str, name: &str, namespace: &[String]) -> Resu
 }
 
 /// What a component may not be if the join is to survive being split back
-/// apart: empty, a segment URL parsing resolves away, or the delimiter doing
-/// the joining.
+/// apart: empty, a segment URL parsing resolves away, or the delimiter itself.
 ///
-/// Deliberately not a character set. Percent-encoding per component is what
-/// makes the wider set safe -- a `/` in a name reaches the service as `%2F`,
-/// still one segment -- while these three erase a boundary that no encoding of
-/// the joined form can recover. An empty component leaves two delimiters
-/// running together, and a split that drops what lies between them yields a
-/// shorter path that addresses a different object: `["prod", ""]` joins to
-/// `prod$`, which reads back as `["prod"]`, so a drop would reach the parent of
-/// the namespace the caller named.
+/// Each erases a boundary no encoding of the joined form recovers. `["prod",
+/// ""]` joins to `prod$`, which reads back as `["prod"]`, so a drop reaches the
+/// parent of the namespace the caller named.
+///
+/// Not a character set: per-component percent-encoding makes the wider set
+/// safe, since a `/` in a name reaches the service as `%2F`, still one
+/// segment.
 fn reject_unaddressable_component(what: &str, value: &str) -> Result<()> {
     if value.is_empty() {
         return Err(Error::InvalidInput {
@@ -629,27 +627,23 @@ fn reject_unaddressable_component(what: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// The path segment addressing one table.
-///
-/// A wrapper for the sake of the error: an invalid table name is reported as
-/// [`Error::InvalidTableName`], which callers match on.
+/// The path segment addressing one table. A wrapper for the error type:
+/// callers match on [`Error::InvalidTableName`].
 fn build_table_identifier(name: &str, namespace: &[String]) -> Result<String> {
     validate_table_name(name)?;
     build_object_identifier("table name", name, namespace)
 }
 
-/// Join validated components into the `{id}` a route addresses: each
-/// percent-encoded, then joined by the delimiter.
+/// Join components into the `{id}` a route addresses: each percent-encoded,
+/// then joined by the delimiter.
 ///
-/// Encoded per component rather than over the joined string, so the delimiter
-/// stays a delimiter and nothing inside a component can end the path segment.
+/// Per component rather than over the joined string, so the delimiter stays a
+/// delimiter and nothing inside a component can end the path segment.
 ///
-/// It is a second line, not the first. Every character a name may hold is
-/// unreserved, so a validated component encodes to itself and the route reads
-/// exactly as the caller wrote it; what the encoding covers is a component that
-/// arrives some other way, so that its content cannot choose the URL's shape.
-/// It does not cover `.` and `..`, which are unreserved too and are resolved
-/// after decoding -- [`build_object_identifier`] refuses those outright.
+/// A second line, not the first: a component from the object charset is all
+/// unreserved and encodes to itself, so the route reads as the caller wrote it.
+/// It does not cover `.` and `..`, which are unreserved too and resolve away
+/// after decoding -- [`build_object_identifier`] refuses those.
 fn join_identifier<'a>(components: impl Iterator<Item = &'a str>) -> String {
     components
         .map(|component| urlencoding::encode(component).into_owned())
@@ -742,16 +736,14 @@ struct RemoteCreateFunctionRequest<'a> {
     artifact: &'a FunctionArtifactRequest,
     signature: &'a FunctionSignature,
     runtime: &'a PythonRuntimeSpec,
-    /// Absent when the Function binds nothing, so the body carries a binding
-    /// list only when there is one to carry, and a client that binds nothing
-    /// sends what a client without bindings sends.
+    /// Absent when the Function binds nothing, so such a client sends what a
+    /// client without bindings sends.
     ///
-    /// A service that does not know the field ignores it: the registration
-    /// succeeds, the version it returns carries no bindings, and the Function
-    /// fails when it runs with the variable unset, far from the call that asked
-    /// for it. [`ServerVersion`] is how this codebase refuses a feature the
-    /// service is too old for, and it does not gate this one yet -- it is held
-    /// per table, and registering a Function is a database-level call.
+    /// A service that does not know the field ignores it: registration
+    /// succeeds, the returned version carries no bindings, and the Function
+    /// fails at execution with the variable unset. [`ServerVersion`] is how
+    /// this codebase refuses a feature the service is too old for; it is held
+    /// per table, so gating a database-level call is follow-up work.
     ///
     /// [`ServerVersion`]: super::db::ServerVersion
     #[serde(skip_serializing_if = "<[SecretBinding]>::is_empty")]

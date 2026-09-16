@@ -5,9 +5,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use lancedb::function::{
-    FunctionApplication, FunctionBinding, FunctionVersion, RefreshColumnResult, SecretBinding,
-    SecretReference,
+    FunctionApplication, FunctionBinding, FunctionVersion, RefreshColumnResult,
 };
+use lancedb::secrets::{SecretBinding, SecretReference};
 use serde_json::Value;
 
 fn fixture(name: &str) -> String {

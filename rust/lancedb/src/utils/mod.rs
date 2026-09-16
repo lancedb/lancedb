@@ -103,9 +103,8 @@ fn is_relative_segment(value: &str) -> bool {
 
 /// Refuse a path component that URL parsing resolves as a relative segment.
 ///
-/// Reachable on its own for an identifier with no other validator to hang it
-/// on: a Function name has no client-side grammar, so this is the only one of
-/// these rules that applies to it.
+/// Reachable on its own for an identifier with no other validator: a Function
+/// name has no client-side grammar, so this is the only rule that applies.
 pub(crate) fn reject_relative_segment(what: &str, value: &str) -> Result<()> {
     if is_relative_segment(value) {
         return Err(Error::InvalidInput {
@@ -115,13 +114,13 @@ pub(crate) fn reject_relative_segment(what: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Every rule an object name obeys, in one place: non-empty, inside
-/// [`OBJECT_NAME_REGEX`], and addressable as a path segment.
+/// Every rule an object name obeys: non-empty, inside [`OBJECT_NAME_REGEX`],
+/// and addressable as a path segment.
 ///
-/// Returns the reason rather than an [`Error`], because the error *type* is
-/// each API's own -- a table reports [`Error::InvalidTableName`] and the rest
-/// report [`Error::InvalidInput`]. Sharing the rules but not the error is what
-/// keeps a table, a namespace segment and a Secret from drifting apart.
+/// Returns the reason rather than an [`Error`], because the error type is each
+/// API's own -- a table reports [`Error::InvalidTableName`], the rest
+/// [`Error::InvalidInput`]. Sharing the rules but not the error keeps a table,
+/// a namespace segment and a Secret from drifting apart.
 fn check_object_name(name: &str) -> std::result::Result<(), &'static str> {
     if name.is_empty() {
         return Err("it must not be empty");
@@ -156,11 +155,11 @@ pub fn validate_namespace_name(name: &str) -> Result<()> {
 /// Validate one component of a Secret identifier: a Secret name, or one segment
 /// of the namespace path holding it.
 ///
-/// The client joins these into `{id}`, and the join decides identity -- the
-/// service only ever sees what the split produced. `"a$b"` is not a name the
-/// service accepts, but joined and split it reads as the namespace `a` and the
-/// name `b`, a different Secret that may already exist. So this is not a second
-/// opinion on the name; it is what lets the service have one.
+/// The join decides identity, and the service only sees what the split
+/// produced. `"a$b"` is not a name the service accepts, but joined and split it
+/// reads as the namespace `a` and the name `b` -- a different Secret that may
+/// already exist. This is not a second opinion on the name; it is what lets the
+/// service have one.
 pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
     check_object_name(value).map_err(|reason| Error::InvalidInput {
         message: format!("invalid {what} '{value}': {reason}"),

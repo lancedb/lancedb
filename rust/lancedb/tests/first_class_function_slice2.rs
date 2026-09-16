@@ -5,7 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use lancedb::Error;
-use lancedb::function::{FunctionRegistrationRequest, SecretBinding, SecretReference};
+use lancedb::function::FunctionRegistrationRequest;
+use lancedb::secrets::{SecretBinding, SecretReference};
 use serde_json::Value;
 
 fn fixture(name: &str) -> String {

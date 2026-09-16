@@ -441,29 +441,13 @@ enum BodyLogging {
     Suppressed,
 }
 
-/// Check a configured identifier delimiter before anything is joined with it.
-///
-/// The delimiter is written into a URL path raw -- it is what separates the
-/// components, so it cannot itself be escaped. That makes it the one piece of
-/// configuration that can change a route's *shape* rather than its content: a
-/// delimiter of `/` turns `["prod"] + "openai"` into `prod/openai`, which is
-/// two path segments, and `POST /v1/secret/prod/openai/drop` matches no route
-/// at all.
-///
-/// Refusing a component that contains the delimiter is not enough to catch
-/// this, because neither component contains one -- the delimiter is the
-/// problem, not what it joins.
-///
-/// An empty delimiter is refused for the same reason from the other side: it
-/// joins `["a", "b"]` into `ab`, which no split recovers.
 /// The delimiter joining a namespace path and a name into the `{id}` a route
 /// addresses, and the only one a LanceDB service splits on.
 ///
-/// The identifier grammar comes from the Lance REST catalog standard, which
-/// carries a delimiter setting so other catalogs can adopt it; LanceDB itself
-/// has one value. Fixing it here is what lets an identifier be joined and split
-/// back apart without further checks: `$` is outside the character set every
-/// object name admits, so no name can contain one.
+/// `$` is outside the character set object names admit, so a joined identifier
+/// always splits back into the parts that made it. The configuration field
+/// exists because the identifier grammar comes from the Lance REST catalog
+/// standard, which carries a delimiter setting for other catalogs to adopt.
 pub(crate) const ID_DELIMITER: &str = "$";
 
 fn validate_id_delimiter(delimiter: &str) -> Result<()> {
@@ -479,12 +463,9 @@ fn validate_id_delimiter(delimiter: &str) -> Result<()> {
 }
 
 impl ClientConfig {
-    /// Check the settings that a request cannot be built correctly without.
-    ///
-    /// Called before a client is constructed from this, so a configuration
+    /// Check the settings a request cannot be built correctly without, so a
     /// mistake is reported where it was made rather than as a confusing
-    /// response later. Public so a caller assembling a config can ask the same
-    /// question without connecting.
+    /// response later. Public so a caller can ask without connecting.
     pub fn validate(&self) -> Result<()> {
         if let Some(delimiter) = &self.id_delimiter {
             validate_id_delimiter(delimiter)?;
@@ -518,8 +499,8 @@ impl RestfulLanceDbClient<Sender> {
         client_config: ClientConfig,
         read_consistency_interval: Option<Duration>,
     ) -> Result<Self> {
-        // Before anything is built from it: a bad delimiter is a mistake in the
-        // caller's configuration, and saying so here names it as one.
+        // Before anything is built from it, so the error names the caller's
+        // configuration rather than a request.
         client_config.validate()?;
 
         // Get the timeouts
@@ -1166,9 +1147,9 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    /// The identifier grammar has one delimiter. A configuration naming any
-    /// other is refused where it was written, rather than producing identifiers
-    /// no service would split the way the caller meant.
+    /// A configuration naming any other delimiter is refused where it was
+    /// written, rather than producing identifiers no service splits the way the
+    /// caller meant.
     #[test]
     fn test_a_delimiter_other_than_the_supported_one_is_refused() {
         for delimiter in ["/", "?", "#", "%", "", ".", "..", "-", "_", "|", "::", "$$"] {
