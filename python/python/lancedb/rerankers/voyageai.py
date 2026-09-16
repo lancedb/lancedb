@@ -32,7 +32,7 @@ class VoyageAIReranker(Reranker):
     return_score : str, default "relevance"
         options are "relevance" or "all". Only "relevance" is supported for now.
     api_key : str, default None
-        The API key to use. If None, will use the OPENAI_API_KEY environment variable.
+        The API key to use. If None, will use the VOYAGE_API_KEY environment variable.
     truncation : Optional[bool], default None
     """
 
