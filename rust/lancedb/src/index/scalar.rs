@@ -64,6 +64,21 @@ pub struct FmIndexBuilder {}
 ///
 /// A ZoneMap index stores min/max summaries for ranges of rows and can
 /// accelerate range predicates by pruning zones that cannot match.
+///
+/// ```
+/// use lancedb::{
+///     index::{scalar::ZoneMapIndexBuilder, Index},
+///     Table,
+/// };
+///
+/// # async fn create_zonemap_index(table: &Table) -> lancedb::Result<()> {
+/// table
+///     .create_index(&["timestamp"], Index::ZoneMap(ZoneMapIndexBuilder::default()))
+///     .execute()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ZoneMapIndexBuilder {}
 
