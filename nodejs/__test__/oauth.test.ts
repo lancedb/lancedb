@@ -3,6 +3,7 @@
 
 import * as fs from "fs";
 import * as http from "http";
+import { execFileSync } from "node:child_process";
 import * as os from "os";
 import * as path from "path";
 import { OAuthConfig, OAuthFlowType, OAuthSession } from "../lancedb/oauth";
@@ -23,9 +24,15 @@ function deviceConfig(issuerUrl: string, cacheDir: string): OAuthConfig {
 
 describe("OAuthSession", () => {
   beforeAll(() => {
-    // Point the Rust browser helper at a no-op so device-flow logins never
-    // open a real browser window during tests.
-    process.env.LANCEDB_OAUTH_BROWSER = "/usr/bin/true";
+    // Child processes inherit the real environment, just as Rust reads it.
+    // Fail before login if the browser override only exists in Jest's sandbox.
+    const browser = execFileSync(
+      process.execPath,
+      ["-p", "process.env.LANCEDB_OAUTH_BROWSER ?? ''"],
+      { encoding: "utf8" },
+    ).trim();
+    expect(browser).not.toBe("");
+    expect(browser).toBe(process.env.LANCEDB_OAUTH_BROWSER);
   });
 
   it("reports an absent session and logout is idempotent", async () => {
