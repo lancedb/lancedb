@@ -588,6 +588,9 @@ impl<S: HttpSend> RemoteTable<S> {
             Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
             Index::Fm(p) => ("FM", Some(to_json(p)?)),
             Index::ZoneMap(p) => ("ZONEMAP", Some(to_json(p)?)),
+            Index::NGram(p) => ("NGRAM", Some(to_json(p)?)),
+            Index::BloomFilter(p) => ("BLOOM_FILTER", Some(to_json(p)?)),
+            Index::RTree(p) => ("RTREE", Some(to_json(p)?)),
             Index::FTS(p) => {
                 let mut params = to_json(p)?;
                 if p.get_document_granularity().is_list_element() {
@@ -6378,6 +6381,33 @@ mod tests {
             ("BTREE", json!({}), Index::BTree(Default::default())),
             ("BITMAP", json!({}), Index::Bitmap(Default::default())),
             ("ZONEMAP", json!({}), Index::ZoneMap(Default::default())),
+            ("NGRAM", json!({}), Index::NGram(Default::default())),
+            (
+                "BLOOM_FILTER",
+                json!({}),
+                Index::BloomFilter(Default::default()),
+            ),
+            ("RTREE", json!({}), Index::RTree(Default::default())),
+            (
+                "BLOOM_FILTER",
+                json!({"number_of_items": 4096, "probability": 0.01}),
+                Index::BloomFilter(
+                    crate::index::scalar::BloomFilterIndexBuilder::default()
+                        .number_of_items(4096)
+                        .unwrap()
+                        .probability(0.01)
+                        .unwrap(),
+                ),
+            ),
+            (
+                "RTREE",
+                json!({"page_size": 1024}),
+                Index::RTree(
+                    crate::index::scalar::RTreeIndexBuilder::default()
+                        .page_size(1024)
+                        .unwrap(),
+                ),
+            ),
             (
                 "LABEL_LIST",
                 json!({}),
