@@ -665,22 +665,80 @@ class RemoteDBConnection(DBConnection):
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> MaterializedView:
-        raise NotImplementedError(
-            "materialized views are supported only on local databases"
+        from .table import RemoteTable
+
+        view = LOOP.run(
+            self._conn.create_materialized_view(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
         )
+        return MaterializedView(
+            RemoteTable(
+                view.table,
+                self.db_name,
+                connection_state=self.serialize,
+                namespace_path=[],
+            )
+        )
+
+    @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._conn.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
+        )
+        return Job(job)
 
     @override
     def open_materialized_view(self, name: str) -> MaterializedView:
-        raise NotImplementedError(
-            "materialized views are supported only on local databases"
-        )
+        view = MaterializedView(self.open_table(name))
+        view.definition
+        return view
 
     @override
     def list_materialized_views(self) -> List[str]:
-        raise NotImplementedError(
-            "materialized views are supported only on local databases"
+        return LOOP.run(self._conn.list_materialized_views())
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_materialized_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._conn.drop_materialized_view_async(name, namespace_path=namespace_path)
         )
+        return Job(job)
 
     @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):

@@ -1657,6 +1657,7 @@ mod tests {
 
     async fn doubled_view(conn: &Connection) -> MaterializedView {
         conn.create_materialized_view("doubled", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -1724,6 +1725,7 @@ mod tests {
         let (conn, _) = db_with_source(vec![1, 20, 3, 40]).await;
         let view = conn
             .create_materialized_view("big", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .only_if("x > 10")
             .execute()
@@ -1749,6 +1751,7 @@ mod tests {
             .await
             .unwrap();
         conn.create_materialized_view("democrats", "src")
+            .with_no_data(true)
             .select([("id", "id")])
             .only_if(r#""PartyAbbrev" = 'D'"#)
             .execute()
@@ -1784,6 +1787,7 @@ mod tests {
             .unwrap();
         let view = conn
             .create_materialized_view("legacy_view", "legacy_src")
+            .with_no_data(true)
             .select([("id", "id")])
             .only_if(r#""PartyAbbrev" = 'X'"#)
             .execute()
@@ -1851,6 +1855,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 20]).await;
         let view = conn
             .create_materialized_view("big", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .only_if("x > 10")
             .execute()
@@ -1872,6 +1877,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![20]).await;
         let view = conn
             .create_materialized_view("big", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .only_if("x > 10")
             .execute()
@@ -1929,6 +1935,7 @@ mod tests {
             .unwrap();
         let view = conn
             .create_materialized_view("legacy_doubled", "legacy_src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2007,6 +2014,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("drifting_view", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2093,6 +2101,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("atomic_view", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2195,6 +2204,7 @@ mod tests {
         let (conn, _) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("raced_rebuild", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2291,6 +2301,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("raced_incremental", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2409,6 +2420,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("empty", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .limit(0)
             .execute()
@@ -2576,6 +2588,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2]).await;
         let view = conn
             .create_materialized_view("capped", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .limit(2)
             .execute()
@@ -2608,6 +2621,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("capped", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .limit(4)
             .execute()
@@ -2677,6 +2691,7 @@ mod tests {
         let (conn, _) = db_with_source(vec![1, 2]).await;
         let view = conn
             .create_materialized_view("none", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .only_if("x > 100")
             .execute()
@@ -2720,6 +2735,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1]).await;
         let view = conn
             .create_materialized_view("v", "src")
+            .with_no_data(true)
             .select([("twice", "x * 2")])
             .execute()
             .await
@@ -2779,6 +2795,7 @@ mod tests {
 
         let second = conn
             .create_materialized_view("second", "doubled")
+            .with_no_data(true)
             .only_if("twice > 10")
             .execute()
             .await
@@ -3146,6 +3163,7 @@ mod tests {
         let (conn, _) = db_with_source(vec![1, 2]).await;
         let view = conn
             .create_materialized_view("v", "src")
+            .with_no_data(true)
             .select([("double value", "x * 2")])
             .execute()
             .await
@@ -3199,6 +3217,7 @@ mod tests {
         // An active-LSM source is refused at create.
         let err = conn
             .create_materialized_view("v", "src")
+            .with_no_data(true)
             .execute()
             .await
             .unwrap_err();
@@ -3209,6 +3228,7 @@ mod tests {
         table.unset_lsm_write_spec().await.unwrap();
         let view = conn
             .create_materialized_view("v", "src")
+            .with_no_data(true)
             .execute()
             .await
             .unwrap();

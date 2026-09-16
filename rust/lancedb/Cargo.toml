@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.39.0-beta.8"
+version = "0.39.0-beta.9"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -53,7 +53,7 @@ metrics = { workspace = true, optional = true }
 metrics-util = { workspace = true, optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "time"] }
 log.workspace = true
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -83,6 +83,9 @@ reqwest = { version = "0.12.0", default-features = false, features = [
 tonic = { workspace = true, optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
 urlencoding = { version = "2", optional = true }
+base64 = { version = "0.22", optional = true }
+fs4 = { version = "0.13", optional = true }
+webbrowser = { version = "1", optional = true }
 uuid = { workspace = true, features = ["v5"] }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
 polars = { version = ">=0.37,<0.40.0", optional = true }
@@ -158,6 +161,9 @@ remote = [
     "dep:http",
     "dep:tonic",
     "dep:urlencoding",
+    "dep:base64",
+    "dep:webbrowser",
+    "dep:fs4",
     "lance-namespace-impls/rest",
     "lance-namespace-impls/rest-adapter",
 ]
