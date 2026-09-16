@@ -379,7 +379,11 @@ pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
             message: format!("Invalid database URL (missing host) '{}'", db_url),
         });
     }
-    let db_name = parsed_url.host_str().unwrap().to_string();
+    let db_name = urlencoding::decode(parsed_url.host_str().unwrap())
+        .map_err(|err| Error::InvalidInput {
+            message: format!("Invalid encoded database name: {err}"),
+        })?
+        .into_owned();
     let db_prefix = {
         let prefix = parsed_url.path().trim_start_matches('/');
         if prefix.is_empty() {
@@ -1096,6 +1100,16 @@ mod tests {
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn test_parse_catalog_database_uri() {
+        let parsed = parse_db_url("db://team%2Fsearch").unwrap();
+        assert_eq!(parsed.db_name, "team/search");
+        assert!(parsed.db_prefix.is_none());
+        let parsed = parse_db_url("db://db/prefix").unwrap();
+        assert_eq!(parsed.db_name, "db");
+        assert_eq!(parsed.db_prefix.as_deref(), Some("prefix"));
     }
 
     #[test]

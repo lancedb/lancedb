@@ -289,6 +289,66 @@ impl RemoteDatabase {
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
+        Self::try_new_with_identity(
+            uri,
+            api_key,
+            region,
+            host_overrides,
+            client_config,
+            options,
+            read_consistency_interval,
+            parsed,
+        )
+    }
+
+    pub(crate) fn for_catalog(
+        endpoint: &str,
+        name: Option<&str>,
+        options: &super::catalog::RemoteCatalogOptions,
+    ) -> Result<Self> {
+        let scope = super::catalog::ScopedHeaderProvider {
+            provider: options.client_config.header_provider.clone(),
+            database: name.map(str::to_string),
+        };
+        let mut config = options.client_config.clone();
+        scope.apply(&mut config.extra_headers);
+        config.header_provider = Some(Arc::new(scope));
+        let uri = name
+            .map(|name| format!("db://{}", urlencoding::encode(name)))
+            .unwrap_or_else(|| endpoint.to_string());
+        let mut db = Self::try_new_with_identity(
+            &uri,
+            options.api_key.as_deref().unwrap_or(""),
+            "us-east-1",
+            RemoteHostOverrides {
+                rest: Some(endpoint.to_string()),
+                sql: None,
+            },
+            config,
+            RemoteOptions::default(),
+            options.read_consistency_interval,
+            super::client::ParsedDbUrl {
+                db_name: name.unwrap_or("").to_string(),
+                db_prefix: None,
+            },
+        )?;
+        if name.is_none() {
+            db.sql_client = None;
+        }
+        Ok(db)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_new_with_identity(
+        uri: &str,
+        api_key: &str,
+        region: &str,
+        host_overrides: RemoteHostOverrides,
+        client_config: ClientConfig,
+        options: RemoteOptions,
+        read_consistency_interval: Option<std::time::Duration>,
+        parsed: super::client::ParsedDbUrl,
+    ) -> Result<Self> {
         let sql_client = SqlClient::new(
             parsed.db_name.clone(),
             parsed.db_prefix.clone(),
@@ -301,7 +361,7 @@ impl RemoteDatabase {
             api_key,
             region,
             &parsed.db_name,
-            host_overrides.rest.is_some(),
+            host_overrides.rest.is_some() && !parsed.db_name.is_empty(),
             &options,
             parsed.db_prefix.as_deref(),
             &client_config,
@@ -1220,6 +1280,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<ListNamespacesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
             .get(&format!("/v1/namespace/{}/list", namespace_id));
@@ -1242,6 +1303,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<CreateNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
             .post(&format!("/v1/namespace/{}/create", namespace_id));
@@ -1256,7 +1318,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
 
         let body = CreateNamespaceRequestBody {
-            mode: request.mode.as_ref().map(|m| format!("{:?}", m)),
+            mode: request.mode,
             properties: request.properties,
         };
 
@@ -1264,12 +1326,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
+        if resp.status() == StatusCode::NO_CONTENT {
+            return Ok(CreateNamespaceResponse::default());
+        }
         resp.json().await.err_to_http(request_id)
     }
 
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
             .post(&format!("/v1/namespace/{}/drop", namespace_id));
@@ -1284,14 +1350,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
 
         let body = DropNamespaceRequestBody {
-            mode: request.mode.as_ref().map(|m| format!("{:?}", m)),
-            behavior: request.behavior.as_ref().map(|b| format!("{:?}", b)),
+            mode: request.mode,
+            behavior: request.behavior,
         };
 
         req = req.json(&body);
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
+        if resp.status() == StatusCode::NO_CONTENT {
+            return Ok(DropNamespaceResponse::default());
+        }
         resp.json().await.err_to_http(request_id)
     }
 
@@ -1301,6 +1370,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<DescribeNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let namespace_id = urlencoding::encode(&namespace_id);
         let req = self
             .client
             .post(&format!("/v1/namespace/{}/describe", namespace_id))

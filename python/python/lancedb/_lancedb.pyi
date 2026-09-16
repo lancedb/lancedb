@@ -856,3 +856,26 @@ def fts_query_to_json(query: Any) -> str: ...
 
 class PermutationReader:
     def __init__(self, base_table: Table, permutation_table: Table): ...
+
+class Catalog:
+    @property
+    def uri(self) -> str: ...
+    async def create_database(
+        self, name: str, *, exist_ok: bool = False
+    ) -> Connection: ...
+    async def open_database(self, name: str) -> Connection: ...
+    async def drop_database(
+        self, name: str, *, ignore_missing: bool = False
+    ) -> None: ...
+    async def list_databases(
+        self, *, limit: Optional[int] = None, page_token: Optional[str] = None
+    ) -> tuple[list[str], Optional[str]]: ...
+
+async def connect_catalog(
+    endpoint: str,
+    *,
+    api_key: Optional[str] = None,
+    client_config: Optional[Any] = None,
+    read_consistency_interval: Optional[float] = None,
+    oauth_config: Optional[Any] = None,
+) -> Catalog: ...

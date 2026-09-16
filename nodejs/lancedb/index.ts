@@ -628,3 +628,10 @@ export async function connectNamespace(
   );
   return new LocalConnection(nativeConn);
 }
+
+export {
+  Catalog,
+  CatalogOptions,
+  ListDatabasesResponse,
+  connectCatalog,
+} from "./catalog";

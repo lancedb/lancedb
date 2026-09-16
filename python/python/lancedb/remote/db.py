@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+from dataclasses import replace
 from datetime import timedelta
 import json
 import logging
@@ -187,11 +188,41 @@ class RemoteDBConnection(DBConnection):
             )
         )
 
+    @classmethod
+    def _from_catalog(cls, inner, name, endpoint, api_key, client_config, oauth_config):
+        config = (
+            ClientConfig(**client_config)
+            if isinstance(client_config, dict)
+            else (client_config or ClientConfig())
+        )
+        headers = {
+            key: value
+            for key, value in (config.extra_headers or {}).items()
+            if key.lower() not in ("x-lancedb-database", "x-lancedb-database-prefix")
+        }
+        headers["x-lancedb-database"] = name
+        result = cls.__new__(cls)
+        result.db_url = inner.uri
+        result.db_name = name
+        result.api_key = api_key or ""
+        result.region = "us-east-1"
+        result.host_override = endpoint
+        result.sql_host_override = None
+        result.storage_options = None
+        result.client_config = replace(config, extra_headers=headers)
+        result._catalog_oauth = oauth_config is not None
+        result._conn = inner
+        return result
+
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
 
     @override
     def serialize(self) -> str:
+        if getattr(self, "_catalog_oauth", False):
+            raise ValueError(
+                "Cannot serialize a catalog connection using OAuth; provide a worker-side connection factory"
+            )
         return json.dumps(
             {
                 "connection_type": "remote",

@@ -21,6 +21,7 @@ use table::{
 };
 
 pub mod arrow;
+pub mod catalog;
 pub mod connection;
 pub mod error;
 pub mod expr;
@@ -61,6 +62,8 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
     m.add_class::<Connection>()?;
+    m.add_class::<catalog::Catalog>()?;
+    m.add_function(wrap_pyfunction!(catalog::connect_catalog, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
     m.add_class::<crate::oauth::PyOAuthSession>()?;

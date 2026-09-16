@@ -31,6 +31,8 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 | LanceError::TableNotFound { .. }
                 | LanceError::NotAMaterializedView { .. }
                 | LanceError::Schema { .. }
+                | LanceError::DatabaseNotFound { .. }
+                | LanceError::DatabaseAlreadyExists { .. }
                 | LanceError::TableAlreadyExists { .. } => self.value_error(),
                 LanceError::CreateDir { .. } => self.os_error(),
                 LanceError::ObjectStore { .. } => Err(PyIOError::new_err(err.to_string())),
