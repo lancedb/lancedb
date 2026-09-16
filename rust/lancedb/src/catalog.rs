@@ -14,6 +14,7 @@
 //! # }
 //! ```
 
+use std::fmt;
 use std::sync::Arc;
 
 use crate::Result;
@@ -133,10 +134,18 @@ pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
 }
 
 /// A catalog connection that returns ordinary LanceDB database connections.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CatalogConnection {
     catalog: Arc<dyn Catalog>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+}
+
+impl fmt::Debug for CatalogConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CatalogConnection")
+            .field("uri", &self.uri())
+            .finish_non_exhaustive()
+    }
 }
 
 impl CatalogConnection {

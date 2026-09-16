@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -84,11 +85,18 @@ impl HeaderProvider for ScopedHeaderProvider {
 ///
 /// Database management requests omit database-selection headers. Opened database
 /// connections retain their own scope and authentication independently.
-#[derive(Debug)]
 pub struct RemoteCatalog {
     endpoint: String,
     root: RemoteDatabase,
     options: RemoteCatalogOptions,
+}
+
+impl fmt::Debug for RemoteCatalog {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RemoteCatalog")
+            .field("uri", &self.endpoint)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RemoteCatalog {
@@ -562,6 +570,26 @@ mod tests {
                     .await,
                 Err(Error::InvalidInput { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn catalog_debug_redacts_credentials() {
+        let mut options = RemoteCatalogOptions {
+            api_key: Some("catalog-secret-key".into()),
+            ..Default::default()
+        };
+        options
+            .client_config
+            .extra_headers
+            .insert("authorization".into(), "Bearer catalog-secret-token".into());
+        let catalog = RemoteCatalog::try_new("https://catalog.example", options).unwrap();
+        let catalog_debug = format!("{catalog:?}");
+        let connection = CatalogConnection::new(Arc::new(catalog));
+        for debug in [catalog_debug, format!("{connection:?}")] {
+            assert!(debug.contains("https://catalog.example"));
+            assert!(!debug.contains("catalog-secret-key"));
+            assert!(!debug.contains("catalog-secret-token"));
         }
     }
 }
