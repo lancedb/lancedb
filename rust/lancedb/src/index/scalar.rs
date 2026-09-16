@@ -84,7 +84,7 @@ pub struct ZoneMapIndexBuilder {}
 
 /// Builder for an NGram index over UTF-8 strings.
 ///
-/// This index accelerates substring, `LIKE`, and regular-expression filters.
+/// This index accelerates certain substring, `LIKE`, and regular-expression filters.
 /// It uses Lance's default trigram parameters.
 ///
 /// ```
@@ -100,8 +100,10 @@ pub struct NGramIndexBuilder {}
 
 /// Builder for a Bloom filter index on scalar values.
 ///
-/// Bloom filters accelerate equality and membership filters by skipping groups
-/// of rows that cannot match. Candidate rows are checked to remove false positives.
+/// Bloom filters accelerate equality and membership filters by skipping groups of rows that cannot
+/// match. Candidate rows are checked to remove false positives. A bloom filter is much smaller than
+/// a btree or bitmap index, but not as precise. It is also limited to equality queries.
+///
 /// Unset parameters use Lance's defaults.
 ///
 /// ```
