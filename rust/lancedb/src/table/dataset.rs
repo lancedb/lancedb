@@ -373,10 +373,10 @@ mod tests {
 
     use super::*;
 
-    use crate::{
-        connect, io::object_store::io_tracking::IoStatsHolder, table::WriteOptions,
-        utils::background_cache::clock,
-    };
+    use lance_io::assert_io_eq;
+    use lance_io::utils::tracking_store::IOTracker;
+
+    use crate::{connect, table::WriteOptions, utils::background_cache::clock};
 
     async fn create_test_dataset(uri: &str) -> Dataset {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -626,7 +626,7 @@ mod tests {
             .execute()
             .await
             .expect("Failed to connect to database");
-        let io_stats = IoStatsHolder::default();
+        let io_stats = IOTracker::default();
 
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
 
@@ -651,7 +651,7 @@ mod tests {
         // latest version.
         table.schema().await.unwrap();
         let stats = io_stats.incremental_stats();
-        assert_eq!(stats.read_iops, 1);
+        assert_io_eq!(stats, read_iops, 1);
     }
 
     /// Regression test: a write that races with as_time_travel() must not panic.
@@ -689,7 +689,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        let io_stats = IoStatsHolder::default();
+        let io_stats = IOTracker::default();
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let table = db
             .create_empty_table("test", schema)
@@ -712,12 +712,12 @@ mod tests {
         // Step 1: within interval — no list
         table.schema().await.unwrap();
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 0, "step 1, elapsed={:?}", start.elapsed());
+        assert_io_eq!(s, read_iops, 0, "step 1, elapsed={:?}", start.elapsed());
 
         // Step 2: still within interval — no list
         table.schema().await.unwrap();
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 0, "step 2, elapsed={:?}", start.elapsed());
+        assert_io_eq!(s, read_iops, 0, "step 2, elapsed={:?}", start.elapsed());
 
         // Step 3: sleep past the 1s boundary
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -725,14 +725,14 @@ mod tests {
         // Step 4: interval expired — exactly 1 list, timer resets
         table.schema().await.unwrap();
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 1, "step 4, elapsed={:?}", start.elapsed());
+        assert_io_eq!(s, read_iops, 1, "step 4, elapsed={:?}", start.elapsed());
 
         // Step 5: 10 more calls — timer just reset, no lists (THIS is the regression test).
         for _ in 0..10 {
             table.schema().await.unwrap();
         }
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 0, "step 5, elapsed={:?}", start.elapsed());
+        assert_io_eq!(s, read_iops, 0, "step 5, elapsed={:?}", start.elapsed());
     }
 
     /// Helper: poison the mutex inside a DatasetConsistencyWrapper.
