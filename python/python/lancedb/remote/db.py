@@ -221,7 +221,8 @@ class RemoteDBConnection(DBConnection):
     def serialize(self) -> str:
         if getattr(self, "_catalog_oauth", False):
             raise ValueError(
-                "Cannot serialize a catalog connection using OAuth; provide a worker-side connection factory"
+                "Cannot serialize a catalog connection using OAuth; "
+                "provide a worker-side connection factory"
             )
         return json.dumps(
             {

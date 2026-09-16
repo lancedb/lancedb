@@ -88,7 +88,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
             "team/search" if i in (1, 2) else None
         )
         assert "x-lancedb-database-prefix" not in headers
-        assert headers["authorization"] == "Bearer secret"
+        assert headers["x-api-key"] == "secret"
 
 
 @pytest.mark.asyncio

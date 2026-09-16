@@ -151,6 +151,7 @@ impl RemoteCatalog {
             .as_deref()
             .unwrap_or("$");
         if name.is_empty()
+            || name.trim() != name
             || !name.is_ascii()
             || name.chars().any(char::is_control)
             || name.contains(delimiter)
@@ -158,7 +159,7 @@ impl RemoteCatalog {
         {
             return Err(Error::InvalidInput {
                 message: format!(
-                    "Invalid database name '{name}': expected a nonempty ASCII name without control characters or namespace delimiter '{delimiter}'"
+                    "Invalid database name '{name}': expected a nonempty ASCII name without surrounding whitespace, control characters, or namespace delimiter '{delimiter}'"
                 ),
             });
         }
@@ -388,8 +389,10 @@ mod tests {
             (204, Value::Null),
         ])
         .await;
-        let mut options = RemoteCatalogOptions::default();
-        options.api_key = Some("test-key".into());
+        let mut options = RemoteCatalogOptions {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
         options.client_config.extra_headers = HashMap::from([
             ("x-lancedb-database".into(), "wrong-static".into()),
             (
@@ -538,7 +541,7 @@ mod tests {
         }
         let catalog =
             RemoteCatalog::try_new("http://127.0.0.1:1", RemoteCatalogOptions::default()).unwrap();
-        for name in ["", "a$b", "\r\ninjected", "..", "café"] {
+        for name in ["", "a$b", "\r\ninjected", "..", "café", " padded "] {
             assert!(matches!(
                 catalog.create_database(name.into()).await,
                 Err(Error::InvalidInput { .. })

@@ -10,7 +10,7 @@ from typing import Any, Optional, Union
 from . import _lancedb
 from .background_loop import LOOP
 from .db import AsyncConnection, DBConnection
-from .remote import ClientConfig
+from .remote import ClientConfig, OAuthConfig
 from .remote.db import RemoteDBConnection
 
 
@@ -83,7 +83,7 @@ class Catalog:
         *,
         api_key=None,
         client_config=None,
-        oauth_config=None,
+        oauth_config: Optional[OAuthConfig] = None,
     ):
         self._inner = inner
         self._api_key = api_key
@@ -131,7 +131,7 @@ async def connect_catalog_async(
     api_key: Optional[str] = None,
     client_config: Optional[Union[ClientConfig, dict[str, Any]]] = None,
     read_consistency_interval: Optional[timedelta] = None,
-    oauth_config=None,
+    oauth_config: Optional[OAuthConfig] = None,
 ) -> AsyncCatalog:
     """Connect to an HTTP(S) server's root catalog.
 
@@ -141,6 +141,8 @@ async def connect_catalog_async(
     """
     if isinstance(client_config, dict):
         client_config = ClientConfig(**client_config)
+    if client_config is None:
+        client_config = ClientConfig()
     inner = await _lancedb.connect_catalog(
         endpoint,
         api_key=api_key,
@@ -161,7 +163,7 @@ def connect_catalog(
     api_key: Optional[str] = None,
     client_config: Optional[Union[ClientConfig, dict[str, Any]]] = None,
     read_consistency_interval: Optional[timedelta] = None,
-    oauth_config=None,
+    oauth_config: Optional[OAuthConfig] = None,
 ) -> Catalog:
     """Connect synchronously to an HTTP(S) server's root catalog.
 

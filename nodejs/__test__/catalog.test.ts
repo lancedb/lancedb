@@ -47,7 +47,7 @@ async function withCatalog(
       headerProvider: () => ({
         "X-LanceDB-Database": "wrong-dynamic",
         "X-LanceDB-Database-Prefix": "wrong",
-        Authorization: "Bearer refreshed",
+        authorization: "Bearer refreshed",
       }),
     });
     await callback(catalog, requests);
@@ -67,6 +67,7 @@ describe("remote catalog", () => {
         [200, {}],
         [200, { tables: [] }],
         [200, { tables: [] }],
+        // biome-ignore lint/style/useNamingConvention: server wire format
         [200, { namespaces: ["team/search"], page_token: "next" }],
         [204, null],
       ],
