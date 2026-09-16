@@ -30,7 +30,7 @@ use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
     resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
     supported_fm_data_type, supported_fts_data_type, supported_label_list_data_type,
-    supported_vector_data_type,
+    supported_vector_data_type, supported_zonemap_data_type,
 };
 
 use super::NativeTable;
@@ -260,7 +260,7 @@ impl NativeTable {
                 )))
             }
             Index::ZoneMap(_) => {
-                Self::validate_index_type(field, "ZoneMap", supported_btree_data_type)?;
+                Self::validate_index_type(field, "ZoneMap", supported_zonemap_data_type)?;
                 Ok(Box::new(ScalarIndexParams::for_builtin(
                     BuiltinIndexType::ZoneMap,
                 )))
@@ -1250,6 +1250,75 @@ mod tests {
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::ZoneMap);
         assert_eq!(stats.distance_type, None);
+    }
+
+    #[tokio::test]
+    async fn test_create_zonemap_index_on_wider_scalar_types() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("large_text", DataType::LargeUtf8, true),
+            Field::new("binary", DataType::Binary, true),
+            Field::new("large_binary", DataType::LargeBinary, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(LargeStringArray::from(vec![
+                    Some("alpha"),
+                    None,
+                    Some("omega"),
+                ])) as ArrayRef,
+                Arc::new(BinaryArray::from(vec![
+                    Some(b"aa".as_slice()),
+                    None,
+                    Some(b"zz".as_slice()),
+                ])) as ArrayRef,
+                Arc::new(LargeBinaryArray::from(vec![
+                    Some(b"left".as_slice()),
+                    None,
+                    Some(b"right".as_slice()),
+                ])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("zonemap_wider_scalar_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        for column in ["large_text", "binary", "large_binary"] {
+            table
+                .create_index(&[column], Index::ZoneMap(ZoneMapIndexBuilder::default()))
+                .execute()
+                .await
+                .unwrap();
+            let index_name = format!("{column}_idx");
+            table
+                .wait_for_index(&[&index_name], Duration::from_millis(10))
+                .await
+                .unwrap();
+        }
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 3);
+        for index in index_configs {
+            assert_eq!(index.index_type, crate::index::IndexType::ZoneMap);
+        }
+
+        let null_count = table
+            .query()
+            .only_if("large_text IS NULL")
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum::<usize>();
+        assert_eq!(null_count, 1);
     }
 
     #[tokio::test]
