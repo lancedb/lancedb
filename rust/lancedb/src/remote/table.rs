@@ -1116,17 +1116,19 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(approx_mode) = query.approx_mode {
             body["approx_mode"] = serde_json::json!(approx_mode);
         }
-        // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
-        // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
-        // New client / old server: old server will only see nprobes, so send it whenever
-        //                          minimum_nprobes is explicitly configured
-        // New client / new server: since minimum_nprobes is present, server can ignore nprobes
         if let Some(minimum_nprobes) = query.minimum_nprobes {
-            body["nprobes"] = minimum_nprobes.into();
             body["minimum_nprobes"] = minimum_nprobes.into();
         }
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             body["maximum_nprobes"] = maximum_nprobes.into();
+        }
+        // An old server only understands `nprobes`. Emit it when the configured
+        // bounds are exact, so the compatibility field has identical semantics.
+        if let (Some(minimum_nprobes), Some(maximum_nprobes)) =
+            (query.minimum_nprobes, query.maximum_nprobes)
+            && minimum_nprobes == maximum_nprobes
+        {
+            body["nprobes"] = minimum_nprobes.into();
         }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
@@ -5444,7 +5446,6 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 5,
                 "minimum_nprobes": 5,
                 "approx_mode": "accurate",
                 "lower_bound": Option::<f32>::None,
