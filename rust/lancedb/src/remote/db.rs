@@ -34,7 +34,7 @@ use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
-use crate::utils::{reject_relative_segment, validate_namespace_name, validate_table_name};
+use crate::utils::{reject_relative_segment, validate_table_name};
 
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, ID_DELIMITER, RequestResultExt, RestfulLanceDbClient,
@@ -580,19 +580,41 @@ impl From<&CreateTableMode> for &'static str {
 /// object type. A caller passing an empty path addresses an object that has no
 /// namespace yet.
 ///
-/// Every namespace segment is checked here. The name's own grammar is the
-/// caller's, so that a table can report [`Error::InvalidTableName`] and a
-/// Function can admit names a table may not. What is checked for all of them is
-/// the relative segment, which is a property of the URL rather than of any
-/// grammar.
+/// What every component is checked for here is addressability, not a character
+/// set: the name's own grammar is the caller's, so that a table can report
+/// [`Error::InvalidTableName`], a Function can admit names a table may not, and
+/// a catalog database can carry a `/` the way [`RemoteCatalog`] allows.
+///
+/// [`RemoteCatalog`]: super::catalog::RemoteCatalog
 fn build_object_identifier(what: &str, name: &str, namespace: &[String]) -> Result<String> {
     for segment in namespace {
-        validate_namespace_name(segment)?;
+        reject_unaddressable_component("namespace segment", segment)?;
     }
-    reject_relative_segment(what, name)?;
+    reject_unaddressable_component(what, name)?;
     Ok(join_identifier(
         namespace.iter().map(String::as_str).chain([name]),
     ))
+}
+
+/// What a component may not be if the join is to survive being split back
+/// apart: a segment URL parsing resolves away, or the delimiter doing the
+/// joining.
+///
+/// Deliberately not a character set. Percent-encoding per component is what
+/// makes the wider set safe -- a `/` in a name reaches the service as `%2F`,
+/// still one segment -- while a delimiter inside a component erases a boundary
+/// that no encoding of the joined form can recover.
+fn reject_unaddressable_component(what: &str, value: &str) -> Result<()> {
+    reject_relative_segment(what, value)?;
+    if value.contains(ID_DELIMITER) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "{what} '{value}' contains the identifier delimiter '{ID_DELIMITER}', so the \
+                 namespace path and the name it joins could not be told apart"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// The path segment addressing one table.
@@ -626,7 +648,7 @@ fn join_identifier<'a>(components: impl Iterator<Item = &'a str>) -> String {
 /// The path segment addressing one namespace.
 fn build_namespace_identifier(namespace: &[String]) -> Result<String> {
     for segment in namespace {
-        validate_namespace_name(segment)?;
+        reject_unaddressable_component("namespace segment", segment)?;
     }
     if namespace.is_empty() {
         // According to the namespace spec, use delimiter to represent root namespace
@@ -1446,7 +1468,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<ListNamespacesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts)?;
-        let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
             .get(&format!("/v1/namespace/{}/list", namespace_id));
@@ -1469,7 +1490,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<CreateNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts)?;
-        let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
             .post(&format!("/v1/namespace/{}/create", namespace_id));
@@ -1501,7 +1521,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts)?;
-        let namespace_id = urlencoding::encode(&namespace_id);
         let mut req = self
             .client
             .post(&format!("/v1/namespace/{}/drop", namespace_id));
@@ -1536,7 +1555,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<DescribeNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts)?;
-        let namespace_id = urlencoding::encode(&namespace_id);
         let req = self
             .client
             .post(&format!("/v1/namespace/{}/describe", namespace_id))
@@ -3424,7 +3442,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_namespace_segment_cannot_choose_its_own_route() {
         use std::sync::{Arc, Mutex};
-        for segment in ["..", "a/b", "a$b"] {
+        for segment in ["..", "a$b"] {
             let reached = Arc::new(Mutex::new(false));
             let flag = reached.clone();
             let conn = Connection::new_with_handler(move |_| {
@@ -3441,6 +3459,25 @@ mod tests {
             );
             assert!(!error.to_string().is_empty(), "{segment:?}");
         }
+    }
+
+    /// A segment outside the table charset still addresses one segment: the
+    /// service decides whether it may exist, and percent-encoding is what keeps
+    /// the question reaching the right route. A catalog database is named this
+    /// way.
+    #[tokio::test]
+    async fn test_a_namespace_segment_outside_the_charset_is_encoded_not_refused() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(String::new()));
+        let path = seen.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            *path.lock().unwrap() = request.url().path().to_string();
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_table("t", &["team/search".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), "/v1/table/team%2Fsearch$t/drop/");
     }
 
     /// A Function name is percent-encoded, which covers everything but the
