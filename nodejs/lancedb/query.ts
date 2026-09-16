@@ -517,7 +517,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   }
 
   /**
-   * Set the number of partitions to search (probe)
+   * Set the maximum number of partitions to search (probe)
    *
    * The number of probes must be greater than 0.
    *
@@ -529,7 +529,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    *
    * The partition whose centroids are closest to the query vector will be
    * exhaustiely searched to find matches.  This parameter controls how many
-   * partitions should be searched.
+   * partitions may be searched.
    *
    * Increasing this value will increase the recall of your query but will
    * also increase the latency of your query. If this method is not called,
@@ -539,9 +539,9 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * your actual data to find the smallest possible value that will still give
    * you the desired recall.
    *
-   * For more fine grained control over behavior when you have a very narrow filter
-   * you can use `minimumNprobes` and `maximumNprobes`.  This method sets both
-   * the minimum and maximum to the same value.
+   * This leaves the minimum at Lance's adaptive default and sets the maximum number
+   * of partitions that may be searched. For more fine-grained control, use
+   * `minimumNprobes` and `maximumNprobes`.
    */
   nprobes(nprobes: number): VectorQuery {
     this.doVectorCall((inner) => inner.nprobes(nprobes));

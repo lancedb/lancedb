@@ -1252,7 +1252,7 @@ impl VectorQuery {
         Ok(self)
     }
 
-    /// Set the number of partitions to search (probe)
+    /// Set the maximum number of partitions to search (probe)
     ///
     /// This argument is only used when the vector column has an IVF PQ index.
     /// If there is no index then this value is ignored.
@@ -1262,7 +1262,7 @@ impl VectorQuery {
     ///
     /// The partition whose centroids are closest to the query vector will be
     /// exhaustiely searched to find matches.  This parameter controls how many
-    /// partitions should be searched.
+    /// partitions may be searched.
     ///
     /// Increasing this value will increase the recall of your query but will
     /// also increase the latency of your query. If this method is not called,
@@ -1272,9 +1272,9 @@ impl VectorQuery {
     /// your actual data to find the smallest possible value that will still give
     /// you the desired recall.
     ///
-    /// This method sets both the minimum and maximum number of partitions to search.
-    /// For more fine-grained control see [`VectorQuery::minimum_nprobes`] and
-    /// [`VectorQuery::maximum_nprobes`].
+    /// This method leaves the minimum at Lance's adaptive default and sets the
+    /// maximum number of partitions to search. For more fine-grained control see
+    /// [`VectorQuery::minimum_nprobes`] and [`VectorQuery::maximum_nprobes`].
     ///
     /// Returns an error if `nprobes` is not greater than 0.
     pub fn nprobes(mut self, nprobes: usize) -> Result<Self> {
@@ -1283,7 +1283,7 @@ impl VectorQuery {
                 message: "nprobes must be greater than 0".to_string(),
             });
         }
-        self.request.minimum_nprobes = Some(nprobes);
+        self.request.minimum_nprobes = None;
         self.request.maximum_nprobes = Some(nprobes);
         Ok(self)
     }
@@ -2484,7 +2484,7 @@ mod tests {
         );
         assert_eq!(query.request.base.limit.unwrap(), 100);
         assert_eq!(query.request.base.offset.unwrap(), 1);
-        assert_eq!(query.request.minimum_nprobes, Some(20));
+        assert_eq!(query.request.minimum_nprobes, None);
         assert_eq!(query.request.maximum_nprobes, Some(20));
         assert!(query.request.use_index);
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
