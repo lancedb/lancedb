@@ -328,6 +328,13 @@ def test_hybrid_query_minimum_nprobes_zero_raises(sync_table: Table):
         )
 
 
+def test_hybrid_query_nprobes_sets_maximum_only(sync_table: Table):
+    query = sync_table.search(query_type="hybrid").nprobes(20)
+
+    assert query._minimum_nprobes is None
+    assert query._maximum_nprobes == 20
+
+
 def test_hybrid_query_distance_range(sync_table: Table):
     reranker = RRFReranker(return_score="all")
     result = (

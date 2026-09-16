@@ -1608,7 +1608,7 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         q,
         vector_column="vector",
         vector=[5.0, 6.0],
-        minimum_nprobes=10,
+        minimum_nprobes=None,
         maximum_nprobes=10,
         refine_factor=5,
     )
@@ -1627,7 +1627,7 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         q,
         vector_column="vector",
         vector=[5.0, 6.0],
-        minimum_nprobes=50,
+        minimum_nprobes=None,
         maximum_nprobes=50,
     )
 
@@ -1712,7 +1712,7 @@ async def test_query_serialization_async(table_async: AsyncTable):
         q,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=50,
+        minimum_nprobes=None,
         maximum_nprobes=50,
         with_row_id=False,
         bypass_vector_index=False,
@@ -1747,7 +1747,7 @@ async def test_query_serialization_async(table_async: AsyncTable):
     check_set_props(
         q,
         vector=sample_vector,
-        minimum_nprobes=10,
+        minimum_nprobes=None,
         maximum_nprobes=10,
         refine_factor=5,
         postfilter=False,

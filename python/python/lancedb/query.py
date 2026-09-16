@@ -691,8 +691,8 @@ class Query(pydantic.BaseModel):
         if True then apply the filter after vector / FTS search.  This is ignored for
         plain SQL filtering.
     nprobes : Optional[int]
-        The number of IVF partitions to search. If this is None then Lance's
-        default probe settings will be used.
+        The maximum number of IVF partitions to search. If this is None then
+        Lance's default probe settings will be used.
 
         - A higher number makes search more accurate but also slower.
 
@@ -1675,7 +1675,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         return self
 
     def nprobes(self, nprobes: int) -> LanceVectorQueryBuilder:
-        """Set the number of probes to use.
+        """Set the maximum number of probes to use.
 
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
@@ -1683,21 +1683,21 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
         for tuning advice.
 
-        This method sets both the minimum and maximum number of probes to the same
-        value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
-        control.
+        This method leaves the minimum at Lance's adaptive default and sets the
+        maximum number of probes. See `minimum_nprobes` and `maximum_nprobes` for
+        more fine-grained control.
 
         Parameters
         ----------
         nprobes: int
-            The number of probes to use.
+            The maximum number of probes to use.
 
         Returns
         -------
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._minimum_nprobes = nprobes
+        self._minimum_nprobes = None
         self._maximum_nprobes = nprobes
         return self
 
@@ -2449,7 +2449,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def nprobes(self, nprobes: int) -> LanceHybridQueryBuilder:
         """
-        Set the number of probes to use for vector search.
+        Set the maximum number of probes to use for vector search.
 
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
@@ -2457,14 +2457,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Parameters
         ----------
         nprobes: int
-            The number of probes to use.
+            The maximum number of probes to use.
 
         Returns
         -------
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._minimum_nprobes = nprobes
+        self._minimum_nprobes = None
         self._maximum_nprobes = nprobes
         return self
 
@@ -3603,7 +3603,7 @@ class AsyncVectorQueryBase:
 
     def nprobes(self, nprobes: int) -> Self:
         """
-        Set the number of partitions to search (probe)
+        Set the maximum number of partitions to search (probe)
 
         This argument is only used when the vector column has an IVF-based index.
         If there is no index then this value is ignored.
@@ -3613,7 +3613,7 @@ class AsyncVectorQueryBase:
 
         The partition whose centroids are closest to the query vector will be
         exhaustiely searched to find matches.  This parameter controls how many
-        partitions should be searched.
+        partitions may be searched.
 
         Increasing this value will increase the recall of your query but will
         also increase the latency of your query. If this method is not called,
@@ -3622,6 +3622,9 @@ class AsyncVectorQueryBase:
         For best results we recommend tuning this parameter with a benchmark against
         your actual data to find the smallest possible value that will still give
         you the desired recall.
+
+        This leaves the minimum at Lance's adaptive default and sets the maximum
+        number of partitions that may be searched.
         """
         self._inner.nprobes(nprobes)
         return self

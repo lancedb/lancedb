@@ -1122,14 +1122,6 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             body["maximum_nprobes"] = maximum_nprobes.into();
         }
-        // An old server only understands `nprobes`. Emit it when the configured
-        // bounds are exact, so the compatibility field has identical semantics.
-        if let (Some(minimum_nprobes), Some(maximum_nprobes)) =
-            (query.minimum_nprobes, query.maximum_nprobes)
-            && minimum_nprobes == maximum_nprobes
-        {
-            body["nprobes"] = minimum_nprobes.into();
-        }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
         body["ef"] = query.ef.into();
@@ -5561,8 +5553,6 @@ mod tests {
                         "nulls_first": false,
                     }
                 ],
-                "nprobes": 12,
-                "minimum_nprobes": 12,
                 "maximum_nprobes": 12,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
