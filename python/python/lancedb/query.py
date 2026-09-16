@@ -691,7 +691,8 @@ class Query(pydantic.BaseModel):
         if True then apply the filter after vector / FTS search.  This is ignored for
         plain SQL filtering.
     nprobes : Optional[int]
-        The maximum number of IVF partitions to search. If this is None then
+        The legacy number of IVF partitions to search. Lance interprets this as
+        a maximum. If this is None then
         Lance's default probe settings will be used.
 
         - A higher number makes search more accurate but also slower.
@@ -771,6 +772,11 @@ class Query(pydantic.BaseModel):
     # distance type to use for vector search
     distance_type: Optional[str] = None
 
+    # legacy number of IVF partitions to search
+    #
+    # Lance interprets this as a maximum unless maximum_nprobes is also set.
+    nprobes: Optional[int] = None
+
     # which columns to return in the results (dict values may be str or Expr)
     columns: QueryProjection = None
 
@@ -843,6 +849,7 @@ class Query(pydantic.BaseModel):
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
+        query.nprobes = req.nprobes
         query.minimum_nprobes = req.minimum_nprobes
         query.maximum_nprobes = req.maximum_nprobes
         query.lower_bound = req.lower_bound
@@ -1619,6 +1626,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._distance_type = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
         self._lower_bound = None
@@ -1683,9 +1691,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
         for tuning advice.
 
-        This method sets only the maximum number of probes. Unless configured
-        separately, the minimum remains at Lance's adaptive default. See
-        `minimum_nprobes` and `maximum_nprobes` for more fine-grained control.
+        The value is retained as `nprobes` through client and server request
+        construction. Lance interprets it as a maximum. Unless configured separately,
+        the minimum remains at Lance's adaptive default.
 
         Parameters
         ----------
@@ -1697,7 +1705,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._maximum_nprobes = nprobes
+        self._nprobes = nprobes
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceVectorQueryBuilder:
@@ -1839,6 +1847,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             distance_type=self._distance_type,
             columns=self._columns,
+            nprobes=self._nprobes,
             minimum_nprobes=self._minimum_nprobes,
             maximum_nprobes=self._maximum_nprobes,
             lower_bound=self._lower_bound,
@@ -2197,6 +2206,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_columns = fts_columns
         self._norm = None
         self._reranker = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
         self._refine_factor = None
@@ -2453,8 +2463,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
-        This sets only the maximum number of probes. Unless configured separately,
-        the minimum remains at Lance's adaptive default.
+        The value is retained as `nprobes` until Lance interprets it as a maximum.
+        Unless configured separately, the minimum remains at Lance's adaptive default.
 
         Parameters
         ----------
@@ -2466,7 +2476,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._maximum_nprobes = nprobes
+        self._nprobes = nprobes
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceHybridQueryBuilder:
@@ -2734,6 +2744,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
+        if self._nprobes is not None:
+            self._vector_query.nprobes(self._nprobes)
         if self._minimum_nprobes is not None:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
         if self._maximum_nprobes is not None:
@@ -3604,7 +3616,7 @@ class AsyncVectorQueryBase:
 
     def nprobes(self, nprobes: int) -> Self:
         """
-        Set the maximum number of partitions to search (probe)
+        Set the legacy IVF probe parameter
 
         This argument is only used when the vector column has an IVF-based index.
         If there is no index then this value is ignored.
@@ -3624,9 +3636,9 @@ class AsyncVectorQueryBase:
         your actual data to find the smallest possible value that will still give
         you the desired recall.
 
-        This sets only the maximum number of partitions that may be searched.
-        Unless configured separately, the minimum remains at Lance's adaptive
-        default.
+        LanceDB retains this as `nprobes` through local and remote request
+        construction. Lance interprets it as a maximum, so unless configured
+        separately, the minimum remains at Lance's adaptive default.
         """
         self._inner.nprobes(nprobes)
         return self

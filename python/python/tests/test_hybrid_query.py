@@ -328,16 +328,18 @@ def test_hybrid_query_minimum_nprobes_zero_raises(sync_table: Table):
         )
 
 
-def test_hybrid_query_nprobes_sets_maximum_only(sync_table: Table):
+def test_hybrid_query_nprobes_remains_independent(sync_table: Table):
     query = sync_table.search(query_type="hybrid").nprobes(20)
 
+    assert query._nprobes == 20
     assert query._minimum_nprobes is None
-    assert query._maximum_nprobes == 20
+    assert query._maximum_nprobes is None
 
     query = query.minimum_nprobes(5).nprobes(20)
 
+    assert query._nprobes == 20
     assert query._minimum_nprobes == 5
-    assert query._maximum_nprobes == 20
+    assert query._maximum_nprobes is None
 
 
 def test_hybrid_query_distance_range(sync_table: Table):

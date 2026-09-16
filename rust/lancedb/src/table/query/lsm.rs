@@ -724,7 +724,9 @@ async fn vector_plan(
         .with_overfetch_factor(LSM_OVERFETCH_FACTOR)
         .nearest(&column, query_vector.as_ref(), k)?
         .distance_metric(distance_type.into());
-    if let Some(minimum_nprobes) = query.minimum_nprobes {
+    if let Some(nprobes) = query.nprobes {
+        scanner = scanner.nprobes(nprobes);
+    } else if let Some(minimum_nprobes) = query.minimum_nprobes {
         scanner = scanner.nprobes(minimum_nprobes);
     }
     if let Some(refine_factor) = query.refine_factor {

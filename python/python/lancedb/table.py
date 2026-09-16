@@ -6038,6 +6038,8 @@ class AsyncTable:
             )
             if query.distance_type is not None:
                 async_query = async_query.distance_type(query.distance_type)
+            if query.nprobes is not None:
+                async_query = async_query.nprobes(query.nprobes)
             if query.minimum_nprobes is not None and query.maximum_nprobes is not None:
                 async_query = async_query.minimum_nprobes(
                     query.minimum_nprobes
