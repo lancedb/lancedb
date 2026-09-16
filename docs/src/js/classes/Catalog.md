@@ -24,6 +24,24 @@ The root namespace endpoint.
 
 ## Methods
 
+### connectDatabase()
+
+```ts
+connectDatabase(name): Promise<Connection>
+```
+
+Connect to an existing database by its logical name.
+
+#### Parameters
+
+* **name**: `string`
+
+#### Returns
+
+`Promise`&lt;[`Connection`](Connection.md)&gt;
+
+***
+
 ### createDatabase()
 
 ```ts
@@ -87,21 +105,3 @@ List one page of databases; pass pageToken from a response for the next page.
 #### Returns
 
 `Promise`&lt;[`ListDatabasesResponse`](../interfaces/ListDatabasesResponse.md)&gt;
-
-***
-
-### openDatabase()
-
-```ts
-openDatabase(name): Promise<Connection>
-```
-
-Open an existing database by its logical name.
-
-#### Parameters
-
-* **name**: `string`
-
-#### Returns
-
-`Promise`&lt;[`Connection`](Connection.md)&gt;

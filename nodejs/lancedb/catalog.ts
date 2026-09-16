@@ -43,9 +43,9 @@ export class Catalog {
     );
   }
 
-  /** Open an existing database by its logical name. */
-  async openDatabase(name: string): Promise<Connection> {
-    return new LocalConnection(await this.inner.openDatabase(name));
+  /** Connect to an existing database by its logical name. */
+  async connectDatabase(name: string): Promise<Connection> {
+    return new LocalConnection(await this.inner.connectDatabase(name));
   }
 
   /** Drop an empty database. The server rejects nonempty databases. */

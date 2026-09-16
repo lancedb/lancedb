@@ -52,6 +52,7 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
     responses.extend(
         [
             (204, None),
+            (200, {}),
             (200, {"tables": []}),
             (200, {"tables": []}),
             (200, {"namespaces": ["team/search"], "page_token": "next"}),
@@ -72,6 +73,8 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
     assert catalog.uri == endpoint
     db = catalog.create_database("team/search", exist_ok=True)
     assert isinstance(db, DBConnection)
+    db = catalog.connect_database("team/search")
+    assert isinstance(db, DBConnection)
     assert db.table_names() == []
     restored = lancedb.deserialize_conn(db.serialize())
     assert restored.table_names() == []
@@ -80,12 +83,13 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
     catalog.drop_database("team/search", ignore_missing=True)
     assert requests[0][0] == "/v1/namespace/team%2Fsearch/create"
     assert requests[0][2] == {"mode": "ExistOk"}
-    assert requests[3][0] == "/v1/namespace/%24/list?limit=1&page_token=a%2Fb"
-    assert requests[4][2] == {"mode": "Skip", "behavior": "Restrict"}
+    assert requests[1][0] == "/v1/namespace/team%2Fsearch/describe"
+    assert requests[4][0] == "/v1/namespace/%24/list?limit=1&page_token=a%2Fb"
+    assert requests[5][2] == {"mode": "Skip", "behavior": "Restrict"}
     for i, (_, headers, _) in enumerate(requests):
         headers = {key.lower(): value for key, value in headers.items()}
         assert headers.get("x-lancedb-database") == (
-            "team/search" if i in (1, 2) else None
+            "team/search" if i in (2, 3) else None
         )
         assert "x-lancedb-database-prefix" not in headers
         assert headers["x-api-key"] == "secret"
@@ -106,11 +110,11 @@ async def test_catalog_async_and_errors(catalog_server):
     )
     catalog = await lancedb.connect_catalog_async(endpoint)
     assert isinstance(catalog, lancedb.AsyncCatalog)
-    db = await catalog.open_database("analytics")
+    db = await catalog.connect_database("analytics")
     assert isinstance(db, AsyncConnection)
     assert await db.table_names() == []
     with pytest.raises(ValueError, match="missing"):
-        await catalog.open_database("missing")
+        await catalog.connect_database("missing")
     with pytest.raises(ValueError, match="exists"):
         await catalog.create_database("exists")
     with pytest.raises(HttpError):

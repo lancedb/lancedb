@@ -26,7 +26,7 @@ class AsyncCatalog:
     """An asynchronous remote catalog returned by
     [connect_catalog_async][lancedb.connect_catalog_async].
 
-    Create/open return ordinary [AsyncConnection][lancedb.db.AsyncConnection]
+    Create/connect return ordinary [AsyncConnection][lancedb.db.AsyncConnection]
     instances. Drop uses restricted behavior: remove the database's tables first.
     """
 
@@ -46,9 +46,9 @@ class AsyncCatalog:
             await self._inner.create_database(name, exist_ok=exist_ok)
         )
 
-    async def open_database(self, name: str) -> AsyncConnection:
-        """Open an existing database by its logical name."""
-        return AsyncConnection(await self._inner.open_database(name))
+    async def connect_database(self, name: str) -> AsyncConnection:
+        """Connect to an existing database by its logical name."""
+        return AsyncConnection(await self._inner.connect_database(name))
 
     async def list_databases(
         self, *, limit: Optional[int] = None, page_token: Optional[str] = None
@@ -100,9 +100,9 @@ class Catalog:
         inner = LOOP.run(self._inner.create_database(name, exist_ok=exist_ok))
         return self._wrap_database(name, inner)
 
-    def open_database(self, name: str) -> DBConnection:
-        """Open an existing database by its logical name."""
-        return self._wrap_database(name, LOOP.run(self._inner.open_database(name)))
+    def connect_database(self, name: str) -> DBConnection:
+        """Connect to an existing database by its logical name."""
+        return self._wrap_database(name, LOOP.run(self._inner.connect_database(name)))
 
     def _wrap_database(self, name: str, inner: AsyncConnection) -> DBConnection:
         return RemoteDBConnection._from_catalog(

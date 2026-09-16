@@ -282,7 +282,7 @@ impl Catalog for RemoteCatalog {
         })
     }
 
-    async fn open_database(&self, name: &str) -> Result<Arc<dyn Database>> {
+    async fn connect_database(&self, name: &str) -> Result<Arc<dyn Database>> {
         self.validate_name(name)?;
         self.root
             .describe_namespace(DescribeNamespaceRequest {
@@ -427,7 +427,7 @@ mod tests {
             .list_namespaces(ListNamespacesRequest::default())
             .await
             .unwrap();
-        let second = catalog.open_database("other").await.unwrap();
+        let second = catalog.connect_database("other").await.unwrap();
         second
             .database()
             .list_namespaces(ListNamespacesRequest::default())
@@ -499,7 +499,7 @@ mod tests {
         .await;
         let catalog = RemoteCatalog::try_new(endpoint, RemoteCatalogOptions::default()).unwrap();
         assert!(matches!(
-            catalog.open_database("missing").await,
+            catalog.connect_database("missing").await,
             Err(Error::DatabaseNotFound { .. })
         ));
         assert!(matches!(
@@ -555,7 +555,7 @@ mod tests {
                 Err(Error::InvalidInput { .. })
             ));
             assert!(matches!(
-                catalog.open_database(name).await,
+                catalog.connect_database(name).await,
                 Err(Error::InvalidInput { .. })
             ));
             assert!(matches!(

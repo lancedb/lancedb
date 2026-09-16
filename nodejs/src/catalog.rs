@@ -84,9 +84,9 @@ impl Catalog {
             .default_error()
     }
     #[napi]
-    pub async fn open_database(&self, name: String) -> Result<Connection> {
+    pub async fn connect_database(&self, name: String) -> Result<Connection> {
         self.inner
-            .open_database(name)
+            .connect_database(name)
             .await
             .map(Connection::inner_new)
             .default_error()

@@ -76,7 +76,7 @@ describe("remote catalog", () => {
           existOk: true,
         });
         expect(await first.tableNames()).toEqual([]);
-        const second = await catalog.openDatabase("other");
+        const second = await catalog.connectDatabase("other");
         expect(await second.tableNames()).toEqual([]);
         expect(await first.tableNames()).toEqual([]);
         expect(
@@ -112,7 +112,7 @@ describe("remote catalog", () => {
         [404, {}],
       ],
       async (catalog, requests) => {
-        await expect(catalog.openDatabase("missing")).rejects.toThrow(
+        await expect(catalog.connectDatabase("missing")).rejects.toThrow(
           "missing",
         );
         await expect(catalog.createDatabase("exists")).rejects.toThrow(
@@ -134,7 +134,7 @@ describe("remote catalog", () => {
     for (const limit of [0, -1, 1.5, 2147483648]) {
       await expect(catalog.listDatabases({ limit })).rejects.toThrow("limit");
     }
-    await expect(catalog.openDatabase("a$b")).rejects.toThrow(
+    await expect(catalog.connectDatabase("a$b")).rejects.toThrow(
       "Invalid database name",
     );
   });

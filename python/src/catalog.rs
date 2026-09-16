@@ -41,11 +41,11 @@ impl Catalog {
         })
     }
 
-    fn open_database<'py>(self_: PyRef<'py, Self>, name: String) -> PyResult<Bound<'py, PyAny>> {
+    fn connect_database<'py>(self_: PyRef<'py, Self>, name: String) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             inner
-                .open_database(name)
+                .connect_database(name)
                 .await
                 .map(Connection::new)
                 .infer_error()

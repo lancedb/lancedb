@@ -129,8 +129,8 @@ pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
     async fn drop_database(&self, request: DropDatabaseRequest) -> Result<()>;
     /// List a page of database names.
     async fn list_databases(&self, request: ListDatabasesRequest) -> Result<ListDatabasesResponse>;
-    /// Open an existing database by its logical name.
-    async fn open_database(&self, name: &str) -> Result<Arc<dyn Database>>;
+    /// Connect to an existing database by its logical name.
+    async fn connect_database(&self, name: &str) -> Result<Arc<dyn Database>>;
 }
 
 /// A catalog connection that returns ordinary LanceDB database connections.
@@ -196,10 +196,10 @@ impl CatalogConnection {
         self.catalog.list_databases(request).await
     }
 
-    /// Open a database without creating it if it is missing.
-    pub async fn open_database(&self, name: impl AsRef<str>) -> Result<Connection> {
+    /// Connect to a database without creating it if it is missing.
+    pub async fn connect_database(&self, name: impl AsRef<str>) -> Result<Connection> {
         Ok(Connection::new(
-            self.catalog.open_database(name.as_ref()).await?,
+            self.catalog.connect_database(name.as_ref()).await?,
             self.embedding_registry.clone(),
         ))
     }
