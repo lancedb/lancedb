@@ -5,9 +5,10 @@
 //!
 //! A materialized view is a table whose contents are defined by a query over
 //! one source table and maintained by refresh rather than by writes. Creation
-//! commits an empty table carrying the kind-tagged definition in schema
-//! metadata; a kind added later reads back as unrefreshable, not as a plain
-//! table. Queries, indexes and search work on the view unchanged.
+//! records a kind-tagged definition in schema metadata and populates the view
+//! unless creation explicitly requests no data. A kind added later reads back
+//! as unrefreshable, not as a plain table. Queries, indexes and search work on
+//! the view unchanged.
 
 pub mod refresh;
 
@@ -28,6 +29,7 @@ use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
 use crate::database::{CreateTableRequest, Database, OpenTableRequest};
 use crate::embeddings::EmbeddingDefinition;
 use crate::function::FunctionBinding;
+use crate::job::Job;
 use crate::table::Table;
 use crate::table::computed_columns::{
     FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,
@@ -124,6 +126,30 @@ pub struct MaterializedViewDefinition {
     pub inputs: Vec<String>,
 }
 
+/// The backend-independent metadata needed to open a materialized view.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializedViewInfo {
+    /// The parsed view definition.
+    pub definition: MaterializedViewDefinition,
+    /// The current physical incarnation, when one has been minted.
+    pub incarnation: Option<String>,
+}
+
+/// The backend-independent request used to create a remote materialized view.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateMaterializedViewRequest {
+    /// Name of the new view.
+    pub name: String,
+    /// Namespace in which to create the view.
+    pub namespace_path: Vec<String>,
+    /// Defining SELECT query.
+    pub query: String,
+    /// Whether to skip the initial population job.
+    pub with_no_data: bool,
+}
+
 /// Prefix of the internal columns holding source columns a computed column
 /// reads without the view projecting them; see
 /// [`PreparedDeclaration::input_column`].
@@ -197,6 +223,28 @@ pub fn materialized_view_kind(
         )));
     }
     Ok(Some(MaterializedViewKind::Select(definition)))
+}
+
+pub(crate) fn materialized_view_info_from_metadata(
+    name: &str,
+    metadata: &HashMap<String, String>,
+) -> Result<MaterializedViewInfo> {
+    let incarnation = metadata.get(INCARNATION_META_KEY).cloned();
+    match materialized_view_kind(metadata)? {
+        Some(MaterializedViewKind::Select(definition)) => Ok(MaterializedViewInfo {
+            definition,
+            incarnation,
+        }),
+        Some(MaterializedViewKind::Unrecognized { kind }) => Err(Error::NotSupported {
+            message: format!(
+                "materialized view '{name}' is defined by '{kind}', which this version of \
+                 lancedb cannot refresh"
+            ),
+        }),
+        None => Err(Error::NotAMaterializedView {
+            name: name.to_string(),
+        }),
+    }
 }
 
 /// Resolve a definition against the source schema into the view's projected
@@ -1114,27 +1162,6 @@ pub async fn prepare_declaration(
     })
 }
 
-/// One row of [`Connection::list_materialized_views`]: a view's name and its
-/// definition kind, which may be one this version cannot refresh.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializedViewEntry {
-    /// Name of the view's table.
-    pub name: String,
-    /// The view's definition as stored.
-    pub kind: MaterializedViewKind,
-}
-
-/// Materialized views are local-only; refuse a remote connection before any
-/// request is made.
-fn ensure_local(connection: &Connection) -> Result<()> {
-    if connection.uri().starts_with("db://") {
-        return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
-        });
-    }
-    Ok(())
-}
-
 /// Builds a materialized view. Created by
 /// [`Connection::create_materialized_view`].
 pub struct CreateMaterializedViewBuilder {
@@ -1146,6 +1173,7 @@ pub struct CreateMaterializedViewBuilder {
     projections: Vec<(String, String)>,
     filter: Option<String>,
     limit: Option<u64>,
+    with_no_data: bool,
 }
 
 impl CreateMaterializedViewBuilder {
@@ -1159,6 +1187,7 @@ impl CreateMaterializedViewBuilder {
             projections: Vec::new(),
             filter: None,
             limit: None,
+            with_no_data: false,
         }
     }
 
@@ -1200,11 +1229,84 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Create the view: an empty table carrying the definition; refresh
-    /// computes the rows. The source must keep stable row ids -- they hold
-    /// provenance across compaction, and cannot be enabled later.
+    /// Create only the definition and empty backing table. By default create
+    /// also waits for the initial refresh so the returned view is populated.
+    pub fn with_no_data(mut self, with_no_data: bool) -> Self {
+        self.with_no_data = with_no_data;
+        self
+    }
+
+    fn query(&self) -> String {
+        fn quote(name: &str) -> String {
+            format!("\"{}\"", name.replace('"', "\"\""))
+        }
+
+        let projection = if self.projections.is_empty() {
+            "*".to_string()
+        } else {
+            self.projections
+                .iter()
+                .map(|(output, expression)| format!("{expression} AS {}", quote(output)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let source = self
+            .source_namespace
+            .iter()
+            .chain(std::iter::once(&self.source))
+            .map(|part| quote(part))
+            .collect::<Vec<_>>()
+            .join(".");
+        let mut query = format!("SELECT {projection} FROM {source}");
+        if let Some(filter) = &self.filter {
+            query.push_str(" WHERE ");
+            query.push_str(filter);
+        }
+        if let Some(limit) = self.limit {
+            query.push_str(&format!(" LIMIT {limit}"));
+        }
+        query
+    }
+
+    /// Submit creation and initial population, returning a [`Job`] that
+    /// settles when the view is ready. The source must keep stable row ids --
+    /// they hold provenance across compaction, and cannot be enabled later.
+    pub async fn execute_async(self) -> Result<Job> {
+        if self.connection.uri().starts_with("db://") {
+            return self
+                .connection
+                .database()
+                .create_materialized_view_async(CreateMaterializedViewRequest {
+                    name: self.name.clone(),
+                    namespace_path: self.namespace.clone(),
+                    query: self.query(),
+                    with_no_data: self.with_no_data,
+                })
+                .await;
+        }
+        Ok(Job::spawned(tokio::spawn(async move {
+            self.execute_native().await.map(|_| ())
+        })))
+    }
+
+    /// Create and populate the view, waiting until it is ready.
     pub async fn execute(self) -> Result<MaterializedView> {
-        ensure_local(&self.connection)?;
+        if !self.connection.uri().starts_with("db://") {
+            return self.execute_native().await;
+        }
+        let connection = self.connection.clone();
+        let name = self.name.clone();
+        let namespace = self.namespace.clone();
+        self.execute_async().await?.wait().await?;
+        let table = connection
+            .open_table(name)
+            .namespace(namespace)
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await
+    }
+
+    async fn execute_native(self) -> Result<MaterializedView> {
         let source = self
             .connection
             .open_table(&self.source)
@@ -1218,7 +1320,11 @@ impl CreateMaterializedViewBuilder {
             self.limit,
         )
         .await?;
-        prepared.create_in(&self.namespace, &self.name).await
+        let view = prepared.create_in(&self.namespace, &self.name).await?;
+        if !self.with_no_data {
+            view.refresh().execute().await?;
+        }
+        Ok(view)
     }
 }
 
@@ -1235,32 +1341,12 @@ impl MaterializedView {
     /// for a plain table, [`Error::NotSupported`] for a kind this version
     /// cannot refresh.
     pub async fn from_table(table: Table) -> Result<Self> {
-        // Same local-only boundary the connection-level entry points hold,
-        // applied before the schema read so a remote table costs no request.
-        if table.as_native().is_none() {
-            return Err(Error::NotSupported {
-                message: "materialized views are supported only on local databases".into(),
-            });
-        }
-        let schema = table.schema().await?;
-        let incarnation = schema.metadata().get(INCARNATION_META_KEY).cloned();
-        match materialized_view_kind(schema.metadata())? {
-            Some(MaterializedViewKind::Select(definition)) => Ok(Self {
-                table,
-                definition,
-                incarnation,
-            }),
-            Some(MaterializedViewKind::Unrecognized { kind }) => Err(Error::NotSupported {
-                message: format!(
-                    "materialized view '{}' is defined by '{kind}', which this version of \
-                     lancedb cannot refresh",
-                    table.name()
-                ),
-            }),
-            None => Err(Error::NotAMaterializedView {
-                name: table.name().to_string(),
-            }),
-        }
+        let info = table.base_table().materialized_view_info().await?;
+        Ok(Self {
+            table,
+            definition: info.definition,
+            incarnation: info.incarnation,
+        })
     }
 
     /// The view, as the table it is. Queries, indexes and search all apply.
@@ -1345,22 +1431,52 @@ impl RefreshMaterializedViewBuilder {
         self
     }
 
+    /// Submit the refresh and return a job that settles with its result.
+    pub async fn execute_async(self) -> Result<Job<RefreshMaterializedViewResult>> {
+        if self.view.table.as_native().is_none() {
+            return self
+                .view
+                .table
+                .base_table()
+                .refresh_materialized_view_async(
+                    self.full,
+                    self.source_version,
+                    self.expected_incarnation.as_deref(),
+                )
+                .await;
+        }
+        Ok(Job::spawned(tokio::spawn(async move {
+            refresh::execute_refresh(
+                &self.view.table,
+                self.full,
+                self.source_version,
+                self.expected_incarnation.as_deref(),
+            )
+            .await
+        })))
+    }
+
+    /// Refresh the view, waiting for the job to finish.
     pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
-        refresh::execute_refresh(
-            &self.view.table,
-            self.full,
-            self.source_version,
-            self.expected_incarnation.as_deref(),
-        )
-        .await
+        if self.view.table.as_native().is_some() {
+            return refresh::execute_refresh(
+                &self.view.table,
+                self.full,
+                self.source_version,
+                self.expected_incarnation.as_deref(),
+            )
+            .await;
+        }
+        self.execute_async().await?.wait().await
     }
 }
 
 impl Connection {
     /// Define a materialized view named `name` over `source`.
     ///
-    /// The view is created empty, with the definition recorded in its schema
-    /// metadata; refresh computes the rows. Local databases only.
+    /// The definition is recorded in schema metadata and the initial refresh
+    /// is completed before this method returns. Use
+    /// [`CreateMaterializedViewBuilder::with_no_data`] to skip population.
     ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
@@ -1372,7 +1488,7 @@ impl Connection {
     ///     .only_if("age >= 18")
     ///     .execute()
     ///     .await?;
-    /// view.refresh().execute().await?;
+    /// assert_eq!(view.table().count_rows(None).await?, 1);
     /// # Ok(())
     /// # }
     /// ```
@@ -1389,28 +1505,75 @@ impl Connection {
         &self,
         name: impl Into<String>,
     ) -> Result<MaterializedView> {
-        ensure_local(self)?;
         let table = self.open_table(name).execute().await?;
         MaterializedView::from_table(table).await
     }
 
-    /// The materialized views in this database, unrefreshable kinds included.
-    /// Costs a table open per table; one that cannot be opened is skipped
-    /// rather than failing the listing.
-    pub async fn list_materialized_views(&self) -> Result<Vec<MaterializedViewEntry>> {
-        ensure_local(self)?;
-        let names = self.table_names().execute().await?;
-        let mut views = Vec::new();
-        for name in names {
-            let Ok(table) = self.open_table(&name).execute().await else {
-                continue;
-            };
-            let schema = table.schema().await?;
-            if let Some(kind) = materialized_view_kind(schema.metadata())? {
-                views.push(MaterializedViewEntry { name, kind });
-            }
+    /// The names of materialized views in the root namespace.
+    pub async fn list_materialized_views(&self) -> Result<Vec<String>> {
+        self.database().list_materialized_views(&[]).await
+    }
+
+    /// Drop a materialized view.
+    ///
+    /// The view may become unavailable before its physical data is removed.
+    /// Use [`Connection::drop_materialized_view_async`] to retain the cleanup
+    /// job and wait for it explicitly.
+    pub async fn drop_materialized_view(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        let name = name.as_ref();
+        if self.uri().starts_with("db://") {
+            return self
+                .database()
+                .drop_materialized_view_async(name, namespace_path)
+                .await
+                .map(|_| ());
         }
-        Ok(views)
+        let table = self
+            .open_table(name)
+            .namespace(namespace_path.to_vec())
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await?;
+        self.drop_table(name, namespace_path).await
+    }
+
+    /// Start dropping a materialized view and return its cleanup job.
+    ///
+    /// This validates that the named resource is a materialized view rather
+    /// than an ordinary table. Call [`Job::wait`] before assuming physical
+    /// cleanup has finished.
+    ///
+    /// ```no_run
+    /// # use lancedb::Connection;
+    /// # async fn drop_view(conn: &Connection) -> lancedb::Result<()> {
+    /// let job = conn.drop_materialized_view_async("daily_sales", &[]).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn drop_materialized_view_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let name = name.as_ref();
+        if self.uri().starts_with("db://") {
+            return self
+                .database()
+                .drop_materialized_view_async(name, namespace_path)
+                .await;
+        }
+        let table = self
+            .open_table(name)
+            .namespace(namespace_path.to_vec())
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await?;
+        self.drop_table_async(name, namespace_path).await
     }
 }
 
@@ -1523,7 +1686,84 @@ mod tests {
                 .data_type(),
             &DataType::UInt64
         );
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_with_no_data_skips_initial_refresh() {
+        let conn = people_db().await;
+        let view = conn
+            .create_materialized_view("empty", "people")
+            .with_no_data(true)
+            .execute()
+            .await
+            .unwrap();
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_and_refresh_async_jobs() {
+        let conn = people_db().await;
+        let create_job = conn
+            .create_materialized_view("async_view", "people")
+            .with_no_data(true)
+            .execute_async()
+            .await
+            .unwrap();
+        assert!(create_job.id().is_none());
+        create_job.wait().await.unwrap();
+
+        let view = conn.open_materialized_view("async_view").await.unwrap();
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+
+        let refresh_job = view.refresh().execute_async().await.unwrap();
+        assert!(refresh_job.id().is_none());
+        let result = refresh_job.wait().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 3);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
+
+        let drop_job = conn
+            .drop_materialized_view_async("async_view", &[])
+            .await
+            .unwrap();
+        assert!(drop_job.id().is_none());
+        drop_job.wait().await.unwrap();
+        assert!(conn.open_table("async_view").execute().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_drop_materialized_view_rejects_plain_tables() {
+        let conn = people_db().await;
+        let error = conn
+            .drop_materialized_view("people", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NotAMaterializedView { .. }));
+
+        conn.create_materialized_view("drop_me", "people")
+            .with_no_data(true)
+            .execute()
+            .await
+            .unwrap();
+        conn.drop_materialized_view("drop_me", &[]).await.unwrap();
+        assert!(conn.open_table("drop_me").execute().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_remote_query_quotes_resource_identifiers() {
+        let conn = people_db().await;
+        let query = conn
+            .create_materialized_view("unused", "odd\"source")
+            .source_namespace(vec!["raw data".into()])
+            .select([("double\"age", "age * 2")])
+            .only_if("age >= 18")
+            .limit(10)
+            .query();
+        assert_eq!(
+            query,
+            "SELECT age * 2 AS \"double\"\"age\" FROM \"raw data\".\"odd\"\"source\" WHERE age >= 18 LIMIT 10"
+        );
     }
 
     /// No projection selects every source column, expanded now: the schema
@@ -1673,14 +1913,9 @@ mod tests {
             .unwrap();
 
         let views = conn.list_materialized_views().await.unwrap();
-        assert_eq!(
-            views.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
-            vec!["adults"]
-        );
-        let MaterializedViewKind::Select(definition) = &views[0].kind else {
-            panic!("expected a select view");
-        };
-        assert_eq!(definition.filter.as_deref(), Some("age >= 18"));
+        assert_eq!(views, vec!["adults"]);
+        let view = conn.open_materialized_view("adults").await.unwrap();
+        assert_eq!(view.definition().filter.as_deref(), Some("age >= 18"));
     }
 
     /// The creation option outranks a connection configured to create
@@ -1763,7 +1998,7 @@ mod tests {
 
     /// A newer-kind view must not disappear from the listing.
     #[tokio::test]
-    async fn test_unrecognized_kind_is_listed_with_its_kind() {
+    async fn test_unrecognized_kind_is_listed_by_name() {
         let conn = people_db().await;
         conn.create_materialized_view("v", "people")
             .execute()
@@ -1781,36 +2016,7 @@ mod tests {
             .unwrap();
 
         let views = conn.list_materialized_views().await.unwrap();
-        assert_eq!(views.len(), 1);
-        assert_eq!(views[0].name, "v");
-        assert_eq!(
-            views[0].kind,
-            MaterializedViewKind::Unrecognized {
-                kind: "join".into()
-            }
-        );
-    }
-
-    /// Remote connections are refused before any request is made.
-    #[cfg(feature = "remote")]
-    #[tokio::test]
-    async fn test_remote_connection_is_refused_up_front() {
-        let conn = connect("db://nowhere")
-            .api_key("sk_test")
-            .region("us-east-1")
-            .execute()
-            .await
-            .unwrap();
-        let err = conn
-            .create_materialized_view("v", "src")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
-        let err = conn.open_materialized_view("v").await.unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
-        let err = conn.list_materialized_views().await.unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
+        assert_eq!(views, vec!["v"]);
     }
 
     /// A definition must evaluate identically across refreshes; anything
@@ -2461,6 +2667,7 @@ mod tests {
 
         let view = conn
             .create_materialized_view("adults", "people")
+            .with_no_data(true)
             .namespace(vec!["ns".to_string()])
             .source_namespace(vec!["ns".to_string()])
             .select([("name", "name")])
@@ -2568,7 +2775,8 @@ mod tests {
         FunctionBinding::from_json(
             &serde_json::json!({
                 "binding_id": binding_id,
-                "function": {"name": "embed", "version": "fv_test"},
+                "function": {"name": "embed", "version": "1", "object_id": "fixture", "location": "memory:///fixture",
+                    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [{
                     "parameter": "text", "field_id": -1, "field_path": input,
                     "arrow_type": input_type, "nullable": true,
@@ -2845,7 +3053,8 @@ mod tests {
         let binding = FunctionBinding::from_json(
             &serde_json::json!({
                 "binding_id": "fb_pair",
-                "function": {"name": "pair", "version": "fv_test"},
+                "function": {"name": "pair", "version": "1", "object_id": "fixture", "location": "memory:///fixture",
+                    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [{"parameter": "value", "field_id": -1, "field_path": "id",
                             "arrow_type": int, "nullable": true}],
                 "outputs": [

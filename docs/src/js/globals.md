@@ -11,6 +11,7 @@
 
 ## Enumerations
 
+- [ClientAuthMethod](enumerations/ClientAuthMethod.md)
 - [FullTextQueryType](enumerations/FullTextQueryType.md)
 - [OAuthFlowType](enumerations/OAuthFlowType.md)
 - [Occur](enumerations/Occur.md)
@@ -35,6 +36,7 @@
 - [MultiMatchQuery](classes/MultiMatchQuery.md)
 - [NativeJsHeaderProvider](classes/NativeJsHeaderProvider.md)
 - [OAuthHeaderProvider](classes/OAuthHeaderProvider.md)
+- [OAuthSession](classes/OAuthSession.md)
 - [PermutationBuilder](classes/PermutationBuilder.md)
 - [PhraseQuery](classes/PhraseQuery.md)
 - [Query](classes/Query.md)
@@ -122,6 +124,8 @@
 - [RestNamespaceConfig](interfaces/RestNamespaceConfig.md)
 - [RetryConfig](interfaces/RetryConfig.md)
 - [ScannableOptions](interfaces/ScannableOptions.md)
+- [SessionLogout](interfaces/SessionLogout.md)
+- [SessionStatus](interfaces/SessionStatus.md)
 - [ShuffleOptions](interfaces/ShuffleOptions.md)
 - [SplitCalculatedOptions](interfaces/SplitCalculatedOptions.md)
 - [SplitHashOptions](interfaces/SplitHashOptions.md)
@@ -131,6 +135,7 @@
 - [TableStatistics](interfaces/TableStatistics.md)
 - [TimeoutConfig](interfaces/TimeoutConfig.md)
 - [TlsConfig](interfaces/TlsConfig.md)
+- [TokenCacheOptions](interfaces/TokenCacheOptions.md)
 - [TokenResponse](interfaces/TokenResponse.md)
 - [TokenizeOptions](interfaces/TokenizeOptions.md)
 - [UpdateFieldMetadataResult](interfaces/UpdateFieldMetadataResult.md)
@@ -166,6 +171,7 @@
 - [instrumentLanceDbMetrics](functions/instrumentLanceDbMetrics.md)
 - [isBlobField](functions/isBlobField.md)
 - [makeArrowTable](functions/makeArrowTable.md)
+- [makeJsonField](functions/makeJsonField.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)
 - [tokenize](functions/tokenize.md)

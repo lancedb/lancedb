@@ -89,6 +89,18 @@ pub fn validate_table_name(name: &str) -> Result<()> {
             reason: "Table names cannot be empty strings".to_string(),
         });
     }
+    if name == "." {
+        return Err(Error::InvalidTableName {
+            name: name.to_string(),
+            reason: "Table name cannot be a single dot.".to_string(),
+        });
+    }
+    if name == ".." {
+        return Err(Error::InvalidTableName {
+            name: name.to_string(),
+            reason: "Table name cannot be two dots.".to_string(),
+        });
+    }
     if !TABLE_NAME_REGEX.is_match(name) {
         return Err(Error::InvalidTableName {
             name: name.to_string(),
@@ -804,8 +816,11 @@ mod tests {
         assert!(validate_table_name("_12345table").is_ok());
         assert!(validate_table_name("table.12345").is_ok());
         assert!(validate_table_name("table.._dot_..12345").is_ok());
+        assert!(validate_table_name("...").is_ok());
 
         assert!(validate_table_name("").is_err());
+        assert!(validate_table_name(".").is_err());
+        assert!(validate_table_name("..").is_err());
         assert!(validate_table_name("my_table!").is_err());
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());

@@ -15,6 +15,25 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
+pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
+    const SENSITIVE_HEADERS: [&str; 5] = [
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+    ];
+
+    for (name, value) in headers.iter_mut() {
+        if SENSITIVE_HEADERS
+            .iter()
+            .any(|sensitive| name.as_str().eq_ignore_ascii_case(sensitive))
+        {
+            value.set_sensitive(true);
+        }
+    }
+}
+
 /// Configuration for TLS/mTLS settings.
 #[derive(Clone, Debug)]
 pub struct TlsConfig {
@@ -681,6 +700,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             );
         }
 
+        redact_sensitive_headers(&mut headers);
         Ok(headers)
     }
 
@@ -714,13 +734,14 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                     if let Ok(header_value) = HeaderValue::from_str(&value) {
                         request_headers.insert(header_name, header_value);
                     } else {
-                        debug!("Invalid header value for key {}: {}", key, value);
+                        debug!("Invalid header value for key {}", key);
                     }
                 } else {
                     debug!("Invalid header name: {}", key);
                 }
             }
         }
+        redact_sensitive_headers(request.headers_mut());
         Ok(request)
     }
 
@@ -1180,7 +1201,7 @@ mod tests {
         assert!(!headers.contains_key("x-api-key"));
 
         let headers = RestfulLanceDbClient::<Sender>::default_headers(
-            "api-key",
+            "static-secret-value",
             "us-east-1",
             "db-name",
             false,
@@ -1189,7 +1210,55 @@ mod tests {
             &ClientConfig::default(),
         )
         .unwrap();
-        assert_eq!(headers.get("x-api-key").unwrap(), "api-key");
+        let api_key = headers.get("x-api-key").unwrap();
+        assert_eq!(api_key, "static-secret-value");
+        assert!(api_key.is_sensitive());
+        assert!(!format!("{headers:?}").contains("static-secret-value"));
+    }
+
+    #[test]
+    fn test_configured_authentication_headers_are_sensitive() {
+        let config = ClientConfig {
+            extra_headers: HashMap::from([
+                (
+                    "Authorization".to_string(),
+                    "Bearer configured-secret".to_string(),
+                ),
+                ("X-API-Key".to_string(), "configured-api-key".to_string()),
+                (
+                    "Cookie".to_string(),
+                    "session=configured-cookie".to_string(),
+                ),
+                (
+                    "Proxy-Authorization".to_string(),
+                    "Basic configured-proxy-secret".to_string(),
+                ),
+                ("X-Custom".to_string(), "visible-value".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &config,
+        )
+        .unwrap();
+
+        assert!(headers.get("authorization").unwrap().is_sensitive());
+        assert!(headers.get("x-api-key").unwrap().is_sensitive());
+        assert!(headers.get("cookie").unwrap().is_sensitive());
+        assert!(headers.get("proxy-authorization").unwrap().is_sensitive());
+        assert!(!headers.get("x-custom").unwrap().is_sensitive());
+        let debug = format!("{headers:?}");
+        assert!(!debug.contains("configured-secret"));
+        assert!(!debug.contains("configured-api-key"));
+        assert!(!debug.contains("configured-cookie"));
+        assert!(!debug.contains("configured-proxy-secret"));
+        assert!(debug.contains("visible-value"));
     }
 
     #[test]
@@ -1303,6 +1372,7 @@ mod tests {
         // Test that dynamic headers override existing headers
         let mut headers = HashMap::new();
         headers.insert("Authorization".to_string(), "Bearer new-token".to_string());
+        headers.insert("X-API-Key".to_string(), "new-api-key".to_string());
         headers.insert("X-Custom".to_string(), "custom-value".to_string());
 
         let provider = TestHeaderProvider::new(headers);
@@ -1338,6 +1408,31 @@ mod tests {
             updated_request.headers().get("X-Custom").unwrap(),
             "custom-value"
         );
+        assert!(
+            updated_request
+                .headers()
+                .get("Authorization")
+                .unwrap()
+                .is_sensitive()
+        );
+        assert!(
+            updated_request
+                .headers()
+                .get("X-API-Key")
+                .unwrap()
+                .is_sensitive()
+        );
+        assert!(
+            !updated_request
+                .headers()
+                .get("X-Custom")
+                .unwrap()
+                .is_sensitive()
+        );
+        let debug = format!("{updated_request:?}");
+        assert!(!debug.contains("new-token"));
+        assert!(!debug.contains("new-api-key"));
+        assert!(debug.contains("custom-value"));
         // Existing headers should still be present
         assert_eq!(
             updated_request.headers().get("X-Existing").unwrap(),

@@ -72,6 +72,7 @@ export {
 
 export {
   makeArrowTable,
+  makeJsonField,
   MakeArrowTableOptions,
   Data,
   VectorColumnOptions,
@@ -170,7 +171,15 @@ export {
   TokenResponse,
 } from "./header";
 
-export { OAuthConfig, OAuthFlowType } from "./oauth";
+export {
+  ClientAuthMethod,
+  OAuthConfig,
+  OAuthFlowType,
+  OAuthSession,
+  SessionLogout,
+  SessionStatus,
+  TokenCacheOptions,
+} from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 

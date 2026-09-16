@@ -640,13 +640,16 @@ export abstract class Table {
    * Recompute this table's contents from its materialized-view definition.
    *
    * Plumbing for {@link MaterializedView.refresh}, which is the way to call
-   * it: rejects tables that carry no view definition. Local tables only.
+   * it: rejects tables that carry no view definition.
    * @ignore
    */
   abstract refreshMaterializedView(
     full?: boolean,
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult>;
+
+  /** @ignore */
+  abstract materializedViewDefinition(): Promise<string>;
 
   /**
    * Alter the name or nullability of columns.
@@ -1365,6 +1368,10 @@ export class LocalTable extends Table {
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult> {
     return await this.inner.refreshMaterializedView(full, sourceVersion);
+  }
+
+  async materializedViewDefinition(): Promise<string> {
+    return await this.inner.materializedViewDefinition();
   }
 
   async alterColumns(

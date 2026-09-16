@@ -14,7 +14,7 @@
 //!  * Tables may be managed by a database system (e.g. Postgres)
 //!  * A custom table implementation (e.g. remote table, etc.) may be used
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +28,8 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::job::Job;
+use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
@@ -294,12 +296,79 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
-    /// Register an immutable Function version through the remote catalog.
+    /// Submit a Function creation job that builds an image and registers it.
     async fn create_function_async(
         &self,
         _request: crate::function::FunctionRegistrationRequest,
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
+    }
+    /// Create a materialized view through a remote catalog and return its
+    /// initial-population job. Local connections use the native declaration
+    /// path directly.
+    #[doc(hidden)]
+    async fn create_materialized_view_async(
+        &self,
+        _request: CreateMaterializedViewRequest,
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view creation")
+    }
+    /// Drop a materialized view through its resource endpoint and return its
+    /// cleanup job. Local connections validate the view and use table drop.
+    #[doc(hidden)]
+    async fn drop_materialized_view_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view drop")
+    }
+    /// List materialized-view names in a namespace.
+    #[doc(hidden)]
+    async fn list_materialized_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut page_token = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let response = self
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace_path.to_vec()),
+                    page_token: page_token.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            for name in response.tables {
+                let Ok(table) = self
+                    .open_table(OpenTableRequest {
+                        name: name.clone(),
+                        namespace_path: namespace_path.to_vec(),
+                        index_cache_size: None,
+                        lance_read_params: None,
+                        location: None,
+                        namespace_client: None,
+                        managed_versioning: None,
+                    })
+                    .await
+                else {
+                    continue;
+                };
+                let schema = table.schema().await?;
+                if crate::materialized_view::materialized_view_kind(schema.metadata())?.is_some() {
+                    names.push(name);
+                }
+            }
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(crate::Error::Runtime {
+                    message: "materialized-view listing repeated a page token".into(),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(names)
     }
     /// Look up one exact immutable Function version.
     async fn get_function(
@@ -313,7 +382,7 @@ pub trait Database:
     async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
-    /// Drop one exact immutable Function version from the remote catalog.
+    /// Remove the current Function name binding, retaining the object history.
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
     }

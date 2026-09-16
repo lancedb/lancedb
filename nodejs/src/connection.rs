@@ -308,6 +308,7 @@ impl Connection {
         projections: Option<Vec<Vec<String>>>,
         filter: Option<String>,
         limit: Option<i64>,
+        with_no_data: bool,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.create_materialized_view(name, source);
         if let Some(projections) = projections {
@@ -328,6 +329,7 @@ impl Connection {
                 .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))?;
             builder = builder.limit(limit);
         }
+        builder = builder.with_no_data(with_no_data);
         let view = builder.execute().await.default_error()?;
         Ok(Table::new(view.table().clone()))
     }
@@ -349,7 +351,37 @@ impl Connection {
             .list_materialized_views()
             .await
             .default_error()?;
-        Ok(views.into_iter().map(|v| v.name).collect())
+        Ok(views)
+    }
+
+    /// Drop a materialized view.
+    #[napi(catch_unwind)]
+    pub async fn drop_materialized_view(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?
+            .drop_materialized_view(&name, &ns)
+            .await
+            .default_error()
+    }
+
+    /// Start dropping a materialized view and return its cleanup job.
+    #[napi(catch_unwind)]
+    pub async fn drop_materialized_view_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_materialized_view_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
     }
 
     #[napi(catch_unwind)]

@@ -5,9 +5,12 @@ import * as http from "http";
 import { RequestListener } from "http";
 import packageJson = require("../package.json");
 import {
+  ClientAuthMethod,
   ClientConfig,
   Connection,
   ConnectionOptions,
+  OAuthConfig,
+  OAuthFlowType,
   TlsConfig,
   connect,
 } from "../lancedb";
@@ -82,21 +85,17 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
-  it("refuses materialized views before issuing any request", async () => {
-    const paths: string[] = [];
+  it("lists materialized views through the namespace route", async () => {
     await withMockDatabase(
       (req, res) => {
-        paths.push(req.url ?? "");
-        res.writeHead(404).end();
+        expect(req.method).toBe("GET");
+        expect(req.url).toBe("/v1/namespace/$/materialized_view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["daily_sales"] }));
       },
       async (db) => {
-        await expect(db.openMaterializedView("secret_table")).rejects.toThrow(
-          /only on local databases/,
-        );
-        await expect(db.listMaterializedViews()).rejects.toThrow(
-          /only on local databases/,
-        );
-        expect(paths).toEqual([]);
+        expect(await db.listMaterializedViews()).toEqual(["daily_sales"]);
       },
     );
   });
@@ -440,6 +439,40 @@ describe("remote connection", () => {
       // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
       { from_branch: "exp", dry_run: true },
     ]);
+  });
+
+  describe("OAuthConfig", () => {
+    it("should expose client auth method values", () => {
+      expect(ClientAuthMethod.None).toBe("none");
+      expect(ClientAuthMethod.ClientSecretBasic).toBe("client_secret_basic");
+      expect(ClientAuthMethod.ClientSecretPost).toBe("client_secret_post");
+    });
+
+    it("should accept a confidential client with basic auth", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        clientSecret: "secret",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        clientAuthMethod: ClientAuthMethod.ClientSecretBasic,
+      };
+
+      expect(config.clientAuthMethod).toBe(ClientAuthMethod.ClientSecretBasic);
+    });
+
+    it("should accept a public PKCE client without auth method or secret", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        usePkce: true,
+      };
+
+      expect(config.clientSecret).toBeUndefined();
+      expect(config.clientAuthMethod).toBeUndefined();
+    });
   });
 
   describe("TlsConfig", () => {

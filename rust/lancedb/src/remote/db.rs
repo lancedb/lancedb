@@ -26,6 +26,7 @@ use crate::database::{
 use crate::error::Result;
 use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
+use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::job::{RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
@@ -585,6 +586,127 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             message: "Getting the read consistency of a remote database is not yet supported"
                 .to_string(),
         })
+    }
+
+    async fn create_materialized_view_async(
+        &self,
+        request: CreateMaterializedViewRequest,
+    ) -> Result<Job> {
+        let identifier = build_table_identifier(
+            &request.name,
+            &request.namespace_path,
+            &self.client.id_delimiter,
+        );
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{identifier}/create"))
+            .json(&serde_json::json!({
+                "query": request.query,
+                "with_no_data": request.with_no_data,
+            }));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let job_id = extract_job_id(&body);
+
+        if request.with_no_data {
+            return Ok(match job_id {
+                Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
+                None => Job::new_done(),
+            });
+        }
+        if status != StatusCode::ACCEPTED {
+            return Err(Error::Http {
+                source: "materialized-view creation with data must return 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            });
+        }
+        let job_id = job_id.ok_or_else(|| Error::Http {
+            source: "materialized-view creation response did not contain a valid job_id".into(),
+            request_id,
+            status_code: Some(status),
+        })?;
+        Ok(Job::new(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
+    async fn drop_materialized_view_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
+        let request = self
+            .client
+            .post(&format!("/v1/materialized_view/{identifier}/drop"));
+        let (request_id, response) = self.client.send(request).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        if status != StatusCode::ACCEPTED {
+            return Err(Error::Http {
+                source: "materialized-view drop must return 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            });
+        }
+        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+            source: "materialized-view drop response did not contain a valid job_id".into(),
+            request_id,
+            status_code: Some(status),
+        })?;
+        self.table_cache
+            .remove(&build_cache_key(name, namespace_path))
+            .await;
+        Ok(Job::new(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
+    async fn list_materialized_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        #[derive(serde::Deserialize)]
+        struct ListMaterializedViewsResponse {
+            #[serde(default)]
+            views: Vec<String>,
+            #[serde(default)]
+            page_token: Option<String>,
+        }
+
+        let namespace_id = build_namespace_identifier(namespace_path, &self.client.id_delimiter);
+        let path = format!("/v1/namespace/{namespace_id}/materialized_view/list");
+        let mut views = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let mut req = self.client.get(&path);
+            if let Some(token) = &page_token {
+                req = req.query(&[("page_token", token)]);
+            }
+            let (request_id, response) = self.client.send(req).await?;
+            let response = self.client.check_response(&request_id, response).await?;
+            let status = response.status();
+            let response: ListMaterializedViewsResponse =
+                response.json().await.err_to_http(request_id.clone())?;
+            views.extend(response.views);
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(Error::Http {
+                    source: "Materialized-view listing response repeated a page_token".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(views)
     }
 
     async fn create_function_async(
@@ -1292,6 +1414,8 @@ mod tests {
     use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
 
     use crate::connection::ConnectBuilder;
+    use crate::database::Database;
+    use crate::materialized_view::CreateMaterializedViewRequest;
     use crate::{
         Connection, Error,
         database::CreateTableMode,
@@ -1329,6 +1453,103 @@ mod tests {
         // Case 4: Verify same inputs produce same key (consistency)
         let key6 = build_cache_key("table1", &["ns1".to_string(), "ns2".to_string()]);
         assert_eq!(key1, key6, "Same inputs should produce same cache key");
+    }
+
+    #[tokio::test]
+    async fn test_create_materialized_view_uses_item_route_and_job() {
+        let db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/materialized_view/analytics$adults/create"
+            );
+            let body = request
+                .body()
+                .and_then(reqwest::Body::as_bytes)
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+                .unwrap();
+            assert_eq!(
+                body["query"],
+                "SELECT age AS \"age\" FROM \"raw\".\"people\" WHERE age >= 18 LIMIT 10"
+            );
+            assert_eq!(body["with_no_data"], false);
+            http::Response::builder()
+                .status(202)
+                .body(serde_json::json!({"job_id": "j1-mv-create"}).to_string())
+                .unwrap()
+        });
+        let job = db
+            .create_materialized_view_async(CreateMaterializedViewRequest {
+                name: "adults".into(),
+                namespace_path: vec!["analytics".into()],
+                query: "SELECT age AS \"age\" FROM \"raw\".\"people\" WHERE age >= 18 LIMIT 10"
+                    .into(),
+                with_no_data: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j1-mv-create"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_materialized_view_uses_item_route_and_job() {
+        let db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/materialized_view/analytics$adults/drop"
+            );
+            assert!(request.body().is_none());
+            http::Response::builder()
+                .status(202)
+                .body(serde_json::json!({"job_id": "j1-mv-drop"}).to_string())
+                .unwrap()
+        });
+        let job = db
+            .drop_materialized_view_async("adults", &["analytics".into()])
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("j1-mv-drop"));
+    }
+
+    #[tokio::test]
+    async fn test_list_materialized_views_follows_empty_pages() {
+        let page = Arc::new(AtomicUsize::new(0));
+        let db = super::RemoteDatabase::new_mock({
+            let page = page.clone();
+            move |request| {
+                assert_eq!(request.method(), "GET");
+                assert_eq!(
+                    request.url().path(),
+                    "/v1/namespace/analytics/materialized_view/list"
+                );
+                match page.fetch_add(1, Ordering::SeqCst) {
+                    0 => {
+                        assert!(request.url().query().is_none());
+                        http::Response::builder()
+                            .status(200)
+                            .body(
+                                serde_json::json!({"views": [], "page_token": "next"}).to_string(),
+                            )
+                            .unwrap()
+                    }
+                    1 => {
+                        assert_eq!(request.url().query(), Some("page_token=next"));
+                        http::Response::builder()
+                            .status(200)
+                            .body(serde_json::json!({"views": ["adults"]}).to_string())
+                            .unwrap()
+                    }
+                    _ => panic!("listing requested too many pages"),
+                }
+            }
+        });
+        assert_eq!(
+            db.list_materialized_views(&["analytics".into()])
+                .await
+                .unwrap(),
+            ["adults"]
+        );
     }
 
     #[tokio::test]
@@ -2864,7 +3085,7 @@ mod tests {
         assert_eq!(job.id(), Some("job-function-1"));
         let version = job.wait().await.unwrap();
         assert_eq!(version.name(), "embed");
-        assert_eq!(version.version(), "fv_01K3EXACT");
+        assert_eq!(version.version(), "1");
     }
 
     #[tokio::test]
@@ -2877,12 +3098,12 @@ mod tests {
             assert_eq!(request.url().path(), "/v1/function/embed/describe");
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(body, serde_json::json!({"version": "fv_01K3EXACT"}));
+            assert_eq!(body, serde_json::json!({"version": "1"}));
             http::Response::builder().status(200).body(VERSION).unwrap()
         });
-        let version = conn.get_function("embed", "fv_01K3EXACT").await.unwrap();
+        let version = conn.get_function("embed", "1").await.unwrap();
         assert_eq!(version.name(), "embed");
-        assert_eq!(version.version(), "fv_01K3EXACT");
+        assert_eq!(version.version(), "1");
     }
 
     #[tokio::test]
@@ -2913,7 +3134,7 @@ mod tests {
                             serde_json::json!({
                                 "functions": [{
                                     "name": "embed",
-                                    "version": "fv_01K3EXACT",
+                                    "version": "1",
                                     "definition": version.clone(),
                                 }],
                             })
@@ -2926,7 +3147,7 @@ mod tests {
         let functions = conn.list_functions().await.unwrap();
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name(), "embed");
-        assert_eq!(functions[0].version(), "fv_01K3EXACT");
+        assert_eq!(functions[0].version(), "1");
     }
 
     #[tokio::test]
@@ -3008,13 +3229,13 @@ mod tests {
             assert_eq!(request.url().path(), "/v1/function/embed/drop");
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(body, serde_json::json!({"version": "fv_01K3EXACT"}));
+            assert_eq!(body, serde_json::json!({"version": "1"}));
             http::Response::builder()
                 .status(200)
                 .body(r#"{"dropped":false}"#)
                 .unwrap()
         });
-        assert!(!conn.drop_function("embed", "fv_01K3EXACT").await.unwrap());
+        assert!(!conn.drop_function("embed", "1").await.unwrap());
     }
 
     #[tokio::test]
@@ -3033,7 +3254,7 @@ mod tests {
             http::Response::builder()
                 .status(200)
                 .body(format!(
-                    r#"{{"job_id": "job-1", "job_type": "create_function", "job_state": "{}", "creation_ms": 1, "result": {{"name": "embed", "version": "fv_1"}}}}"#,
+                    r#"{{"job_id": "job-1", "job_type": "create_function", "job_state": "{}", "creation_ms": 1, "result": {{"name": "embed", "version": "1"}}}}"#,
                     state
                 ))
                 .unwrap()
