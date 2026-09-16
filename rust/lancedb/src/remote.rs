@@ -6,6 +6,7 @@
 //! building client/server applications with LanceDB or as a client for some
 //! other custom LanceDB service.
 
+pub mod catalog;
 pub(crate) mod client;
 pub(crate) mod db;
 pub(crate) mod job;
@@ -36,3 +37,5 @@ pub use oauth::{
     AuthorizationCodeOptions, ClientAuthMethod, OAuthConfig, OAuthFlow, OAuthHeaderProvider,
 };
 pub use token_cache::{OAuthSession, SessionLogout, SessionStatus, TokenCacheOptions};
+
+pub use catalog::{RemoteCatalog, RemoteCatalogOptions};

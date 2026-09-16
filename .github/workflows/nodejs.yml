@@ -207,4 +207,4 @@ jobs:
         pnpm tsc
     - name: Test
       run: |
-        pnpm test
+        pnpm test --runInBand

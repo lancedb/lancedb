@@ -52,6 +52,14 @@ from .namespace import (
     AsyncLanceNamespaceDBConnection,
 )
 
+from .catalog import (
+    AsyncCatalog,
+    Catalog,
+    ListDatabasesResponse,
+    connect_catalog,
+    connect_catalog_async,
+)
+
 
 if TYPE_CHECKING:
     from lance.blob import BlobType as BlobType
@@ -561,6 +569,11 @@ async def connect_async(
 
 
 __all__ = [
+    "Catalog",
+    "AsyncCatalog",
+    "ListDatabasesResponse",
+    "connect_catalog",
+    "connect_catalog_async",
     "AsyncMaterializedView",
     "MaterializedView",
     "MaterializedViewDefinition",
