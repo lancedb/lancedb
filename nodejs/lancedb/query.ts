@@ -550,9 +550,9 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * your actual data to find the smallest possible value that will still give
    * you the desired recall.
    *
-   * This leaves the minimum at Lance's adaptive default and sets the maximum number
-   * of partitions that may be searched. For more fine-grained control, use
-   * `minimumNprobes` and `maximumNprobes`.
+   * This sets only the maximum number of partitions that may be searched. Unless
+   * configured separately, the minimum remains at Lance's adaptive default. For
+   * more fine-grained control, use `minimumNprobes` and `maximumNprobes`.
    */
   nprobes(nprobes: number): VectorQuery {
     this.doVectorCall((inner) => inner.nprobes(nprobes));

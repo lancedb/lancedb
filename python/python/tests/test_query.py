@@ -1631,6 +1631,15 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         maximum_nprobes=50,
     )
 
+    q = table.search([5.0, 6.0]).minimum_nprobes(5).nprobes(50).to_query_object()
+    check_set_props(
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        minimum_nprobes=5,
+        maximum_nprobes=50,
+    )
+
     q = table.search([5.0, 6.0]).maximum_nprobes(10).to_query_object()
     check_set_props(
         q,

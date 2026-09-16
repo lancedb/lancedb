@@ -1683,9 +1683,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
         for tuning advice.
 
-        This method leaves the minimum at Lance's adaptive default and sets the
-        maximum number of probes. See `minimum_nprobes` and `maximum_nprobes` for
-        more fine-grained control.
+        This method sets only the maximum number of probes. Unless configured
+        separately, the minimum remains at Lance's adaptive default. See
+        `minimum_nprobes` and `maximum_nprobes` for more fine-grained control.
 
         Parameters
         ----------
@@ -1697,7 +1697,6 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._minimum_nprobes = None
         self._maximum_nprobes = nprobes
         return self
 
@@ -2454,6 +2453,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
+        This sets only the maximum number of probes. Unless configured separately,
+        the minimum remains at Lance's adaptive default.
+
         Parameters
         ----------
         nprobes: int
@@ -2464,7 +2466,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._minimum_nprobes = None
         self._maximum_nprobes = nprobes
         return self
 
@@ -3623,8 +3624,9 @@ class AsyncVectorQueryBase:
         your actual data to find the smallest possible value that will still give
         you the desired recall.
 
-        This leaves the minimum at Lance's adaptive default and sets the maximum
-        number of partitions that may be searched.
+        This sets only the maximum number of partitions that may be searched.
+        Unless configured separately, the minimum remains at Lance's adaptive
+        default.
         """
         self._inner.nprobes(nprobes)
         return self

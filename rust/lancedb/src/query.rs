@@ -1251,11 +1251,11 @@ impl VectorQuery {
     /// your actual data to find the smallest possible value that will still give
     /// you the desired recall.
     ///
-    /// This method leaves the minimum at Lance's adaptive default and sets the
-    /// maximum number of partitions to search. For more fine-grained control see
-    /// [`VectorQuery::minimum_nprobes`] and [`VectorQuery::maximum_nprobes`].
+    /// This method sets only the maximum number of partitions to search. Unless
+    /// configured separately, the minimum remains at Lance's adaptive default. For
+    /// more fine-grained control see [`VectorQuery::minimum_nprobes`] and
+    /// [`VectorQuery::maximum_nprobes`].
     pub fn nprobes(mut self, nprobes: usize) -> Self {
-        self.request.minimum_nprobes = None;
         self.request.maximum_nprobes = Some(nprobes);
         self
     }
@@ -2332,6 +2332,16 @@ mod tests {
         let maximum_only_query = query.maximum_nprobes(Some(20)).unwrap();
         assert_eq!(maximum_only_query.request.minimum_nprobes, None);
         assert_eq!(maximum_only_query.request.maximum_nprobes, Some(20));
+
+        let bounded_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2])
+            .unwrap()
+            .minimum_nprobes(5)
+            .unwrap()
+            .nprobes(20);
+        assert_eq!(bounded_query.request.minimum_nprobes, Some(5));
+        assert_eq!(bounded_query.request.maximum_nprobes, Some(20));
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 

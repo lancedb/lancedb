@@ -465,9 +465,9 @@ For best results we recommend tuning this parameter with a benchmark against
 your actual data to find the smallest possible value that will still give
 you the desired recall.
 
-This leaves the minimum at Lance's adaptive default and sets the maximum number
-of partitions that may be searched. For more fine-grained control, use
-`minimumNprobes` and `maximumNprobes`.
+This sets only the maximum number of partitions that may be searched. Unless
+configured separately, the minimum remains at Lance's adaptive default. For
+more fine-grained control, use `minimumNprobes` and `maximumNprobes`.
 
 #### Parameters
 
