@@ -3310,9 +3310,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         _read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
-        crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
+        crate::table::computed_columns::ensure_not_function_bound(
             self.schema().await?.as_ref(),
             "schema evolution",
+            crate::table::schema_evolution::new_column_names(&transforms),
         )?;
         match transforms {
             NewColumnTransform::SqlExpressions(expressions) => {
@@ -3365,9 +3366,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
-        crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
+        crate::table::computed_columns::ensure_not_function_bound(
             self.schema().await?.as_ref(),
             "schema evolution",
+            columns.iter().map(|(name, _)| name),
         )?;
         // The server plans the declaration against its table schema, including
         // Blob v2 semantics inherited by a direct field projection.
@@ -7921,8 +7923,9 @@ mod tests {
         assert_eq!(result.version, 8);
     }
 
-    #[tokio::test]
-    async fn test_add_function_column_allows_an_existing_binding() {
+    /// The fixture binding's table: `title` and `body` bound as inputs, its
+    /// two outputs declared, plus an unbound `spare`.
+    fn fixture_bound_schema() -> Schema {
         let binding = crate::function::FunctionBinding::from_json(include_str!(
             "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
         ))
@@ -7949,13 +7952,78 @@ mod tests {
                 ),
             )
         }));
-        let schema = Schema::new_with_metadata(
+        fields.push(Field::new("spare", DataType::Int32, true));
+        Schema::new_with_metadata(
             fields,
             HashMap::from([(
                 crate::table::computed_columns::FUNCTION_BINDINGS_META_KEY.to_string(),
                 binding_metadata,
             )]),
-        );
+        )
+    }
+
+    /// Only a column the binding uses is refused, and it is refused before
+    /// any request goes out; the rest reach the server as usual.
+    #[tokio::test]
+    async fn test_add_columns_scopes_to_the_columns_a_binding_uses() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(describe_response(&fixture_bound_schema()))
+                .unwrap(),
+            "/v1/table/my_table/add_columns/" => http::Response::builder()
+                .status(200)
+                .body(r#"{"version":10}"#.to_string())
+                .unwrap(),
+            path => panic!("Unexpected path: {path}"),
+        });
+        table
+            .add_columns()
+            .computed("doubled", "spare * 2")
+            .execute()
+            .await
+            .unwrap();
+        table
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "eager".into(),
+                "spare + 1".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(describe_response(&fixture_bound_schema()))
+                .unwrap(),
+            path => panic!("mutation request must not be sent: {path}"),
+        });
+        for name in ["title", "search_text"] {
+            let err = table
+                .add_columns()
+                .computed(name, "1")
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "{err:?}");
+            let err = table
+                .add_columns()
+                .transform(NewColumnTransform::SqlExpressions(vec![(
+                    name.into(),
+                    "1".into(),
+                )]))
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "{err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_function_column_allows_an_existing_binding() {
+        let schema = fixture_bound_schema();
         let table =
             Table::new_with_handler("my_table", move |request| match request.url().path() {
                 "/v1/table/my_table/describe/" => http::Response::builder()

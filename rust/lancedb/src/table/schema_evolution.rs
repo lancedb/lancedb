@@ -103,9 +103,10 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
-    computed_columns::ensure_no_function_bindings_for_mutation(
+    computed_columns::ensure_not_function_bound(
         table.schema().await?.as_ref(),
         "schema evolution",
+        new_column_names(&transforms),
     )?;
     // Declarations are admitted only through [`execute_declare`].
     match &transforms {
@@ -131,9 +132,10 @@ pub(crate) async fn execute_declare(
     // An LSM write spec keeps visible rows in tiers refresh cannot reach;
     // checked against latest committed state, not this handle's snapshot.
     table.checkout_latest().await?;
-    computed_columns::ensure_no_function_bindings_for_mutation(
+    computed_columns::ensure_not_function_bound(
         table.schema().await?.as_ref(),
         "schema evolution",
+        columns.iter().map(|(name, _)| name),
     )?;
     // Unset drops the MemWAL index, so the spec alone stops describing a table
     // whose SSTables still hold rows. The shard directories outlive it and are
@@ -154,6 +156,26 @@ pub(crate) async fn execute_declare(
     }
     let transform = computed_columns::declare(table.schema().await?, columns)?;
     commit_add_columns(table, transform, None).await
+}
+
+/// The top-level columns `transforms` adds.
+pub(crate) fn new_column_names(transforms: &NewColumnTransform) -> Vec<String> {
+    let names = |schema: &ArrowSchema| {
+        schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>()
+    };
+    match transforms {
+        NewColumnTransform::SqlExpressions(expressions) => {
+            expressions.iter().map(|(name, _)| name.clone()).collect()
+        }
+        NewColumnTransform::AllNulls(schema) => names(schema),
+        NewColumnTransform::BatchUDF(udf) => names(&udf.output_schema),
+        NewColumnTransform::Stream(stream) => names(&stream.schema()),
+        NewColumnTransform::Reader(reader) => names(&reader.schema()),
+    }
 }
 
 pub(crate) async fn commit_add_columns(
@@ -178,13 +200,18 @@ pub(crate) async fn execute_alter_columns(
 ) -> Result<AlterColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
-    // Nullability is not part of what an expression resolves against, so only
-    // a rename or a retype can invalidate a binding.
     let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
-    computed_columns::ensure_no_function_bindings_for_mutation(
+    // A Function binding stores its columns' exact fields, nullability
+    // included, so every alteration of one counts, and a rename's target too.
+    computed_columns::ensure_not_function_bound(
         schema.as_ref(),
         "schema evolution",
+        alterations.iter().flat_map(|alteration| {
+            std::iter::once(alteration.path.as_str()).chain(alteration.rename.as_deref())
+        }),
     )?;
+    // Nullability is not part of what an expression resolves against, so only
+    // a rename or a retype can invalidate a binding.
     let rebinding = alterations
         .iter()
         .filter(|alteration| alteration.rename.is_some() || alteration.data_type.is_some())
@@ -212,14 +239,9 @@ pub(crate) async fn execute_drop_columns(
 ) -> Result<DropColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
-    computed_columns::ensure_no_function_bindings_for_mutation(
-        &ArrowSchema::from(dataset.schema()),
-        "schema evolution",
-    )?;
-    computed_columns::ensure_not_an_input(
-        &std::sync::Arc::new(ArrowSchema::from(dataset.schema())),
-        columns,
-    )?;
+    let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    computed_columns::ensure_not_function_bound(schema.as_ref(), "schema evolution", columns)?;
+    computed_columns::ensure_not_an_input(&schema, columns)?;
     dataset.drop_columns(columns).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
@@ -241,7 +263,11 @@ pub(crate) async fn execute_update_field_metadata(
     // binding out from under a refresh. A replace on a declared column would
     // silently erase it.
     let schema = ArrowSchema::from(dataset.schema());
-    computed_columns::ensure_no_function_bindings_for_mutation(&schema, "schema evolution")?;
+    computed_columns::ensure_not_function_bound(
+        &schema,
+        "field metadata update",
+        updates.iter().map(|update| update.path.as_str()),
+    )?;
     let declared: Vec<String> = computed_columns::computed_columns(&schema)
         .into_iter()
         .map(|declaration| declaration.name)
@@ -263,7 +289,7 @@ pub(crate) async fn execute_update_field_metadata(
         if update.replace
             && declared
                 .iter()
-                .any(|name| name == computed_columns::root(&update.path))
+                .any(|name| *name == computed_columns::root(&update.path))
         {
             return Err(Error::InvalidInput {
                 message: format!(
@@ -300,8 +326,202 @@ mod tests {
 
     use super::FieldMetadataUpdate;
     use crate::connect;
+    use crate::function::FunctionBinding;
     use crate::query::{ExecutableQuery, QueryBase, Select};
     use crate::table::NewColumnTransform;
+    use crate::table::computed_columns::{
+        FUNCTION_BINDINGS_META_KEY, ensure_supported_function_metadata, function_bindings,
+        function_bindings_metadata, function_computed_column_metadata,
+    };
+    use crate::{Error, Table};
+    use std::collections::HashMap;
+
+    /// A table carrying the fixture binding: `title` and `body` are its
+    /// inputs, `search_text` and `search_token_count` its outputs, `spare`
+    /// nobody's. Stamped the way the server does it, since no local path
+    /// declares a binding.
+    async fn bound_table() -> Table {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("title", Utf8, ["a"]),
+            ("body", Utf8, ["b"]),
+            ("search_text", Utf8, ["a b"]),
+            ("search_token_count", Int64, [2]),
+            ("spare", Int32, [1])
+        )
+        .unwrap();
+        let table = conn.create_table("bound", batch).execute().await.unwrap();
+        let binding = FunctionBinding::from_json(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_schema_metadata(vec![(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                Some(function_bindings_metadata(std::slice::from_ref(&binding)).unwrap()),
+            )])
+            .await
+            .unwrap();
+        let inputs = ["title".to_string(), "body".to_string()];
+        let outputs = binding
+            .outputs()
+            .iter()
+            .map(|output| {
+                (
+                    dataset.schema().field(&output.output_name).unwrap().id as u32,
+                    function_computed_column_metadata(
+                        binding.binding_id(),
+                        output.output_ordinal,
+                        &inputs,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        dataset.replace_field_metadata(outputs).await.unwrap();
+        native.dataset.update(dataset);
+        ensure_supported_function_metadata(&table.schema().await.unwrap()).unwrap();
+        table
+    }
+
+    fn metadata_update(path: &str) -> FieldMetadataUpdate {
+        FieldMetadataUpdate {
+            path: path.into(),
+            metadata: HashMap::from([("unit".to_string(), Some("label".to_string()))]),
+            replace: false,
+        }
+    }
+
+    /// Columns no binding uses evolve as on any table, and the binding is
+    /// still valid afterwards, which is what every later write checks.
+    #[tokio::test]
+    async fn test_schema_evolution_leaves_unbound_columns_free_on_a_bound_table() {
+        let table = bound_table().await;
+        table
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "eager".into(),
+                "1".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .add_columns()
+            .computed("derived", "spare * 2")
+            .execute()
+            .await
+            .unwrap();
+        table
+            .update_field_metadata(&[metadata_update("eager")])
+            .await
+            .unwrap();
+        table
+            .alter_columns(&[ColumnAlteration::new("eager".into()).rename("moved".into())])
+            .await
+            .unwrap();
+        table.drop_columns(&["moved"]).await.unwrap();
+
+        let schema = table.schema().await.unwrap();
+        ensure_supported_function_metadata(&schema).unwrap();
+        assert_eq!(function_bindings(&schema).unwrap().len(), 1);
+        assert!(schema.field_with_name("derived").is_ok());
+        assert!(schema.field_with_name("moved").is_err());
+    }
+
+    fn bound(err: Error) {
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("a Function binding reads or writes it")),
+            "{err:?}"
+        );
+    }
+
+    /// Every schema-evolution door refuses a column a binding reads or
+    /// writes, including a rename onto one.
+    #[tokio::test]
+    async fn test_schema_evolution_refuses_the_columns_a_function_binding_uses() {
+        let table = bound_table().await;
+        let version = table.version().await.unwrap();
+        for column in ["title", "body", "search_text", "search_token_count"] {
+            bound(table.drop_columns(&[column]).await.unwrap_err());
+            bound(
+                table
+                    .alter_columns(&[ColumnAlteration::new(column.into()).rename("moved".into())])
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .alter_columns(&[ColumnAlteration::new(column.into()).set_nullable(false)])
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .update_field_metadata(&[metadata_update(column)])
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .add_columns()
+                    .transform(NewColumnTransform::SqlExpressions(vec![(
+                        column.into(),
+                        "1".into(),
+                    )]))
+                    .execute()
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .add_columns()
+                    .computed(column, "1")
+                    .execute()
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        bound(
+            table
+                .alter_columns(&[ColumnAlteration::new("spare".into()).rename("title".into())])
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(table.version().await.unwrap(), version);
+    }
+
+    /// Lance resolves a quoted spelling to the same field as the bare one,
+    /// so the guard compares identities, not text.
+    #[tokio::test]
+    async fn quoted_function_output_path_is_still_refused() {
+        let table = bound_table().await;
+        let version = table.version().await.unwrap();
+        for path in ["`title`", "`search_text`", "`title`.nested"] {
+            bound(table.drop_columns(&[path]).await.unwrap_err());
+            bound(
+                table
+                    .alter_columns(&[ColumnAlteration::new(path.into()).set_nullable(false)])
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .update_field_metadata(&[metadata_update(path)])
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        bound(
+            table
+                .alter_columns(&[ColumnAlteration::new("spare".into()).rename("`title`".into())])
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(table.version().await.unwrap(), version);
+    }
 
     // Add Columns Tests
 
