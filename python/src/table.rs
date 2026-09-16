@@ -1481,6 +1481,15 @@ impl Table {
         })
     }
 
+    /// Whether reads on this table route through the MemWAL. Cached by the
+    /// remote table, so the hybrid query path can ask on every call.
+    pub fn lsm_enabled(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.lsm_enabled().await.infer_error()
+        })
+    }
+
     /// Converge the table's LSM write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last

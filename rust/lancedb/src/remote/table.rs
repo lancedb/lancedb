@@ -88,6 +88,12 @@ const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
+/// The MemWAL routing bit changes only when a write spec is installed or
+/// removed, both of which invalidate this handle's cache directly. The TTL
+/// bounds how long a change made through *another* handle goes unnoticed; a
+/// stale `false` is caught by the `with_row_id` rejection on the query itself.
+const WAL_ENABLED_CACHE_TTL: Duration = Duration::from_secs(30);
+const WAL_ENABLED_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
 const SCHEMA_SELECTOR_CHANGED: &str = "table selector changed while fetching schema";
 
 fn fts_query_requires_document_granularity_support(query: &FtsQuery) -> bool {
@@ -483,6 +489,7 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     version: Arc<RwLock<Option<u64>>>,
     location: RwLock<Option<String>>,
     schema_cache: BackgroundCache<SchemaRef, Error>,
+    wal_enabled_cache: BackgroundCache<bool, Error>,
     freshness: Arc<Mutex<FreshnessState>>,
     /// The branch this handle is scoped to, or `None` for the main branch.
     /// Stamped onto every branch-accepting request so reads and writes resolve
@@ -647,6 +654,10 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+            wal_enabled_cache: BackgroundCache::new(
+                WAL_ENABLED_CACHE_TTL,
+                WAL_ENABLED_CACHE_REFRESH_WINDOW,
+            ),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
         }
@@ -680,6 +691,10 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+            wal_enabled_cache: BackgroundCache::new(
+                WAL_ENABLED_CACHE_TTL,
+                WAL_ENABLED_CACHE_REFRESH_WINDOW,
+            ),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
         }
@@ -1414,6 +1429,10 @@ impl<S: HttpSend> RemoteTable<S> {
         self.schema_cache.invalidate();
     }
 
+    fn invalidate_wal_enabled_cache(&self) {
+        self.wal_enabled_cache.invalidate();
+    }
+
     fn handle_error_invalidation(&self, error: &Error) {
         let status_code = match error {
             Error::Http { status_code, .. } => *status_code,
@@ -1583,6 +1602,10 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                wal_enabled_cache: BackgroundCache::new(
+                    WAL_ENABLED_CACHE_TTL,
+                    WAL_ENABLED_CACHE_REFRESH_WINDOW,
+                ),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -1607,6 +1630,10 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                wal_enabled_cache: BackgroundCache::new(
+                    WAL_ENABLED_CACHE_TTL,
+                    WAL_ENABLED_CACHE_REFRESH_WINDOW,
+                ),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -1640,6 +1667,10 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                wal_enabled_cache: BackgroundCache::new(
+                    WAL_ENABLED_CACHE_TTL,
+                    WAL_ENABLED_CACHE_REFRESH_WINDOW,
+                ),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -3071,6 +3102,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
+        self.invalidate_wal_enabled_cache();
         Ok(())
     }
 
@@ -3082,6 +3114,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         ));
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
+        self.invalidate_wal_enabled_cache();
         Ok(())
     }
 
@@ -3146,6 +3179,42 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         .with_writer_config_defaults(body.writer_config_defaults);
 
         Ok(Some(spec))
+    }
+
+    /// Cached because every hybrid query asks, and the answer is a routing
+    /// hint rather than a correctness gate: a wrong `false` surfaces as the
+    /// `with_row_id` rejection on the query itself, and a wrong `true` still
+    /// produces a valid base-only read.
+    ///
+    /// An unreachable endpoint therefore answers `false` instead of failing.
+    /// That hides nothing: a server without the route has no MemWAL tables, and
+    /// if the table itself is gone the query that follows reports it. Only a
+    /// success is cached, so a transient failure is re-asked on the next call.
+    ///
+    /// Reuses `get_lsm_write_spec` rather than `BackgroundCache::get`, whose
+    /// fetch closure must be `'static` and so cannot borrow `self`. The cost is
+    /// no single-flight on a cold cache — concurrent first calls each send one
+    /// request — and a refresh that blocks rather than happening in the
+    /// background. Both are one POST against a bit that changes almost never.
+    async fn lsm_enabled(&self) -> Result<bool> {
+        if let Some(enabled) = self.wal_enabled_cache.try_get() {
+            return Ok(enabled);
+        }
+        match self.get_lsm_write_spec().await {
+            Ok(spec) => {
+                let enabled = spec.is_some();
+                self.wal_enabled_cache.seed(enabled);
+                Ok(enabled)
+            }
+            Err(e) => {
+                log::debug!(
+                    "lsm_enabled: reading the write spec for table {} failed, \
+                     treating the table as base-only: {e}",
+                    self.identifier
+                );
+                Ok(false)
+            }
+        }
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -13038,5 +13107,266 @@ mod tests {
             .await
             .unwrap();
         branch.stats().await.unwrap();
+    }
+
+    const WAL_SPEC_BODY: &str = r#"{"lsm_write_spec":{"sharding":{"mode":"unsharded"},"maintained_indexes":[],"writer_config_defaults":{}}}"#;
+    const NO_WAL_SPEC_BODY: &str = r#"{"lsm_write_spec":null}"#;
+
+    /// One read per TTL, not one per query: hybrid asks on every call.
+    #[tokio::test]
+    async fn test_lsm_enabled_caches_the_write_spec_read() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/get_lsm_write_spec/"
+            );
+            seen.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(WAL_SPEC_BODY)
+                .unwrap()
+        });
+
+        assert!(table.base_table().lsm_enabled().await.unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(table.base_table().lsm_enabled().await.unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        clock::advance_by(Duration::from_secs(31));
+        assert!(table.base_table().lsm_enabled().await.unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A null spec is the server saying "base-only", not an error.
+    #[tokio::test]
+    async fn test_lsm_enabled_is_false_without_a_write_spec() {
+        let table = Table::new_with_handler("my_table", move |_| {
+            http::Response::builder()
+                .status(200)
+                .body(NO_WAL_SPEC_BODY)
+                .unwrap()
+        });
+        assert!(!table.base_table().lsm_enabled().await.unwrap());
+    }
+
+    /// Installing or removing a spec on this handle must not leave the routing
+    /// bit stale for a TTL.
+    #[rstest]
+    #[case("set_lsm_write_spec")]
+    #[case("unset_lsm_write_spec")]
+    #[tokio::test]
+    async fn test_lsm_enabled_invalidated_by_write_spec_change(#[case] operation: &str) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = if request.url().path().ends_with("/get_lsm_write_spec/") {
+                seen.fetch_add(1, Ordering::SeqCst);
+                WAL_SPEC_BODY
+            } else {
+                "{}"
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+
+        table.base_table().lsm_enabled().await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        match operation {
+            "set_lsm_write_spec" => table
+                .set_lsm_write_spec(LsmWriteSpec::unsharded())
+                .await
+                .unwrap(),
+            "unset_lsm_write_spec" => table.unset_lsm_write_spec().await.unwrap(),
+            other => panic!("unexpected operation: {other}"),
+        }
+
+        table.base_table().lsm_enabled().await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A server with no such route has no MemWAL tables, so `false` is the
+    /// right answer rather than a failed query. The failure is not cached.
+    #[tokio::test]
+    async fn test_lsm_enabled_treats_an_unreachable_endpoint_as_base_only() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(404)
+                .body("not found")
+                .unwrap()
+        });
+
+        assert!(!table.base_table().lsm_enabled().await.unwrap());
+        assert!(!table.base_table().lsm_enabled().await.unwrap());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a failed read must not be cached"
+        );
+    }
+
+    /// The whole point of PK mode: neither leg may ask for `_rowid` (the server
+    /// rejects it on a MemWAL table before it plans), both must carry the key
+    /// so the surrogate can be built, and the key must not leak into the answer
+    /// when the caller did not select it.
+    #[tokio::test]
+    async fn test_hybrid_on_a_wal_table_joins_on_the_primary_key() {
+        use arrow_array::Float32Array;
+        use lance::dataset::ROW_ID;
+        use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
+
+        let vector_type =
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2);
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false).with_metadata(
+                [(
+                    LANCE_UNENFORCED_PRIMARY_KEY_POSITION.to_string(),
+                    "1".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            Field::new("text", DataType::Utf8, true),
+            Field::new("vector", vector_type.clone(), true),
+        ]);
+
+        // One leg answers on `id` "a", the other on "a" and "b": the shared key
+        // must fuse to a single output row.
+        let leg = |score_column: &str, ids: Vec<&str>| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Utf8, false),
+                Field::new("text", DataType::Utf8, true),
+                Field::new(score_column, DataType::Float32, false),
+            ]));
+            let scores = Float32Array::from(vec![1.0_f32; ids.len()]);
+            let texts = StringArray::from(ids.clone());
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(StringArray::from(ids)),
+                    Arc::new(texts),
+                    Arc::new(scores),
+                ],
+            )
+            .unwrap()
+        };
+
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen = bodies.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&table_schema).into_bytes())
+                    .unwrap(),
+                "/v1/table/my_table/get_lsm_write_spec/" => http::Response::builder()
+                    .status(200)
+                    .body(WAL_SPEC_BODY.as_bytes().to_vec())
+                    .unwrap(),
+                "/v1/table/my_table/query/" => {
+                    let body = request_body_json(&request);
+                    let is_fts = body.get("full_text_query").is_some_and(|v| !v.is_null());
+                    seen.lock().unwrap().push(body);
+                    let batch = if is_fts {
+                        leg("_score", vec!["a", "b"])
+                    } else {
+                        leg("_distance", vec!["a"])
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(write_ipc_file(&batch))
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            });
+
+        let results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("a".to_string()))
+            .select(Select::columns(&["text"]))
+            .limit(10)
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "one request per leg");
+        for body in bodies.iter() {
+            assert_ne!(
+                body["with_row_id"],
+                serde_json::Value::Bool(true),
+                "a MemWAL table rejects with_row_id before it plans: {body}"
+            );
+            let columns = body["columns"].as_array().expect("a column projection");
+            assert!(
+                columns.iter().any(|c| c == "id"),
+                "the key has to be projected to build the surrogate: {body}"
+            );
+        }
+
+        let batch = &results[0];
+        assert!(
+            batch.column_by_name(ROW_ID).is_none(),
+            "the surrogate is an internal join key"
+        );
+        assert!(
+            batch.column_by_name("id").is_none(),
+            "the caller selected only `text`, so the injected key must be dropped"
+        );
+        assert_eq!(batch.num_rows(), 2, "`a` appears in both legs and fuses");
+    }
+
+    /// A surrogate must never be handed back as if it were a row id, so an
+    /// explicit `with_row_id` is refused rather than quietly answered.
+    #[tokio::test]
+    async fn test_hybrid_on_a_wal_table_refuses_with_row_id() {
+        use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
+
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false).with_metadata(
+                [(
+                    LANCE_UNENFORCED_PRIMARY_KEY_POSITION.to_string(),
+                    "1".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            Field::new("text", DataType::Utf8, true),
+        ]);
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => describe_response(&table_schema),
+                "/v1/table/my_table/get_lsm_write_spec/" => WAL_SPEC_BODY.to_string(),
+                path => panic!("the query must be refused before it is sent, got {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+
+        let err = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("a".to_string()))
+            .with_row_id()
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+            .execute()
+            .await
+            .err()
+            .expect("the query must be refused");
+
+        assert!(
+            matches!(err, Error::NotSupported { .. }),
+            "expected NotSupported, got {err:?}"
+        );
+        assert!(err.to_string().contains("use_lsm(false)"), "{err}");
     }
 }

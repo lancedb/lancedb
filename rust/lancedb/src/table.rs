@@ -78,7 +78,7 @@ pub mod delete;
 pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
-mod primary_key;
+pub(crate) mod primary_key;
 pub mod query;
 pub mod refresh;
 pub mod schema_evolution;
@@ -680,6 +680,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         Err(Error::NotSupported {
             message: "get_lsm_write_spec is not supported on this table type".into(),
         })
+    }
+    /// Whether reads on this table route through the MemWAL.
+    ///
+    /// Distinct from [`Self::get_lsm_write_spec`] only in that callers who need
+    /// the routing decision and not the spec itself can have it cached.
+    ///
+    /// The default is `false`: a table type with no MemWAL write path never
+    /// routes through one.
+    async fn lsm_enabled(&self) -> Result<bool> {
+        Ok(false)
     }
     /// Seal every bucket's active memtable into L0.
     ///
@@ -1912,6 +1922,15 @@ impl Table {
     /// ```
     pub async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
         self.inner.get_lsm_write_spec().await
+    }
+
+    /// Whether reads on this table route through the MemWAL.
+    ///
+    /// Cheaper to ask repeatedly than [`Self::get_lsm_write_spec`], which it is
+    /// otherwise equivalent to: implementations may cache the answer, since it
+    /// changes only when a write spec is installed or removed.
+    pub async fn lsm_enabled(&self) -> Result<bool> {
+        self.inner.lsm_enabled().await
     }
 
     /// Converge this table's LSM write path into its base table.

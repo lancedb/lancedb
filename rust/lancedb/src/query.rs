@@ -1176,6 +1176,72 @@ pub struct VectorQuery {
     request: VectorQueryRequest,
 }
 
+/// How the hybrid fusion identifies the same row across its two legs.
+enum FusionKey {
+    /// Lance's `_rowid`, requested from the server. Every table that can supply
+    /// one uses this.
+    RowId,
+    /// A surrogate derived client-side from the primary key. MemWAL tables take
+    /// this path: the fresh tier has no stable row id, so the server rejects
+    /// `with_row_id` outright.
+    PrimaryKey {
+        columns: Vec<String>,
+        /// Key columns the caller did not ask for, added to the projection so
+        /// the surrogate can be built and dropped again before returning.
+        injected: Vec<String>,
+    },
+}
+
+/// The key columns `select` does not already produce, and so would have to be
+/// added to it for the surrogate to be buildable.
+fn pk_columns_to_inject(select: &Select, pk_columns: &[String]) -> Vec<String> {
+    let produced: Vec<&String> = match select {
+        // Already every non-system column, the key among them.
+        Select::All => return Vec::new(),
+        Select::Columns(columns) => columns.iter().collect(),
+        Select::Dynamic(pairs) => pairs.iter().map(|(name, _)| name).collect(),
+        Select::Expr(pairs) => pairs.iter().map(|(name, _)| name).collect(),
+    };
+    pk_columns
+        .iter()
+        .filter(|pk| !produced.contains(pk))
+        .cloned()
+        .collect()
+}
+
+/// Add the key columns `select` is missing, as identity projections where the
+/// selection is expression-shaped.
+fn inject_pk_columns(select: &mut Select, pk_columns: &[String]) {
+    let missing = pk_columns_to_inject(select, pk_columns);
+    if missing.is_empty() {
+        return;
+    }
+    match select {
+        Select::All => {}
+        Select::Columns(columns) => columns.extend(missing),
+        Select::Dynamic(pairs) => pairs.extend(missing.into_iter().map(|pk| (pk.clone(), pk))),
+        Select::Expr(pairs) => {
+            pairs.extend(missing.into_iter().map(|pk| {
+                let expr = crate::expr::col(&pk);
+                (pk, expr)
+            }));
+        }
+    }
+}
+
+/// Drop `columns` from `batch`, ignoring any that are not present.
+fn drop_columns(batch: RecordBatch, columns: &[String]) -> Result<RecordBatch> {
+    let keep: Vec<usize> = batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| !columns.iter().any(|name| name == field.name()))
+        .map(|(idx, _)| idx)
+        .collect();
+    Ok(batch.project(&keep)?)
+}
+
 impl VectorQuery {
     fn new(base: Query) -> Self {
         Self {
@@ -1414,12 +1480,24 @@ impl VectorQuery {
     ) -> Result<SendableRecordBatchStream> {
         let max_batch_length = options.max_batch_length as usize;
         let internal_options = options.without_output_batch_length_limit();
-        // clone query and specify we want to include row IDs, which can be needed for reranking
+        let key = self.fusion_key().await?;
+
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
-        fts_query = fts_query.with_row_id();
-
-        let mut vector_query = self.clone().with_row_id();
+        let mut vector_query = self.clone();
+        match &key {
+            // The legs need the join column, which the reranking needs in turn.
+            FusionKey::RowId => {
+                fts_query = fts_query.with_row_id();
+                vector_query = vector_query.with_row_id();
+            }
+            // Ask for the key columns instead, and never for `_rowid`: the
+            // server rejects it on a MemWAL table before it plans.
+            FusionKey::PrimaryKey { columns, .. } => {
+                inject_pk_columns(&mut fts_query.request.select, columns);
+                inject_pk_columns(&mut vector_query.request.base.select, columns);
+            }
+        }
 
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
@@ -1439,6 +1517,16 @@ impl VectorQuery {
         // concatenate all the batches together
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
         let mut vec_results = concat_batches(&vec_schema, vec_results.iter())?;
+
+        // Vector first: `merge_results` concatenates in that order and keeps the
+        // first occurrence, so first-seen ids preserve its tie break.
+        if let FusionKey::PrimaryKey { columns, .. } = &key {
+            let mut legs = [vec_results, fts_results];
+            hybrid::stamp_surrogate_row_ids(&mut legs, columns)?;
+            let [vec, fts] = legs;
+            vec_results = vec;
+            fts_results = fts;
+        }
 
         if matches!(self.request.base.norm, Some(NormalizeMethod::Rank)) {
             vec_results = hybrid::rank(vec_results, DIST_COL, None)?;
@@ -1475,11 +1563,43 @@ impl VectorQuery {
             results = results.slice(0, limit);
         }
 
-        if !self.request.base.with_row_id {
-            results = results.drop_column(ROW_ID)?;
+        match &key {
+            FusionKey::RowId => {
+                if !self.request.base.with_row_id {
+                    results = results.drop_column(ROW_ID)?;
+                }
+            }
+            // The surrogate is an internal join key, never an answer: it goes
+            // whether or not the caller asked for `_rowid`, and `fusion_key`
+            // has already refused the query if they did.
+            FusionKey::PrimaryKey { injected, .. } => {
+                results = results.drop_column(ROW_ID)?;
+                results = drop_columns(results, injected)?;
+            }
         }
 
         Ok(single_batch_stream(results, max_batch_length))
+    }
+
+    /// Whether this hybrid query can join its legs on `_rowid`, or has to build
+    /// a surrogate from the primary key because the table is MemWAL-backed.
+    async fn fusion_key(&self) -> Result<FusionKey> {
+        if self.request.base.use_lsm == Some(false) || !self.parent.lsm_enabled().await? {
+            return Ok(FusionKey::RowId);
+        }
+        if self.request.base.with_row_id {
+            return Err(Error::NotSupported {
+                message: "hybrid search on a MemWAL table cannot return _rowid: the fresh tier \
+                          has no stable row id, and the ids the fusion joins on are synthesized \
+                          from the primary key. Set use_lsm(false) to read the base table only \
+                          (results will exclude un-compacted MemWAL data)"
+                    .to_string(),
+            });
+        }
+        let schema = self.parent.schema().await?;
+        let columns = crate::table::primary_key::pk_columns(&schema);
+        let injected = pk_columns_to_inject(&self.request.base.select, &columns);
+        Ok(FusionKey::PrimaryKey { columns, injected })
     }
 
     async fn inner_execute_with_options(

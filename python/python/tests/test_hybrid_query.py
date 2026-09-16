@@ -495,3 +495,115 @@ def test_normalize_scores():
             assert pc.equal(result, expected), (
                 f"Expected {expected} but got {result} for invert={invert}"
             )
+
+
+def _wal_table(schema: pa.Schema) -> mock.Mock:
+    """A stand-in for a MemWAL-backed table: the fusion cannot use `_rowid`."""
+    table = mock.Mock()
+    table.lsm_enabled.return_value = True
+    table.schema = schema
+    return table
+
+
+_PK_SCHEMA = pa.schema(
+    [
+        pa.field(
+            "id",
+            pa.string(),
+            metadata={b"lance-schema:unenforced-primary-key:position": b"1"},
+        ),
+        pa.field("text", pa.string()),
+    ]
+)
+
+
+def _wal_hybrid(**select):
+    builder = (
+        LanceHybridQueryBuilder(_wal_table(_PK_SCHEMA)).vector([0.1, 0.2]).text("puppy")
+    )
+    if "columns" in select:
+        builder = builder.select(select["columns"])
+    return builder
+
+
+def test_wal_hybrid_projects_the_key_instead_of_asking_for_row_ids():
+    builder = _wal_hybrid(columns=["text"])
+    builder._create_query_builders()
+
+    assert builder._fusion_pk == ["id"]
+    assert builder._injected_pk == ["id"]
+    for leg in (builder._vector_query, builder._fts_query):
+        assert leg._columns == ["text", "id"]
+        # A MemWAL table rejects with_row_id before it plans.
+        assert leg._with_row_id is not True
+
+
+def test_wal_hybrid_selecting_the_key_injects_nothing():
+    builder = _wal_hybrid(columns=["text", "id"])
+    builder._create_query_builders()
+    assert builder._injected_pk == []
+
+
+def test_wal_hybrid_without_a_projection_leaves_it_alone():
+    builder = _wal_hybrid()
+    builder._create_query_builders()
+    # Select-all already returns the key.
+    assert builder._injected_pk == []
+    assert builder._vector_query._columns is None
+
+
+def test_base_table_hybrid_still_joins_on_row_ids():
+    table = mock.Mock()
+    table.lsm_enabled.return_value = False
+    builder = LanceHybridQueryBuilder(table).vector([0.1, 0.2]).text("puppy")
+    builder._create_query_builders()
+
+    # `to_arrow` is what turns row ids on for this path; all that matters here
+    # is that no key was resolved and no projection was touched.
+    assert builder._fusion_pk is None
+    assert builder._injected_pk == []
+
+
+def test_wal_hybrid_with_use_lsm_false_joins_on_row_ids():
+    builder = _wal_hybrid().use_lsm(False)
+    builder._create_query_builders()
+    assert builder._fusion_pk is None
+
+
+def test_wal_hybrid_refuses_an_explicit_with_row_id():
+    builder = _wal_hybrid().with_row_id(True)
+    with pytest.raises(NotImplementedError, match="use_lsm"):
+        builder._create_query_builders()
+
+
+def test_wal_hybrid_return_score_all_is_not_refused():
+    """`return_score="all"` turns row ids on for the reranker, not the caller."""
+    builder = _wal_hybrid().rerank(RRFReranker(return_score="all"))
+    builder._create_query_builders()
+    assert builder._fusion_pk == ["id"]
+
+
+def test_wal_hybrid_fuses_on_the_key_and_drops_it_again():
+    builder = _wal_hybrid(columns=["text"])
+    builder._create_query_builders()
+
+    vector_results = pa.table(
+        {"text": ["a", "b"], "id": ["a", "b"], "_distance": [0.1, 0.2]}
+    )
+    fts_results = pa.table({"text": ["b", "c"], "id": ["b", "c"], "_score": [1.0, 2.0]})
+
+    combined = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=fts_results,
+        vector_results=vector_results,
+        norm="score",
+        fts_query="puppy",
+        reranker=RRFReranker(),
+        limit=10,
+        with_row_ids=True,
+        pk_columns=builder._fusion_pk,
+    )
+    results = builder._finish_hybrid_results(combined)
+
+    assert "_rowid" not in results.column_names, "the surrogate is internal"
+    assert "id" not in results.column_names, "the caller selected only `text`"
+    assert sorted(results.column("text").to_pylist()) == ["a", "b", "c"]

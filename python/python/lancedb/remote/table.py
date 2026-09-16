@@ -1023,6 +1023,10 @@ class RemoteTable(Table):
         """Read the installed LsmWriteSpec, or ``None``."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
+    def lsm_enabled(self) -> bool:
+        """Whether reads route through the MemWAL. Cached by the client."""
+        return LOOP.run(self._table.lsm_enabled())
+
     def checkpoint_lsm(self) -> None:
         """Synchronous version of
         [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""

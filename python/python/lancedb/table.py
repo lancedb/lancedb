@@ -2467,6 +2467,14 @@ class Table(ABC):
         to check if the table is already using the new path style.
         """
 
+    def lsm_enabled(self) -> bool:
+        """Whether reads on this table route through the MemWAL.
+
+        ``False`` for table types that have no MemWAL write path, which is what
+        lets query paths ask unconditionally.
+        """
+        return False
+
 
 class LanceTable(Table):
     """
@@ -4362,6 +4370,11 @@ class LanceTable(Table):
         [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
+    def lsm_enabled(self) -> bool:
+        """Whether reads route through the MemWAL. See
+        [`AsyncTable.lsm_enabled`][lancedb.AsyncTable.lsm_enabled]."""
+        return LOOP.run(self._table.lsm_enabled())
+
     def checkpoint_lsm(self) -> None:
         """Synchronous version of
         [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
@@ -5100,6 +5113,14 @@ class AsyncTable:
         resolved when the spec was set — ``None`` never round-trips.
         """
         return await self._inner.get_lsm_write_spec()
+
+    async def lsm_enabled(self) -> bool:
+        """Whether reads on this table route through the MemWAL.
+
+        Equivalent to testing `get_lsm_write_spec` for ``None``, but cached by
+        the remote table, so query paths can ask on every call.
+        """
+        return await self._inner.lsm_enabled()
 
     async def checkpoint_lsm(self) -> None:
         """Converge this table's LSM write path into its base table.

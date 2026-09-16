@@ -5,10 +5,13 @@ use arrow::compute::{
     kernels::numeric::{div, sub},
     max, min,
 };
-use arrow_array::{Float32Array, RecordBatch, cast::downcast_array};
+use arrow::row::{RowConverter, SortField};
+use arrow_array::{Float32Array, RecordBatch, UInt64Array, cast::downcast_array};
 use arrow_schema::{DataType, Field, Schema, SortOptions};
 use lance::dataset::ROW_ID;
+use lance_arrow::RecordBatchExt;
 use lance_index::{scalar::inverted::SCORE_COL, vector::DIST_COL};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -171,6 +174,83 @@ pub fn normalize_scores(
     let results = RecordBatch::try_new(results.schema(), columns).unwrap();
 
     Ok(results)
+}
+
+/// Replace each batch's join column with a dense surrogate derived from
+/// `pk_columns`, in place and in the order given.
+///
+/// The fusion joins its two legs on [`ROW_ID`], which a MemWAL table cannot
+/// supply — the fresh tier has no stable row id. It only ever compares the
+/// column for equality, though (`merge_results` dedups, the rerankers group and
+/// the score restore looks up), so any injective mapping of the primary key
+/// serves. Ids are assigned in first-seen order across `batches`, so passing
+/// them in fusion order keeps the dedup's "first occurrence wins" and its tie
+/// break byte-identical to what a real row id would have produced.
+///
+/// Writing it under the [`ROW_ID`] name is what lets every reranker, including
+/// third-party implementations that hardcode the name, run unmodified. The
+/// column never reaches the caller: the hybrid query drops it before returning.
+pub fn stamp_surrogate_row_ids(batches: &mut [RecordBatch], pk_columns: &[String]) -> Result<()> {
+    if pk_columns.is_empty() {
+        return Err(Error::InvalidInput {
+            message: "hybrid search on a MemWAL table needs an unenforced primary key to \
+                      deduplicate on, and this table declares none"
+                .to_string(),
+        });
+    }
+
+    let mut converter: Option<RowConverter> = None;
+    let mut ids: HashMap<Vec<u8>, u64> = HashMap::new();
+
+    for batch in batches.iter_mut() {
+        // Both legs empty: `query_schemas` synthesizes a schema carrying only
+        // the score and join columns, so there is no key to read — and no row
+        // that would need one.
+        let row_ids: UInt64Array = if batch.num_rows() == 0 {
+            UInt64Array::from(Vec::<u64>::new())
+        } else {
+            let key_columns = pk_columns
+                .iter()
+                .map(|name| {
+                    batch
+                        .column_by_name(name)
+                        .cloned()
+                        .ok_or_else(|| Error::InvalidInput {
+                            message: format!(
+                                "hybrid search could not deduplicate: primary key column {} \
+                                 is missing from a result set with {} rows",
+                                name,
+                                batch.num_rows()
+                            ),
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let converter = match converter {
+                Some(ref converter) => converter,
+                None => converter.insert(RowConverter::new(
+                    key_columns
+                        .iter()
+                        .map(|column| SortField::new(column.data_type().clone()))
+                        .collect(),
+                )?),
+            };
+
+            let rows = converter.convert_columns(&key_columns)?;
+            let next = &mut ids;
+            UInt64Array::from_iter_values(rows.iter().map(|row| {
+                let id = next.len() as u64;
+                *next.entry(row.as_ref().to_vec()).or_insert(id)
+            }))
+        };
+
+        *batch = batch.try_with_column(
+            Field::new(ROW_ID, DataType::UInt64, false),
+            Arc::new(row_ids),
+        )?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -345,5 +425,116 @@ mod test {
             scores.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
             vec![0.0, 0.0, 0.0, 0.0, 0.0]
         );
+    }
+
+    fn batch(ids: Vec<&str>, score: &str) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Arc::new(Field::new("id", DataType::Utf8, false)),
+            Arc::new(Field::new(score, DataType::Float32, false)),
+        ]));
+        let scores = Float32Array::from(vec![0.0_f32; ids.len()]);
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(ids)), Arc::new(scores)],
+        )
+        .unwrap()
+    }
+
+    fn row_ids(batch: &RecordBatch) -> Vec<u64> {
+        let ids: UInt64Array = downcast_array(batch.column_by_name(ROW_ID).unwrap());
+        ids.values().to_vec()
+    }
+
+    /// The same key in both legs has to land on the same id or the fusion will
+    /// not dedup, and ids must ascend in fusion order so the tie break holds.
+    #[test]
+    fn test_surrogate_row_ids_are_shared_across_legs_in_first_seen_order() {
+        let mut batches = vec![
+            batch(vec!["a", "b", "c"], DIST_COL),
+            batch(vec!["b", "d"], SCORE_COL),
+        ];
+        stamp_surrogate_row_ids(&mut batches, &["id".to_string()]).unwrap();
+
+        assert_eq!(row_ids(&batches[0]), vec![0, 1, 2]);
+        assert_eq!(
+            row_ids(&batches[1]),
+            vec![1, 3],
+            "b keeps the id the vector leg gave it"
+        );
+    }
+
+    /// A string key is the common case and cannot be cast to the u64 the
+    /// rerankers read, which is the whole reason for the surrogate.
+    #[test]
+    fn test_surrogate_row_ids_repeat_within_a_leg() {
+        let mut batches = vec![batch(vec!["a", "a", "b"], DIST_COL)];
+        stamp_surrogate_row_ids(&mut batches, &["id".to_string()]).unwrap();
+        assert_eq!(row_ids(&batches[0]), vec![0, 0, 1]);
+    }
+
+    #[test]
+    fn test_surrogate_row_ids_support_a_composite_key() {
+        let schema = Arc::new(Schema::new(vec![
+            Arc::new(Field::new("tenant", DataType::Utf8, false)),
+            Arc::new(Field::new("id", DataType::Int32, false)),
+        ]));
+        let make = |tenants: Vec<&str>, ids: Vec<i32>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(tenants)),
+                    Arc::new(arrow_array::Int32Array::from(ids)),
+                ],
+            )
+            .unwrap()
+        };
+        let mut batches = vec![make(vec!["x", "y"], vec![1, 1]), make(vec!["y"], vec![1])];
+        stamp_surrogate_row_ids(&mut batches, &["tenant".to_string(), "id".to_string()]).unwrap();
+
+        assert_eq!(
+            row_ids(&batches[0]),
+            vec![0, 1],
+            "same id, different tenant"
+        );
+        assert_eq!(row_ids(&batches[1]), vec![1]);
+    }
+
+    /// Both legs empty: `query_schemas` synthesizes a schema with no key column,
+    /// and there is no row that would need one.
+    #[test]
+    fn test_surrogate_row_ids_tolerate_the_both_empty_schema() {
+        let mut batches = vec![
+            RecordBatch::new_empty(Arc::new(empty_vec_schema())),
+            RecordBatch::new_empty(Arc::new(empty_fts_schema())),
+        ];
+        // The synthesized schemas already carry ROW_ID, so stamping would
+        // duplicate the field name; drop it first the way the caller does.
+        for b in batches.iter_mut() {
+            let keep: Vec<_> = b
+                .schema()
+                .fields()
+                .iter()
+                .filter(|f| f.name() != ROW_ID)
+                .map(|f| b.schema().index_of(f.name()).unwrap())
+                .collect();
+            *b = b.project(&keep).unwrap();
+        }
+        stamp_surrogate_row_ids(&mut batches, &["id".to_string()]).unwrap();
+        assert_eq!(row_ids(&batches[0]), Vec::<u64>::new());
+    }
+
+    /// Rows with no key would silently fuse into one bucket, so refuse.
+    #[test]
+    fn test_surrogate_row_ids_reject_a_missing_key_column() {
+        let mut batches = vec![batch(vec!["a"], DIST_COL)];
+        let err = stamp_surrogate_row_ids(&mut batches, &["nope".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn test_surrogate_row_ids_reject_a_table_with_no_primary_key() {
+        let mut batches = vec![batch(vec!["a"], DIST_COL)];
+        let err = stamp_surrogate_row_ids(&mut batches, &[]).unwrap_err();
+        assert!(err.to_string().contains("unenforced primary key"), "{err}");
     }
 }
