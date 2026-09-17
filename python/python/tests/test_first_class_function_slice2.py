@@ -11,6 +11,7 @@ import types
 from datetime import date
 import http.server
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -24,11 +25,14 @@ import pytest
 import lancedb
 from lancedb.functions import (
     PythonRuntimeSpec,
+    SecretBinding,
+    SecretReference,
     UdfDefinition,
     _canonical_arrow_type,
     _GRAMMAR_PRIMITIVES,
     udf,
 )
+from lancedb.secrets import EnvVarSecret
 
 THRESHOLD = 20
 _CACHE = None
@@ -59,6 +63,15 @@ def normalize_score(value: float) -> float:
     return value / 100.0
 
 
+@udf(
+    pip=["openai==3.7.0"],
+    env={"MODE": "test"},
+    python_version="3.12",
+)
+def analyze_caption(caption: str) -> str:
+    return caption.strip()
+
+
 def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
     assert isinstance(normalize_score, UdfDefinition)
     assert normalize_score(25.0) == 0.25
@@ -73,6 +86,286 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+def test_secret_bound_udf_matches_its_shared_registration_golden():
+    assert analyze_caption("  hello  ") == "hello"
+    bound = analyze_caption.bind_secrets(
+        [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
+    )
+    assert (
+        bound.to_canonical_json()
+        == (FIXTURES / "remote_function_secret_registration_request.canonical.json")
+        .read_text()
+        .strip()
+    )
+
+
+def test_a_namespaced_binding_records_the_path_and_the_name():
+    """A binding names the parts, so nothing has to be parsed back out.
+
+    A root binding carries no path at all: the field is absent rather than an
+    empty list, so a binding states a namespace only when it has one.
+    """
+    root = EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
+    assert root.secret_namespace_path == []
+
+    nested = EnvVarSecret(
+        secret_name="openai-prod",
+        env_variable="OPENAI_API_KEY",
+        secret_namespace_path=["prod", "vision"],
+    )
+    assert nested.secret_namespace_path == ["prod", "vision"]
+    assert nested != root
+
+    bound = analyze_caption.bind_secrets([nested])
+    assert list(bound.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(
+                name="openai-prod", namespace_path=("prod", "vision")
+            ),
+        )
+    ]
+
+    at_root = analyze_caption.bind_secrets([root])
+    assert list(at_root.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(name="openai-prod"),
+        )
+    ]
+    # A root binding carries no path at all on the wire.
+    canonical = json.loads(at_root.to_canonical_json())
+    assert canonical["secret_bindings"] == [
+        {
+            "kind": "env",
+            "variable": "OPENAI_API_KEY",
+            "secret_ref": {"name": "openai-prod"},
+        }
+    ]
+
+
+def test_a_namespace_path_is_validated_locally():
+    # The charset is the service's, not a delimiter's: a reference is never
+    # joined, so a segment cannot make anything parse two ways.
+    with pytest.raises(ValueError):
+        EnvVarSecret(
+            secret_name="openai-prod",
+            env_variable="K",
+            secret_namespace_path=["with$delim"],
+        )
+    with pytest.raises(ValueError):
+        EnvVarSecret(
+            secret_name="openai-prod", env_variable="K", secret_namespace_path=["a/b"]
+        )
+    # A bare string is a plausible mistake with the wrong meaning.
+    with pytest.raises(TypeError):
+        EnvVarSecret(
+            secret_name="openai-prod", env_variable="K", secret_namespace_path="prod"
+        )
+
+
+def test_an_unbound_request_carries_no_binding_at_all():
+    """Binding is a registration-time decision, so the definition holds none.
+
+    The decorator declares nothing about secrets, which is what makes the PRD's
+    claim true: a Function's source and its registration request are identical
+    whether or not a credential is later bound to it.
+    """
+    unbound = json.loads(analyze_caption.registration_request.to_canonical_json())
+    assert "secret_bindings" not in unbound
+    assert "OPENAI_API_KEY" not in json.dumps(unbound)
+
+
+def test_binding_a_secret_leaves_the_packaged_artifact_untouched():
+    """The artifact is source bytes and nothing else, with or without secrets."""
+    bound = analyze_caption.bind_secrets(
+        [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
+    )
+    assert bound.artifact == analyze_caption.registration_request.artifact
+    assert bound.artifact.digest == analyze_caption.registration_request.artifact.digest
+
+
+def test_a_function_declaring_no_secret_is_registered_exactly_as_before():
+    """The compatibility claim: nothing about the no-secret path moves."""
+    assert (
+        normalize_score.bind_secrets(None).to_canonical_json()
+        == normalize_score.registration_request.to_canonical_json()
+    )
+    assert (
+        "secret_bindings"
+        not in normalize_score.registration_request.to_canonical_json()
+    )
+
+
+def test_a_function_binds_each_variable_once():
+    with pytest.raises(ValueError, match="binds each environment variable once"):
+        analyze_caption.bind_secrets(
+            [
+                EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY"),
+                EnvVarSecret(
+                    secret_name="openai-staging", env_variable="OPENAI_API_KEY"
+                ),
+            ]
+        )
+
+
+def test_bindings_may_not_collide_with_plain_configuration():
+    """`env` is stored with the Function; a Secret is not. Refuse, do not pick."""
+    with pytest.raises(ValueError, match="must be disjoint"):
+        analyze_caption.bind_secrets(
+            [EnvVarSecret(secret_name="mode-prod", env_variable="MODE")]
+        )
+
+
+def test_a_binding_envelope_reaches_the_service_for_it_to_judge():
+    """Binding rules are the service's: it owns the runtime the names land in.
+
+    The client sends what it was given, so a rule it duplicated could disagree
+    with the service's without either side noticing. What is checked here is
+    that the envelope arrives intact -- the shape the service judges is the
+    shape the caller wrote.
+    """
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        bindings = [
+            EnvVarSecret(secret_name=f"secret-{index}", env_variable=f"TOKEN_{index}")
+            for index in range(17)
+        ]
+        db.create_function(normalize_score, secrets=bindings)
+
+    sent = state["requests"][0][1]
+    assert len(sent["secret_bindings"]) == 17
+    assert {
+        "kind": "env",
+        "variable": "TOKEN_0",
+        "secret_ref": {"name": "secret-0"},
+    } in sent["secret_bindings"]
+
+
+_SECRET_DEBUG_LOG_SOURCE = """
+import http.server
+import json
+import threading
+
+import lancedb
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        payload = json.dumps({}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+server = http.server.ThreadingHTTPServer(("localhost", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+try:
+    db = lancedb.connect(
+        "db://dev",
+        api_key="API_KEY_SENTINEL",
+        host_override="http://localhost:%d" % server.server_address[1],
+        client_config={"retry_config": {"retries": 0}},
+    )
+    db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
+finally:
+    server.shutdown()
+"""
+
+
+def test_a_credential_never_reaches_a_debug_log(tmp_path):
+    """The logger sees the serialized body, so no value-side redaction reaches it.
+
+    Runs in a subprocess because the Rust logger reads ``LANCEDB_LOG`` once, at
+    import.
+    """
+    script = tmp_path / "write_secret.py"
+    script.write_text(_SECRET_DEBUG_LOG_SOURCE)
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LANCEDB_LOG": "debug"},
+    )
+    output = result.stdout + result.stderr
+
+    # Without this the test passes when debug logging is simply off.
+    assert "Sending request_id=" in output, output
+    assert "SECRET_VALUE_SENTINEL" not in output
+    assert "API_KEY_SENTINEL" not in output
+
+
+def test_a_credential_value_is_rejected_in_the_binding_position():
+    """The one mistake the typed binding exists to stop."""
+    with pytest.raises(TypeError, match="EnvVarSecret"):
+        analyze_caption.bind_secrets(["sk-live-0001"])
+
+
+@pytest.mark.parametrize(
+    ("secret", "variable", "message"),
+    [
+        ("openai-prod", "not-a-var", "invalid environment variable name"),
+        ("openai-prod", "API-TOKEN", "invalid environment variable name"),
+        ("not a name", "API_TOKEN", "invalid Secret name"),
+        ("openai$prod", "API_TOKEN", "invalid Secret name"),
+    ],
+)
+def test_a_binding_validates_both_names_locally(secret, variable, message):
+    with pytest.raises(ValueError, match=message):
+        EnvVarSecret(secret_name=secret, env_variable=variable)
+
+
+def test_a_secret_name_admits_what_a_namespace_name_does():
+    """A Secret has to be nameable wherever a namespace already is.
+
+    LanceDB namespace and table names are `[A-Za-z0-9_.-]` with no rule about
+    which character comes first, so a name may lead with `_`, `-` or `.`.
+    Anything narrower here would leave Secrets unaddressable inside namespaces
+    that already exist -- the reason periods are admitted is the reason the
+    edges are too.
+    """
+    for name in ["openai.prod.v1", ".hidden", "_internal", "-lead", "trailing."]:
+        binding = EnvVarSecret(secret_name=name, env_variable="OPENAI_API_KEY")
+        assert binding.secret_name == name
+
+    for name in ["", "with/slash", "with$delimiter", "a" * 256]:
+        with pytest.raises(ValueError, match="invalid Secret name"):
+            EnvVarSecret(secret_name=name, env_variable="OPENAI_API_KEY")
+
+    # A namespace segment follows the same rule, and LanceDB already admits
+    # these shapes as namespace names -- so a Secret is addressable inside one.
+    for segment in [".hidden", "_internal", "-lead", "trailing."]:
+        binding = EnvVarSecret(
+            secret_name="openai-prod",
+            env_variable="OPENAI_API_KEY",
+            secret_namespace_path=[segment],
+        )
+        assert binding.secret_namespace_path == [segment]
+
+    for segment in ["", "with/slash", "with$delimiter"]:
+        with pytest.raises(ValueError, match="invalid namespace path segment"):
+            EnvVarSecret(
+                secret_name="openai-prod",
+                env_variable="OPENAI_API_KEY",
+                secret_namespace_path=[segment],
+            )
 
 
 def _main_udf_source(
@@ -1232,7 +1525,20 @@ def _mock_remote_function_catalog():
             body = json.loads(self.rfile.read(length) or b"{}")
             state["requests"].append((self.path, body))
             status = 200
-            if self.path == "/v1/function/normalize_score/create":
+            # `{id}` is the Function name, so match on the shape rather than on
+            # one name: these tests register more than one Function.
+            parts = self.path.strip("/").split("/")
+            function_action = (
+                (urllib.parse.unquote(parts[2]), parts[3])
+                if len(parts) == 4 and parts[0] == "v1" and parts[1] == "function"
+                else (None, None)
+            )
+            secret_action = (
+                (urllib.parse.unquote(parts[2]), parts[3])
+                if len(parts) == 4 and parts[0] == "v1" and parts[1] == "secret"
+                else (None, None)
+            )
+            if function_action[1] == "create":
                 state["version"] = {
                     "name": "normalize_score",
                     "version": FUNCTION_VERSION,
@@ -1246,6 +1552,7 @@ def _mock_remote_function_catalog():
                         ).read_text()
                     )["image"],
                     "signature": body["signature"],
+                    "secret_bindings": body.get("secret_bindings", []),
                     "created_at": "2026-08-21T00:00:00Z",
                 }
                 response = {"job_id": "job-register"}
@@ -1264,6 +1571,15 @@ def _mock_remote_function_catalog():
             elif self.path == "/v1/function/normalize_score/drop":
                 assert body == {"version": FUNCTION_VERSION}
                 response = {"dropped": True}
+            elif secret_action[1] in ("create", "alter"):
+                # The Secret is the path identifier, so the body is the value.
+                assert set(body) == {"value"}
+                assert secret_action[0] == "openai-prod"
+                response = {}
+            elif secret_action[1] == "drop":
+                assert secret_action[0] == "openai-prod"
+                assert body == {}
+                response = {}
             else:
                 status = 404
                 response = {"error": "not found"}
@@ -1276,6 +1592,16 @@ def _mock_remote_function_catalog():
                 for key, values in urllib.parse.parse_qs(url.query).items()
             }
             state["requests"].append((url.path, query))
+            if url.path == "/v1/namespace/$/secret/list":
+                if "page_token" not in query:
+                    self._write_response(
+                        200,
+                        {"secrets": [{"name": "openai-prod"}], "page_token": "next"},
+                    )
+                else:
+                    assert query["page_token"] == "next"
+                    self._write_response(200, {"secrets": [{"name": "hf-prod"}]})
+                return
             if url.path != "/v1/namespace/$/function/list":
                 self._write_response(404, {"error": "not found"})
                 return
@@ -1328,6 +1654,92 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
     )
     expected_request.pop("name")
     assert create_request == expected_request
+
+
+def test_remote_registration_sends_bindings_and_never_a_credential():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        created = db.create_function(
+            analyze_caption,
+            secrets=[
+                EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
+            ],
+        )
+
+    assert list(created.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(name="openai-prod"),
+        )
+    ]
+    path, create_request = state["requests"][0]
+    assert path == "/v1/function/analyze_caption/create"
+    assert create_request["secret_bindings"] == [
+        {
+            "kind": "env",
+            "variable": "OPENAI_API_KEY",
+            "secret_ref": {"name": "openai-prod"},
+        }
+    ]
+    # The request names a Secret and carries nothing that could be one. The
+    # Function's own name is the path identifier rather than a body field, so
+    # it is the one key the body does not repeat.
+    expected = json.loads(
+        analyze_caption.bind_secrets(
+            [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
+        ).to_canonical_json()
+    )
+    assert expected.pop("name") == "analyze_caption"
+    assert create_request == expected
+
+
+def test_remote_secret_verbs_round_trip():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        assert db.create_secret("openai-prod", "sk-live-0001") is None
+        assert db.alter_secret("openai-prod", "sk-live-0002") is None
+        assert db.list_secrets() == ["openai-prod", "hf-prod"]
+        assert db.drop_secret("openai-prod") is None
+
+    routes = [path for path, _ in state["requests"]]
+    assert routes == [
+        "/v1/secret/openai-prod/create",
+        "/v1/secret/openai-prod/alter",
+        "/v1/namespace/$/secret/list",
+        "/v1/namespace/$/secret/list",
+        "/v1/secret/openai-prod/drop",
+    ]
+    # The Secret is the path identifier, so the body is the value alone.
+    assert state["requests"][0][1] == {"value": "sk-live-0001"}
+    # Listing is a GET: the first page asks for nothing, the second resumes on
+    # the token the server handed back, and neither carries a body.
+    assert state["requests"][2][1] == {}
+    assert state["requests"][3][1] == {"page_token": "next"}
+
+
+def test_building_a_binding_contacts_no_server():
+    """A binding is a local value: it says nothing about whether the Secret exists.
+
+    Existence is the server's answer at registration, where a mistyped name is a
+    clear error rather than a client-side check that was already stale.
+    """
+    with _mock_remote_function_catalog() as (_host, state):
+        binding = EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
+        assert binding.secret_name == "openai-prod"
+        assert binding.env_variable == "OPENAI_API_KEY"
+
+    assert state["requests"] == []
 
 
 def test_blocking_remote_registration_returns_function_version():

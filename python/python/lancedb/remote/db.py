@@ -8,7 +8,16 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Union,
+)
 from urllib.parse import urlparse
 from uuid import UUID
 import warnings
@@ -30,6 +39,7 @@ from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription
 from ..materialized_view import MaterializedView, SelectArg
+from ..secrets import EnvVarSecret, SecretInfo
 
 if TYPE_CHECKING:
     from .._lancedb import JobInfo
@@ -845,8 +855,14 @@ class RemoteDBConnection(DBConnection):
         return Job(LOOP.run(self._conn.open_job(job_id)))
 
     @override
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        return Job(LOOP.run(self._conn.create_function_async(definition)))
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+    ) -> Job[FunctionVersion]:
+        job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
+        return Job(job)
 
     @override
     def get_function(self, name: str, *, version: str) -> FunctionVersion:
@@ -859,6 +875,34 @@ class RemoteDBConnection(DBConnection):
     @override
     def drop_function(self, name: str, *, version: str) -> bool:
         return LOOP.run(self._conn.drop_function(name, version=version))
+
+    @override
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.alter_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
+
+    @override
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_secrets(namespace_path=namespace_path))
+
+    @override
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_secret(name, namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List["JobInfo"]:

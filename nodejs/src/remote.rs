@@ -93,6 +93,9 @@ pub struct ClientConfig {
     pub retry_config: Option<RetryConfig>,
     pub timeout_config: Option<TimeoutConfig>,
     pub extra_headers: Option<HashMap<String, String>>,
+    /// The delimiter joining a namespace path and a name into one object
+    /// identifier. `"$"` is the only supported value, and leaving this unset is
+    /// how to get it; anything else is rejected when the connection is created.
     pub id_delimiter: Option<String>,
     pub tls_config: Option<TlsConfig>,
     /// User identifier for tracking purposes.

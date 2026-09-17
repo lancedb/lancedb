@@ -58,7 +58,16 @@
         }
       },
       "source": false
-    }
+    },
+    "secret_bindings": [
+      {
+        "kind": "env",
+        "variable": "HF_TOKEN",
+        "secret_ref": {
+          "name": "hf-prod"
+        }
+      }
+    ]
   },
   "future_job": {
     "trace_id": "trace-1"

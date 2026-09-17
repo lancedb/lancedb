@@ -472,7 +472,7 @@ mod tests {
         }
         assert_eq!(
             requests[0].line,
-            "GET /v1/namespace/%24/list?limit=1&page_token=a%2Fb HTTP/1.1"
+            "GET /v1/namespace/$/list?limit=1&page_token=a%2Fb HTTP/1.1"
         );
         assert_eq!(
             requests[1].line,
