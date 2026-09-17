@@ -10,6 +10,7 @@ import {
   fromRecordBatchToBuffer,
   tableFromIPC,
 } from "./arrow";
+import { Expr, exprToSQL } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
   JsFullTextQuery,
@@ -387,8 +388,9 @@ export class StandardQueryBase<
    * Calling this multiple times combines the filters with a logical AND rather
    * than replacing the previous filter.
    */
-  where(predicate: string): this {
-    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
+  where(predicate: string | Expr): this {
+    const sql = exprToSQL(predicate);
+    this.doCall((inner: NativeQueryType) => inner.onlyIf(sql));
     return this;
   }
   /**
@@ -396,7 +398,7 @@ export class StandardQueryBase<
    * @see where
    * @deprecated Use `where` instead
    */
-  filter(predicate: string): this {
+  filter(predicate: string | Expr): this {
     return this.where(predicate);
   }
 
