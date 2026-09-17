@@ -5368,8 +5368,8 @@ dependencies = [
 
 [[package]]
 name = "lance-geo"
-version = "13.0.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v13.0.0-beta.3#565808c992c3d2adf1909b9753b50a28b6bd8a19"
+version = "13.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v13.0.0-beta.4#fea665e0d96d73acd1be330ce850973ff00b7126"
 dependencies = [
  "datafusion",
  "geo-traits",
