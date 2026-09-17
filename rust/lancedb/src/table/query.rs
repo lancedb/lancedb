@@ -106,19 +106,19 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request has no approx_mode or use_lsm field yet, so
-    // pushing these down would silently ignore the user's setting. For use_lsm that
-    // is worse than a tuning miss: MemWAL read routing lives only in `create_plan`,
-    // so a pushed-down query would return stale base-only data with no error.
+    // The namespace QueryTable request cannot represent approx_mode, use_lsm, or
+    // separate IVF probe bounds yet, so pushing them down would silently change the
+    // query. For use_lsm that is worse than a tuning miss: MemWAL read routing lives
+    // only in `create_plan`, so a pushed-down query would return stale base-only data.
     if query.base().use_lsm.is_some() || query.base().take_offsets.is_some() {
         return true;
     }
     matches!(
         query,
-        AnyQuery::VectorQuery(VectorQueryRequest {
-            approx_mode: Some(_),
-            ..
-        })
+        AnyQuery::VectorQuery(vector_query)
+            if vector_query.approx_mode.is_some()
+                || vector_query.minimum_nprobes.is_some()
+                || vector_query.maximum_nprobes.is_some()
     )
 }
 
@@ -296,7 +296,12 @@ pub async fn create_plan(
             scanner.approx_mode(approx_mode.into());
         }
 
-        scanner.minimum_nprobes(query.minimum_nprobes);
+        if let Some(nprobes) = query.nprobes {
+            scanner.nprobes(nprobes);
+        }
+        if let Some(minimum_nprobes) = query.minimum_nprobes {
+            scanner.minimum_nprobes(minimum_nprobes);
+        }
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             scanner.maximum_nprobes(maximum_nprobes);
         }
@@ -630,7 +635,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 columns,
                 offset: vq.base.offset.map(|o| o as i32),
                 distance_type: vq.distance_type.map(|dt| dt.to_string()),
-                nprobes: Some(vq.minimum_nprobes as i32),
+                nprobes: vq.nprobes.map(|nprobes| nprobes as i32),
                 ef: vq.ef.map(|e| e as i32),
                 refine_factor: vq.refine_factor.map(|r| r as i32),
                 lower_bound: vq.lower_bound,
@@ -919,7 +924,6 @@ mod tests {
             column: Some("vector".to_string()),
             // We cast here to satisfy the struct definition
             query_vector: vec![query_vector as Arc<dyn Array>],
-            minimum_nprobes: 20,
             distance_type: Some(crate::DistanceType::L2),
             ..Default::default()
         };
@@ -940,6 +944,7 @@ mod tests {
         );
         assert_eq!(ns_request.vector_column, Some("vector".to_string()));
         assert_eq!(ns_request.distance_type, Some("l2".to_string()));
+        assert_eq!(ns_request.nprobes, None);
 
         // Verify the vector data was extracted correctly
         assert!(ns_request.vector.single_vector.is_some());
@@ -947,6 +952,41 @@ mod tests {
             ns_request.vector.single_vector.as_ref().unwrap(),
             &vec![1.0, 2.0, 3.0, 4.0]
         );
+    }
+
+    #[test]
+    fn test_namespace_query_probe_pushdown_compatibility() {
+        let default_query = AnyQuery::VectorQuery(VectorQueryRequest::default());
+        assert!(!requires_local_namespace_execution(&default_query));
+
+        let nprobes_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            nprobes: Some(20),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&nprobes_query));
+        assert_eq!(
+            convert_to_namespace_query(&nprobes_query).unwrap().nprobes,
+            Some(20)
+        );
+
+        let minimum_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            minimum_nprobes: Some(5),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&minimum_query));
+
+        let maximum_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            maximum_nprobes: Some(10),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&maximum_query));
+
+        let exact_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            minimum_nprobes: Some(20),
+            maximum_nprobes: Some(20),
+            ..Default::default()
+        });
+        assert!(requires_local_namespace_execution(&exact_query));
     }
 
     #[test]

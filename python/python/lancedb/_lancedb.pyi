@@ -723,6 +723,7 @@ class PyQueryRequest:
     use_lsm: Optional[bool]
     column: Optional[str]
     query_vector: Optional[List[pa.Array]]
+    nprobes: Optional[int]
     minimum_nprobes: Optional[int]
     maximum_nprobes: Optional[int]
     lower_bound: Optional[float]
