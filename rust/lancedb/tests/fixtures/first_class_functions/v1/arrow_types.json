@@ -79,6 +79,12 @@
       }
     },
     {
+      "arrow_type": "large_utf8",
+      "json": {
+        "type": "large_utf8"
+      }
+    },
+    {
       "arrow_type": "binary",
       "json": {
         "type": "binary"
@@ -172,6 +178,21 @@
       }
     },
     {
+      "arrow_type": "list<large_utf8>",
+      "json": {
+        "type": "list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "large_utf8"
+            }
+          }
+        ]
+      }
+    },
+    {
       "arrow_type": "large_list<utf8>",
       "json": {
         "type": "large_list",
@@ -181,6 +202,21 @@
             "nullable": false,
             "type": {
               "type": "utf8"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "arrow_type": "large_list<large_utf8>",
+      "json": {
+        "type": "large_list",
+        "fields": [
+          {
+            "name": "item",
+            "nullable": false,
+            "type": {
+              "type": "large_utf8"
             }
           }
         ]

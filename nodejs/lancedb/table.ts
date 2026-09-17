@@ -17,8 +17,10 @@ import {
   tableFromIPC,
 } from "./arrow";
 
+import { BlobFile } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
+import { Job } from "./job";
 import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsResult,
@@ -30,7 +32,6 @@ import {
   DropColumnsResult,
   IndexConfig,
   IndexStatistics,
-  Job,
   LsmStats,
   Branches as NativeBranches,
   OptimizeStats,
@@ -147,7 +148,8 @@ export interface OptimizeOptions {
    * olderThan.setDate(olderThan.getDate() - 1));
    * tbl.optimize({cleanupOlderThan: olderThan});
    *
-   * // Delete all versions except the current version
+   * // Delete versions committed before this point. Versions created by the
+   * // optimize call itself are newer than the cutoff and will be retained.
    * tbl.optimize({cleanupOlderThan: new Date()});
    */
   cleanupOlderThan: Date;
@@ -313,7 +315,7 @@ export abstract class Table {
    * Note: if your condition is something like "some_id_column == 7" and
    * you are updating many rows (with different ids) then you will get
    * better performance with a single [`merge_insert`] call instead of
-   * repeatedly calilng this method.
+   * repeatedly calling this method.
    * @param {Map<string, string> | Record<string, string>} updates - the
    * columns to update
    * @returns {Promise<UpdateResult>} A promise that resolves to an object
@@ -511,6 +513,35 @@ export abstract class Table {
   abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
 
   /**
+   * Blob v2 columns, including nested dotted paths.
+   */
+  abstract blobColumns(): Promise<string[]>;
+
+  /**
+   * Bytes for `column` at row IDs from {@link Query.withRowId}.
+   *
+   * Reads the table's current checkout. IDs from another version can fail after
+   * compaction unless stable row ids are enabled. Results keep input order and
+   * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   */
+  abstract fetchBlobs(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+  ): Promise<(Buffer | null)[]>;
+
+  /**
+   * Opens lazy blob handles for `column` at the given row IDs using the
+   * table's current checkout.
+   *
+   * Preserves input order, duplicates, and nulls. Use this for large payloads.
+   * See {@link Table.fetchBlobs} for row-ID validity across versions.
+   */
+  abstract fetchBlobFiles(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+  ): Promise<(BlobFile | null)[]>;
+
+  /**
    * Create a search query to find the nearest neighbors
    * of the given query
    * @param {string | IntoVector} query - the query, a vector or string
@@ -542,10 +573,10 @@ export abstract class Table {
    * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
    * large table as on an empty one.
    *
-   * A refresh does not revisit rows it has already filled, so mutating an
-   * input leaves the value computed at fill time; recomputing means dropping
-   * the column and declaring it again. While a declaration reads a column,
-   * that column cannot be renamed, retyped or dropped.
+   * A refresh also recomputes the rows whose inputs changed since they were
+   * computed, so a mutated input is reflected by the next refresh. While a
+   * declaration reads a column, that column cannot be renamed, retyped or
+   * dropped.
    *
    * On LanceDB Cloud and Enterprise the expression is planned by the
    * server, and the refresh runs as a server job -- see
@@ -576,10 +607,10 @@ export abstract class Table {
   /**
    * Fill the rows of a computed column that hold no value yet.
    *
-   * Rows appended since the last refresh are filled by the next one; rows
-   * already filled are left as they are, so the call is idempotent and does
-   * not observe a mutated input. Local tables only: a remote refresh runs
-   * as a server job, through {@link Table#refreshColumnAsync}.
+   * Rows appended since the last refresh are filled by the next one, and
+   * rows whose inputs changed since they were computed are recomputed;
+   * everything else is left as it is. Local tables only: a remote refresh
+   * runs as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.
@@ -609,13 +640,16 @@ export abstract class Table {
    * Recompute this table's contents from its materialized-view definition.
    *
    * Plumbing for {@link MaterializedView.refresh}, which is the way to call
-   * it: rejects tables that carry no view definition. Local tables only.
+   * it: rejects tables that carry no view definition.
    * @ignore
    */
   abstract refreshMaterializedView(
     full?: boolean,
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult>;
+
+  /** @ignore */
+  abstract materializedViewDefinition(): Promise<string>;
 
   /**
    * Alter the name or nullability of columns.
@@ -919,6 +953,16 @@ export abstract class Table {
   /** Return the table as an arrow table */
   abstract toArrow(): Promise<ArrowTable>;
 
+  /**
+   * Create a {@link MergeInsertBuilder}, which combines new data with the
+   * existing table in a single transaction — inserting, updating and deleting
+   * rows depending on how they match.
+   *
+   * @param on - The column, or columns, to match source rows against target
+   * rows on. Typically a key or id column. Several columns match on the
+   * composite key: a source row updates a target row only when it agrees on
+   * every one of them.
+   */
   abstract mergeInsert(on: string | string[]): MergeInsertBuilder;
 
   /** List all the stats of a specified index
@@ -1114,13 +1158,15 @@ export class LocalTable extends Table {
   ): Promise<Job> {
     // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
-    return await this.inner.createIndexAsync(
-      nativeIndex,
-      column,
-      options?.replace,
-      options?.waitTimeoutSeconds,
-      options?.name,
-      options?.train,
+    return new Job(
+      await this.inner.createIndexAsync(
+        nativeIndex,
+        column,
+        options?.replace,
+        options?.waitTimeoutSeconds,
+        options?.name,
+        options?.train,
+      ),
     );
   }
 
@@ -1148,23 +1194,34 @@ export class LocalTable extends Table {
   }
 
   takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
-    const ids = rowIds.map((id) => {
-      if (typeof id === "bigint") {
-        return id;
-      }
-      if (!Number.isInteger(id)) {
-        throw new Error("Row id must be an integer (or bigint)");
-      }
-      if (id < 0) {
-        throw new Error("Row id cannot be negative");
-      }
-      if (!Number.isSafeInteger(id)) {
-        throw new Error("Row id is too large for number; use bigint instead");
-      }
-      return BigInt(id);
-    });
+    return new TakeQuery(this.inner.takeRowIds(rowIdsToBigInts(rowIds)));
+  }
 
-    return new TakeQuery(this.inner.takeRowIds(ids));
+  blobColumns(): Promise<string[]> {
+    return this.inner.blobColumns();
+  }
+
+  async fetchBlobs(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+  ): Promise<(Buffer | null)[]> {
+    const values = await this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds));
+    // N-API Option maps missing values to undefined. Collapse those to null.
+    return values.map((value) => value ?? null);
+  }
+
+  async fetchBlobFiles(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+  ): Promise<(BlobFile | null)[]> {
+    const files = await this.inner.fetchBlobFiles(
+      column,
+      rowIdsToBigInts(rowIds),
+    );
+    // N-API Option maps missing values to undefined. Collapse those to null.
+    return files.map((file) =>
+      file == null ? null : BlobFile.fromNative(file),
+    );
   }
 
   query(): Query {
@@ -1303,7 +1360,7 @@ export class LocalTable extends Table {
   }
 
   async refreshColumnAsync(column: string): Promise<Job> {
-    return await this.inner.refreshColumnAsync(column);
+    return new Job(await this.inner.refreshColumnAsync(column));
   }
 
   async refreshMaterializedView(
@@ -1311,6 +1368,10 @@ export class LocalTable extends Table {
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult> {
     return await this.inner.refreshMaterializedView(full, sourceVersion);
+  }
+
+  async materializedViewDefinition(): Promise<string> {
+    return await this.inner.materializedViewDefinition();
   }
 
   async alterColumns(
@@ -1433,16 +1494,8 @@ export class LocalTable extends Table {
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    let cleanupOlderThanMs;
-    if (
-      options?.cleanupOlderThan !== undefined &&
-      options?.cleanupOlderThan !== null
-    ) {
-      cleanupOlderThanMs =
-        new Date().getTime() - options.cleanupOlderThan.getTime();
-    }
     return await this.inner.optimize(
-      cleanupOlderThanMs,
+      options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
     );
   }
@@ -1720,4 +1773,22 @@ export class Branches {
       dryRun,
     )) as unknown as CherryPickResult;
   }
+}
+
+function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
+  return rowIds.map((id) => {
+    if (typeof id === "bigint") {
+      return id;
+    }
+    if (!Number.isInteger(id)) {
+      throw new Error("Row id must be an integer (or bigint)");
+    }
+    if (id < 0) {
+      throw new Error("Row id cannot be negative");
+    }
+    if (!Number.isSafeInteger(id)) {
+      throw new Error("Row id is too large for number; use bigint instead");
+    }
+    return BigInt(id);
+  });
 }

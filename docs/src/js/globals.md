@@ -11,6 +11,7 @@
 
 ## Enumerations
 
+- [ClientAuthMethod](enumerations/ClientAuthMethod.md)
 - [FullTextQueryType](enumerations/FullTextQueryType.md)
 - [OAuthFlowType](enumerations/OAuthFlowType.md)
 - [Occur](enumerations/Occur.md)
@@ -19,10 +20,12 @@
 ## Classes
 
 - [AutoQuery](classes/AutoQuery.md)
+- [BlobFile](classes/BlobFile.md)
 - [BooleanQuery](classes/BooleanQuery.md)
 - [BoostQuery](classes/BoostQuery.md)
 - [BranchContents](classes/BranchContents.md)
 - [Branches](classes/Branches.md)
+- [Catalog](classes/Catalog.md)
 - [Connection](classes/Connection.md)
 - [HeaderProvider](classes/HeaderProvider.md)
 - [Index](classes/Index.md)
@@ -34,6 +37,7 @@
 - [MultiMatchQuery](classes/MultiMatchQuery.md)
 - [NativeJsHeaderProvider](classes/NativeJsHeaderProvider.md)
 - [OAuthHeaderProvider](classes/OAuthHeaderProvider.md)
+- [OAuthSession](classes/OAuthSession.md)
 - [PermutationBuilder](classes/PermutationBuilder.md)
 - [PhraseQuery](classes/PhraseQuery.md)
 - [Query](classes/Query.md)
@@ -61,6 +65,7 @@
 - [BranchIndexSummary](interfaces/BranchIndexSummary.md)
 - [BranchRowCountSummary](interfaces/BranchRowCountSummary.md)
 - [BucketStats](interfaces/BucketStats.md)
+- [CatalogOptions](interfaces/CatalogOptions.md)
 - [CherryPickError](interfaces/CherryPickError.md)
 - [CherryPickPreview](interfaces/CherryPickPreview.md)
 - [CherryPickResult](interfaces/CherryPickResult.md)
@@ -96,9 +101,10 @@
 - [IvfFlatOptions](interfaces/IvfFlatOptions.md)
 - [IvfPqOptions](interfaces/IvfPqOptions.md)
 - [IvfRqOptions](interfaces/IvfRqOptions.md)
-- [JobDescription](interfaces/JobDescription.md)
+- [JobEventsOptions](interfaces/JobEventsOptions.md)
 - [JobFailureInfo](interfaces/JobFailureInfo.md)
 - [JobInfo](interfaces/JobInfo.md)
+- [ListDatabasesResponse](interfaces/ListDatabasesResponse.md)
 - [ListNamespacesOptions](interfaces/ListNamespacesOptions.md)
 - [ListNamespacesResponse](interfaces/ListNamespacesResponse.md)
 - [ListTablesOptions](interfaces/ListTablesOptions.md)
@@ -121,6 +127,8 @@
 - [RestNamespaceConfig](interfaces/RestNamespaceConfig.md)
 - [RetryConfig](interfaces/RetryConfig.md)
 - [ScannableOptions](interfaces/ScannableOptions.md)
+- [SessionLogout](interfaces/SessionLogout.md)
+- [SessionStatus](interfaces/SessionStatus.md)
 - [ShuffleOptions](interfaces/ShuffleOptions.md)
 - [SplitCalculatedOptions](interfaces/SplitCalculatedOptions.md)
 - [SplitHashOptions](interfaces/SplitHashOptions.md)
@@ -130,6 +138,7 @@
 - [TableStatistics](interfaces/TableStatistics.md)
 - [TimeoutConfig](interfaces/TimeoutConfig.md)
 - [TlsConfig](interfaces/TlsConfig.md)
+- [TokenCacheOptions](interfaces/TokenCacheOptions.md)
 - [TokenResponse](interfaces/TokenResponse.md)
 - [TokenizeOptions](interfaces/TokenizeOptions.md)
 - [UpdateFieldMetadataResult](interfaces/UpdateFieldMetadataResult.md)
@@ -143,6 +152,7 @@
 
 - [AnalyzePlanDistributedMetrics](type-aliases/AnalyzePlanDistributedMetrics.md)
 - [BaseTokenizer](type-aliases/BaseTokenizer.md)
+- [BlobOptions](type-aliases/BlobOptions.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
 - [FieldLike](type-aliases/FieldLike.md)
@@ -158,10 +168,14 @@
 ## Functions
 
 - [RecordBatchIterator](functions/RecordBatchIterator.md)
+- [blob](functions/blob.md)
 - [connect](functions/connect.md)
+- [connectCatalog](functions/connectCatalog.md)
 - [connectNamespace](functions/connectNamespace.md)
 - [instrumentLanceDbMetrics](functions/instrumentLanceDbMetrics.md)
+- [isBlobField](functions/isBlobField.md)
 - [makeArrowTable](functions/makeArrowTable.md)
+- [makeJsonField](functions/makeJsonField.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)
 - [tokenize](functions/tokenize.md)

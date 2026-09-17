@@ -327,8 +327,8 @@ def test_embedding_function_with_pandas(tmp_path):
         ) -> List[np.array]:
             return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
-    registery = get_registry()
-    func = registery.get("mock-embedding").create()
+    registry = get_registry()
+    func = registry.get("mock-embedding").create()
 
     class TestSchema(LanceModel):
         text: str = func.SourceField()
@@ -394,9 +394,9 @@ def test_multiple_embeddings_for_pandas(tmp_path):
         ) -> List[np.array]:
             return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
-    registery = get_registry()
-    func1 = registery.get("mock-embedding").create()
-    func2 = registery.get("mock-embedding2").create()
+    registry = get_registry()
+    func1 = registry.get("mock-embedding").create()
+    func2 = registry.get("mock-embedding2").create()
 
     class TestSchema(LanceModel):
         text: str = func1.SourceField()

@@ -66,6 +66,25 @@ def _row_ids_by_id(table):
     return dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
 
 
+def _assert_missing_blob_row_ids(exc_info):
+    message = str(exc_info.value)
+    assert "row ids" in message
+    assert "rowaddr" not in message
+    assert "fragment" not in message
+
+
+def _assert_fetch_apis_reject_missing_row_ids(table, row_ids):
+    with pytest.raises(ValueError) as exc_info:
+        table.fetch_blobs("image", row_ids)
+    _assert_missing_blob_row_ids(exc_info)
+    with pytest.raises(ValueError) as exc_info:
+        table.fetch_blob_files("image", row_ids)
+    _assert_missing_blob_row_ids(exc_info)
+    with pytest.raises(ValueError) as exc_info:
+        table.fetch_blob_ranges("image", [(row_id, 0, 1) for row_id in row_ids])
+    _assert_missing_blob_row_ids(exc_info)
+
+
 def test_blob_factory_declares_v2_field():
     field = lancedb.blob("image")
     assert isinstance(field.type, pa.ExtensionType)
@@ -278,7 +297,10 @@ def test_blob_v2_projection_sources_use_typed_column_name():
 
 
 def _legacy_v1_table(name):
-    db = lancedb.connect("memory:///")
+    # Legacy v1 blob columns are only writable at file version <= 2.1.
+    db = lancedb.connect(
+        "memory:///", storage_options={"new_table_data_storage_version": "2.1"}
+    )
     schema = pa.schema(
         [
             pa.field("id", pa.int64()),
@@ -691,6 +713,25 @@ def test_fetch_blobs_accepts_query_result():
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"gamma"}
 
 
+def test_fetch_blobs_after_compact_with_stable_row_ids(tmp_path):
+    db = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("t", schema=schema)
+    table.add([{"id": 1, "image": b"frag-one"}])
+    table.add([{"id": 2, "image": b"frag-two"}])
+    by_id = _row_ids_by_id(table)
+    ids = [by_id[1], by_id[2]]
+
+    table.optimize()
+
+    blobs = table.fetch_blobs("image", ids)
+    assert blobs.to_pylist() == [b"frag-one", b"frag-two"]
+    ranges = table.fetch_blob_ranges("image", [(ids[0], 5, 3), (ids[1], 5, 3)])
+    assert ranges.to_pylist() == [b"one", b"two"]
+
+
 def test_fetch_blobs_preserves_null_and_empty_values():
     table = _blob_table(
         "nulls",
@@ -708,6 +749,80 @@ def test_fetch_blobs_preserves_null_and_empty_values():
     assert blobs[1].as_py() is None
     assert blobs[2].as_py() == b""
     assert blobs[3].as_py() == b"present"
+
+
+def test_add_all_null_list_to_blob_column():
+    table = _blob_table("all_null_add", [{"id": 1, "image": None}])
+
+    hits = table.search().to_arrow()
+    blobs = table.fetch_blobs("image", hits)
+    assert len(blobs) == 1
+    assert blobs[0].as_py() is None
+
+
+def test_add_all_null_list_to_blob_column_with_sanitizer():
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("all_null_sanitized_add", schema=schema)
+
+    table.add([{"id": 1, "image": None}], on_bad_vectors="fill")
+
+    hits = table.search().to_arrow()
+    blobs = table.fetch_blobs("image", hits)
+    assert len(blobs) == 1
+    assert blobs[0].as_py() is None
+
+
+def test_add_all_null_list_to_nested_blob_column():
+    db = lancedb.connect("memory:///")
+    blob_field = lancedb.blob("image")
+    info_field = pa.field("info", pa.struct([blob_field]))
+    info = pa.StructArray.from_arrays(
+        [_blob_array("image", [b"seed"])], fields=[blob_field]
+    )
+    seed = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), info],
+        schema=pa.schema([pa.field("id", pa.int64()), info_field]),
+    )
+    table = db.create_table("nested_null_add", data=seed)
+
+    table.add([{"id": 1, "info": {"image": None}}])
+    table.add([{"id": 2, "info": {"image": None}}], on_bad_vectors="fill")
+
+    hits = table.search().where("id > 0").to_arrow()
+    blobs = table.fetch_blobs("info.image", hits)
+    assert len(blobs) == 2
+    assert all(blob.as_py() is None for blob in blobs)
+
+
+@pytest.mark.parametrize("large_list", [False, True], ids=["list", "large_list"])
+def test_add_list_of_dicts_to_blob_list_column(large_list):
+    db = lancedb.connect("memory:///")
+    blob_field = lancedb.blob("image")
+    blob_values = _blob_array("image", [b"seed"])
+    if large_list:
+        items_field = pa.field("items", pa.large_list(blob_field))
+        items = pa.LargeListArray.from_arrays(
+            pa.array([0, 1], type=pa.int64()), blob_values
+        )
+    else:
+        items_field = pa.field("items", pa.list_(blob_field))
+        items = pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), blob_values)
+    seed = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), items],
+        schema=pa.schema([pa.field("id", pa.int64()), items_field]),
+    )
+    table = db.create_table(f"blob_{large_list}_list_add", data=seed)
+
+    table.add([{"id": 1, "items": [None]}])
+    table.add(
+        [{"id": 2, "items": [b"a", None]}],
+        on_bad_vectors="fill",
+    )
+
+    ids = table.search().select(["id"]).to_arrow()["id"].to_pylist()
+    assert sorted(ids) == [0, 1, 2]
+    assert pa.types.is_large_list(table.schema.field("items").type) is large_list
 
 
 def test_fetch_blob_ranges_aligns_repeated_ranges_and_nulls():
@@ -739,8 +854,25 @@ def test_fetch_blob_ranges_validates_requests():
     with pytest.raises(ValueError, match="offset \\+ length overflowed"):
         table.fetch_blob_ranges("image", [(row_id, 2**64 - 1, 1)])
 
-    with pytest.raises(ValueError, match="row IDs"):
+    with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_ranges("image", [(2**64 - 1, 0, 1)])
+    _assert_missing_blob_row_ids(exc_info)
+
+
+def test_fetch_blob_apis_reject_missing_fragment_row_addr():
+    table = _blob_table("missing_frag", [{"id": 1, "image": b"x"}])
+    live = _row_ids_by_id(table)[1]
+    _assert_fetch_apis_reject_missing_row_ids(table, [1 << 32, live])
+
+
+def test_fetch_blob_apis_reject_deleted_row_ids():
+    table = _blob_table(
+        "deleted_rows",
+        [{"id": 1, "image": b"one"}, {"id": 2, "image": b"two"}],
+    )
+    by_id = _row_ids_by_id(table)
+    table.delete("id = 2")
+    _assert_fetch_apis_reject_missing_row_ids(table, [by_id[2], by_id[1]])
 
 
 def test_fetch_blob_ranges_empty_requests_returns_empty_array():

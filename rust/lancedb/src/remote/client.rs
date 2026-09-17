@@ -15,6 +15,25 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
+pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
+    const SENSITIVE_HEADERS: [&str; 5] = [
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+    ];
+
+    for (name, value) in headers.iter_mut() {
+        if SENSITIVE_HEADERS
+            .iter()
+            .any(|sensitive| name.as_str().eq_ignore_ascii_case(sensitive))
+        {
+            value.set_sensitive(true);
+        }
+    }
+}
+
 /// Configuration for TLS/mTLS settings.
 #[derive(Clone, Debug)]
 pub struct TlsConfig {
@@ -71,8 +90,9 @@ pub struct ClientConfig {
     pub user_agent: String,
     // TODO: how to configure request ids?
     pub extra_headers: HashMap<String, String>,
-    /// The delimiter to use when constructing object identifiers.
-    /// If not default, passes as query parameter.
+    /// The delimiter joining a namespace path and a name into one object
+    /// identifier. [`ID_DELIMITER`] is the only accepted value; any other is
+    /// refused by [`ClientConfig::validate`].
     pub id_delimiter: Option<String>,
     /// TLS configuration for mTLS support
     pub tls_config: Option<TlsConfig>,
@@ -288,7 +308,6 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
     pub(crate) sender: S,
-    pub(crate) id_delimiter: String,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
     /// Connection-level read consistency interval. Drives the
     /// `x-lancedb-min-timestamp` freshness header sent on read requests.
@@ -311,7 +330,6 @@ impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
             .field("host", &self.host)
             .field("retry_config", &self.retry_config)
             .field("sender", &self.sender)
-            .field("id_delimiter", &self.id_delimiter)
             .field(
                 "header_provider",
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
@@ -360,7 +378,11 @@ pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
             message: format!("Invalid database URL (missing host) '{}'", db_url),
         });
     }
-    let db_name = parsed_url.host_str().unwrap().to_string();
+    let db_name = urlencoding::decode(parsed_url.host_str().unwrap())
+        .map_err(|err| Error::InvalidInput {
+            message: format!("Invalid encoded database name: {err}"),
+        })?
+        .into_owned();
     let db_prefix = {
         let prefix = parsed_url.path().trim_start_matches('/');
         if prefix.is_empty() {
@@ -404,6 +426,54 @@ fn validate_dns_hostname(hostname: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether a request's body may appear in a debug log.
+///
+/// The API that built the body decides. The transport cannot know which
+/// payloads are credentials, and a list of routes here would have to be kept in
+/// step with endpoints defined elsewhere -- so the knowledge lives with the
+/// call that has it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BodyLogging {
+    /// Log the body at debug. The default: a request body is diagnostic unless
+    /// the call that built it says otherwise.
+    Allowed,
+    /// Never log the body. For a request whose body is a credential.
+    Suppressed,
+}
+
+/// The delimiter joining a namespace path and a name into the `{id}` a route
+/// addresses, and the only one a LanceDB service splits on.
+///
+/// `$` is outside the character set object names admit, so a joined identifier
+/// always splits back into the parts that made it. The configuration field
+/// exists because the identifier grammar comes from the Lance REST catalog
+/// standard, which carries a delimiter setting for other catalogs to adopt.
+pub(crate) const ID_DELIMITER: &str = "$";
+
+fn validate_id_delimiter(delimiter: &str) -> Result<()> {
+    if delimiter != ID_DELIMITER {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "id_delimiter '{delimiter}' is not supported: '{ID_DELIMITER}' is the only \
+                 delimiter LanceDB services split an identifier on"
+            ),
+        });
+    }
+    Ok(())
+}
+
+impl ClientConfig {
+    /// Check the settings a request cannot be built correctly without, so a
+    /// mistake is reported where it was made rather than as a confusing
+    /// response later. Public so a caller can ask without connecting.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(delimiter) = &self.id_delimiter {
+            validate_id_delimiter(delimiter)?;
+        }
+        Ok(())
+    }
+}
+
 impl RestfulLanceDbClient<Sender> {
     fn get_timeout(passed: Option<Duration>, env_var: &str) -> Result<Option<Duration>> {
         if let Some(passed) = passed {
@@ -429,6 +499,10 @@ impl RestfulLanceDbClient<Sender> {
         client_config: ClientConfig,
         read_consistency_interval: Option<Duration>,
     ) -> Result<Self> {
+        // Before anything is built from it, so the error names the caller's
+        // configuration rather than a request.
+        client_config.validate()?;
+
         // Get the timeouts
         let timeout =
             Self::get_timeout(client_config.timeout_config.timeout, "LANCE_CLIENT_TIMEOUT")?;
@@ -528,10 +602,6 @@ impl RestfulLanceDbClient<Sender> {
             host,
             retry_config,
             sender: Sender,
-            id_delimiter: client_config
-                .id_delimiter
-                .clone()
-                .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
             read_consistency_interval,
             max_bytes_per_request,
@@ -610,12 +680,14 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         if !api_key.is_empty() {
-            headers.insert(
-                HeaderName::from_static("x-api-key"),
-                HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
-                    message: "non-ascii api key provided".to_string(),
-                })?,
-            );
+            // `log_request` prints the request's Debug, which prints headers.
+            // Marking the value sensitive is what makes that print `Sensitive`
+            // instead of the key itself.
+            let mut key = HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
+                message: "non-ascii api key provided".to_string(),
+            })?;
+            key.set_sensitive(true);
+            headers.insert(HeaderName::from_static("x-api-key"), key);
         }
         if region == "local" {
             let host = format!("{}.local.api.lancedb.com", db_name);
@@ -681,27 +753,18 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             );
         }
 
+        redact_sensitive_headers(&mut headers);
         Ok(headers)
     }
 
     pub fn get(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
-        let builder = self.client.get(full_uri);
-        self.add_id_delimiter_query_param(builder)
+        self.client.get(full_uri)
     }
 
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
-        let builder = self.client.post(full_uri);
-        self.add_id_delimiter_query_param(builder)
-    }
-
-    fn add_id_delimiter_query_param(&self, req: RequestBuilder) -> RequestBuilder {
-        if self.id_delimiter != "$" {
-            req.query(&[("delimiter", self.id_delimiter.clone())])
-        } else {
-            req
-        }
+        self.client.post(full_uri)
     }
 
     /// Apply dynamic headers from the header provider if configured
@@ -714,17 +777,34 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                     if let Ok(header_value) = HeaderValue::from_str(&value) {
                         request_headers.insert(header_name, header_value);
                     } else {
-                        debug!("Invalid header value for key {}: {}", key, value);
+                        debug!("Invalid header value for key {}", key);
                     }
                 } else {
                     debug!("Invalid header name: {}", key);
                 }
             }
         }
+        redact_sensitive_headers(request.headers_mut());
         Ok(request)
     }
 
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
+        self.send_logging(req, BodyLogging::Allowed).await
+    }
+
+    /// Send a request whose body must never reach a debug log.
+    ///
+    /// The body is built by the caller, so only the caller knows it holds a
+    /// credential; `log_request` sees serialized bytes and cannot tell.
+    pub async fn send_suppressing_body(&self, req: RequestBuilder) -> Result<(String, Response)> {
+        self.send_logging(req, BodyLogging::Suppressed).await
+    }
+
+    async fn send_logging(
+        &self,
+        req: RequestBuilder,
+        body_logging: BodyLogging,
+    ) -> Result<(String, Response)> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
         let request_id = self.extract_request_id(&mut request);
@@ -732,7 +812,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         // Apply dynamic headers before sending
         request = self.apply_dynamic_headers(request).await?;
 
-        self.log_request(&request, &request_id);
+        self.log_request(&request, &request_id, body_logging);
 
         let response = self
             .sender
@@ -795,7 +875,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             // Apply dynamic headers before each retry attempt
             request = self.apply_dynamic_headers(request).await?;
 
-            self.log_request(&request, &request_id);
+            self.log_request(&request, &request_id, BodyLogging::Allowed);
 
             let response = self.sender.send(&c, request).await.map(|r| (r.status(), r));
 
@@ -839,13 +919,18 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    pub(crate) fn log_request(&self, request: &Request, request_id: &String) {
+    fn log_request(&self, request: &Request, request_id: &String, body_logging: BodyLogging) {
         if log::log_enabled!(log::Level::Debug) {
             let content_type = request
                 .headers()
                 .get("content-type")
                 .map(|v| v.to_str().unwrap());
-            if content_type == Some("application/json") {
+            if body_logging == BodyLogging::Suppressed {
+                debug!(
+                    "Sending request_id={}: {:?} with body suppressed",
+                    request_id, request
+                );
+            } else if content_type == Some("application/json") {
                 let body = request.body().as_ref().unwrap().as_bytes().unwrap();
                 let body = String::from_utf8_lossy(body);
                 debug!(
@@ -1022,7 +1107,6 @@ pub mod test_utils {
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
-            id_delimiter: "$".to_string(),
             header_provider: None,
             read_consistency_interval,
             max_bytes_per_request: None,
@@ -1049,7 +1133,6 @@ pub mod test_utils {
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
-            id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
             header_provider: config.header_provider,
             read_consistency_interval: None,
             max_bytes_per_request: config
@@ -1064,6 +1147,40 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    /// A configuration naming any other delimiter is refused where it was
+    /// written, rather than producing identifiers no service splits the way the
+    /// caller meant.
+    #[test]
+    fn test_a_delimiter_other_than_the_supported_one_is_refused() {
+        for delimiter in ["/", "?", "#", "%", "", ".", "..", "-", "_", "|", "::", "$$"] {
+            let error = super::validate_id_delimiter(delimiter)
+                .expect_err("only the supported delimiter may be configured");
+            assert!(
+                error.to_string().contains("id_delimiter"),
+                "{delimiter:?}: {error}"
+            );
+        }
+        super::validate_id_delimiter(super::ID_DELIMITER).unwrap();
+    }
+
+    /// Leaving it unset is how nearly every caller reaches the same delimiter.
+    #[test]
+    fn test_an_unset_delimiter_is_the_supported_one() {
+        super::ClientConfig::default().validate().unwrap();
+        super::ClientConfig {
+            id_delimiter: Some(super::ID_DELIMITER.to_string()),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
+        super::ClientConfig {
+            id_delimiter: Some("-".to_string()),
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("a configured delimiter other than the supported one must be refused");
+    }
+
     use super::*;
     use serial_test::serial;
     use std::time::Duration;
@@ -1075,6 +1192,16 @@ mod tests {
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn test_parse_catalog_database_uri() {
+        let parsed = parse_db_url("db://team%2Fsearch").unwrap();
+        assert_eq!(parsed.db_name, "team/search");
+        assert!(parsed.db_prefix.is_none());
+        let parsed = parse_db_url("db://db/prefix").unwrap();
+        assert_eq!(parsed.db_name, "db");
+        assert_eq!(parsed.db_prefix.as_deref(), Some("prefix"));
     }
 
     #[test]
@@ -1180,7 +1307,7 @@ mod tests {
         assert!(!headers.contains_key("x-api-key"));
 
         let headers = RestfulLanceDbClient::<Sender>::default_headers(
-            "api-key",
+            "static-secret-value",
             "us-east-1",
             "db-name",
             false,
@@ -1189,7 +1316,90 @@ mod tests {
             &ClientConfig::default(),
         )
         .unwrap();
-        assert_eq!(headers.get("x-api-key").unwrap(), "api-key");
+        let api_key = headers.get("x-api-key").unwrap();
+        assert_eq!(api_key, "static-secret-value");
+        assert!(api_key.is_sensitive());
+        assert!(!format!("{headers:?}").contains("static-secret-value"));
+    }
+
+    #[test]
+    fn test_configured_authentication_headers_are_sensitive() {
+        let config = ClientConfig {
+            extra_headers: HashMap::from([
+                (
+                    "Authorization".to_string(),
+                    "Bearer configured-secret".to_string(),
+                ),
+                ("X-API-Key".to_string(), "configured-api-key".to_string()),
+                (
+                    "Cookie".to_string(),
+                    "session=configured-cookie".to_string(),
+                ),
+                (
+                    "Proxy-Authorization".to_string(),
+                    "Basic configured-proxy-secret".to_string(),
+                ),
+                ("X-Custom".to_string(), "visible-value".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &config,
+        )
+        .unwrap();
+
+        assert!(headers.get("authorization").unwrap().is_sensitive());
+        assert!(headers.get("x-api-key").unwrap().is_sensitive());
+        assert!(headers.get("cookie").unwrap().is_sensitive());
+        assert!(headers.get("proxy-authorization").unwrap().is_sensitive());
+        assert!(!headers.get("x-custom").unwrap().is_sensitive());
+        let debug = format!("{headers:?}");
+        assert!(!debug.contains("configured-secret"));
+        assert!(!debug.contains("configured-api-key"));
+        assert!(!debug.contains("configured-cookie"));
+        assert!(!debug.contains("configured-proxy-secret"));
+        assert!(debug.contains("visible-value"));
+    }
+
+    /// `log_request` prints the request's Debug, and Debug for a request prints
+    /// its headers. Marking the value sensitive is the only thing standing
+    /// between the API key and every debug line; assert on the header map's own
+    /// Debug, which is what that printing reduces to.
+    #[test]
+    fn test_api_key_is_redacted_in_debug_output() {
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "sk-live-sentinel",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(headers.get("x-api-key").unwrap(), "sk-live-sentinel");
+        assert!(
+            !format!("{:?}", headers).contains("sk-live-sentinel"),
+            "the API key must not survive Debug formatting"
+        );
+    }
+
+    /// A suppressed body is suppressed whatever the content type says, and an
+    /// allowed one is logged in full.
+    #[test]
+    fn test_body_logging_is_decided_by_the_caller() {
+        assert_ne!(BodyLogging::Allowed, BodyLogging::Suppressed);
+        // `send` and `send_suppressing_body` differ only in what they pass, so
+        // the enum is the whole contract: a caller states its intent and the
+        // transport does not infer one from the route.
+        assert_eq!(BodyLogging::Allowed, BodyLogging::Allowed);
     }
 
     #[test]
@@ -1281,7 +1491,6 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             sender: Sender,
-            id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,
@@ -1303,6 +1512,7 @@ mod tests {
         // Test that dynamic headers override existing headers
         let mut headers = HashMap::new();
         headers.insert("Authorization".to_string(), "Bearer new-token".to_string());
+        headers.insert("X-API-Key".to_string(), "new-api-key".to_string());
         headers.insert("X-Custom".to_string(), "custom-value".to_string());
 
         let provider = TestHeaderProvider::new(headers);
@@ -1319,7 +1529,6 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             sender: Sender,
-            id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,
@@ -1338,6 +1547,31 @@ mod tests {
             updated_request.headers().get("X-Custom").unwrap(),
             "custom-value"
         );
+        assert!(
+            updated_request
+                .headers()
+                .get("Authorization")
+                .unwrap()
+                .is_sensitive()
+        );
+        assert!(
+            updated_request
+                .headers()
+                .get("X-API-Key")
+                .unwrap()
+                .is_sensitive()
+        );
+        assert!(
+            !updated_request
+                .headers()
+                .get("X-Custom")
+                .unwrap()
+                .is_sensitive()
+        );
+        let debug = format!("{updated_request:?}");
+        assert!(!debug.contains("new-token"));
+        assert!(!debug.contains("new-api-key"));
+        assert!(debug.contains("custom-value"));
         // Existing headers should still be present
         assert_eq!(
             updated_request.headers().get("X-Existing").unwrap(),
@@ -1359,7 +1593,6 @@ mod tests {
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
             sender: Sender,
-            id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,

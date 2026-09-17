@@ -18,6 +18,7 @@ import {
   Query,
   Table,
   VectorQuery,
+  blob,
   connect,
   tokenize,
 } from "../lancedb";
@@ -52,6 +53,7 @@ import {
   Operator,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
+import { LocalTable } from "../lancedb/table";
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
@@ -281,7 +283,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         numIndices: 0,
         numRows: 3,
         // Full on-disk size of the two data files, footers and metadata included.
-        totalBytes: 684,
+        totalBytes: 550,
       });
 
       // Index files count toward totalBytes too (only deletion files and
@@ -289,7 +291,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.createIndex("id", { config: Index.btree() });
       const statsWithIndex = await table.stats();
       expect(statsWithIndex.numIndices).toBe(1);
-      expect(statsWithIndex.totalBytes).toBeGreaterThan(684);
+      expect(statsWithIndex.totalBytes).toBeGreaterThan(550);
     });
 
     it("should overwrite data if asked", async () => {
@@ -737,11 +739,12 @@ it("should query documents with LangChain PDF metadata", async () => {
 
 describe("merge insert", () => {
   let tmpDir: tmp.DirResult;
+  let conn: Connection;
   let table: Table;
 
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
-    const conn = await connect(tmpDir.name);
+    conn = await connect(tmpDir.name);
 
     table = await conn.createTable("some_table", [
       { a: 1, b: "a" },
@@ -778,6 +781,38 @@ describe("merge insert", () => {
     const result = (await table.toArrow()).toArray().sort((a, b) => a.a - b.a);
 
     expect(result.map((row) => ({ ...row }))).toEqual(expected);
+  });
+  test("upsert on a composite key", async () => {
+    const composite = await conn.createTable("composite", [
+      { shard: "a", id: 1, val: "x" },
+      { shard: "a", id: 2, val: "y" },
+      { shard: "b", id: 1, val: "z" },
+    ]);
+
+    // ("a", 1) matches an existing row and updates it. ("b", 2) agrees with an
+    // existing row on each key column separately but on neither pair, so it is
+    // an insert.
+    const mergeInsertRes = await composite
+      .mergeInsert(["shard", "id"])
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { shard: "a", id: 1, val: "X" },
+        { shard: "b", id: 2, val: "W" },
+      ]);
+    expect(mergeInsertRes.numUpdatedRows).toBe(1);
+    expect(mergeInsertRes.numInsertedRows).toBe(1);
+
+    const result = (await composite.toArrow())
+      .toArray()
+      .sort((a, b) => a.shard.localeCompare(b.shard) || a.id - b.id);
+
+    expect(result.map((row) => ({ ...row }))).toEqual([
+      { shard: "a", id: 1, val: "X" },
+      { shard: "a", id: 2, val: "y" },
+      { shard: "b", id: 1, val: "z" },
+      { shard: "b", id: 2, val: "W" },
+    ]);
   });
   test("conditional update", async () => {
     const newData = [
@@ -2368,6 +2403,276 @@ describe("when dealing with versioning", () => {
   });
 });
 
+describe("when dealing with blob columns", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("discovers blob columns", async () => {
+    const { table } = await openBlobTable();
+    expect(await table.blobColumns()).toEqual(["image"]);
+  });
+
+  it("preserves order, duplicates, and nulls", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [alphaId, betaId, nullId] = rowIds;
+    const bytes = await table.fetchBlobs("image", [
+      betaId,
+      alphaId,
+      betaId,
+      nullId,
+    ]);
+    expect(bytes.map((b) => (b == null ? null : b.toString()))).toEqual([
+      "beta",
+      "alpha",
+      "beta",
+      null,
+    ]);
+    const files = await table.fetchBlobFiles("image", [
+      betaId,
+      nullId,
+      alphaId,
+    ]);
+    expect(files.map((f) => f == null)).toEqual([false, true, false]);
+  });
+
+  it("reads full blob contents", async () => {
+    const { table, rowIds, alpha, beta } = await openBlobTable();
+    const bytes = await table.fetchBlobs("image", rowIds);
+    expect(bytes[0]!.equals(alpha)).toBe(true);
+    expect(bytes[1]!.equals(beta)).toBe(true);
+    const files = await table.fetchBlobFiles("image", rowIds);
+    expect(files[0]!.size()).toBe(BigInt(alpha.length));
+    expect(Buffer.from(await files[0]!.read()).toString()).toBe("alpha");
+    expect(Buffer.from(await files[1]!.read()).toString()).toBe("beta");
+  });
+
+  it("reads a half-open range", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const files = await table.fetchBlobFiles("image", rowIds);
+    expect(Buffer.from(await files[0]!.readRange(0n, 2n)).toString()).toBe(
+      "al",
+    );
+  });
+
+  it("readRange does not move the cursor", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    expect((await handle!.readRange(1n, 3n)).toString()).toBe("lp");
+    expect(await handle!.read()).toEqual(alpha);
+    expect(await handle!.read()).toEqual(Buffer.alloc(0));
+  });
+
+  it("fails when readRange end is past the blob size", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const files = await table.fetchBlobFiles("image", rowIds);
+    await expect(
+      files[0]!.readRange(0n, BigInt(alpha.length + 1)),
+    ).rejects.toThrow(/exceeds blob size/);
+  });
+
+  it("rejects fetchBlobs on a non-blob column", async () => {
+    const { table, rowIds } = await openBlobTable();
+    await expect(table.fetchBlobs("id", rowIds)).rejects.toThrow(/blob/i);
+  });
+
+  it("discovers and fetches nested blob columns", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("info", new Struct([blob("image")]), true),
+    ]);
+    const payload = Buffer.from("nested");
+    const table = await db.createTable(
+      "nested_blobs",
+      [{ id: 1n, info: { image: payload } }],
+      { schema },
+    );
+    expect(await table.blobColumns()).toEqual(["info.image"]);
+    const rows = await table.query().withRowId().toArray();
+    const bytes = await table.fetchBlobs("info.image", [
+      rows[0]._rowid as bigint,
+    ]);
+    expect(bytes[0]!.equals(payload)).toBe(true);
+  });
+
+  it("creates and adds list blob columns", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("images", new List(blob("image")), true),
+    ]);
+    const alpha = Buffer.from("alpha");
+    const beta = Buffer.from("beta");
+    const gamma = Buffer.from("gamma");
+    const table = await db.createTable(
+      "list_blobs",
+      [{ id: 1n, images: [alpha, beta] }],
+      { schema },
+    );
+    await table.add([
+      { id: 2n, images: null },
+      { id: 3n, images: [gamma, null] },
+      { id: 4n, images: [] },
+    ]);
+    expect(await table.blobColumns()).toEqual(["images.image"]);
+    const rows = await table.query().toArray();
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(descriptorSizes(byId.get(1)!.images)).toEqual([
+      alpha.length,
+      beta.length,
+    ]);
+    expect(byId.get(2)!.images).toBeNull();
+    expect(descriptorSizes(byId.get(3)!.images)).toEqual([gamma.length, null]);
+    expect(Array.from(byId.get(4)!.images as Iterable<unknown>)).toHaveLength(
+      0,
+    );
+  });
+
+  it("creates and adds list struct blob columns", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "items",
+        new List(
+          new Field(
+            "item",
+            new Struct([new Field("name", new Utf8(), true), blob("image")]),
+            true,
+          ),
+        ),
+        true,
+      ),
+    ]);
+    const alpha = Buffer.from("nested-alpha");
+    const beta = Buffer.from("nested-beta");
+    const table = await db.createTable(
+      "list_struct_blobs",
+      [{ id: 1n, items: [{ name: "one", image: alpha }] }],
+      { schema },
+    );
+    await table.add([
+      {
+        id: 2n,
+        items: [
+          { name: "two", image: beta },
+          { name: "three", image: null },
+        ],
+      },
+    ]);
+    const rows = await table.query().toArray();
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(
+      descriptorSizes(
+        Array.from(byId.get(1)!.items as Iterable<{ image: unknown }>).map(
+          (item) => item.image,
+        ),
+      ),
+    ).toEqual([alpha.length]);
+    expect(
+      descriptorSizes(
+        Array.from(byId.get(2)!.items as Iterable<{ image: unknown }>).map(
+          (item) => item.image,
+        ),
+      ),
+    ).toEqual([beta.length, null]);
+  });
+
+  it("rejects blob fields inside a fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("frames", new FixedSizeList(2, blob("frame")), true),
+    ]);
+    await expect(
+      db.createTable(
+        "fsl_blobs",
+        [{ id: 1n, frames: [Buffer.from("a"), Buffer.from("b")] }],
+        { schema },
+      ),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
+  it("rejects blob fields inside a nested fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "clip",
+        new Struct([
+          new Field("frames", new FixedSizeList(2, blob("frame")), true),
+        ]),
+        true,
+      ),
+    ]);
+    await expect(
+      db.createTable(
+        "nested_fsl_blobs",
+        [
+          {
+            id: 1n,
+            clip: { frames: [Buffer.from("a"), Buffer.from("b")] },
+          },
+        ],
+        { schema },
+      ),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
+  it("rejects an Arrow table with blob fields inside a fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("frames", new FixedSizeList(2, blob("frame")), true),
+    ]);
+    await expect(
+      db.createTable("fsl_blobs_ipc", new ArrowTable(schema)),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
+  function descriptorSizes(values: unknown): (number | null)[] {
+    return Array.from(
+      values as Iterable<{ size?: bigint | number } | null>,
+    ).map((value) => (value == null ? null : Number(value.size)));
+  }
+
+  async function openBlobTable() {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const alpha = Buffer.from("alpha");
+    const beta = Buffer.from("beta");
+    const table = await db.createTable(
+      "blobs",
+      [
+        { id: 1n, image: alpha },
+        { id: 2n, image: beta },
+        { id: 3n, image: null },
+      ],
+      { schema },
+    );
+    const rows = await table.query().withRowId().toArray();
+    const rowIdById = new Map(
+      rows.map((r) => [Number(r.id), r._rowid as bigint]),
+    );
+    const rowIds = [1, 2, 3].map((id) => rowIdById.get(id)!);
+    return { table, rowIds, alpha, beta };
+  }
+});
+
 describe("when dealing with tags", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
@@ -2461,6 +2766,15 @@ describe("when dealing with tags", () => {
   });
 });
 
+/** Returns a Date strictly later than every instant observed before the call. */
+async function nextMillisecond(): Promise<Date> {
+  const start = Date.now();
+  while (Date.now() <= start) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  return new Date();
+}
+
 describe("when optimizing a dataset", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
@@ -2483,9 +2797,14 @@ describe("when optimizing a dataset", () => {
   });
 
   it("cleanups old versions", async () => {
-    const stats = await table.optimize({ cleanupOlderThan: new Date() });
+    // Lance stores version timestamps with nanosecond precision while a JS
+    // Date only has millisecond precision. A cutoff captured in the same
+    // millisecond as the last commit would truncate to *before* that commit
+    // and leave it in place, so wait for the clock to tick over first.
+    const cutoff = await nextMillisecond();
+    const stats = await table.optimize({ cleanupOlderThan: cutoff });
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
-    expect(stats.prune.oldVersionsRemoved).toBe(3);
+    expect(stats.prune.oldVersionsRemoved).toBe(2);
   });
 
   it("delete unverified", async () => {
@@ -2504,6 +2823,24 @@ describe("when optimizing a dataset", () => {
     });
     expect(stats.prune.oldVersionsRemoved).toBeGreaterThan(1);
   });
+});
+
+it("passes cleanupOlderThan to the native binding as an absolute timestamp", async () => {
+  const optimize = jest.fn().mockResolvedValue({
+    compaction: {
+      filesAdded: 0,
+      filesRemoved: 0,
+      fragmentsAdded: 0,
+      fragmentsRemoved: 0,
+    },
+    prune: { bytesRemoved: 0, oldVersionsRemoved: 0 },
+  });
+  const table = new LocalTable({ optimize } as never);
+  const cutoff = new Date("2020-01-02T03:04:05.678Z");
+
+  await table.optimize({ cleanupOlderThan: cutoff, deleteUnverified: true });
+
+  expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true);
 });
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
@@ -3219,7 +3556,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const db = await connect(tmpDir.name);
       const data = [
         { text: "fa", vector: [0.1, 0.2, 0.3] },
-        { text: "fo", vector: [0.4, 0.5, 0.6] },
+        { text: "fo", vector: [0.4, 0.5, 0.6] }, // spellchecker:disable-line
         { text: "fob", vector: [0.4, 0.5, 0.6] },
         { text: "focus", vector: [0.4, 0.5, 0.6] },
         { text: "foo", vector: [0.4, 0.5, 0.6] },
@@ -3244,7 +3581,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const resultSet = new Set(fuzzyResults.map((r) => r.text));
       expect(resultSet.has("foo")).toBe(true);
       expect(resultSet.has("fob")).toBe(true);
-      expect(resultSet.has("fo")).toBe(true);
+      expect(resultSet.has("fo")).toBe(true); // spellchecker:disable-line
       expect(resultSet.has("food")).toBe(true);
 
       const prefixResults = await table

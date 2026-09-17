@@ -13,11 +13,7 @@ use crate::{
     runtime::future_into_py,
     table::Table,
 };
-use arrow::{
-    datatypes::Schema,
-    ffi_stream::ArrowArrayStreamReader,
-    pyarrow::{FromPyArrow, ToPyArrow},
-};
+use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
@@ -28,7 +24,7 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyDict, PyDictMethods, PyList, PyListMethods},
+    types::{PyAnyMethods, PyDict, PyDictMethods, PyList},
 };
 
 #[pyclass]
@@ -86,6 +82,24 @@ impl Connection {
     }
 }
 
+fn parse_default_namespace_path(path: Option<Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
+    match path {
+        Some(path) => {
+            if !path.is_instance_of::<PyList>() {
+                return Err(PyValueError::new_err(
+                    "Connection.execute_query_async default_namespace_path must be a list",
+                ));
+            }
+            path.extract::<Vec<String>>().map_err(|_| {
+                PyValueError::new_err(
+                    "Connection.execute_query_async default_namespace_path components must be strings",
+                )
+            })
+        }
+        None => Ok(vec!["public".to_string()]),
+    }
+}
+
 #[pymethods]
 impl Connection {
     fn __repr__(&self) -> String {
@@ -106,6 +120,40 @@ impl Connection {
     #[getter]
     pub fn uri(&self) -> PyResult<String> {
         self.get_inner().map(|inner| inner.uri().to_string())
+    }
+
+    #[pyo3(signature = (query, *, default_namespace_path=None))]
+    pub fn execute_query_async<'a>(
+        self_: PyRef<'a, Self>,
+        query: String,
+        default_namespace_path: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
+        future_into_py(self_.py(), async move {
+            let operation = inner
+                .execute_query_async(query)
+                .default_namespace_path(default_namespace_path);
+            operation
+                .execute()
+                .await
+                .map(crate::sql::Query::new)
+                .infer_error()
+        })
+    }
+
+    pub fn describe_query<'a>(
+        self_: PyRef<'a, Self>,
+        query_id: uuid::Uuid,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .describe_query(query_id)
+                .await
+                .map(crate::sql::QueryDescription::from)
+                .infer_error()
+        })
     }
 
     #[pyo3(signature = ())]
@@ -333,7 +381,7 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None))]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -341,6 +389,7 @@ impl Connection {
         projections: Option<Vec<(String, String)>>,
         filter: Option<String>,
         limit: Option<u64>,
+        with_no_data: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
@@ -354,8 +403,38 @@ impl Connection {
             if let Some(limit) = limit {
                 builder = builder.limit(limit);
             }
-            let view = builder.execute().await.infer_error()?;
+            builder = builder.with_no_data(with_no_data);
+            let view = Box::pin(builder.execute()).await.infer_error()?;
             Ok(Table::new(view.table().clone()))
+        })
+    }
+
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    pub fn create_materialized_view_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        source: String,
+        projections: Option<Vec<(String, String)>>,
+        filter: Option<String>,
+        limit: Option<u64>,
+        with_no_data: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.create_materialized_view(name, source);
+            if let Some(projections) = projections {
+                builder = builder.select(projections);
+            }
+            if let Some(filter) = filter {
+                builder = builder.only_if(filter);
+            }
+            if let Some(limit) = limit {
+                builder = builder.limit(limit);
+            }
+            let job = Box::pin(builder.with_no_data(with_no_data).execute_async())
+                .await
+                .infer_error()?;
+            Ok(crate::job::Job::new(job))
         })
     }
 
@@ -363,7 +442,40 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let views = inner.list_materialized_views().await.infer_error()?;
-            Ok(views.into_iter().map(|view| view.name).collect::<Vec<_>>())
+            Ok(views)
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_materialized_view(name, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_materialized_view_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_materialized_view_async(name, &namespace_path)
+                .await
+                .infer_error()
+                .map(crate::job::Job::new)
         })
     }
 
@@ -592,9 +704,12 @@ impl Connection {
         })
     }
 
-    pub fn job(&self, job_id: String) -> PyResult<crate::job::Job> {
-        let inner = self.get_inner()?.clone();
-        Ok(crate::job::Job::new(inner.job(job_id).infer_error()?))
+    pub fn open_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let job = inner.open_job(&job_id).await.infer_error()?;
+            Ok(crate::job::Job::new(job))
+        })
     }
 
     pub fn create_function_async(
@@ -629,6 +744,109 @@ impl Connection {
         })
     }
 
+    pub fn list_functions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .list_functions()
+                .await
+                .infer_error()?
+                .into_iter()
+                .map(|function| function.to_canonical_json().infer_error())
+                .collect::<PyResult<Vec<_>>>()
+        })
+    }
+
+    pub fn drop_function(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.drop_function(name, version).await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, value, namespace_path=None))]
+    pub fn create_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        value: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .create_secret(name, value, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, value, namespace_path=None))]
+    pub fn alter_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        value: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .alter_secret(name, value, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (namespace_path=None))]
+    pub fn list_secrets(
+        self_: PyRef<'_, Self>,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner.list_secrets(&namespace_path).await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner.drop_secret(name, &namespace_path).await.infer_error()
+        })
+    }
+
+    /// Name and timestamps as a plain tuple. `SecretInfo` carries no value, so
+    /// there is none to filter out here. Timestamps stay integers rather than
+    /// going through a string, so the caller can compare two without parsing.
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            let info = inner
+                .describe_secret(name, &namespace_path)
+                .await
+                .infer_error()?;
+            Ok((info.name, info.created_at_millis, info.updated_at_millis))
+        })
+    }
+
     pub fn list_jobs(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
@@ -640,42 +858,16 @@ impl Connection {
         })
     }
 
-    pub fn get_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            let description = inner.get_job(&job_id).await.infer_error()?;
-            Ok(description.map(crate::job::JobDescription::from))
-        })
-    }
-
     pub fn cancel_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             inner.cancel_job(&job_id).await.infer_error()
         })
     }
-
-    #[pyo3(signature = (job_id=None))]
-    pub fn job_history(
-        self_: PyRef<'_, Self>,
-        job_id: Option<String>,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            let batches = inner.job_history(job_id.as_deref()).await.infer_error()?;
-            Python::attach(|py| {
-                let list = PyList::empty(py);
-                for batch in batches {
-                    list.append(batch.to_pyarrow(py)?)?;
-                }
-                Ok(list.unbind())
-            })
-        })
-    }
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None))]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, sql_host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python<'_>,
@@ -683,6 +875,7 @@ pub fn connect(
     api_key: Option<String>,
     region: Option<String>,
     host_override: Option<String>,
+    sql_host_override: Option<String>,
     read_consistency_interval: Option<f64>,
     client_config: Option<PyClientConfig>,
     storage_options: Option<HashMap<String, String>>,
@@ -702,6 +895,12 @@ pub fn connect(
         if let Some(host_override) = host_override {
             builder = builder.host_override(&host_override);
         }
+        #[cfg(feature = "remote")]
+        if let Some(sql_host_override) = sql_host_override {
+            builder = builder.sql_host_override(&sql_host_override);
+        }
+        #[cfg(not(feature = "remote"))]
+        let _ = sql_host_override;
         if let Some(read_consistency_interval) = read_consistency_interval {
             let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
             builder = builder.read_consistency_interval(read_consistency_interval);

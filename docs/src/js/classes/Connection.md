@@ -180,13 +180,13 @@ abstract createMaterializedView(
 
 Define a materialized view named `name` over the table `source`.
 
-The view is created empty, with the query recorded in its schema
-metadata; `view.refresh()` computes the rows. The view is a normal
-table: it can be queried, indexed and searched, and it appears in
-`tableNames`. The source table must have stable row ids (create it with
+The view is populated before creation returns. Set `withNoData` to create
+only its definition and empty backing table. The view is a normal table:
+it can be queried, indexed and searched, and it appears in `tableNames`.
+The source table must have stable row ids (create it with
 the `newTableEnableStableRowIds` storage option); they keep the view's
 provenance valid across source compactions and cannot be enabled after
-a table exists. Local databases only.
+a table exists.
 
 #### Parameters
 
@@ -201,6 +201,8 @@ a table exists. Local databases only.
 * **options.select?**: [`MaterializedViewSelect`](../type-aliases/MaterializedViewSelect.md)
 
 * **options.where?**: `string`
+
+* **options.withNoData?**: `boolean`
 
 #### Returns
 
@@ -373,6 +375,54 @@ Drop all tables in the database.
 
 ***
 
+### dropMaterializedView()
+
+```ts
+abstract dropMaterializedView(name, namespacePath?): Promise<void>
+```
+
+Drop the materialized view named `name`.
+
+The view may become unavailable before physical cleanup finishes. Use
+[dropMaterializedViewAsync](Connection.md#dropmaterializedviewasync) to retain and wait for the cleanup job.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### dropMaterializedViewAsync()
+
+```ts
+abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping the materialized view named `name` and return its cleanup
+job without waiting for completion.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### dropNamespace()
 
 ```ts
@@ -448,26 +498,6 @@ on the returned job to know when cleanup has finished.
 
 ***
 
-### getJob()
-
-```ts
-abstract getJob(jobId): Promise<null | JobDescription>
-```
-
-Describe a single server-side job by id.
-
-Resolves to `null` when the server has no such job.
-
-#### Parameters
-
-* **jobId**: `string`
-
-#### Returns
-
-`Promise`&lt;`null` \| [`JobDescription`](../interfaces/JobDescription.md)&gt;
-
-***
-
 ### isOpen()
 
 ```ts
@@ -479,48 +509,6 @@ Return true if the connection has not been closed
 #### Returns
 
 `boolean`
-
-***
-
-### job()
-
-```ts
-abstract job(jobId): Job
-```
-
-A [Job](Job.md) handle for a server-side job by id.
-
-The handle is constructed without a server round trip; an unknown id
-surfaces when the handle is used. Dropping the handle has no effect on
-the job itself.
-
-#### Parameters
-
-* **jobId**: `string`
-
-#### Returns
-
-[`Job`](Job.md)
-
-***
-
-### jobHistory()
-
-```ts
-abstract jobHistory(jobId?): Promise<Table<any>>
-```
-
-The lifecycle event history of a server-side job, as an Arrow table.
-
-Lists history across all jobs when `jobId` is omitted.
-
-#### Parameters
-
-* **jobId?**: `string`
-
-#### Returns
-
-`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 ***
 
@@ -645,6 +633,30 @@ List a page of the tables in this database.
 
 A page of table names and an
   optional token for the tables after it.
+
+***
+
+### openJob()
+
+```ts
+abstract openJob(jobId): Promise<Job>
+```
+
+Open a server-side job by id, returning a handle with its record already
+populated. Rejects when the server has no such job, the way
+[Connection.openTable](Connection.md#opentable) does for a missing table.
+
+The returned [Job](Job.md) answers for its own state, specification,
+result, failure and event history, so there is no separate
+connection-level call for any of them.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 

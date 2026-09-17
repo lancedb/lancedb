@@ -22,7 +22,11 @@ from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector
 from .job import AsyncJob, Job
+from .sql import AsyncQuery as AsyncSqlQuery
+from .sql import Query as SqlQuery
+from .sql import QueryDescription
 from .functions import (
+    AssignmentMapping as AssignmentMapping,
     FunctionArtifactRequest as FunctionArtifactRequest,
     FunctionApplication as FunctionApplication,
     FunctionBinding as FunctionBinding,
@@ -33,6 +37,8 @@ from .functions import (
     UdfDefinition as UdfDefinition,
     udf as udf,
 )
+from .secrets import EnvVarSecret as EnvVarSecret
+from .secrets import SecretInfo as SecretInfo
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
@@ -46,6 +52,14 @@ from .namespace import (
     connect_namespace_async,
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
+)
+
+from .catalog import (
+    AsyncCatalog,
+    Catalog,
+    ListDatabasesResponse,
+    connect_catalog,
+    connect_catalog_async,
 )
 
 
@@ -101,6 +115,7 @@ def connect(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
@@ -129,6 +144,9 @@ def connect(
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
+    sql_host_override: str, optional
+        The remote SQL service endpoint override. The client connects lazily when SQL
+        is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
@@ -270,6 +288,7 @@ def connect(
             api_key,
             region,
             host_override,
+            sql_host_override=sql_host_override,
             # TODO: remove this (deprecation warning downstream)
             request_thread_pool=request_thread_pool,
             client_config=client_config,
@@ -412,6 +431,7 @@ def deserialize_conn(
             parsed["api_key"],
             parsed.get("region", "us-east-1"),
             host_override=parsed.get("host_override"),
+            sql_host_override=parsed.get("sql_host_override"),
             client_config=parsed.get("client_config"),
             storage_options=storage_options,
         )
@@ -425,6 +445,7 @@ async def connect_async(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]] = None,
     storage_options: Optional[Dict[str, str]] = None,
@@ -447,6 +468,9 @@ async def connect_async(
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
+    sql_host_override: str, optional
+        The remote SQL service endpoint override. The client connects lazily when SQL
+        is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
@@ -534,6 +558,7 @@ async def connect_async(
             api_key,
             region,
             host_override,
+            sql_host_override,
             read_consistency_interval_secs,
             client_config,
             storage_options,
@@ -546,6 +571,11 @@ async def connect_async(
 
 
 __all__ = [
+    "Catalog",
+    "AsyncCatalog",
+    "ListDatabasesResponse",
+    "connect_catalog",
+    "connect_catalog_async",
     "AsyncMaterializedView",
     "MaterializedView",
     "MaterializedViewDefinition",
@@ -556,6 +586,7 @@ __all__ = [
     "connect_namespace_async",
     "AsyncConnection",
     "AsyncJob",
+    "AsyncSqlQuery",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
     "CompactionOptions",
@@ -571,6 +602,8 @@ __all__ = [
     "vector",
     "DBConnection",
     "Job",
+    "QueryDescription",
+    "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
     "LsmWriteSpec",

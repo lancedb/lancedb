@@ -4,7 +4,7 @@
 """Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
-environment bake, and execution are owned by Sophon.
+environment bake, secret resolution, and execution are owned by Sophon.
 ``RefreshColumnResult`` is also the backend-neutral result of a local
 expression-backed refresh job.
 """
@@ -25,7 +25,7 @@ import re
 import sys
 import textwrap
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import (
     Annotated,
@@ -41,6 +41,7 @@ from typing import (
 
 import pyarrow as pa
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -49,9 +50,24 @@ from pydantic import (
     model_validator,
 )
 
+from .schema import is_blob_v2_field as _is_blob_v2_field
+from .secrets import EnvVarSecret
+
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
 _UInt64 = conint(strict=True, ge=0, le=2**64 - 1)
+
+
+def _validate_gpu_wire_marker(value: Any) -> bool:
+    if value is not True:
+        raise ValueError("runtime.gpu must be true")
+    return True
+
+
+def _normalize_gpu_marker(value: bool) -> Optional[bool]:
+    if not isinstance(value, bool):
+        raise ValueError("gpu must be a boolean")
+    return True if value else None
 
 
 class _FrozenDict(dict):
@@ -212,6 +228,33 @@ class FunctionOutput(_OpenRemoteValue):
     fields: tuple[FunctionResultField, ...] = ()
 
 
+class SecretReference(_RemoteValue):
+    """Where a Secret lives, carried as its parts rather than as one string.
+
+    A joined id would need a delimiter, and a delimiter has to be excluded from
+    every name and segment forever, agreed on by both sides, and re-agreed each
+    time either grows a new way to be configured. Naming the parts settles all
+    of that: nothing here is parsed, so nothing can parse two ways.
+    """
+
+    name: str
+    namespace_path: tuple[str, ...] = ()
+
+
+class SecretBinding(_RemoteValue):
+    """How a Secret reaches the Function that binds it.
+
+    One list rather than a field per delivery mode: a binding is the concept,
+    and how it arrives is a property of one. ``kind`` is open, so a binding a
+    newer service introduces decodes here instead of failing the whole
+    FunctionVersion.
+    """
+
+    kind: str
+    variable: Optional[str] = None
+    secret_ref: Optional[SecretReference] = None
+
+
 class FunctionSignature(_RemoteValue):
     inputs: tuple[FunctionParameter, ...]
     output: FunctionOutput
@@ -239,6 +282,23 @@ class PythonRuntimeSpec(_RemoteValue):
     python_version: Optional[str] = None
     environment: Optional[PythonEnvironmentSpec] = None
     env: Optional[Mapping[str, str]] = None
+    gpu: Optional[bool] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_unknown_runtime_payload(cls, value):
+        if isinstance(value, Mapping):
+            kind = value.get("kind")
+            if isinstance(kind, str) and kind not in {"python", "python_v2"}:
+                return {"kind": kind}
+        return value
+
+    @field_validator("gpu", mode="before")
+    @classmethod
+    def _validate_gpu_marker(cls, value):
+        if value is None:
+            return None
+        return _validate_gpu_wire_marker(value)
 
     @model_validator(mode="after")
     def _validate_runtime_kind(self):
@@ -247,28 +307,57 @@ class PythonRuntimeSpec(_RemoteValue):
                 raise ValueError("python runtime requires python_version")
             if self.environment is None:
                 raise ValueError("python runtime requires environment")
+            if self.gpu is not None:
+                raise ValueError("python runtime with gpu requires kind='python_v2'")
+        elif self.kind == "python_v2":
+            if self.python_version is None:
+                raise ValueError("python_v2 runtime requires python_version")
+            if self.environment is None:
+                raise ValueError("python_v2 runtime requires environment")
+            if self.gpu is None:
+                raise ValueError("python_v2 runtime requires gpu")
         else:
             object.__setattr__(self, "python_version", None)
             object.__setattr__(self, "environment", None)
             object.__setattr__(self, "env", None)
+            object.__setattr__(self, "gpu", None)
         return self
 
 
-class FunctionVersion(_RemoteValue):
-    """An exact immutable Function version returned by Enterprise.
+class FunctionImage(_RemoteValue):
+    """A complete OCI Function image identified by its exact manifest digest."""
 
-    Scheduling resources, priority, concurrency, and retry policy belong to
-    the submitting Job and are not part of this identity.
-    """
+    manifest_digest: str
+    descriptor: Mapping[str, Any]
+    source: bool
+
+
+def _validate_object_version(value: str) -> str:
+    if int(value) > 2**64 - 1:
+        raise ValueError("Function version exceeds uint64")
+    return value
+
+
+_ObjectVersion = Annotated[
+    str,
+    Field(strict=True, pattern=r"^[1-9][0-9]*$"),
+    AfterValidator(_validate_object_version),
+]
+
+
+class FunctionVersion(_RemoteValue):
+    """A pinned object revision, independent of its executable image digest."""
 
     name: str
-    version: str
-    artifact: FunctionArtifact
+    object_id: str
+    location: str
+    version: _ObjectVersion
+    image: FunctionImage
     signature: FunctionSignature
-    runtime: PythonRuntimeSpec
-    runtime_digest: str
-    environment_digest: str
+    secret_bindings: tuple[SecretBinding, ...] = ()
     created_at: str
+    metadata: Mapping[str, str]
+    disabled: bool
 
     def __call__(self, **inputs: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.
@@ -322,24 +411,39 @@ class FunctionVersion(_RemoteValue):
                 )
             )
         return FunctionApplication(
-            function=FunctionVersionRef(name=self.name, version=self.version),
+            function=FunctionVersionRef(
+                name=self.name,
+                object_id=self.object_id,
+                location=self.location,
+                version=self.version,
+                manifest_digest=self.image.manifest_digest,
+            ),
             inputs=tuple(bindings),
             output=self.signature.output,
         )
 
 
 class FunctionRegistrationRequest(_RemoteValue):
-    """Stable remote registration envelope produced by :func:`udf`."""
+    """Stable remote registration envelope produced by :func:`udf`.
+
+    Credential values deliberately have no field here. The only secret-shaped
+    thing a client sends is ``secret_bindings``: the name of a Secret the
+    database already holds, which the remote service resolves at execution.
+    """
 
     name: str
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
+    secret_bindings: tuple[SecretBinding, ...] = ()
 
 
 class FunctionVersionRef(_OpenRemoteValue):
     name: str
-    version: str
+    object_id: str
+    location: str
+    version: _ObjectVersion
+    manifest_digest: str
 
 
 class ApplicationInput(_OpenRemoteValue):
@@ -429,11 +533,7 @@ class InputBinding(_RemoteValue):
 
 
 class OutputMapping(_RemoteValue):
-    """One stable result-field mapping.
-
-    Assignment state is outside the Slice 1 client contract. During the NULL
-    transition Lance exposes no public cell-flag identifier to persist here.
-    """
+    """One stable result-field mapping."""
 
     result_field: str
     output_name: str
@@ -443,6 +543,13 @@ class OutputMapping(_RemoteValue):
     nullable: bool
 
 
+class AssignmentMapping(_RemoteValue):
+    """Internal physical column preserving flattened struct validity."""
+
+    output_name: str
+    output_field_id: _Int32
+
+
 class FunctionBinding(_RemoteValue):
     """Immutable Function binding persisted by the Enterprise table service."""
 
@@ -450,6 +557,7 @@ class FunctionBinding(_RemoteValue):
     function: FunctionVersionRef
     inputs: tuple[InputBinding, ...]
     outputs: tuple[OutputMapping, ...]
+    assignment: Optional[AssignmentMapping] = None
     input_schema: Optional[Mapping[str, Any]] = None
     output_schema: Optional[Mapping[str, Any]] = None
 
@@ -480,6 +588,14 @@ class RefreshColumnResult(_RemoteValue):
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
+_FUNCTION_BLOB_V2_TYPE = "blob_v2"
+_ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
+_BLOB_V2_EXTENSION_NAME = "lance.blob.v2"
+_NESTED_BLOB_COLLECTION_ERROR = (
+    "unsupported Arrow type for Function signature: Blob v2 fields nested under "
+    "collection types are not supported"
+)
+
 
 _GRAMMAR_PRIMITIVES = (
     (pa.bool_(), "bool"),
@@ -495,6 +611,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.float32(), "float32"),
     (pa.float64(), "float64"),
     (pa.string(), "utf8"),
+    (pa.large_string(), "large_utf8"),
     (pa.binary(), "binary"),
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
@@ -502,31 +619,258 @@ _GRAMMAR_PRIMITIVES = (
 
 
 def _canonical_arrow_type(data_type: pa.DataType) -> str:
-    """The server's V1 Function type grammar. Anything outside it is rejected
-    here rather than at registration."""
+    """The compact Function grammar, or canonical exact JSON for nested types."""
+    grammar = _grammar_arrow_type(data_type)
+    if grammar is not None:
+        return grammar
+    exact = _exact_arrow_type(data_type)
+    return json.dumps(exact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _grammar_arrow_type(data_type: pa.DataType) -> Optional[str]:
     for candidate, name in _GRAMMAR_PRIMITIVES:
         if data_type == candidate:
             return name
     if pa.types.is_list(data_type) or pa.types.is_large_list(data_type):
+        item = _grammar_list_item(data_type)
+        if item is None:
+            return None
         prefix = "list" if pa.types.is_list(data_type) else "large_list"
-        return f"{prefix}<{_canonical_list_item(data_type)}>"
+        return f"{prefix}<{item}>"
     if pa.types.is_fixed_size_list(data_type) and data_type.list_size > 0:
-        return (
-            f"fixed_size_list<{_canonical_list_item(data_type)}, {data_type.list_size}>"
-        )
-    raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
+        item = _grammar_list_item(data_type)
+        if item is not None:
+            return f"fixed_size_list<{item}, {data_type.list_size}>"
+    return None
 
 
-def _canonical_list_item(data_type: pa.DataType) -> str:
+def _grammar_list_item(data_type: pa.DataType) -> Optional[str]:
     """The grammar names only the item type; it always means a non-nullable
-    child called `item`, so any other child metadata cannot be represented."""
+    child called `item`, so other child properties require exact JSON."""
     child = data_type.value_field
     if child.name != "item" or child.nullable or child.metadata:
+        return None
+    return _grammar_arrow_type(child.type)
+
+
+def _validate_exact_arrow_field(field: pa.Field) -> None:
+    if not field.name:
         raise TypeError(
-            "unsupported Arrow type for Function signature: list items must be a "
-            f"non-nullable field named 'item', got {child}"
+            "unsupported Arrow type for Function signature: field names "
+            "must not be empty"
         )
-    return _canonical_arrow_type(child.type)
+    if _is_blob_v2_field(field):
+        if not _has_supported_blob_v2_layout(field):
+            raise TypeError(
+                "unsupported Arrow type for Function signature: lance.blob.v2 "
+                f"requires a supported Blob storage layout, got {field}"
+            )
+        metadata = {
+            (key.decode() if isinstance(key, bytes) else key): (
+                value.decode() if isinstance(value, bytes) else value
+            )
+            for key, value in (field.metadata or {}).items()
+        }
+        if metadata and metadata != {
+            _ARROW_EXTENSION_NAME_KEY: _BLOB_V2_EXTENSION_NAME
+        }:
+            raise TypeError(
+                "unsupported Arrow type for Function signature: lance.blob.v2 "
+                "field metadata must contain only its canonical extension marker"
+            )
+    elif field.metadata:
+        raise TypeError(
+            "unsupported Arrow type for Function signature: field metadata "
+            f"is not supported, got {field}"
+        )
+
+
+def _has_supported_blob_v2_layout(field: pa.Field) -> bool:
+    data_type = field.type
+    if isinstance(data_type, pa.ExtensionType):
+        data_type = data_type.storage_type
+    if not pa.types.is_struct(data_type):
+        return False
+
+    fields = tuple(data_type)
+
+    def matches(spec, compare_nullable) -> bool:
+        return len(fields) == len(spec) and all(
+            actual.name == name
+            and actual.type == expected_type
+            and (not check_nullable or actual.nullable == nullable)
+            for actual, (name, expected_type, nullable), check_nullable in zip(
+                fields, spec, compare_nullable
+            )
+        )
+
+    logical_minimal = (
+        ("data", pa.large_binary(), True),
+        ("uri", pa.utf8(), True),
+    )
+    logical_full = logical_minimal + (
+        ("position", pa.uint64(), True),
+        ("size", pa.uint64(), True),
+    )
+    prepared = (
+        ("kind", pa.uint8(), True),
+        ("data", pa.large_binary(), True),
+        ("uri", pa.utf8(), True),
+        ("blob_id", pa.uint32(), True),
+        ("blob_size", pa.uint64(), True),
+        ("position", pa.uint64(), True),
+    )
+    descriptor = (
+        ("kind", pa.uint8(), False),
+        ("position", pa.uint64(), False),
+        ("size", pa.uint64(), False),
+        ("blob_id", pa.uint32(), False),
+        ("blob_uri", pa.utf8(), False),
+    )
+    return (
+        matches(logical_minimal, (True, True))
+        or matches(logical_full, (True, True, False, False))
+        or matches(prepared, (True,) * len(prepared))
+        or matches(descriptor, (False,) * len(descriptor))
+    )
+
+
+def _canonical_arrow_field(field: pa.Field) -> str:
+    _validate_exact_arrow_field(field)
+    if _is_blob_v2_field(field):
+        return _FUNCTION_BLOB_V2_TYPE
+    return _canonical_arrow_type(field.type)
+
+
+def _blob_storage_type(field: pa.Field) -> pa.DataType:
+    data_type = field.type
+    if isinstance(data_type, pa.ExtensionType):
+        return data_type.storage_type
+    return data_type
+
+
+def _exact_blob_storage_type(field: pa.Field) -> dict[str, Any]:
+    storage = _blob_storage_type(field)
+    if not pa.types.is_struct(storage):
+        raise TypeError(
+            "unsupported Arrow type for Function signature: lance.blob.v2 "
+            "requires struct storage"
+        )
+    return {
+        "type": "struct",
+        "fields": [
+            {
+                "name": child.name,
+                "nullable": child.nullable,
+                "type": (
+                    {"type": "large_binary"}
+                    if pa.types.is_large_binary(child.type)
+                    else _exact_arrow_type(child.type)
+                ),
+            }
+            for child in storage
+        ],
+    }
+
+
+def _data_type_has_blob_v2(data_type: pa.DataType) -> bool:
+    if pa.types.is_struct(data_type):
+        return any(
+            _is_blob_v2_field(field) or _data_type_has_blob_v2(field.type)
+            for field in data_type
+        )
+    if (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    ):
+        field = data_type.value_field
+        return _is_blob_v2_field(field) or _data_type_has_blob_v2(field.type)
+    if pa.types.is_map(data_type):
+        return any(
+            _is_blob_v2_field(field) or _data_type_has_blob_v2(field.type)
+            for field in (data_type.key_field, data_type.item_field)
+        )
+    return False
+
+
+def _exact_arrow_field(
+    field: pa.Field, *, inside_collection: bool = False
+) -> dict[str, Any]:
+    _validate_exact_arrow_field(field)
+    if _is_blob_v2_field(field):
+        if inside_collection:
+            raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+        return {
+            "name": field.name,
+            "nullable": field.nullable,
+            "type": _exact_blob_storage_type(field),
+            "metadata": {
+                _ARROW_EXTENSION_NAME_KEY: _BLOB_V2_EXTENSION_NAME,
+            },
+        }
+    value = {
+        "name": field.name,
+        "nullable": field.nullable,
+        "type": _exact_arrow_type(field.type, inside_collection=inside_collection),
+    }
+    return value
+
+
+def _exact_arrow_type(
+    data_type: pa.DataType, *, inside_collection: bool = False
+) -> dict[str, Any]:
+    for candidate, name in _GRAMMAR_PRIMITIVES:
+        if data_type == candidate:
+            return {"type": name}
+    if pa.types.is_struct(data_type):
+        fields = list(data_type)
+        names = [field.name for field in fields]
+        if not fields or len(set(names)) != len(names):
+            raise TypeError(
+                "unsupported Arrow type for Function signature: structs must have "
+                "non-empty, uniquely named fields"
+            )
+        return {
+            "type": "struct",
+            "fields": [
+                _exact_arrow_field(field, inside_collection=inside_collection)
+                for field in fields
+            ],
+        }
+    if (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    ):
+        if pa.types.is_fixed_size_list(data_type):
+            if data_type.value_field.name != "item":
+                raise TypeError(
+                    "unsupported Arrow type for Function signature: fixed-size list "
+                    "items must be named 'item'"
+                )
+            if data_type.list_size <= 0:
+                raise TypeError(
+                    f"unsupported Arrow type for Function signature: {data_type}"
+                )
+        value: dict[str, Any] = {
+            "type": (
+                "list"
+                if pa.types.is_list(data_type)
+                else "large_list"
+                if pa.types.is_large_list(data_type)
+                else "fixed_size_list"
+            ),
+            "fields": [
+                _exact_arrow_field(data_type.value_field, inside_collection=True)
+            ],
+        }
+        if pa.types.is_fixed_size_list(data_type):
+            value["length"] = data_type.list_size
+        return value
+    if pa.types.is_map(data_type) and _data_type_has_blob_v2(data_type):
+        raise TypeError(_NESTED_BLOB_COLLECTION_ERROR)
+    raise TypeError(f"unsupported Arrow type for Function signature: {data_type}")
 
 
 def _list_of(item: pa.DataType) -> pa.DataType:
@@ -600,8 +944,15 @@ def _callable_parameters(function: Callable[..., Any]) -> tuple[inspect.Paramete
 
 def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutput:
     if isinstance(output, pa.Schema):
+        if output.metadata:
+            raise TypeError("Function output schema metadata is not supported")
         fields = tuple(output)
-    elif isinstance(output, pa.Field) and pa.types.is_struct(output.type):
+    elif (
+        isinstance(output, pa.Field)
+        and not _is_blob_v2_field(output)
+        and pa.types.is_struct(output.type)
+    ):
+        _validate_exact_arrow_field(output)
         if output.nullable:
             raise ValueError("Function output must be non-nullable")
         fields = tuple(output.type)
@@ -617,18 +968,19 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
             raise TypeError(
                 "output_schema must be a PyArrow DataType, Field, or Schema"
             )
+        _validate_exact_arrow_field(field)
         if field.nullable:
             raise ValueError("Function output must be non-nullable")
         return FunctionOutput(
             kind="scalar",
-            arrow_type=_canonical_arrow_type(field.type),
+            arrow_type=_canonical_arrow_field(field),
             nullable=False,
         )
 
     if not fields:
         raise ValueError("named-struct Function output must contain at least one field")
-    if any(field.nullable for field in fields):
-        raise ValueError("Function output fields must be non-nullable")
+    for field in fields:
+        _validate_exact_arrow_field(field)
     names = [field.name for field in fields]
     if len(set(names)) != len(names):
         raise ValueError("Function output field names must be unique")
@@ -637,8 +989,8 @@ def _function_output(output: pa.DataType | pa.Field | pa.Schema) -> FunctionOutp
         fields=tuple(
             FunctionResultField(
                 name=field.name,
-                arrow_type=_canonical_arrow_type(field.type),
-                nullable=False,
+                arrow_type=_canonical_arrow_field(field),
+                nullable=field.nullable,
             )
             for field in fields
         ),
@@ -657,6 +1009,10 @@ def _infer_signature(
     if input_schema is not None:
         if not isinstance(input_schema, pa.Schema):
             raise TypeError("input_schema must be a PyArrow Schema")
+        if input_schema.metadata:
+            raise TypeError("Function input schema metadata is not supported")
+        for field in input_schema:
+            _validate_exact_arrow_field(field)
         expected = tuple(parameter.name for parameter in parameters)
         actual = tuple(input_schema.names)
         if actual != expected:
@@ -667,7 +1023,7 @@ def _infer_signature(
         inputs = tuple(
             FunctionParameter(
                 name=field.name,
-                arrow_type=_canonical_arrow_type(field.type),
+                arrow_type=_canonical_arrow_field(field),
                 nullable=field.nullable,
             )
             for field in input_schema
@@ -690,7 +1046,9 @@ def _infer_signature(
         inputs.append(
             FunctionParameter(
                 name=parameter.name,
-                arrow_type=_canonical_arrow_type(data_type),
+                arrow_type=_canonical_arrow_field(
+                    pa.field(parameter.name, data_type, nullable=nullable)
+                ),
                 nullable=nullable,
             )
         )
@@ -910,6 +1268,7 @@ class UdfDefinition:
         pip: tuple[str, ...],
         env: Mapping[str, str],
         python_version: Optional[str],
+        gpu: bool = False,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
     ):
@@ -938,12 +1297,14 @@ class UdfDefinition:
         signature = _infer_signature(function, input_schema, output_schema)
         source = _package_source(function)
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
+        gpu_marker = _normalize_gpu_marker(gpu)
         runtime = PythonRuntimeSpec(
-            kind="python",
+            kind="python_v2" if gpu_marker is not None else "python",
             python_version=python_version
             or f"{sys.version_info.major}.{sys.version_info.minor}",
             environment=environment_spec,
             env=environment,
+            gpu=gpu_marker,
         )
         self._function = function
         self._request = FunctionRegistrationRequest(
@@ -968,8 +1329,72 @@ class UdfDefinition:
 
     @property
     def registration_request(self) -> FunctionRegistrationRequest:
-        """The immutable request sent by ``create_function_async``."""
+        """The immutable request sent by ``create_function_async``.
+
+        Carries no secret bindings. Binding is a registration-time decision,
+        so a Function bound to Secrets is registered through :meth:`bind_secrets`,
+        which is what ``create_function`` calls.
+        """
         return self._request
+
+    def bind_secrets(
+        self, secrets: Optional[Sequence[EnvVarSecret]]
+    ) -> FunctionRegistrationRequest:
+        """The registration request for this definition bound to ``secrets``.
+
+        Binding does not change the Function's source: each
+        [EnvVarSecret][lancedb.secrets.EnvVarSecret] names a Secret and the
+        environment variable its value should arrive in, and the Function reads
+        that variable the way it already did. Whether the named Secrets exist is
+        the server's answer, not this one.
+        """
+        bindings = () if secrets is None else tuple(secrets)
+        wrong_type = [
+            binding for binding in bindings if not isinstance(binding, EnvVarSecret)
+        ]
+        if wrong_type:
+            kinds = sorted({type(binding).__name__ for binding in wrong_type})
+            raise TypeError(
+                f"Function secrets must be EnvVarSecret values, not {kinds!r}; a "
+                "credential value is never sent to this API"
+            )
+        variables = [binding.env_variable for binding in bindings]
+        duplicates = sorted({name for name in variables if variables.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                "a Function binds each environment variable once; duplicated: "
+                f"{duplicates!r}"
+            )
+        # `env` is ordinary configuration carried in the definition, so a name in
+        # both would have a value visible in the Function's record and a value
+        # that is not. Refuse rather than pick.
+        environment = self._request.runtime.env or {}
+        overlap = sorted(set(environment) & set(variables))
+        if overlap:
+            raise ValueError(
+                f"Function env and secret bindings must be disjoint: {overlap!r}"
+            )
+        if not bindings:
+            return self._request
+        # Sorted, because the list is carried in the FunctionVersion hash and a
+        # caller's argument order is not part of what a Function is.
+        resolved = tuple(
+            sorted(
+                (
+                    SecretBinding(
+                        kind="env",
+                        variable=binding.env_variable,
+                        secret_ref=SecretReference(
+                            name=binding.secret_name,
+                            namespace_path=tuple(binding.secret_namespace_path),
+                        ),
+                    )
+                    for binding in bindings
+                ),
+                key=lambda binding: (binding.kind, binding.variable or ""),
+            )
+        )
+        return self._request._copy(update={"secret_bindings": resolved})
 
     def __call__(self, *args, **kwargs):
         return self._function(*args, **kwargs)
@@ -989,6 +1414,7 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
@@ -1003,6 +1429,7 @@ def udf(
     pip: tuple[str, ...] | list[str] = (),
     env: Optional[Mapping[str, str]] = None,
     python_version: Optional[str] = None,
+    gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
 ):
@@ -1010,8 +1437,9 @@ def udf(
 
     Input and output signatures are inferred from supported annotations. For
     Arrow types annotations cannot express precisely, pass ``input_schema``
-    and ``output_schema`` together. Nullable outputs are rejected because V1
-    uses physical NULL to represent unassigned computed-column rows.
+    and ``output_schema`` together. Scalar outputs must be non-nullable. Every
+    named-struct field may be nullable; Enterprise preserves the struct's
+    validity when the result is expanded into sibling columns.
 
     Parameters
     ----------
@@ -1023,8 +1451,8 @@ def udf(
         Explicit input fields in the exact order of the callable parameters.
         Must be provided together with ``output_schema``.
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
-        Explicit scalar or named-struct output. Must be non-nullable and be
-        provided together with ``input_schema``.
+        Explicit scalar or named-struct output. Scalar outputs must be
+        non-nullable. Must be provided together with ``input_schema``.
     pip : sequence of str, optional
         Pip requirements for the remote environment.
     conda : sequence of str, optional
@@ -1032,9 +1460,15 @@ def udf(
     conda_channels : sequence of str, optional
         Conda channels in priority order; requires ``conda``.
     env : mapping of str to str, optional
-        Environment variables included in the Function definition.
+        Environment variables included in the Function definition. Not for
+        credentials -- these are ordinary configuration, stored with the
+        Function and visible wherever it is.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
+    gpu : bool, default False
+        Whether every remote execution requires a GPU. The execution platform
+        selects one compatible GPU for each worker. The requirement is part of
+        the immutable Function version.
 
     The packaged artifact is a snapshot: the function source plus exactly
     the module-level names it references (modules as imports, importable
@@ -1059,6 +1493,11 @@ def udf(
     ...     return value * 2
     >>> score(1.5)
     3.0
+    >>> @udf(pip=["cupy-cuda12x"], gpu=True)
+    ... def gpu_score(value: int) -> int:
+    ...     return value * 2
+    >>> gpu_score.registration_request.runtime.gpu
+    True
     """
 
     def decorate(target: Callable[..., Any]) -> UdfDefinition:
@@ -1070,6 +1509,7 @@ def udf(
             pip=tuple(pip),
             env={} if env is None else env,
             python_version=python_version,
+            gpu=gpu,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
         )
@@ -1080,6 +1520,7 @@ def udf(
 
 
 __all__ = [
+    "AssignmentMapping",
     "ApplicationInput",
     "FunctionApplication",
     "FunctionArtifact",
@@ -1091,6 +1532,7 @@ __all__ = [
     "FunctionRegistrationRequest",
     "FunctionResultField",
     "FunctionSignature",
+    "FunctionImage",
     "FunctionVersion",
     "FunctionVersionRef",
     "InputBinding",

@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
@@ -15,6 +15,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
+use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
@@ -330,6 +331,44 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn blob_columns(&self) -> napi::Result<Vec<String>> {
+        self.inner_ref()?.blob_columns().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn fetch_blobs(
+        &self,
+        column: String,
+        row_ids: Vec<BigInt>,
+    ) -> napi::Result<Vec<Option<Buffer>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let array = self
+            .inner_ref()?
+            .fetch_blobs(column.as_str(), &row_ids)
+            .await
+            .default_error()?;
+        Ok(copy_blob_buffers(array))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn fetch_blob_files(
+        &self,
+        column: String,
+        row_ids: Vec<BigInt>,
+    ) -> napi::Result<Vec<Option<BlobFile>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let files = self
+            .inner_ref()?
+            .fetch_blob_files(column.as_str(), &row_ids)
+            .await
+            .default_error()?;
+        Ok(files
+            .into_iter()
+            .map(|file| file.map(BlobFile::new))
+            .collect())
+    }
+
+    #[napi(catch_unwind)]
     pub fn vector_search(&self, vector: Float32Array) -> napi::Result<VectorQuery> {
         self.query()?.nearest_to(vector)
     }
@@ -406,6 +445,19 @@ impl Table {
         }
         let result = builder.execute().await.default_error()?;
         Ok(result.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn materialized_view_definition(&self) -> napi::Result<String> {
+        let inner = self.inner_ref()?.clone();
+        let view = lancedb::MaterializedView::from_table(inner)
+            .await
+            .default_error()?;
+        serde_json::to_string(view.definition()).map_err(|err| {
+            napi::Error::from_reason(format!(
+                "failed to serialize materialized-view definition: {err}"
+            ))
+        })
     }
 
     #[napi(catch_unwind)]
@@ -638,22 +690,20 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn optimize(
         &self,
-        older_than_ms: Option<i64>,
+        before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
     ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
-        let older_than = if let Some(ms) = older_than_ms {
-            if ms == i64::MIN {
-                return Err(napi::Error::from_reason(format!(
-                    "older_than_ms can not be {}",
-                    i32::MIN,
-                )));
-            }
-            Duration::try_milliseconds(ms)
-        } else {
-            None
-        };
+        let before_timestamp = before_timestamp_ms
+            .map(|ms| {
+                DateTime::from_timestamp_millis(ms).ok_or_else(|| {
+                    napi::Error::from_reason(format!(
+                        "cleanupOlderThan timestamp is out of range: {ms}"
+                    ))
+                })
+            })
+            .transpose()?;
 
         let compaction_stats = inner
             .optimize(OptimizeAction::Compact {
@@ -664,16 +714,22 @@ impl Table {
             .default_error()?
             .compaction
             .unwrap();
-        let prune_stats = inner
-            .optimize(OptimizeAction::Prune {
-                older_than,
-                delete_unverified,
-                error_if_tagged_old_versions: None,
-            })
-            .await
-            .default_error()?
-            .prune
-            .unwrap();
+        let prune_stats = if let Some(before_timestamp) = before_timestamp {
+            inner
+                .optimize_prune_before(before_timestamp, delete_unverified, None)
+                .await
+        } else {
+            inner
+                .optimize(OptimizeAction::Prune {
+                    older_than: None,
+                    delete_unverified,
+                    error_if_tagged_old_versions: None,
+                })
+                .await
+        }
+        .default_error()?
+        .prune
+        .unwrap();
         inner
             .optimize(lancedb::table::OptimizeAction::Index(
                 OptimizeOptions::default(),

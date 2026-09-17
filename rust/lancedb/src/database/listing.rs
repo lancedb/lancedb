@@ -18,7 +18,7 @@ use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
 
-use crate::blob::{ensure_blob_storage_version, has_blob_columns};
+use crate::blob::ensure_blob_storage_version;
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
@@ -512,7 +512,7 @@ impl ListingDatabase {
                 // iter thru the query params and extract the commit store param
                 let mut engine = None;
                 let mut mirrored_store = None;
-                let mut filtered_querys = vec![];
+                let mut filtered_queries = vec![];
 
                 // WARNING: specifying engine is NOT a publicly supported feature in lancedb yet
                 // THE API WILL CHANGE
@@ -528,13 +528,13 @@ impl ListingDatabase {
                         mirrored_store = Some(value.to_string());
                     } else {
                         // to owned so we can modify the url
-                        filtered_querys.push((key.to_string(), value.to_string()));
+                        filtered_queries.push((key.to_string(), value.to_string()));
                     }
                 }
 
                 // Filter out the commit store query param -- it's a lancedb param
                 url.query_pairs_mut().clear();
-                url.query_pairs_mut().extend_pairs(filtered_querys);
+                url.query_pairs_mut().extend_pairs(filtered_queries);
                 // Take a copy of the query string so we can propagate it to lance.
                 // `query_pairs_mut()` leaves the URL with `Some("")` even when no
                 // pairs survive (or none existed in the first place), so an empty
@@ -827,7 +827,6 @@ impl ListingDatabase {
         if let Some(enable_stable_row_ids) = overrides
             .enable_stable_row_ids
             .or(self.new_table_config.enable_stable_row_ids)
-            .or(has_blob_columns(&data_schema).then_some(true))
         {
             write_params.enable_stable_row_ids = enable_stable_row_ids;
         }
@@ -897,11 +896,11 @@ impl Database for ListingDatabase {
     }
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
-        if let Some(read_consistency_inverval) = self.read_consistency_interval {
-            if read_consistency_inverval.is_zero() {
+        if let Some(interval) = self.read_consistency_interval {
+            if interval.is_zero() {
                 Ok(ReadConsistency::Strong)
             } else {
-                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+                Ok(ReadConsistency::Eventual(interval))
             }
         } else {
             Ok(ReadConsistency::Manual)
@@ -1034,10 +1033,10 @@ impl Database for ListingDatabase {
             return self.namespace_database().create_table(request).await;
         }
         // Use provided location if available, otherwise derive from table name
-        let table_uri = request
-            .location
-            .clone()
-            .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
+        let table_uri = match request.location.clone() {
+            Some(location) => location,
+            None => self.table_uri(&request.name)?,
+        };
 
         let mut write_params = request
             .write_options
@@ -1150,10 +1149,10 @@ impl Database for ListingDatabase {
             return self.namespace_database().open_table(request).await;
         }
         // Use provided location if available, otherwise derive from table name
-        let table_uri = request
-            .location
-            .clone()
-            .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
+        let table_uri = match request.location.clone() {
+            Some(location) => location,
+            None => self.table_uri(&request.name)?,
+        };
 
         // Only modify the storage options if we actually have something to
         // inherit. There is a difference between storage_options=None and
@@ -1695,6 +1694,64 @@ mod tests {
             page.tables.is_empty(),
             "invalid empty table name was listed"
         );
+    }
+
+    /// The names a table cannot have. A name is what the database builds the table's
+    /// location out of, so one it cannot build a location from is refused rather than
+    /// turned into some other path.
+    const INVALID_TABLE_NAMES: [&str; 4] = ["", "has space", "bad/name", "a!b"];
+
+    /// Creating a table under an invalid name is an error the caller can handle, not a
+    /// panic: the name comes from the caller, and the bindings turn the error into their
+    /// own (`ValueError` in Python).
+    #[tokio::test]
+    async fn test_create_table_rejects_invalid_names() {
+        let (_tempdir, db) = setup_database().await;
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        for name in INVALID_TABLE_NAMES {
+            let result = db
+                .create_table(CreateTableRequest {
+                    name: name.to_string(),
+                    namespace_path: vec![],
+                    data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+                    mode: CreateTableMode::Create,
+                    write_options: Default::default(),
+                    location: None,
+                    namespace_client: None,
+                })
+                .await;
+
+            assert!(
+                matches!(result, Err(Error::InvalidTableName { .. })),
+                "creating {name:?} did not report an invalid table name"
+            );
+        }
+    }
+
+    /// Opening a table under an invalid name is likewise an error rather than a panic.
+    #[tokio::test]
+    async fn test_open_table_rejects_invalid_names() {
+        let (_tempdir, db) = setup_database().await;
+
+        for name in INVALID_TABLE_NAMES {
+            let result = db
+                .open_table(OpenTableRequest {
+                    name: name.to_string(),
+                    namespace_path: vec![],
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
+                })
+                .await;
+
+            assert!(
+                matches!(result, Err(Error::InvalidTableName { .. })),
+                "opening {name:?} did not report an invalid table name"
+            );
+        }
     }
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
@@ -3044,15 +3101,15 @@ mod tests {
     /// across platforms — see the `file://` test below).
     fn capture_query_like_connect(input_uri: &str) -> Option<String> {
         let mut url = url::Url::parse(input_uri).unwrap();
-        let mut filtered_querys = Vec::new();
+        let mut filtered_queries = Vec::new();
         for (key, value) in url.query_pairs() {
             if key == ENGINE || key == MIRRORED_STORE {
                 continue;
             }
-            filtered_querys.push((key.to_string(), value.to_string()));
+            filtered_queries.push((key.to_string(), value.to_string()));
         }
         url.query_pairs_mut().clear();
-        url.query_pairs_mut().extend_pairs(filtered_querys);
+        url.query_pairs_mut().extend_pairs(filtered_queries);
         url.query().filter(|q| !q.is_empty()).map(|s| s.to_string())
     }
 

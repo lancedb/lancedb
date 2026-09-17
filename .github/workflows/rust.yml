@@ -232,7 +232,10 @@ jobs:
           ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | .features | keys | .[]' \
             | grep -v s3-test | sort | uniq | paste -s -d "," -`
-          cargo test --profile ci --features $ALL_FEATURES --locked
+          # Run doctests before test binaries fill the runner disk. Examples are
+          # already built by the Linux job, so avoid retaining them here.
+          cargo test --profile ci --features $ALL_FEATURES --locked --doc
+          cargo test --profile ci --features $ALL_FEATURES --locked --lib --tests
 
   windows:
     strategy:

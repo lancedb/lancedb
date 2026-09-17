@@ -2,13 +2,24 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+from dataclasses import replace
 from datetime import timedelta
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Union,
+)
 from urllib.parse import urlparse
+from uuid import UUID
 import warnings
 
 if sys.version_info >= (3, 12):
@@ -25,10 +36,13 @@ from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
+from ..sql import Query as SqlQuery
+from ..sql import QueryDescription
 from ..materialized_view import MaterializedView, SelectArg
+from ..secrets import EnvVarSecret, SecretInfo
 
 if TYPE_CHECKING:
-    from .._lancedb import JobDescription, JobInfo
+    from .._lancedb import JobInfo
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
@@ -116,6 +130,7 @@ class RemoteDBConnection(DBConnection):
         read_timeout: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         read_consistency_interval: Optional[timedelta] = None,
+        sql_host_override: Optional[str] = None,
     ):
         """Connect to a remote LanceDB database."""
         if isinstance(client_config, dict):
@@ -161,6 +176,7 @@ class RemoteDBConnection(DBConnection):
         self.api_key = api_key
         self.region = region
         self.host_override = host_override
+        self.sql_host_override = sql_host_override
         self.storage_options = storage_options
         self.db_name = parsed.netloc
 
@@ -175,17 +191,58 @@ class RemoteDBConnection(DBConnection):
                 api_key=api_key,
                 region=region,
                 host_override=host_override,
+                sql_host_override=sql_host_override,
                 client_config=client_config,
                 storage_options=storage_options,
                 read_consistency_interval=read_consistency_interval,
             )
         )
 
+    @classmethod
+    def _from_catalog(
+        cls,
+        inner,
+        name,
+        endpoint,
+        api_key,
+        client_config,
+        oauth_config,
+        sql_host_override,
+    ):
+        config = (
+            ClientConfig(**client_config)
+            if isinstance(client_config, dict)
+            else (client_config or ClientConfig())
+        )
+        headers = {
+            key: value
+            for key, value in (config.extra_headers or {}).items()
+            if key.lower() not in ("x-lancedb-database", "x-lancedb-database-prefix")
+        }
+        headers["x-lancedb-database"] = name
+        result = cls.__new__(cls)
+        result.db_url = inner.uri
+        result.db_name = name
+        result.api_key = api_key or ""
+        result.region = "us-east-1"
+        result.host_override = endpoint
+        result.sql_host_override = sql_host_override
+        result.storage_options = None
+        result.client_config = replace(config, extra_headers=headers)
+        result._catalog_oauth = oauth_config is not None
+        result._conn = inner
+        return result
+
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
 
     @override
     def serialize(self) -> str:
+        if getattr(self, "_catalog_oauth", False):
+            raise ValueError(
+                "Cannot serialize a catalog connection using OAuth; "
+                "provide a worker-side connection factory"
+            )
         return json.dumps(
             {
                 "connection_type": "remote",
@@ -193,6 +250,7 @@ class RemoteDBConnection(DBConnection):
                 "api_key": self.api_key,
                 "region": self.region,
                 "host_override": self.host_override,
+                "sql_host_override": self.sql_host_override,
                 "client_config": _client_config_to_dict(self.client_config),
                 "storage_options": self.storage_options,
             }
@@ -658,22 +716,80 @@ class RemoteDBConnection(DBConnection):
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> MaterializedView:
-        raise NotImplementedError(
-            "materialized views are supported only on local databases"
+        from .table import RemoteTable
+
+        view = LOOP.run(
+            self._conn.create_materialized_view(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
         )
+        return MaterializedView(
+            RemoteTable(
+                view.table,
+                self.db_name,
+                connection_state=self.serialize,
+                namespace_path=[],
+            )
+        )
+
+    @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._conn.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
+        )
+        return Job(job)
 
     @override
     def open_materialized_view(self, name: str) -> MaterializedView:
-        raise NotImplementedError(
-            "materialized views are supported only on local databases"
-        )
+        view = MaterializedView(self.open_table(name))
+        view.definition
+        return view
 
     @override
     def list_materialized_views(self) -> List[str]:
-        raise NotImplementedError(
-            "materialized views are supported only on local databases"
+        return LOOP.run(self._conn.list_materialized_views())
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_materialized_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._conn.drop_materialized_view_async(name, namespace_path=namespace_path)
         )
+        return Job(job)
 
     @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
@@ -732,35 +848,66 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def job(self, job_id: str) -> Job:
-        """A [Job][lancedb.job.Job] handle for a server-side job by id.
-
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+    def open_job(self, job_id: str) -> Job:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        return Job(self._conn.job(job_id))
+        return Job(LOOP.run(self._conn.open_job(job_id)))
 
     @override
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        return Job(LOOP.run(self._conn.create_function_async(definition)))
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+    ) -> Job[FunctionVersion]:
+        job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
+        return Job(job)
 
     @override
     def get_function(self, name: str, *, version: str) -> FunctionVersion:
         return LOOP.run(self._conn.get_function(name, version=version))
 
     @override
+    def list_functions(self) -> List[FunctionVersion]:
+        return LOOP.run(self._conn.list_functions())
+
+    @override
+    def drop_function(self, name: str, *, version: str) -> bool:
+        return LOOP.run(self._conn.drop_function(name, version=version))
+
+    @override
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.alter_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
+
+    @override
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_secrets(namespace_path=namespace_path))
+
+    @override
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_secret(name, namespace_path=namespace_path))
+
+    @override
     def list_jobs(self) -> List["JobInfo"]:
         """List server-side jobs across the database's tables."""
         return LOOP.run(self._conn.list_jobs())
-
-    @override
-    def get_job(self, job_id: str) -> Optional["JobDescription"]:
-        """Describe a single server-side job by id.
-
-        Returns None when the server has no such job.
-        """
-        return LOOP.run(self._conn.get_job(job_id))
 
     @override
     def cancel_job(self, job_id: str) -> bool:
@@ -773,12 +920,35 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.cancel_job(job_id))
 
     @override
-    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> SqlQuery:
+        """Start executing SQL through this remote connection.
 
-        Lists history across all jobs when `job_id` is None.
+        Unqualified tables use this connection's database and the
+        ``["public"]`` namespace by default. Fully qualified table names may
+        reference other databases available to the same deployment.
         """
-        return LOOP.run(self._conn.job_history(job_id))
+        return SqlQuery(
+            LOOP.run(
+                self._conn.execute_query_async(
+                    query,
+                    default_namespace_path=default_namespace_path,
+                )
+            )
+        )
+
+    @override
+    def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        return LOOP.run(
+            self._conn.describe_query(
+                query_id,
+            )
+        )
 
     @override
     def namespace_client(self) -> LanceNamespace:

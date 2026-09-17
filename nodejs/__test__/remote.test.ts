@@ -3,10 +3,14 @@
 
 import * as http from "http";
 import { RequestListener } from "http";
+import packageJson = require("../package.json");
 import {
+  ClientAuthMethod,
   ClientConfig,
   Connection,
   ConnectionOptions,
+  OAuthConfig,
+  OAuthFlowType,
   TlsConfig,
   connect,
 } from "../lancedb";
@@ -70,26 +74,28 @@ async function withMockDatabase(
   try {
     await callback(db);
   } finally {
-    server.close();
+    // `close()` alone leaves the port bound until keep-alive sockets drain, so
+    // a single failing test would cascade into EADDRINUSE for every test after
+    // it. Destroy the connections and wait for the port to actually be free.
+    await new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      server.close(() => resolve());
+    });
   }
 }
 
 describe("remote connection", () => {
-  it("refuses materialized views before issuing any request", async () => {
-    const paths: string[] = [];
+  it("lists materialized views through the namespace route", async () => {
     await withMockDatabase(
       (req, res) => {
-        paths.push(req.url ?? "");
-        res.writeHead(404).end();
+        expect(req.method).toBe("GET");
+        expect(req.url).toBe("/v1/namespace/$/materialized_view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["daily_sales"] }));
       },
       async (db) => {
-        await expect(db.openMaterializedView("secret_table")).rejects.toThrow(
-          /only on local databases/,
-        );
-        await expect(db.listMaterializedViews()).rejects.toThrow(
-          /only on local databases/,
-        );
-        expect(paths).toEqual([]);
+        expect(await db.listMaterializedViews()).toEqual(["daily_sales"]);
       },
     );
   });
@@ -131,7 +137,7 @@ describe("remote connection", () => {
       (req, res) => {
         expect(req.headers["x-api-key"]).toEqual("fake");
         expect(req.headers["user-agent"]).toEqual(
-          `LanceDB-Node-Client/${process.env.npm_package_version}`,
+          `LanceDB-Node-Client/${packageJson.version}`,
         );
 
         const body = JSON.stringify({ tables: [] });
@@ -433,6 +439,40 @@ describe("remote connection", () => {
       // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
       { from_branch: "exp", dry_run: true },
     ]);
+  });
+
+  describe("OAuthConfig", () => {
+    it("should expose client auth method values", () => {
+      expect(ClientAuthMethod.None).toBe("none");
+      expect(ClientAuthMethod.ClientSecretBasic).toBe("client_secret_basic");
+      expect(ClientAuthMethod.ClientSecretPost).toBe("client_secret_post");
+    });
+
+    it("should accept a confidential client with basic auth", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        clientSecret: "secret",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        clientAuthMethod: ClientAuthMethod.ClientSecretBasic,
+      };
+
+      expect(config.clientAuthMethod).toBe(ClientAuthMethod.ClientSecretBasic);
+    });
+
+    it("should accept a public PKCE client without auth method or secret", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        usePkce: true,
+      };
+
+      expect(config.clientSecret).toBeUndefined();
+      expect(config.clientAuthMethod).toBeUndefined();
+    });
   });
 
   describe("TlsConfig", () => {
@@ -932,6 +972,7 @@ describe("remote connection jobs surface", () => {
     const { tableFromArrays, tableToIPC } = await import("apache-arrow");
     const eventsTable = tableFromArrays({ state: ["created", "succeeded"] });
     const eventsBody = Buffer.from(tableToIPC(eventsTable, "stream"));
+    const queryEventsPayloads: Record<string, unknown>[] = [];
 
     await withMockDatabase(
       (req, res) => {
@@ -960,6 +1001,16 @@ describe("remote connection jobs surface", () => {
                 );
             }
           } else if (req.url === "/v1/jobs/describe") {
+            if (payload["job_id"] === "job-2") {
+              res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                  '{"job_id": "job-2", "job_type": "refresh_column", ' +
+                    '"job_state": "DONE", "creation_ms": 2000, ' +
+                    '"result": {"rows_assigned": 1000000}}',
+                );
+              return;
+            }
             if (payload["job_id"] !== "job-1") {
               res.writeHead(404).end("no such job");
               return;
@@ -981,6 +1032,7 @@ describe("remote connection jobs surface", () => {
               .writeHead(200, { "Content-Type": "application/json" })
               .end('{"job_id": "job-1"}');
           } else if (req.url === "/v1/jobs/query_events") {
+            queryEventsPayloads.push(payload);
             res
               .writeHead(200, {
                 "Content-Type": "application/vnd.apache.arrow.stream",
@@ -997,22 +1049,65 @@ describe("remote connection jobs surface", () => {
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
 
-        const description = await db.getJob("job-1");
-        expect(description?.state).toEqual("failed");
-        expect(JSON.parse(description?.specJson ?? "")).toEqual({
-          column: "vec",
-        });
-        expect(description?.failure?.message).toEqual("worker died");
-        expect(await db.getJob("missing")).toBeNull();
-
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
 
-        const history = await db.jobHistory("job-1");
-        expect(history.numRows).toEqual(2);
+        // Opening a job hands back a populated handle; a missing one rejects.
+        await expect(db.openJob("missing")).rejects.toThrow("not found");
+        const finished = await db.openJob("job-2");
+        expect(finished.state).toEqual("finished");
+        expect(finished.result).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          rows_assigned: 1000000,
+        });
 
-        const job = db.job("job-1");
+        const job = await db.openJob("job-1");
         expect(job.id).toEqual("job-1");
+
+        // openJob already populated the handle; refresh() re-reads it.
+        expect(job.state).toEqual("failed");
+        await job.refresh();
+        expect(job.state).toEqual("failed");
+        expect(job.jobType).toEqual("create_index");
+        expect(job.creationMs).toEqual(1000);
+        expect(job.spec).toEqual({ column: "vec" });
+        expect(job.result).toBeNull();
+        expect(job.failure?.message).toEqual("worker died");
+
+        // The handle reaches its own events, supplying its job id.
+        const jobEvents = await job.events({
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+        expect(jobEvents.numRows).toEqual(2);
+        expect(queryEventsPayloads.pop()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          job_id: "job-1",
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+
+        // Printing lays every known field out on its own line, with the JSON
+        // payloads indented rather than crammed onto one line.
+        expect(`${job}`).toEqual(
+          [
+            "Job(",
+            '    id="job-1",',
+            '    state="failed",',
+            '    jobType="create_index",',
+            "    creationMs=1000,",
+            "    spec={",
+            '        "column": "vec"',
+            "    },",
+            "    failure={",
+            '        "phase": "execute",',
+            '        "message": "worker died",',
+            '        "retryable": true',
+            "    },",
+            ")",
+          ].join("\n"),
+        );
+
         expect(await job.status()).toEqual("failed");
         await expect(job.wait()).rejects.toThrow("worker died");
       },

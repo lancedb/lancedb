@@ -74,10 +74,10 @@ now: the column is committed with no values, and rows get them from
 [Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
 large table as on an empty one.
 
-A refresh does not revisit rows it has already filled, so mutating an
-input leaves the value computed at fill time; recomputing means dropping
-the column and declaring it again. While a declaration reads a column,
-that column cannot be renamed, retyped or dropped.
+A refresh also recomputes the rows whose inputs changed since they were
+computed, so a mutated input is reflected by the next refresh. While a
+declaration reads a column, that column cannot be renamed, retyped or
+dropped.
 
 On LanceDB Cloud and Enterprise the expression is planned by the
 server, and the refresh runs as a server job -- see
@@ -134,6 +134,20 @@ Alter the name or nullability of columns.
 
 A promise that resolves to an object
 containing the new version number of the table after altering the columns.
+
+***
+
+### blobColumns()
+
+```ts
+abstract blobColumns(): Promise<string[]>
+```
+
+Blob v2 columns, including nested dotted paths.
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
 
 ***
 
@@ -499,6 +513,54 @@ Drop an index from the table.
 
 ***
 
+### fetchBlobFiles()
+
+```ts
+abstract fetchBlobFiles(column, rowIds): Promise<(null | BlobFile)[]>
+```
+
+Opens lazy blob handles for `column` at the given row IDs using the
+table's current checkout.
+
+Preserves input order, duplicates, and nulls. Use this for large payloads.
+See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+
+#### Parameters
+
+* **column**: `string`
+
+* **rowIds**: readonly (`number` \| `bigint`)[]
+
+#### Returns
+
+`Promise`&lt;(`null` \| [`BlobFile`](BlobFile.md))[]&gt;
+
+***
+
+### fetchBlobs()
+
+```ts
+abstract fetchBlobs(column, rowIds): Promise<(null | Buffer)[]>
+```
+
+Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
+
+Reads the table's current checkout. IDs from another version can fail after
+compaction unless stable row ids are enabled. Results keep input order and
+duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+
+#### Parameters
+
+* **column**: `string`
+
+* **rowIds**: readonly (`number` \| `bigint`)[]
+
+#### Returns
+
+`Promise`&lt;(`null` \| `Buffer`)[]&gt;
+
+***
+
 ### flushLsm()
 
 ```ts
@@ -676,9 +738,17 @@ List all the versions of the table
 abstract mergeInsert(on): MergeInsertBuilder
 ```
 
+Create a [MergeInsertBuilder](MergeInsertBuilder.md), which combines new data with the
+existing table in a single transaction — inserting, updating and deleting
+rows depending on how they match.
+
 #### Parameters
 
 * **on**: `string` \| `string`[]
+    The column, or columns, to match source rows against target
+    rows on. Typically a key or id column. Several columns match on the
+    composite key: a source row updates a target row only when it agrees on
+    every one of them.
 
 #### Returns
 
@@ -846,10 +916,10 @@ abstract refreshColumn(column): Promise<RefreshColumnResult>
 
 Fill the rows of a computed column that hold no value yet.
 
-Rows appended since the last refresh are filled by the next one; rows
-already filled are left as they are, so the call is idempotent and does
-not observe a mutated input. Local tables only: a remote refresh runs
-as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+Rows appended since the last refresh are filled by the next one, and
+rows whose inputs changed since they were computed are recomputed;
+everything else is left as it is. Local tables only: a remote refresh
+runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Parameters
 
@@ -1258,7 +1328,7 @@ value is 0")
 Note: if your condition is something like "some_id_column == 7" and
 you are updating many rows (with different ids) then you will get
 better performance with a single [`merge_insert`] call instead of
-repeatedly calilng this method.
+repeatedly calling this method.
 
 ##### Parameters
 

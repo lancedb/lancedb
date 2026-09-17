@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { tableFromIPC } from "apache-arrow";
 import {
   Data,
   SchemaLike,
@@ -16,6 +15,7 @@ import {
   makeEmptyTable,
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { Job } from "./job";
 import {
   MaterializedView,
   MaterializedViewSelect,
@@ -27,8 +27,6 @@ import type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
   DropNamespaceResponse,
-  Job,
-  JobDescription,
   JobInfo,
   ListNamespacesResponse,
   ListTablesResponse,
@@ -322,13 +320,13 @@ export abstract class Connection {
   /**
    * Define a materialized view named `name` over the table `source`.
    *
-   * The view is created empty, with the query recorded in its schema
-   * metadata; `view.refresh()` computes the rows. The view is a normal
-   * table: it can be queried, indexed and searched, and it appears in
-   * `tableNames`. The source table must have stable row ids (create it with
+   * The view is populated before creation returns. Set `withNoData` to create
+   * only its definition and empty backing table. The view is a normal table:
+   * it can be queried, indexed and searched, and it appears in `tableNames`.
+   * The source table must have stable row ids (create it with
    * the `newTableEnableStableRowIds` storage option); they keep the view's
    * provenance valid across source compactions and cannot be enabled after
-   * a table exists. Local databases only.
+   * a table exists.
    */
   abstract createMaterializedView(
     name: string,
@@ -337,6 +335,7 @@ export abstract class Connection {
       select?: MaterializedViewSelect;
       where?: string;
       limit?: number;
+      withNoData?: boolean;
     },
   ): Promise<MaterializedView>;
 
@@ -353,6 +352,30 @@ export abstract class Connection {
    * Found by reading every table's schema, so this costs an open per table.
    */
   abstract listMaterializedViews(): Promise<string[]>;
+
+  /**
+   * Drop the materialized view named `name`.
+   *
+   * The view may become unavailable before physical cleanup finishes. Use
+   * {@link dropMaterializedViewAsync} to retain and wait for the cleanup job.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract dropMaterializedView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<void>;
+
+  /**
+   * Start dropping the materialized view named `name` and return its cleanup
+   * job without waiting for completion.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract dropMaterializedViewAsync(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<Job>;
 
   abstract openTable(
     name: string,
@@ -557,23 +580,18 @@ export abstract class Connection {
   ): Promise<void>;
 
   /**
-   * A {@link Job} handle for a server-side job by id.
+   * Open a server-side job by id, returning a handle with its record already
+   * populated. Rejects when the server has no such job, the way
+   * {@link Connection.openTable} does for a missing table.
    *
-   * The handle is constructed without a server round trip; an unknown id
-   * surfaces when the handle is used. Dropping the handle has no effect on
-   * the job itself.
+   * The returned {@link Job} answers for its own state, specification,
+   * result, failure and event history, so there is no separate
+   * connection-level call for any of them.
    */
-  abstract job(jobId: string): Job;
+  abstract openJob(jobId: string): Promise<Job>;
 
   /** List server-side jobs across the database's tables. */
   abstract listJobs(): Promise<JobInfo[]>;
-
-  /**
-   * Describe a single server-side job by id.
-   *
-   * Resolves to `null` when the server has no such job.
-   */
-  abstract getJob(jobId: string): Promise<JobDescription | null>;
 
   /**
    * Request cancellation of a server-side job by id.
@@ -582,13 +600,6 @@ export abstract class Connection {
    * such job exists. Cancelling an already-terminal job is a no-op success.
    */
   abstract cancelJob(jobId: string): Promise<boolean>;
-
-  /**
-   * The lifecycle event history of a server-side job, as an Arrow table.
-   *
-   * Lists history across all jobs when `jobId` is omitted.
-   */
-  abstract jobHistory(jobId?: string): Promise<ArrowTable>;
 }
 
 /** @hideconstructor */
@@ -645,6 +656,7 @@ export class LocalConnection extends Connection {
       select?: MaterializedViewSelect;
       where?: string;
       limit?: number;
+      withNoData?: boolean;
     },
   ): Promise<MaterializedView> {
     validateNonNegativeInteger(options?.limit, "limit");
@@ -654,6 +666,7 @@ export class LocalConnection extends Connection {
       normalizeSelect(options?.select),
       options?.where,
       options?.limit,
+      options?.withNoData ?? false,
     );
     return new MaterializedView(new LocalTable(innerTable));
   }
@@ -665,6 +678,22 @@ export class LocalConnection extends Connection {
 
   async listMaterializedViews(): Promise<string[]> {
     return await this.inner.listMaterializedViews();
+  }
+
+  async dropMaterializedView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<void> {
+    return this.inner.dropMaterializedView(name, namespacePath ?? []);
+  }
+
+  async dropMaterializedViewAsync(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<Job> {
+    return new Job(
+      await this.inner.dropMaterializedViewAsync(name, namespacePath ?? []),
+    );
   }
 
   async listTables(
@@ -869,7 +898,7 @@ export class LocalConnection extends Connection {
   }
 
   async dropTableAsync(name: string, namespacePath?: string[]): Promise<Job> {
-    return this.inner.dropTableAsync(name, namespacePath ?? []);
+    return new Job(await this.inner.dropTableAsync(name, namespacePath ?? []));
   }
 
   async dropAllTables(namespacePath?: string[]): Promise<void> {
@@ -928,28 +957,16 @@ export class LocalConnection extends Connection {
     );
   }
 
-  job(jobId: string): Job {
-    return this.inner.job(jobId);
+  async openJob(jobId: string): Promise<Job> {
+    return new Job(await this.inner.openJob(jobId));
   }
 
   async listJobs(): Promise<JobInfo[]> {
     return this.inner.listJobs();
   }
 
-  async getJob(jobId: string): Promise<JobDescription | null> {
-    return this.inner.getJob(jobId);
-  }
-
   async cancelJob(jobId: string): Promise<boolean> {
     return this.inner.cancelJob(jobId);
-  }
-
-  async jobHistory(jobId?: string): Promise<ArrowTable> {
-    const buf = await this.inner.jobHistory(jobId);
-    if (buf.length === 0) {
-      return new ArrowTable();
-    }
-    return tableFromIPC(buf);
   }
 }
 

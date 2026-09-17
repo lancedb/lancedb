@@ -56,7 +56,7 @@ jobs:
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           # Restricted to http(s) on purpose. Much of docs/src is generated
-          # API reference (the js/ tree comes from `npm run docs` in nodejs)
+          # API reference (the js/ tree comes from `pnpm run docs` in nodejs)
           # and the hand-written pages use mkdocstrings cross-references and
           # nav-relative paths that only resolve in the site mkdocs builds,
           # not in this checkout, so relative links would be reported as

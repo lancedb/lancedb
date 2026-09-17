@@ -14,11 +14,9 @@
 //!  * Tables may be managed by a database system (e.g. Postgres)
 //!  * A custom table implementation (e.g. remote table, etc.) may be used
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-
-use arrow_array::RecordBatch;
 
 use lance::dataset::ReadParams;
 use lance_namespace::LanceNamespace;
@@ -30,6 +28,9 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::job::Job;
+use crate::materialized_view::CreateMaterializedViewRequest;
+use crate::secrets::SecretInfo;
 use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
@@ -206,8 +207,8 @@ pub enum ReadConsistency {
 /// compaction, column refresh, ...).
 #[derive(Debug, Clone)]
 pub struct JobInfo {
-    /// The job id -- what [`Database::get_job`] and [`Database::cancel_job`]
-    /// accept.
+    /// The job id -- what [`Database::open_job`] and
+    /// [`Database::cancel_job`] accept.
     pub job_id: String,
     /// The table the job runs against, without URI or namespace.
     pub table: String,
@@ -218,8 +219,8 @@ pub struct JobInfo {
     pub created_at_millis: i64,
 }
 
-/// A described job from [`Database::get_job`]: lifecycle state plus the
-/// job-type-specific specification.
+/// The server-side record behind a [`crate::job::Job`] handle: lifecycle
+/// state plus the job-type-specific specification and result.
 #[derive(Debug, Clone)]
 pub struct JobDescription {
     pub job_id: String,
@@ -230,6 +231,10 @@ pub struct JobDescription {
     pub creation_ms: i64,
     /// The job-type-specific specification. Null when the server omits it.
     pub spec: serde_json::Value,
+    /// The job-type-specific terminal result, for job types that define one.
+    /// `None` until the job succeeds, so a job that never terminates reports
+    /// its progress through [`crate::job::Job::events`] instead.
+    pub result: Option<serde_json::Value>,
     /// Why the job failed, when the job is failed and the server reports a
     /// reason.
     pub failure: Option<crate::error::JobFailure>,
@@ -244,6 +249,12 @@ fn job_op_not_supported<T>(what: &str) -> Result<T> {
 fn function_catalog_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: "Function catalog operations are not supported by this database".to_string(),
+    })
+}
+
+fn secret_catalog_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Secret operations are not supported by this database".to_string(),
     })
 }
 
@@ -292,12 +303,79 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
-    /// Register an immutable Function version through the remote catalog.
+    /// Submit a Function creation job that builds an image and registers it.
     async fn create_function_async(
         &self,
         _request: crate::function::FunctionRegistrationRequest,
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
+    }
+    /// Create a materialized view through a remote catalog and return its
+    /// initial-population job. Local connections use the native declaration
+    /// path directly.
+    #[doc(hidden)]
+    async fn create_materialized_view_async(
+        &self,
+        _request: CreateMaterializedViewRequest,
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view creation")
+    }
+    /// Drop a materialized view through its resource endpoint and return its
+    /// cleanup job. Local connections validate the view and use table drop.
+    #[doc(hidden)]
+    async fn drop_materialized_view_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view drop")
+    }
+    /// List materialized-view names in a namespace.
+    #[doc(hidden)]
+    async fn list_materialized_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut page_token = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let response = self
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace_path.to_vec()),
+                    page_token: page_token.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            for name in response.tables {
+                let Ok(table) = self
+                    .open_table(OpenTableRequest {
+                        name: name.clone(),
+                        namespace_path: namespace_path.to_vec(),
+                        index_cache_size: None,
+                        lance_read_params: None,
+                        location: None,
+                        namespace_client: None,
+                        managed_versioning: None,
+                    })
+                    .await
+                else {
+                    continue;
+                };
+                let schema = table.schema().await?;
+                if crate::materialized_view::materialized_view_kind(schema.metadata())?.is_some() {
+                    names.push(name);
+                }
+            }
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(crate::Error::Runtime {
+                    message: "materialized-view listing repeated a page token".into(),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(names)
     }
     /// Look up one exact immutable Function version.
     async fn get_function(
@@ -307,19 +385,61 @@ pub trait Database:
     ) -> Result<crate::function::FunctionVersion> {
         function_catalog_not_supported()
     }
-    /// A [`crate::job::Job`] handle for a server-side job by id, suitable for
-    /// waiting on or cancelling the job. The handle is constructed without a
-    /// server round trip; an unknown id surfaces when the handle is used.
-    fn job(&self, _job_id: &str) -> Result<crate::job::Job> {
-        job_op_not_supported("job")
+    /// List every published immutable Function version in the remote catalog.
+    async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
+        function_catalog_not_supported()
+    }
+    /// Remove the current Function name binding, retaining the object history.
+    async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
+        function_catalog_not_supported()
+    }
+    /// Create a named Secret in this database. Fails if the name is taken, so
+    /// a create can never silently become a rotation.
+    async fn create_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// Replace the credential behind an existing Secret. Fails if it does not
+    /// exist. Every Function bound to it resolves the new value from its next
+    /// execution, with no new Function version.
+    async fn alter_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// The names of every Secret in this database.
+    ///
+    /// Names only. No API path returns a stored credential, by construction
+    /// rather than by policy.
+    async fn list_secrets(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a Secret. Functions bound to it fail at their next job, which is
+    /// the revocation path.
+    async fn drop_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// What the database records about one Secret: its name and timestamps,
+    /// never its value.
+    async fn describe_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<SecretInfo> {
+        secret_catalog_not_supported()
+    }
+    /// Open a job by id, returning a handle with its record already
+    /// populated. Fails with [`crate::Error::JobNotFound`] when the server has
+    /// no such job.
+    async fn open_job(&self, _job_id: &str) -> Result<crate::job::Job> {
+        job_op_not_supported("open_job")
     }
     /// List server-side jobs across the database's tables.
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
         job_op_not_supported("list_jobs")
-    }
-    /// Describe a single job by id. `None` when the server has no such job.
-    async fn get_job(&self, _job_id: &str) -> Result<Option<JobDescription>> {
-        job_op_not_supported("get_job")
     }
     /// Request cancellation of a job by id. Returns true if the server
     /// accepted the cancellation, false if no such job exists. Cancelling an
@@ -327,10 +447,21 @@ pub trait Database:
     async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
         job_op_not_supported("cancel_job")
     }
-    /// The lifecycle event history of a job (all jobs when `job_id` is
-    /// `None`), as recorded Arrow batches.
-    async fn job_history(&self, _job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
-        job_op_not_supported("job_history")
+    /// Start executing a SQL statement on a remote database.
+    async fn execute_query_async(
+        &self,
+        _query: &str,
+        _default_namespace_path: &[String],
+    ) -> Result<crate::sql::Query> {
+        Err(crate::error::Error::NotSupported {
+            message: "SQL is not supported by this database".to_string(),
+        })
+    }
+    /// Describe a submitted SQL query by its connection-scoped id.
+    async fn describe_query(&self, _query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
+        Err(crate::error::Error::NotSupported {
+            message: "SQL is not supported by this database".to_string(),
+        })
     }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;

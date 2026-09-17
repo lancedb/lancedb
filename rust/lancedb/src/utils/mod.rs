@@ -19,10 +19,15 @@ use std::pin::Pin;
 use crate::error::{Error, Result};
 use datafusion_physical_plan::SendableRecordBatchStream;
 
-static TABLE_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
-static NAMESPACE_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
+/// The characters any object name may contain: a table, a namespace segment, a
+/// Secret, a materialized view.
+///
+/// No positional rule on top of it -- a name may begin with `_`, `-` or `.`,
+/// as LanceDB namespaces already do. `.` and `..` are excluded separately, by
+/// [`reject_relative_segment`]: that is a property of where a name sits in a
+/// URL, not of the name. Length is the service's to bound.
+static OBJECT_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]+$").unwrap());
 
 pub trait PatchStoreParam {
     fn patch_with_store_wrapper(
@@ -81,52 +86,92 @@ impl PatchReadParam for ReadParams {
     }
 }
 
-/// Validate table name.
-pub fn validate_table_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::InvalidTableName {
-            name: name.to_string(),
-            reason: "Table names cannot be empty strings".to_string(),
-        });
-    }
-    if !TABLE_NAME_REGEX.is_match(name) {
-        return Err(Error::InvalidTableName {
-            name: name.to_string(),
-            reason:
-                "Table names can only contain alphanumeric characters, underscores, hyphens, and periods"
-                    .to_string(),
+/// The reason `.` and `..` are refused wherever a name becomes a path segment.
+const RELATIVE_SEGMENT_REASON: &str =
+    "'.' and '..' are read as relative path segments and cannot address an object";
+
+/// Whether URL parsing would resolve this component away rather than keep it.
+///
+/// Exactly `.` and `..`, and their percent-encoded spellings -- resolution
+/// happens after decoding, so `%2E%2E` collapses as surely as `..` does, and
+/// `drop_table("..")` would reach `/v1/drop/`. No wider than that: `...` is an
+/// ordinary segment that addresses fine.
+fn is_relative_segment(value: &str) -> bool {
+    let decoded = value.replace("%2e", ".").replace("%2E", ".");
+    decoded == "." || decoded == ".."
+}
+
+/// Refuse a path component that URL parsing resolves as a relative segment.
+///
+/// Reachable on its own for an identifier with no other validator: a Function
+/// name has no client-side grammar, so this is the only rule that applies.
+pub(crate) fn reject_relative_segment(what: &str, value: &str) -> Result<()> {
+    if is_relative_segment(value) {
+        return Err(Error::InvalidInput {
+            message: format!("invalid {what} '{value}': {RELATIVE_SEGMENT_REASON}"),
         });
     }
     Ok(())
 }
 
-/// Validate a namespace name component
+/// Every rule an object name obeys: non-empty, inside [`OBJECT_NAME_REGEX`],
+/// and addressable as a path segment.
 ///
-/// Namespace names must:
-/// - Not be empty
-/// - Only contain alphanumeric characters, underscores, hyphens, and periods
-///
-/// # Arguments
-/// * `name` - A single namespace component (not the full path)
-///
-/// # Returns
-/// * `Ok(())` if the namespace name is valid
-/// * `Err(Error)` if the namespace name is invalid
-pub fn validate_namespace_name(name: &str) -> Result<()> {
+/// Returns the reason rather than an [`Error`], because the error type is each
+/// API's own -- a table reports [`Error::InvalidTableName`], the rest
+/// [`Error::InvalidInput`]. Sharing the rules but not the error keeps a table,
+/// a namespace segment and a Secret from drifting apart.
+fn check_object_name(name: &str) -> std::result::Result<(), &'static str> {
     if name.is_empty() {
-        return Err(Error::InvalidInput {
-            message: "Namespace names cannot be empty strings".to_string(),
-        });
+        return Err("it must not be empty");
     }
-    if !NAMESPACE_NAME_REGEX.is_match(name) {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "Invalid namespace name '{}': Namespace names can only contain alphanumeric characters, underscores, hyphens, and periods",
-                name
-            ),
-        });
+    if !OBJECT_NAME_REGEX.is_match(name) {
+        return Err(
+            "it may contain only alphanumeric characters, underscores, hyphens and periods",
+        );
+    }
+    if is_relative_segment(name) {
+        return Err(RELATIVE_SEGMENT_REASON);
     }
     Ok(())
+}
+
+/// Validate a table name.
+pub fn validate_table_name(name: &str) -> Result<()> {
+    check_object_name(name).map_err(|reason| Error::InvalidTableName {
+        name: name.to_string(),
+        reason: reason.to_string(),
+    })
+}
+
+/// Validate one component of a namespace path -- a single segment, not the
+/// whole path. [`validate_namespace`] covers a path.
+pub fn validate_namespace_name(name: &str) -> Result<()> {
+    check_object_name(name).map_err(|reason| Error::InvalidInput {
+        message: format!("invalid namespace name '{name}': {reason}"),
+    })
+}
+
+/// Validate one component of a Secret identifier: a Secret name, or one segment
+/// of the namespace path holding it.
+///
+/// The join decides identity, and the service only sees what the split
+/// produced. `"a$b"` is not a name the service accepts, but joined and split it
+/// reads as the namespace `a` and the name `b` -- a different Secret that may
+/// already exist. This is not a second opinion on the name; it is what lets the
+/// service have one.
+pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
+    check_object_name(value).map_err(|reason| Error::InvalidInput {
+        message: format!("invalid {what} '{value}': {reason}"),
+    })
+}
+
+/// Validate a Secret name and every segment of the namespace path holding it.
+pub fn validate_secret_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    for segment in namespace_path {
+        validate_secret_component("Secret namespace path segment", segment)?;
+    }
+    validate_secret_component("Secret name", name)
 }
 
 /// Validate all components of a namespace
@@ -227,7 +272,7 @@ pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<
 
 pub(crate) struct ResolvedFtsField {
     pub canonical_path: String,
-    pub field: Field,
+    pub terminal_field: Field,
     pub list_depth: usize,
 }
 
@@ -309,7 +354,7 @@ pub(crate) fn resolve_lance_fts_field_path(
     );
     Ok(ResolvedFtsField {
         canonical_path,
-        field: Field::from(field),
+        terminal_field: Field::from(terminal),
         list_depth,
     })
 }
@@ -375,7 +420,7 @@ pub(crate) fn resolve_arrow_fts_field_path(
             message: format!("Invalid schema: {}", e),
         })?;
     let resolved = resolve_lance_fts_field_path(&lance_schema, column)?;
-    Ok((resolved.canonical_path, resolved.field))
+    Ok((resolved.canonical_path, resolved.terminal_field))
 }
 
 pub fn supported_btree_data_type(dtype: &DataType) -> bool {
@@ -391,6 +436,14 @@ pub fn supported_btree_data_type(dtype: &DataType) -> bool {
                 | DataType::Date64
                 | DataType::Timestamp(_, _)
                 | DataType::FixedSizeBinary(_)
+        )
+}
+
+pub fn supported_zonemap_data_type(dtype: &DataType) -> bool {
+    supported_btree_data_type(dtype)
+        || matches!(
+            dtype,
+            DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
         )
 }
 
@@ -647,8 +700,9 @@ mod tests {
             Field::new("docs", text_list(), true),
         ]);
 
-        let (path, _) = resolve_arrow_fts_field_path(&schema, "docs.content").unwrap();
+        let (path, field) = resolve_arrow_fts_field_path(&schema, "docs.content").unwrap();
         assert_eq!(path, "docs.content");
+        assert_eq!(field.data_type(), &DataType::Utf8);
 
         let lance_schema = lance_core::datatypes::Schema::try_from(&schema).unwrap();
         let field_id = lance_schema
@@ -803,8 +857,11 @@ mod tests {
         assert!(validate_table_name("_12345table").is_ok());
         assert!(validate_table_name("table.12345").is_ok());
         assert!(validate_table_name("table.._dot_..12345").is_ok());
+        assert!(validate_table_name("...").is_ok());
 
         assert!(validate_table_name("").is_err());
+        assert!(validate_table_name(".").is_err());
+        assert!(validate_table_name("..").is_err());
         assert!(validate_table_name("my_table!").is_err());
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());

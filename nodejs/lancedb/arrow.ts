@@ -40,6 +40,7 @@ import {
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { typedArrayToArrowType } from "./arrow_type";
+import { coerceBlobValue, isBlobField } from "./blob";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import {
   EmbeddingFunctionConfig,
@@ -70,6 +71,30 @@ export type FieldLike =
       nullable: boolean;
       metadata?: Map<string, string>;
     };
+
+/**
+ * Create an Arrow field backed by LanceDB's JSON extension type.
+ *
+ * @param name - The field name.
+ * @param nullable - Whether the field accepts null values.
+ * @example
+ * ```ts
+ * import { connect, makeJsonField } from "@lancedb/lancedb";
+ * import { Schema } from "apache-arrow";
+ *
+ * const schema = new Schema([makeJsonField("metadata")]);
+ * const db = await connect("/path/to/database");
+ * await db.createTable("items", [{ metadata: '{"source":"api"}' }], { schema });
+ * ```
+ */
+export function makeJsonField(name: string, nullable = true): Field {
+  return new Field(
+    name,
+    new Utf8(),
+    nullable,
+    new Map([["ARROW:extension:name", "arrow.json"]]),
+  );
+}
 
 export type DataLike =
   | import("apache-arrow").Data
@@ -430,12 +455,14 @@ export function makeArrowTable(
       throw new Error("A schema must be provided if data is empty");
     } else {
       schema = new Schema(schema.fields, schemaMetadata);
+      validateBlobSchema(schema);
       return new ArrowTable(schema);
     }
   }
 
   let inferredSchema = inferSchema(data, schema, opt);
   inferredSchema = new Schema(inferredSchema.fields, schemaMetadata);
+  validateBlobSchema(inferredSchema);
 
   const finalColumns: Record<string, Vector> = {};
   for (const field of inferredSchema.fields) {
@@ -443,6 +470,35 @@ export function makeArrowTable(
   }
 
   return new ArrowTable(inferredSchema, finalColumns);
+}
+
+function validateBlobSchema(schema: Schema): void {
+  for (const field of schema.fields) {
+    validateBlobField(field);
+  }
+}
+
+function validateBlobField(field: Field): void {
+  if (
+    isFixedSizeList(field.type) &&
+    containsBlobField(field.type.children[0])
+  ) {
+    throw new Error(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  }
+  for (const child of field.type.children ?? []) {
+    validateBlobField(child);
+  }
+}
+
+function containsBlobField(field: Field): boolean {
+  if (isBlobField(field)) {
+    return true;
+  }
+  return (field.type.children ?? []).some((child: Field) =>
+    containsBlobField(child),
+  );
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -480,6 +536,32 @@ function transposeData(
   path: string[] = [],
 ): Vector {
   const valuesPath = [...path, field.name];
+  if (isBlobField(field) && field.type instanceof Struct) {
+    const blobRows = data.map((datum) =>
+      coerceBlobValue(valueAtPath(datum, valuesPath)),
+    );
+    const childVectors = field.type.children.map((child) => {
+      const values = blobRows.map((row) =>
+        row == null ? null : (row[child.name as "data" | "uri"] ?? null),
+      );
+      return makeVector(values, child.type, undefined, child.nullable);
+    });
+    const nullCount = blobRows.filter((row) => row === null).length;
+    const structData = makeData({
+      type: field.type,
+      length: blobRows.length,
+      nullCount,
+      nullBitmap:
+        nullCount > 0
+          ? arrowUtil.packBools(blobRows.map((row) => row !== null))
+          : undefined,
+      children: childVectors.map((v) => v.data[0]),
+    });
+    return arrowMakeVector(structData);
+  }
+  if (isList(field.type) && containsBlobField(field.type.children[0])) {
+    return transposeListData(data, field, valuesPath);
+  }
   const values = data.map((datum) => valueAtPath(datum, valuesPath));
   if (field.type instanceof Struct) {
     const childFields = field.type.children;
@@ -495,12 +577,54 @@ function transposeData(
         nullCount > 0
           ? arrowUtil.packBools(values.map((value) => value !== null))
           : undefined,
-      children: childVectors as unknown as ArrowData<DataType>[],
+      children: childVectors.map((v) => v.data[0]),
     });
     return arrowMakeVector(structData);
   } else {
     return makeVector(values, field.type, undefined, field.nullable);
   }
+}
+
+function transposeListData(
+  data: Record<string, unknown>[],
+  field: Field,
+  valuesPath: string[],
+): Vector {
+  const listType = field.type as List;
+  const childField = listType.children[0];
+  const lists = data.map((datum) => valueAtPath(datum, valuesPath));
+  const flattened: Record<string, unknown>[] = [];
+  const validity: boolean[] = [];
+  const offsets: number[] = [0];
+
+  for (const list of lists) {
+    if (list == null) {
+      validity.push(false);
+      offsets.push(flattened.length);
+      continue;
+    }
+    if (!Array.isArray(list)) {
+      throw new Error(`expected an array for list field '${field.name}'`);
+    }
+    validity.push(true);
+    for (const element of list) {
+      flattened.push({ [childField.name]: element });
+    }
+    offsets.push(flattened.length);
+  }
+
+  const childVector = transposeData(flattened, childField, []);
+  const nullCount = validity.filter((valid) => !valid).length;
+  return arrowMakeVector(
+    makeData({
+      type: listType,
+      length: lists.length,
+      nullCount,
+      nullBitmap: nullCount > 0 ? arrowUtil.packBools(validity) : undefined,
+      valueOffsets: Int32Array.from(offsets),
+      child: childVector.data[0],
+    }),
+  );
 }
 
 /**
@@ -600,7 +724,7 @@ function makeVector(
   }
   if (values.length === 0) {
     throw Error(
-      "makeVector requires at least one value or the type must be specfied",
+      "makeVector requires at least one value or the type must be specified",
     );
   }
   const sampleValue = values.find((val) => val !== null && val !== undefined);
@@ -858,7 +982,7 @@ async function applyEmbeddings<T>(
  * customized by the `embeddingDataType` property of the embedding function.
  *
  * If a schema is provided in `makeTableOptions` then it should include the
- * embedding columns.  If no schema is provded then embedding columns will
+ * embedding columns.  If no schema is provided then embedding columns will
  * be placed at the end of the table, after all of the input columns.
  */
 export async function convertToTable(
@@ -952,6 +1076,7 @@ export async function fromTableToBuffer(
     schema = sanitizeSchema(schema);
   }
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  validateBlobSchema(tableWithEmbeddings.schema);
   const writer = RecordBatchFileWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
 }

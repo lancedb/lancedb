@@ -75,6 +75,7 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod freshness;
 pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
@@ -242,7 +243,7 @@ enum BadVectorHandling {
     /// An error is returned
     #[default]
     Error,
-    /// The offending row is droppped
+    /// The offending row is dropped
     Drop,
     /// The invalid/missing items are replaced by fill_value
     Fill(f32),
@@ -564,6 +565,29 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Read this table's materialized-view definition and incarnation.
+    #[doc(hidden)]
+    async fn materialized_view_info(
+        &self,
+    ) -> Result<crate::materialized_view::MaterializedViewInfo> {
+        let schema = self.schema().await?;
+        crate::materialized_view::materialized_view_info_from_metadata(
+            self.name(),
+            schema.metadata(),
+        )
+    }
+    /// Submit a materialized-view refresh.
+    #[doc(hidden)]
+    async fn refresh_materialized_view_async(
+        &self,
+        _full: bool,
+        _source_version: Option<u64>,
+        _expected_incarnation: Option<&str>,
+    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
+        Err(Error::NotSupported {
+            message: "remote materialized-view refresh is not supported on this table type".into(),
+        })
+    }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
     /// The returned handle is independent from later refreshes or checkouts on
@@ -597,6 +621,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<String>;
+    /// Whether [`BaseTable::analyze_plan`] is provided by a remote service.
+    ///
+    /// Client-side query wrappers use this to preserve backend metrics and
+    /// distributed-analysis options instead of replacing them with a local plan.
+    #[doc(hidden)]
+    fn analyze_plan_is_remote(&self) -> bool {
+        false
+    }
 
     /// Add new records to the table.
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
@@ -772,7 +804,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
         })
     }
-    /// Fill a computed column's unfilled rows.
+    /// Fill a computed column's unfilled rows and recompute those whose
+    /// inputs changed.
     ///
     /// The default returns `NotSupported`; Lance-backed tables override it.
     async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
@@ -780,8 +813,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are supported only on local tables".into(),
         })
     }
-    /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
-    /// the operation.
+    /// Fill a computed column's unfilled rows and recompute those whose
+    /// inputs changed, returning a [`Job`] tracking the operation.
     async fn refresh_column_async(
         &self,
         _column: &str,
@@ -1186,6 +1219,9 @@ impl Table {
     /// valid empty blobs contain empty byte strings. Prefer
     /// [`Self::fetch_blob_files`] for large selections.
     ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids.
+    ///
     /// ```
     /// use arrow_array::UInt64Array;
     /// use futures::TryStreamExt;
@@ -1227,6 +1263,9 @@ impl Table {
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
     ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids.
+    ///
     /// ```
     /// use lancedb::blob::BlobRangeRequest;
     ///
@@ -1264,6 +1303,9 @@ impl Table {
     ///
     /// Same length and order as `row_ids`. Null rows are `None`. Bytes are not
     /// read from disk until a call to [`BlobFile::read`].
+    ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids.
     ///
     /// ```
     /// # use lancedb::Table;
@@ -1311,7 +1353,7 @@ impl Table {
     /// Note: if your condition is something like "some_id_column == 7" and
     /// you are updating many rows (with different ids) then you will get
     /// better performance with a single [`merge_insert`] call instead of
-    /// repeatedly calilng this method.
+    /// repeatedly calling this method.
     pub fn update(&self) -> UpdateBuilder {
         UpdateBuilder::new(self.inner.clone())
     }
@@ -1500,7 +1542,9 @@ impl Table {
     ///
     /// * `on` One or more columns to join on.  This is how records from the
     ///   source table and target table are matched.  Typically this is some
-    ///   kind of key or id column.
+    ///   kind of key or id column.  Several columns match on the composite
+    ///   key: a source row updates a target row only when it agrees on every
+    ///   one of them.
     ///
     /// # Examples
     ///
@@ -1654,9 +1698,9 @@ impl Table {
     /// Offsets are useful for sampling as the set of all valid offsets is easily
     /// known in advance to be [0, len(table)).
     ///
-    /// No guarantees are made regarding the order in which results are returned.  If you
-    /// desire an output order that matches the order of the given offsets, you will need
-    /// to add the row offset column to the output and align it yourself.
+    /// No guarantees are made regarding the order in which results are returned.
+    /// Repeated offsets produce repeated rows, which makes this method suitable for
+    /// sampling with replacement.
     ///
     /// Parameters
     /// ----------
@@ -1722,6 +1766,33 @@ impl Table {
         self.inner.optimize(action).await
     }
 
+    /// Prune versions committed before an absolute timestamp.
+    ///
+    /// This is an internal entry point for language bindings whose public API
+    /// accepts an absolute cleanup cutoff.
+    #[doc(hidden)]
+    pub async fn optimize_prune_before(
+        &self,
+        before_timestamp: chrono::DateTime<chrono::Utc>,
+        delete_unverified: Option<bool>,
+        error_if_tagged_old_versions: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        let native = self.as_native().ok_or_else(|| Error::NotSupported {
+            message: "optimize is not supported on LanceDB cloud.".into(),
+        })?;
+        let prune = optimize::cleanup_old_versions_before(
+            native,
+            before_timestamp,
+            delete_unverified,
+            error_if_tagged_old_versions,
+        )
+        .await?;
+        Ok(OptimizeStats {
+            compaction: None,
+            prune: Some(prune),
+        })
+    }
+
     /// Add new columns to the table, providing values to fill in.
     pub fn add_columns(&self) -> AddColumnsBuilder {
         AddColumnsBuilder::new(self.inner.clone())
@@ -1732,9 +1803,10 @@ impl Table {
     /// Declared with
     /// [`AddColumnsBuilder::computed`](add_columns::AddColumnsBuilder::computed),
     /// a column starts empty and gets its values here. Fragments appended
-    /// since the last refresh are filled by the next one; fragments already
-    /// filled are left as they are, so the call is idempotent and does not
-    /// observe a mutated input.
+    /// since the last refresh are filled by the next one, and fragments whose
+    /// inputs changed since they were computed are recomputed (see
+    /// [`freshness`](crate::table::freshness)); everything else is left as
+    /// it is.
     ///
     /// Local tables only: a remote refresh runs as a server job, through
     /// [`Table::refresh_column_async`].
@@ -2787,7 +2859,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
-        computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
+        let batches = computed_columns::admit_create_source(batches)?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2887,6 +2959,7 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
+        let batches = computed_columns::admit_create_source(batches)?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
@@ -5660,7 +5733,7 @@ mod tests {
             TableStatistics {
                 num_rows: 250,
                 num_indices: 0,
-                total_bytes: 8925,
+                total_bytes: 8969,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
@@ -5764,6 +5837,13 @@ mod tests {
             .sum();
         assert!(index_bytes > 0);
         assert_eq!(with_index, data_only + index_bytes);
+
+        // Release builds reject unstable overlay datasets unless explicitly opted in.
+        if !lance_table::feature_flags::can_read_dataset(
+            lance_table::feature_flags::FLAG_UNSTABLE_DATA_OVERLAY_FILES,
+        ) {
+            return;
+        }
 
         // Commit an overlay file supplying new `foo` values for the first three
         // rows of fragment 0. There is no high-level API that writes overlays
