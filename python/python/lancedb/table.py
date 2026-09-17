@@ -309,6 +309,9 @@ class CompactionOptions(TypedDict, total=False):
     max_overlays_per_fragment: Optional[int]
     """Maximum overlays before a fragment is fully compacted."""
 
+    data_storage_version: str
+    """Data-file version or release selector for compacted output."""
+
 
 # Known distance metrics for legacy API detection
 KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}

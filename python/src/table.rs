@@ -18,6 +18,7 @@ use arrow::{
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::blob::{BlobFile, BlobRangeRequest};
+use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, CompactionMode, CompactionOptions, Duration,
@@ -212,6 +213,14 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
             "max_source_bytes" => parsed.max_source_bytes = optional_positive_u64(&value, &key)?,
             "excluded_fragment_ids" => parsed.excluded_fragment_ids = u32_list(&value, &key)?,
             "max_overlays_per_fragment" => parsed.max_overlays_per_fragment = value.extract()?,
+            "data_storage_version" => {
+                let version: String = value.extract()?;
+                parsed.data_storage_version = Some(
+                    version
+                        .parse::<LanceFileVersion>()
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                );
+            }
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "Invalid compaction option: {key}"

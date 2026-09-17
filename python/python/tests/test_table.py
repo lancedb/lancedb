@@ -4124,6 +4124,33 @@ async def test_optimize_compaction_source_limits(
 
 
 @pytest.mark.asyncio
+async def test_optimize_compaction_data_storage_version(
+    mem_db_async: AsyncConnection,
+):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+
+    stats = await table.optimize(
+        compaction_options={
+            "target_rows_per_fragment": 3,
+            "data_storage_version": "2.2",
+        }
+    )
+    assert stats.compaction.fragments_removed == 2
+    assert stats.compaction.fragments_added == 1
+
+    table = await mem_db_async.create_table("cross_family", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+    with pytest.raises(ValueError, match="V1 and V2 storage versions cannot be mixed"):
+        await table.optimize(
+            compaction_options={
+                "target_rows_per_fragment": 3,
+                "data_storage_version": "legacy",
+            }
+        )
+
+
+@pytest.mark.asyncio
 async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnection):
     table = await mem_db_async.create_table("test", data=[{"x": 1}])
     await table.add([{"x": 2}])
@@ -4155,6 +4182,7 @@ async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnect
         ("io_buffer_size", 2**63, "must be at most 9223372036854775807"),
         ("max_source_rows", 0, "must be greater than 0"),
         ("max_source_bytes", 0, "must be greater than 0"),
+        ("data_storage_version", "invalid", "Unknown Lance storage version: invalid"),
         (
             "excluded_fragment_ids",
             [-1],
