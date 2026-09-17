@@ -126,6 +126,7 @@ include = [
     "python/lancedb/rerankers/util.py",
     "python/lancedb/rerankers/__init__.py",
     "python/lancedb/rerankers/voyageai.py",
+    "python/lancedb/rerankers/typesafe.py",
     "python/lancedb/rerankers/jinaai.py",
     "python/lancedb/rerankers/openai.py",
     "python/lancedb/rerankers/cross_encoder.py",

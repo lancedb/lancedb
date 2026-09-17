@@ -21,6 +21,7 @@ from lancedb.rerankers import (
     OpenaiReranker,
     JinaReranker,
     AnswerdotaiRerankers,
+    TypeSafeReranker,
     VoyageAIReranker,
     MRRReranker,
     WatsonxReranker,
@@ -511,6 +512,88 @@ def test_jina_reranker(tmp_path):
 def test_voyageai_reranker(tmp_path):
     pytest.importorskip("voyageai")
     reranker = VoyageAIReranker(model_name="rerank-2.5")
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
+class _FakeTypeSafeClient:
+    """Stands in for ``typesafe_sdk.TypeSafeClient``; scores by word overlap."""
+
+    def __init__(self):
+        self.requests = []
+
+    def system_one(self, state, questions, model):
+        self.requests.append((state, questions, model))
+        query_words = set(state["query"].lower().split())
+        doc_words = set(state["document"].lower().split())
+        noul = len(query_words & doc_words) / len(query_words)
+        answers = {key: type("NoulAnswer", (), {"noul": noul})() for key in questions}
+        return type("SystemOneResponse", (), {"answers": answers})()
+
+
+def test_typesafe_reranker_with_fake_client(tmp_path):
+    reranker = TypeSafeReranker(max_concurrency=4)
+    reranker._client = _FakeTypeSafeClient()
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+    state, questions, model = reranker._client.requests[0]
+    assert model == "jev-latest"
+    assert set(state) == {"query", "document"}
+    assert questions == {
+        "relevance": {
+            "type": "noul",
+            "instructions": reranker.instructions,
+            "criteria": reranker.criteria,
+        }
+    }
+
+
+def test_typesafe_reranker_scores_each_row():
+    reranker = TypeSafeReranker(
+        column="body",
+        instructions="Is this about cats?",
+        criteria={},
+        return_score="all",
+    )
+    reranker._client = _FakeTypeSafeClient()
+    results = pa.table(
+        {
+            "body": ["dogs bark", "cats purr and cats nap", None, "cats"],
+            "_distance": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
+
+    reranked = reranker.rerank_vector("cats nap", results)
+
+    assert reranked["body"].to_pylist() == [
+        "cats purr and cats nap",
+        "cats",
+        "dogs bark",
+        None,
+    ]
+    assert reranked["_relevance_score"].to_pylist() == [1.0, 0.5, 0.0, 0.0]
+    assert reranked["_distance"].to_pylist() == [0.2, 0.4, 0.1, 0.3]
+    # Null documents are scored 0 without a request.
+    assert len(reranker._client.requests) == 3
+    assert reranker._client.requests[0][1] == {
+        "relevance": {"type": "noul", "instructions": "Is this about cats?"}
+    }
+
+
+def test_typesafe_reranker_rejects_invalid_arguments():
+    with pytest.raises(ValueError, match="criteria keys"):
+        TypeSafeReranker(criteria={"yes": "relevant"})
+    with pytest.raises(ValueError, match="max_concurrency"):
+        TypeSafeReranker(max_concurrency=0)
+
+
+@pytest.mark.skipif(
+    os.environ.get("TYPESAFE_API_KEY") is None, reason="TYPESAFE_API_KEY not set"
+)
+def test_typesafe_reranker(tmp_path):
+    pytest.importorskip("typesafe_sdk")
+    reranker = TypeSafeReranker()
     table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
