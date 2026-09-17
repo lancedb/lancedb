@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import deprecation
 import warnings
 from abc import ABC, abstractmethod
@@ -265,12 +266,14 @@ def _into_pyarrow_reader(
 
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
-            schema = data[0].__class__.to_arrow_schema()
+            model_schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
-            return pa.Table.from_pylist(data, schema=schema).to_reader()
+            data = _serialize_json_values(data, schema or model_schema)
+            return pa.Table.from_pylist(data, schema=model_schema).to_reader()
         elif isinstance(data[0], pa.RecordBatch):
             return pa.Table.from_batches(data).to_reader()
         else:
+            data = _serialize_json_values(data, schema)
             return pa.Table.from_pylist(data).to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         table = pa.Table.from_pandas(data, preserve_index=False)
@@ -616,6 +619,61 @@ def _field_extension_name(field: pa.Field) -> Optional[str]:
     if isinstance(extension_name, bytes):
         return extension_name.decode()
     return extension_name
+
+
+def _is_json_field(field: pa.Field) -> bool:
+    return _field_extension_name(field) in ("arrow.json", "lance.json")
+
+
+def _serialize_json_value(value: Any, field: pa.Field) -> Any:
+    if value is None or isinstance(value, str):
+        return value
+    if _is_json_field(field):
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+
+    if pa.types.is_struct(field.type) and isinstance(value, dict):
+        serialized = dict(value)
+        changed = False
+        for child_field in field.type:
+            if child_field.name not in value:
+                continue
+            child_value = _serialize_json_value(value[child_field.name], child_field)
+            if child_value is not value[child_field.name]:
+                serialized[child_field.name] = child_value
+                changed = True
+        return serialized if changed else value
+
+    if _is_list_like(field.type) and isinstance(value, list):
+        values = [_serialize_json_value(item, field.type.value_field) for item in value]
+        return (
+            values if any(new is not old for new, old in zip(values, value)) else value
+        )
+
+    return value
+
+
+def _serialize_json_values(data: Any, target_schema: Optional[pa.Schema]) -> Any:
+    if target_schema is None or not isinstance(data, list):
+        return data
+
+    serialized_rows = []
+    for row in data:
+        if not isinstance(row, dict):
+            serialized_rows.append(row)
+            continue
+        serialized_row = dict(row)
+        changed = False
+        for field in target_schema:
+            if field.name not in row:
+                continue
+            value = _serialize_json_value(row[field.name], field)
+            if value is not row[field.name]:
+                serialized_row[field.name] = value
+                changed = True
+        serialized_rows.append(serialized_row if changed else row)
+    return serialized_rows
 
 
 def _align_field_types(
@@ -5666,6 +5724,7 @@ class AsyncTable:
 
         """
         schema = await self.schema()
+        data = _serialize_json_values(data, schema)
         if on_bad_vectors is None:
             on_bad_vectors = "error"
         if fill_value is None:

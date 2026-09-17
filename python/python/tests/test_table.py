@@ -4,6 +4,7 @@
 
 import ctypes
 import gc
+import json
 import os
 import sys
 import threading
@@ -3025,6 +3026,194 @@ async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
 
     rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
     assert rows == [{"id": "c", "j": '{"k":3}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_python_objects_to_json_column(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("payload", pa.json_()),
+            pa.field("metadata", pa.struct([("label", pa.string())])),
+            pa.field("tags", pa.list_(pa.string())),
+        ]
+    )
+    table = mem_db.create_table("json_python_objects_add", schema=schema)
+    table.add(
+        [
+            {
+                "id": 1,
+                "payload": {"foo": "bar", "count": 2},
+                "metadata": {"label": "dict"},
+                "tags": ["a", "b"],
+            },
+            {
+                "id": 2,
+                "payload": {
+                    "name": "alice",
+                    "tags": ["x", "y"],
+                    "nested": {"enabled": True},
+                },
+                "metadata": {"label": "nested"},
+                "tags": ["c"],
+            },
+            {
+                "id": 3,
+                "payload": ["x", "y", "z"],
+                "metadata": {"label": "list"},
+                "tags": ["d", "e"],
+            },
+            {
+                "id": 4,
+                "payload": '{"foo": "bar"}',
+                "metadata": {"label": "string"},
+                "tags": ["f"],
+            },
+            {
+                "id": 5,
+                "payload": None,
+                "metadata": {"label": "null"},
+                "tags": ["g"],
+            },
+        ]
+    )
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert json.loads(rows[1]["payload"]) == {"foo": "bar", "count": 2}
+    assert json.loads(rows[2]["payload"]) == {
+        "name": "alice",
+        "tags": ["x", "y"],
+        "nested": {"enabled": True},
+    }
+    assert json.loads(rows[3]["payload"]) == ["x", "y", "z"]
+    assert json.loads(rows[4]["payload"]) == {"foo": "bar"}
+    assert rows[5]["payload"] is None
+    assert rows[1]["metadata"] == {"label": "dict"}
+    assert rows[1]["tags"] == ["a", "b"]
+
+    matched = table.query().where("json_extract(payload, '$.count') = '2'").to_list()
+    assert [row["id"] for row in matched] == [1]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_merge_insert_python_objects_to_json_column(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("payload", pa.json_()),
+            pa.field("metadata", pa.struct([("label", pa.string())])),
+            pa.field("tags", pa.list_(pa.string())),
+        ]
+    )
+    table = mem_db.create_table("json_python_objects_merge", schema=schema)
+    table.add(
+        [
+            {
+                "id": 1,
+                "payload": {"old": True},
+                "metadata": {"label": "old"},
+                "tags": ["old"],
+            }
+        ]
+    )
+
+    table.merge_insert(
+        "id"
+    ).when_matched_update_all().when_not_matched_insert_all().execute(
+        [
+            {
+                "id": 1,
+                "payload": {"foo": "bar", "count": 2},
+                "metadata": {"label": "dict"},
+                "tags": ["a", "b"],
+            },
+            {
+                "id": 2,
+                "payload": {
+                    "name": "alice",
+                    "tags": ["x", "y"],
+                    "nested": {"enabled": True},
+                },
+                "metadata": {"label": "nested"},
+                "tags": ["c"],
+            },
+            {
+                "id": 3,
+                "payload": ["x", "y", "z"],
+                "metadata": {"label": "list"},
+                "tags": ["d", "e"],
+            },
+            {
+                "id": 4,
+                "payload": '{"foo": "bar"}',
+                "metadata": {"label": "string"},
+                "tags": ["f"],
+            },
+            {
+                "id": 5,
+                "payload": None,
+                "metadata": {"label": "null"},
+                "tags": ["g"],
+            },
+        ]
+    )
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert json.loads(rows[1]["payload"]) == {"foo": "bar", "count": 2}
+    assert json.loads(rows[2]["payload"]) == {
+        "name": "alice",
+        "tags": ["x", "y"],
+        "nested": {"enabled": True},
+    }
+    assert json.loads(rows[3]["payload"]) == ["x", "y", "z"]
+    assert json.loads(rows[4]["payload"]) == {"foo": "bar"}
+    assert rows[5]["payload"] is None
+    assert rows[1]["metadata"] == {"label": "dict"}
+    assert rows[1]["tags"] == ["a", "b"]
+
+    matched = table.query().where("json_extract(payload, '$.count') = '2'").to_list()
+    assert [row["id"] for row in matched] == [1]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_python_objects_to_nested_json_fields(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info",
+                pa.struct([pa.field("payload", pa.json_())]),
+            ),
+            pa.field("documents", pa.list_(pa.field("item", pa.json_()))),
+        ]
+    )
+    table = mem_db.create_table("nested_json_python_objects_add", schema=schema)
+
+    table.add(
+        [
+            {
+                "id": 1,
+                "info": {"payload": {"kind": "struct", "value": 1}},
+                "documents": [{"kind": "list", "value": 2}],
+            }
+        ]
+    )
+
+    row = table.to_arrow().to_pylist()[0]
+    assert json.loads(row["info"]["payload"]) == {"kind": "struct", "value": 1}
+    assert json.loads(row["documents"][0]) == {"kind": "list", "value": 2}
+    assert [
+        row["id"]
+        for row in table.query()
+        .where("json_extract(info.payload, '$.value') = '1'")
+        .to_list()
+    ] == [1]
+    assert [
+        row["id"]
+        for row in table.query()
+        .where("json_extract(documents[1], '$.value') = '2'")
+        .to_list()
+    ] == [1]
 
 
 @pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
