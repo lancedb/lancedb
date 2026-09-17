@@ -1545,7 +1545,8 @@ impl Connection {
     ///
     /// This validates that the named resource is a materialized view rather
     /// than an ordinary table. Call [`Job::wait`] before assuming physical
-    /// cleanup has finished.
+    /// cleanup has finished. When the backend performs cleanup inline, the
+    /// returned job is already finished and has no job ID.
     ///
     /// ```no_run
     /// # use lancedb::Connection;
