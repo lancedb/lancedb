@@ -170,6 +170,12 @@ listing a storage directory.
 
 ::: lancedb.functions.RefreshColumnResult
 
+::: lancedb.FunctionErrors
+
+::: lancedb.FunctionErrorRecord
+
+::: lancedb.FunctionErrorFragment
+
 ::: lancedb.job.Job
 
 ::: lancedb.job.AsyncJob

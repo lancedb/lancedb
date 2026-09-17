@@ -731,6 +731,101 @@ pub struct RefreshColumnResult {
     pub published_version: Option<u64>,
 }
 
+/// Which per-row errors [`crate::Table::function_errors`] lists. Every
+/// filter is optional; the listing is table-addressed, so with none set it
+/// covers every refresh of every column.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FunctionErrorsRequest {
+    /// Only errors recorded by this job.
+    pub job_id: Option<String>,
+    /// Only errors on this column.
+    pub column: Option<String>,
+    /// At most this many records; the server default is 10000 and its cap
+    /// 100000. [`FunctionErrors::truncated`] says whether the cap was hit.
+    pub limit: Option<usize>,
+}
+
+impl FunctionErrorsRequest {
+    /// A request with no filter.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Only errors recorded by `job_id`.
+    pub fn job_id(mut self, job_id: impl Into<String>) -> Self {
+        self.job_id = Some(job_id.into());
+        self
+    }
+
+    /// Only errors on `column`.
+    pub fn column(mut self, column: impl Into<String>) -> Self {
+        self.column = Some(column.into());
+        self
+    }
+
+    /// At most `limit` records.
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+}
+
+/// One row a Function refresh skipped, as the server recorded it. The
+/// message carries the input that failed, which is why reading errors needs
+/// read access to the table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrorRecord {
+    /// The refresh job that recorded the error.
+    pub job_id: String,
+    /// The fragment holding the row.
+    pub fragment_id: u64,
+    /// The row's offset within the fragment; `None` when the fragment's
+    /// detail was capped and only the fragment summary remains.
+    #[serde(default)]
+    pub row_offset: Option<u32>,
+    /// The column being computed.
+    pub column: String,
+    /// The Function that failed.
+    pub function: String,
+    /// The Function's version.
+    pub function_version: String,
+    /// The table version the refresh read.
+    pub table_version: u64,
+    /// The error's class, as the executor reported it.
+    pub error_type: String,
+    /// The error's text.
+    pub error_message: String,
+    /// When the error was recorded, in milliseconds since the epoch.
+    pub created_at_millis: i64,
+}
+
+/// A fragment whose per-row detail was capped: `rows_skipped` rows failed,
+/// of which only `rows_recorded` have a [`FunctionErrorRecord`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrorFragment {
+    /// The refresh job that recorded the errors.
+    pub job_id: String,
+    /// The fragment.
+    pub fragment_id: u64,
+    /// Rows the refresh skipped in this fragment.
+    pub rows_skipped: u64,
+    /// Rows with a record of their own.
+    pub rows_recorded: u64,
+}
+
+/// A table's per-row Function errors; see [`crate::Table::function_errors`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrors {
+    /// The recorded rows, newest job first.
+    pub records: Vec<FunctionErrorRecord>,
+    /// Fragments whose detail was capped.
+    #[serde(default)]
+    pub fragments: Vec<FunctionErrorFragment>,
+    /// Whether the listing stopped at its limit.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 impl RefreshColumnResult {
     /// Deprecated compatibility alias for `rows_assigned`.
     pub fn rows_filled(&self) -> u64 {

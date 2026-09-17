@@ -3519,6 +3519,35 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })))
     }
 
+    async fn function_errors(
+        &self,
+        request: &crate::function::FunctionErrorsRequest,
+    ) -> Result<crate::function::FunctionErrors> {
+        let mut body = serde_json::json!({});
+        if let Some(job_id) = &request.job_id {
+            body["job_id"] = serde_json::json!(job_id);
+        }
+        if let Some(column) = &request.column {
+            body["column"] = serde_json::json!(column);
+        }
+        if let Some(limit) = request.limit {
+            body["limit"] = serde_json::json!(limit);
+        }
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/errors", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse errors response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
         self.check_mutable().await?;
         let body = alterations
@@ -8186,6 +8215,88 @@ mod tests {
                 if message.contains("refresh_column_async")),
             "{err:?}"
         );
+    }
+
+    /// The error listing is table-addressed with optional job and column
+    /// filters, mirroring the server's SQL surface, and the two non-record
+    /// signals come back as their own fields rather than as rows.
+    #[tokio::test]
+    async fn test_function_errors_lists_the_rows_a_refresh_skipped() {
+        use crate::function::{FunctionErrorFragment, FunctionErrorRecord, FunctionErrorsRequest};
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/errors");
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"job_id": "j-7", "column": "embedding", "limit": 2})
+            );
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"records": [{"job_id": "j-7", "fragment_id": 3, "row_offset": 9,
+                        "column": "embedding", "function": "embed", "function_version": "2",
+                        "table_version": 11, "error_type": "ValueError",
+                        "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
+                        "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
+                        "rows_recorded": 100}],
+                        "truncated": true}"#,
+                )
+                .unwrap()
+        });
+
+        let errors = table
+            .function_errors(
+                FunctionErrorsRequest::new()
+                    .job_id("j-7")
+                    .column("embedding")
+                    .limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            errors.records,
+            [FunctionErrorRecord {
+                job_id: "j-7".into(),
+                fragment_id: 3,
+                row_offset: Some(9),
+                column: "embedding".into(),
+                function: "embed".into(),
+                function_version: "2".into(),
+                table_version: 11,
+                error_type: "ValueError".into(),
+                error_message: "bad input 'x'".into(),
+                created_at_millis: 1_700_000_000_000,
+            }]
+        );
+        assert_eq!(
+            errors.fragments,
+            [FunctionErrorFragment {
+                job_id: "j-7".into(),
+                fragment_id: 4,
+                rows_skipped: 500,
+                rows_recorded: 100,
+            }]
+        );
+        assert!(errors.truncated);
+
+        // No filter sends no filter, and an empty listing reads as such.
+        let table = Table::new_with_handler("my_table", |request| {
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(value, serde_json::json!({}));
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"records": []}"#)
+                .unwrap()
+        });
+        let errors = table
+            .function_errors(FunctionErrorsRequest::new())
+            .await
+            .unwrap();
+        assert_eq!(errors, crate::function::FunctionErrors::default());
     }
 
     /// The refresh handle is wrapped for read-freshness tracking, so it has to
