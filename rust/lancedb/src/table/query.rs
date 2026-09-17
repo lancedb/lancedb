@@ -17,11 +17,15 @@ use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::Array;
 use arrow_schema::{DataType, Schema};
+use datafusion_common::tree_node::{Transformed, TreeNode};
 use datafusion_common::{Column, DataFusionError, SchemaError};
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion_physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion_physical_plan::limit::GlobalLimitExec;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
+use datafusion_physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion_physical_plan::union::UnionExec;
+use datafusion_physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
@@ -382,10 +386,42 @@ pub async fn create_plan(
         scanner.order_by(Some(order_by.clone()))?;
     }
 
-    scanner
+    let plan = scanner
         .create_plan()
         .await
-        .map_err(|error| enrich_lance_field_not_found(error, schema))
+        .map_err(|error| enrich_lance_field_not_found(error, schema))?;
+    preserve_ordered_global_limits(plan)
+}
+
+/// Preserve an ordered input when Lance's distribution optimizer coalesces it for a limit.
+///
+/// Exact KNN plans sort row ids before applying their global limit. At parallelism greater
+/// than one, `EnforceDistribution` can insert a [`CoalescePartitionsExec`] immediately below
+/// that limit. A plain coalesce concatenates its ordered input partitions in completion order,
+/// so a later materialization step can return individually sorted batches in the wrong global
+/// order. Replace only this limit-bound coalesce with an order-preserving merge.
+fn preserve_ordered_global_limits(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(plan
+        .transform_up(|plan| {
+            let Some(limit) = plan.downcast_ref::<GlobalLimitExec>() else {
+                return Ok(Transformed::no(plan));
+            };
+            let Some(coalesce) = limit.input().downcast_ref::<CoalescePartitionsExec>() else {
+                return Ok(Transformed::no(plan));
+            };
+            let input = coalesce.input();
+            let Some(ordering) = input.output_ordering().cloned() else {
+                return Ok(Transformed::no(plan));
+            };
+
+            let merge: Arc<dyn ExecutionPlan> = Arc::new(
+                SortPreservingMergeExec::new(ordering, input.clone()).with_fetch(coalesce.fetch()),
+            );
+            let mut replacement = GlobalLimitExec::new(merge, limit.skip(), limit.fetch());
+            replacement.set_required_ordering(limit.required_ordering().clone());
+            Ok(Transformed::yes(Arc::new(replacement)))
+        })?
+        .data)
 }
 
 /// Replace DataFusion's top-level field candidates with qualified leaf paths.
@@ -1022,6 +1058,108 @@ mod tests {
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         let count: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(count, 2); // 4 and 5
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_exact_knn_large_limit_preserves_global_order() {
+        use crate::connect;
+        use arrow_array::cast::AsArray;
+        use arrow_schema::{DataType, Field, Schema};
+        use lance_index::vector::DIST_COL;
+
+        const ROWS: usize = 20_000;
+        const LIMIT: usize = 12_000;
+
+        fn has_order_losing_limit(plan: &Arc<dyn ExecutionPlan>) -> bool {
+            if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>()
+                && let Some(coalesce) = limit.input().downcast_ref::<CoalescePartitionsExec>()
+                && coalesce.input().output_ordering().is_some()
+            {
+                return true;
+            }
+            plan.children()
+                .iter()
+                .any(|child| has_order_losing_limit(child))
+        }
+
+        fn has_order_preserving_limit(plan: &Arc<dyn ExecutionPlan>) -> bool {
+            if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>()
+                && limit
+                    .input()
+                    .downcast_ref::<SortPreservingMergeExec>()
+                    .is_some()
+            {
+                return true;
+            }
+            plan.children()
+                .iter()
+                .any(|child| has_order_preserving_limit(child))
+        }
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let ids = Arc::new(Int32Array::from_iter_values(0..ROWS as i32));
+        let vectors = Arc::new(fixed_size_list_array(
+            (0..ROWS).flat_map(|value| [value as f32, 0.0]).collect(),
+            2,
+        ));
+        // This column is materialized after the KNN limit, matching the plan shape
+        // that exposed the internal coalesce in the reported Python query.
+        let payload = Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+            "payload", ROWS,
+        )));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![ids, vectors, payload]).unwrap();
+        let table = conn
+            .create_table("ordered_exact_knn", batch)
+            .execute()
+            .await
+            .unwrap();
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+
+        let mut scanner = dataset.scan();
+        let query = Float32Array::from(vec![0.0, 0.0]);
+        scanner.nearest("vector", &query, LIMIT).unwrap();
+        scanner.limit(Some(LIMIT as i64), None).unwrap();
+        scanner.target_parallelism(8);
+        let plan = scanner.create_plan().await.unwrap();
+        let displayed =
+            datafusion_physical_plan::display::DisplayableExecutionPlan::new(plan.as_ref())
+                .indent(true)
+                .to_string();
+
+        assert!(
+            has_order_losing_limit(&plan),
+            "test setup must contain an ordered input coalesced below a global limit:\n{displayed}"
+        );
+        let plan = preserve_ordered_global_limits(plan).unwrap();
+        assert!(!has_order_losing_limit(&plan));
+        assert!(has_order_preserving_limit(&plan));
+
+        let stream = execute_plan(plan, Default::default()).unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let mut distances = Vec::with_capacity(LIMIT);
+        for batch in batches {
+            distances.extend_from_slice(
+                batch
+                    .column_by_name(DIST_COL)
+                    .unwrap()
+                    .as_primitive::<Float32Type>()
+                    .values(),
+            );
+        }
+        assert_eq!(distances.len(), LIMIT);
+        for pair in distances.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "exact KNN distances must be globally ordered, found {} before {}",
+                pair[0],
+                pair[1]
+            );
+        }
     }
 
     #[tokio::test]
