@@ -34,7 +34,9 @@ class TypeSafeReranker(Reranker):
     whether the document is relevant. The probability of "yes", between 0 and 1,
     becomes the ``_relevance_score``. Because every score is an absolute
     probability rather than a position in the list, scores are comparable
-    across queries and can be thresholded.
+    across queries and can be thresholded. They are model estimates, though,
+    and can vary slightly between identical calls, so results with close scores
+    may swap places when the same search is repeated.
 
     One request is sent per result, up to ``max_concurrency`` at a time.
 

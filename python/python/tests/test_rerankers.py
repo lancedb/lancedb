@@ -102,7 +102,15 @@ def get_test_table(tmp_path):
     return table, MyTable
 
 
-def _run_test_reranker(reranker, table, query, query_vector, schema):
+def _run_test_reranker(
+    reranker, table, query, query_vector, schema, deterministic=True
+):
+    """Exercise a reranker across search types.
+
+    Set ``deterministic=False`` for rerankers whose scores can vary between
+    identical calls, such as remote model APIs; repeated searches are then not
+    expected to return the same order.
+    """
     # Hybrid search setting
     result1 = (
         table.search(query, query_type="hybrid", vector_column_name="vector")
@@ -114,7 +122,8 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .rerank(reranker=reranker)
         .to_pydantic(schema)
     )
-    assert result1 == result2
+    if deterministic:
+        assert result1 == result2
 
     query_vector = table.to_pandas()["vector"][0]
     result = (
@@ -204,7 +213,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
     )
     assert len(result_deduped) <= 20
     result_arrow = reranker.rerank_multivector([rs1.to_arrow(), rs2.to_arrow()], query)
-    assert len(result) == 20 and result == result_arrow
+    assert len(result) == 20 and len(result_arrow) == 20
+    if deterministic:
+        assert result == result_arrow
 
 
 def _run_test_hybrid_reranker(reranker, tmp_path):
@@ -595,7 +606,14 @@ def test_typesafe_reranker(tmp_path):
     pytest.importorskip("typesafe_sdk")
     reranker = TypeSafeReranker()
     table, schema = get_test_table(tmp_path)
-    _run_test_reranker(reranker, table, "single player experience", None, schema)
+    _run_test_reranker(
+        reranker,
+        table,
+        "single player experience",
+        None,
+        schema,
+        deterministic=False,
+    )
 
 
 def test_empty_result_reranker():
