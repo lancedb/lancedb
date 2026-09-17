@@ -391,6 +391,9 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
     Ok(())
 }
 
+/// Refuse `operation` outright on a table with a Function binding. For
+/// operations that cannot say which columns they touch; the others use
+/// [`ensure_not_function_bound`].
 pub(crate) fn ensure_no_function_bindings_for_mutation(
     schema: &ArrowSchema,
     operation: &str,
@@ -402,6 +405,49 @@ pub(crate) fn ensure_no_function_bindings_for_mutation(
                 "{operation} is not supported on a table with registered Function bindings"
             ),
         });
+    }
+    Ok(())
+}
+
+/// Refuse `operation` only when a path in `touched` names a column a Function
+/// binding depends on: an input's root, an output, or the assignment column.
+/// A binding stores those columns' exact Arrow fields, so editing one strands it.
+pub(crate) fn ensure_not_function_bound<S: AsRef<str>>(
+    schema: &ArrowSchema,
+    operation: &str,
+    touched: impl IntoIterator<Item = S>,
+) -> Result<()> {
+    ensure_supported_function_metadata(schema)?;
+    let mut protected = BTreeSet::new();
+    for binding in function_bindings(schema)? {
+        for input in binding.inputs() {
+            protected.insert(field_root(&input.field_path)?);
+        }
+        protected.extend(
+            binding
+                .outputs()
+                .iter()
+                .map(|output| output.output_name.clone()),
+        );
+        protected.extend(
+            binding
+                .assignment()
+                .map(|assignment| assignment.output_name.clone()),
+        );
+    }
+    if protected.is_empty() {
+        return Ok(());
+    }
+    for path in touched {
+        let column = field_root(path.as_ref())?;
+        if protected.contains(&column) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "{operation} of '{column}' is not supported: a Function binding reads or \
+                     writes it"
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -1324,7 +1370,7 @@ pub(crate) fn ensure_not_written<'a>(
         .map(|declaration| declaration.name)
         .collect();
     for name in written {
-        if declared.iter().any(|declared| declared == root(name)) {
+        if declared.iter().any(|declared| *declared == root(name)) {
             return Err(Error::InvalidInput {
                 message: format!(
                     "column '{}' is computed; its values come from refresh and cannot be \
@@ -1517,9 +1563,24 @@ pub(crate) fn ensure_not_retyped(schema: &ArrowSchema, paths: &[&str]) -> Result
     Ok(())
 }
 
-/// The top-level column a possibly nested input path reads.
-pub(crate) fn root(path: &str) -> &str {
-    path.split('.').next().unwrap_or(path)
+/// The top-level column a path addresses, by the grammar lance resolves it
+/// with, so a quoted spelling names the same column as a bare one.
+pub(crate) fn field_root(path: &str) -> Result<String> {
+    parse_field_path(path)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid column path '{path}': {e}"),
+        })?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::InvalidInput {
+            message: format!("column path '{path}' is empty"),
+        })
+}
+
+/// [`field_root`], falling back to the text before the first dot for a
+/// spelling lance would not resolve.
+pub(crate) fn root(path: &str) -> String {
+    field_root(path).unwrap_or_else(|_| path.split('.').next().unwrap_or(path).to_string())
 }
 
 /// A declaration's expression bound to a schema, ready to evaluate.
@@ -1743,7 +1804,7 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
     let mut indices = Vec::with_capacity(inputs.len());
     for input in &inputs {
         let index = runtime_schema
-            .index_of(root(input))
+            .index_of(&root(input))
             .map_err(|_| invalid(format!("unknown column '{input}'")))?;
         if !indices.contains(&index) {
             indices.push(index);
@@ -1878,7 +1939,11 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
 /// assert!(validate_declarations(schema, &[("c".into(), "random()".into())]).is_err());
 /// ```
 pub fn validate_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<()> {
-    ensure_no_function_bindings_for_mutation(schema.as_ref(), "schema evolution")?;
+    ensure_not_function_bound(
+        schema.as_ref(),
+        "schema evolution",
+        columns.iter().map(|(name, _)| name),
+    )?;
     plan(schema, columns).map(drop)
 }
 
@@ -3189,6 +3254,72 @@ mod tests {
             &binding,
         )
         .unwrap();
+    }
+
+    /// The scoped guard refuses exactly the columns a binding uses -- input
+    /// roots, outputs and the assignment column -- and nothing else.
+    #[test]
+    fn test_function_bound_columns_are_the_only_ones_refused() {
+        let mut raw_binding: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        raw_binding["outputs"][0]["nullable"] = Value::Bool(true);
+        raw_binding["outputs"][1]["nullable"] = Value::Bool(true);
+        raw_binding["assignment"] = serde_json::json!({
+            "output_name": "__function_assignment_fb_01K3TEXT",
+            "output_field_id": -1,
+        });
+        raw_binding["output_schema"]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "__function_assignment_fb_01K3TEXT",
+                "nullable": true,
+                "type": {"type": "bool"},
+            }));
+        let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
+        let mut fields = valid_function_binding_schema(true, true, &binding)
+            .fields()
+            .to_vec();
+        fields.push(Arc::new(ArrowField::new("spare", DataType::Int32, true)));
+        let schema = ArrowSchema::new_with_metadata(
+            fields,
+            HashMap::from([(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                function_bindings_metadata(std::slice::from_ref(&binding)).unwrap(),
+            )]),
+        );
+
+        ensure_not_function_bound(
+            &schema,
+            "schema evolution",
+            ["spare", "spare.nested", "new", "`spare`", "`spare.nested`"],
+        )
+        .unwrap();
+        for path in [
+            "title",
+            "body.nested",
+            "search_text",
+            "search_token_count",
+            "__function_assignment_fb_01K3TEXT",
+            "`title`",
+            "`body`.nested",
+            "`search_text`",
+        ] {
+            let err = ensure_not_function_bound(&schema, "schema evolution", [path]).unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidInput { message }
+                    if message.contains("a Function binding reads or writes it")),
+                "{path}: {err:?}"
+            );
+        }
+        // A spelling lance cannot resolve is refused rather than compared as text.
+        let err = ensure_not_function_bound(&schema, "schema evolution", ["`title"]).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("invalid column path")),
+            "{err:?}"
+        );
     }
 
     #[test]
