@@ -4483,12 +4483,12 @@ class LanceTable(Table):
     def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
         """Merge Enterprise table overrides into the current table overrides.
 
-        Only fields supplied in ``overrides`` are changed; unrelated existing
-        overrides are preserved by the remote service update flow.
+        Only fields supplied in ``overrides`` are changed; unrelated overrides
+        from the current read snapshot are preserved.
 
         Examples
         --------
-        >>> table.update_table_overrides(
+        >>> table.update_table_overrides(  # doctest: +SKIP
         ...     job_types={
         ...         "compaction": {"enabled": True},
         ...         "cleanup": {"enabled": False},
@@ -5252,12 +5252,12 @@ class AsyncTable:
     async def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
         """Merge Enterprise table overrides into the current table overrides.
 
-        Only fields supplied in ``overrides`` are changed; unrelated existing
-        overrides are preserved by the remote service update flow.
+        Only fields supplied in ``overrides`` are changed; unrelated overrides
+        from the current read snapshot are preserved.
 
         Examples
         --------
-        >>> await table.update_table_overrides(
+        >>> await table.update_table_overrides(  # doctest: +SKIP
         ...     job_types={
         ...         "compaction": {"enabled": True},
         ...         "cleanup": {"enabled": False},
