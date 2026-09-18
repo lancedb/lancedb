@@ -44,6 +44,75 @@ from utils import exception_output
 TEST_LANGUAGE_MODEL_HOME = Path(__file__).parent / "models"
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.parametrize("block_size", [128, 256])
+def test_json_fts(tmp_path, block_size):
+    db = ldb.connect(tmp_path)
+    data = pa.table(
+        {
+            "id": [0, 1, 2, 3],
+            "doc": pa.array(
+                [
+                    '{"title":"brown fox","meta":{"tag":"nature"},"author":"alice"}',
+                    '{"title":"blue car","meta":{"tag":"city"}}',
+                    '{"title":"brown bear","meta":{"tag":"nature"}}',
+                    '{"title":"red fox","author":"alice"}',
+                ],
+                type=pa.json_(),
+            ),
+        }
+    )
+    table = db.create_table("json_fts", data)
+    table.create_index("doc", config=FTS(block_size=block_size), name="doc_fts")
+    table = db.open_table("json_fts")
+    index = table.list_indices()[0]
+    assert index.name == "doc_fts"
+    assert index.index_type == "FTS"
+    assert index.columns == ["doc"]
+    stats = table.index_stats("doc_fts")
+    assert stats.num_indexed_rows == 4
+    assert stats.num_unindexed_rows == 0
+
+    for query, expected in [
+        ("title,str,brown", [0, 2]),
+        ("meta.tag,str,nature", [0, 2]),
+        ("author,str,alice", [0, 3]),
+        ("title,str,alice", []),
+        ("title,str,title", []),
+    ]:
+        search = table.search(query, query_type="fts", fts_columns="doc")
+        assert sorted(row["id"] for row in search.to_list()) == expected
+        plan = search.explain_plan(True)
+        assert "MatchQuery" in plan, plan
+        assert "FlatMatchQuery" not in plan, plan
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_json_fts_async(tmp_path):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "json_fts",
+        pa.table({"doc": pa.array(['{"meta":{"tag":"nature"}}'], type=pa.json_())}),
+    )
+    await table.create_index("doc", config=FTS())
+    search = table.query().nearest_to_text(MatchQuery("meta.tag,str,nature", "doc"))
+    assert len(await search.to_list()) == 1
+    plan = await search.explain_plan(True)
+    assert "MatchQuery" in plan, plan
+    assert "FlatMatchQuery" not in plan, plan
+
+
+@pytest.mark.parametrize("dtype", [pa.binary(), pa.large_binary()])
+def test_fts_rejects_raw_binary(tmp_path, dtype):
+    table = ldb.connect(tmp_path).create_table(
+        "binary_fts", pa.table({"doc": pa.array([b'{"title":"brown"}'], type=dtype)})
+    )
+    with pytest.raises(ValueError, match="FTS.*lance.json.*raw binary"):
+        table.create_index("doc", config=FTS())
+    assert table.list_indices() == []
+
+
 @pytest.fixture
 def table(tmp_path) -> ldb.table.LanceTable:
     # Use local random state to avoid affecting other tests

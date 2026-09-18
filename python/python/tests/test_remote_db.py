@@ -1034,6 +1034,72 @@ def test_remote_job_wait_raises_on_failure():
             job.wait()
 
 
+@pytest.mark.parametrize("server_version", ["0.2.0", "0.6.0"])
+def test_remote_json_fts_config(server_version):
+    from lancedb.index import FTS
+
+    received_requests = []
+
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.send_header("phalanx-version", server_version)
+        request.end_headers()
+        if request.path == "/v1/table/test/describe/":
+            fields = [
+                {
+                    "name": "doc",
+                    "type": {"type": "large_binary"},
+                    "nullable": True,
+                    "metadata": {"ARROW:extension:name": "lance.json"},
+                },
+                {
+                    "name": "raw",
+                    "type": {"type": "large_binary"},
+                    "nullable": True,
+                },
+            ]
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": fields}}).encode()
+            )
+        elif request.path == "/v1/table/test/create_index/":
+            received_requests.append(read_json_body(request))
+            request.wfile.write(b"{}")
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.create_index(
+            "doc",
+            config=FTS(
+                with_position=True,
+                base_tokenizer="whitespace",
+                stem=False,
+                remove_stop_words=False,
+                lower_case=False,
+                block_size=256,
+            ),
+            name="doc_fts",
+            replace=False,
+        )
+        with pytest.raises(ValueError, match="FTS.*lance.json.*raw binary"):
+            table.create_index("raw", config=FTS())
+
+    assert len(received_requests) == 1
+    request = received_requests[0]
+    assert request["column"] == "doc"
+    assert request["index_type"] == "FTS"
+    assert request["name"] == "doc_fts"
+    assert request["replace"] is False
+    assert request["with_position"] is True
+    assert request["base_tokenizer"] == "whitespace"
+    assert request["stem"] is False
+    assert request["remove_stop_words"] is False
+    assert request["lower_case"] is False
+    assert request["block_size"] == 256
+
+
 def test_remote_create_index_new_api():
     received_requests = []
 
