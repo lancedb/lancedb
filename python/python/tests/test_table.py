@@ -1612,7 +1612,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
     mock_create_index.assert_called_with(
         "my_vector",
-        replace=True,
+        replace=False,
         config=expected_config,
         wait_timeout=None,
         name=None,
@@ -1632,7 +1632,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
     mock_create_index.assert_called_with(
         "my_vector",
-        replace=True,
+        replace=False,
         config=expected_config,
         wait_timeout=None,
         name=None,
@@ -1658,7 +1658,7 @@ def test_create_index_name_and_train_parameters(
     expected_config = IvfPq()  # Default config
     mock_create_index.assert_called_with(
         "vector",
-        replace=True,
+        replace=False,
         config=expected_config,
         wait_timeout=None,
         name="my_custom_index",
@@ -1669,7 +1669,7 @@ def test_create_index_name_and_train_parameters(
     table.create_index(vector_column_name="vector", train=False)
     mock_create_index.assert_called_with(
         "vector",
-        replace=True,
+        replace=False,
         config=expected_config,
         wait_timeout=None,
         name=None,
@@ -1680,7 +1680,7 @@ def test_create_index_name_and_train_parameters(
     table.create_index(vector_column_name="vector", name="my_index_name", train=True)
     mock_create_index.assert_called_with(
         "vector",
-        replace=True,
+        replace=False,
         config=expected_config,
         wait_timeout=None,
         name="my_index_name",
@@ -1717,7 +1717,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
         table.create_index("vector", config=IvfPq(distance_type="l2"))
     mock_create_index.assert_called_with(
         "vector",
-        replace=True,
+        replace=False,
         config=IvfPq(distance_type="l2"),
         wait_timeout=None,
         name=None,
@@ -1728,7 +1728,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
     table.create_index("category", config=BTree())
     mock_create_index.assert_called_with(
         "category",
-        replace=True,
+        replace=False,
         config=BTree(),
         wait_timeout=None,
         name=None,
@@ -1739,7 +1739,7 @@ def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
     table.create_index("text", config=FTS(with_position=True))
     mock_create_index.assert_called_with(
         "text",
-        replace=True,
+        replace=False,
         config=FTS(with_position=True),
         wait_timeout=None,
         name=None,

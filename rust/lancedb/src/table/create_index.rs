@@ -757,12 +757,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Rebuilding the same index without replace fails once the build
+        // Rebuilding the same index without explicit replace fails once the build
         // starts, so the failure reaches the job rather than execute_async.
         let job = Arc::new(
             table
                 .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
-                .replace(false)
                 .execute_async()
                 .await
                 .unwrap(),
@@ -801,7 +800,6 @@ mod tests {
 
         let job = table
             .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
-            .replace(false)
             .execute_async()
             .await
             .unwrap();
@@ -1138,6 +1136,7 @@ mod tests {
         // Can also specify btree
         table
             .create_index(&["i"], Index::BTree(BTreeIndexBuilder::default()))
+            .replace(true)
             .execute()
             .await
             .unwrap();
