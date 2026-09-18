@@ -522,7 +522,7 @@ def test_stored_queries_and_legacy_layouts_are_read():
 
     # A newer writer's layout is reported, never guessed at.
     for newer in (
-        {"format": 2, "query": query},
+        {"format": 3, "query": query},
         {"kind": "select_v3", "source_table": "people"},
     ):
         with pytest.raises(NotImplementedError, match="cannot refresh"):
