@@ -448,7 +448,7 @@ enum BodyLogging {
 /// always splits back into the parts that made it. The configuration field
 /// exists because the identifier grammar comes from the Lance REST catalog
 /// standard, which carries a delimiter setting for other catalogs to adopt.
-pub(crate) const ID_DELIMITER: &str = "$";
+pub const ID_DELIMITER: &str = "$";
 
 fn validate_id_delimiter(delimiter: &str) -> Result<()> {
     if delimiter != ID_DELIMITER {
@@ -765,6 +765,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.post(full_uri)
+    }
+
+    pub fn put(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.put(full_uri)
     }
 
     /// Apply dynamic headers from the header provider if configured

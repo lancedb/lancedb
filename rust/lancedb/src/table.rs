@@ -39,6 +39,7 @@ use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use serde::{Deserialize, Serialize};
+pub type TableOverrides = serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::format;
 use std::path::Path;
@@ -704,6 +705,33 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
         Err(Error::NotSupported {
             message: "get_lsm_write_spec is not supported on this table type".into(),
+        })
+    }
+    /// Read Enterprise table overrides.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn get_table_overrides(&self) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "get_table_overrides is supported only on remote Enterprise tables".into(),
+        })
+    }
+    /// Merge Enterprise table overrides into the currently stored object.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn update_table_overrides(&self, _overrides: TableOverrides) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "update_table_overrides is supported only on remote Enterprise tables".into(),
+        })
+    }
+    /// Clear Enterprise table overrides.
+    ///
+    /// The default implementation returns `NotSupported`; Enterprise remote
+    /// tables override it.
+    async fn reset_table_overrides(&self) -> Result<TableOverrides> {
+        Err(Error::NotSupported {
+            message: "reset_table_overrides is supported only on remote Enterprise tables".into(),
         })
     }
     /// Seal every bucket's active memtable into L0.
@@ -2007,6 +2035,33 @@ impl Table {
     /// ```
     pub async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
         self.inner.get_lsm_write_spec().await
+    }
+
+    /// Read Enterprise table overrides for this table.
+    ///
+    /// Table overrides configure Enterprise-managed background behavior such as
+    /// automatic compaction, cleanup, and reindex execution. Local tables return
+    /// `NotSupported` because they do not have an Enterprise background planner
+    /// consuming these overrides.
+    pub async fn get_table_overrides(&self) -> Result<TableOverrides> {
+        self.inner.get_table_overrides().await
+    }
+
+    /// Merge Enterprise table overrides into the current stored overrides.
+    ///
+    /// This method uses patch semantics: fields present in `overrides` are
+    /// recursively merged into the existing table overrides and unrelated fields
+    /// are preserved.
+    pub async fn update_table_overrides(
+        &self,
+        overrides: TableOverrides,
+    ) -> Result<TableOverrides> {
+        self.inner.update_table_overrides(overrides).await
+    }
+
+    /// Clear Enterprise table overrides for this table.
+    pub async fn reset_table_overrides(&self) -> Result<TableOverrides> {
+        self.inner.reset_table_overrides().await
     }
 
     /// Converge this table's LSM write path into its base table.

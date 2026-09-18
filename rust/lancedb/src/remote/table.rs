@@ -489,6 +489,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
 
 pub struct RemoteTable<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
+    db_name: String,
     name: String,
     namespace: Vec<String>,
     identifier: String,
@@ -514,6 +515,48 @@ impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
 }
 
 impl<S: HttpSend> RemoteTable<S> {
+    fn table_overrides_query(&self) -> Vec<(&str, &str)> {
+        let mut query = Vec::with_capacity(3 + self.namespace.len());
+        query.push(("db", self.db_name.as_str()));
+        query.push(("table", self.name.as_str()));
+        for namespace in &self.namespace {
+            query.push(("namespace", namespace.as_str()));
+        }
+        if let Some(branch) = self.branch.as_deref() {
+            query.push(("branch", branch));
+        }
+        query
+    }
+
+    fn table_overrides_set_body(&self, overrides: serde_json::Value) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "db": &self.db_name,
+            "namespace": &self.namespace,
+            "table": &self.name,
+            "overrides": overrides,
+        });
+        if let Some(branch) = &self.branch {
+            body["branch"] = serde_json::Value::String(branch.clone());
+        }
+        body
+    }
+
+    fn merge_table_overrides(
+        target: &mut serde_json::Map<String, serde_json::Value>,
+        patch: serde_json::Map<String, serde_json::Value>,
+    ) {
+        for (key, value) in patch {
+            match (target.get_mut(&key), value) {
+                (Some(serde_json::Value::Object(existing)), serde_json::Value::Object(patch)) => {
+                    Self::merge_table_overrides(existing, patch);
+                }
+                (_, value) => {
+                    target.insert(key, value);
+                }
+            }
+        }
+    }
+
     async fn submit_create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
         self.check_mutable().await?;
         let request = self
@@ -651,6 +694,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
     pub fn new(
         client: RestfulLanceDbClient<S>,
+        db_name: String,
         name: String,
         namespace: Vec<String>,
         identifier: String,
@@ -658,6 +702,7 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Self {
         Self {
             client,
+            db_name,
             name,
             namespace,
             identifier,
@@ -691,6 +736,7 @@ impl<S: HttpSend> RemoteTable<S> {
     fn with_branch(&self, branch: Option<String>) -> Self {
         Self {
             client: self.client.clone(),
+            db_name: self.db_name.clone(),
             name: self.name.clone(),
             namespace: self.namespace.clone(),
             identifier: self.identifier.clone(),
@@ -1594,6 +1640,7 @@ mod test_utils {
             let client = client_with_handler(handler);
             Self {
                 client,
+                db_name: "default".to_string(),
                 name: name.clone(),
                 namespace: vec![],
                 identifier: name,
@@ -1618,6 +1665,7 @@ mod test_utils {
             let client = client_with_handler_and_interval(handler, read_consistency_interval);
             Self {
                 client,
+                db_name: "default".to_string(),
                 name: name.clone(),
                 namespace: vec![],
                 identifier: name,
@@ -1651,6 +1699,7 @@ mod test_utils {
             let client = client_with_handler_and_config(handler, config);
             Self {
                 client,
+                db_name: "default".to_string(),
                 name: name.clone(),
                 namespace: vec![],
                 identifier: name,
@@ -3276,6 +3325,56 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         .with_writer_config_defaults(body.writer_config_defaults);
 
         Ok(Some(spec))
+    }
+
+    async fn get_table_overrides(&self) -> Result<serde_json::Value> {
+        let request = self
+            .client
+            .get("/admin/table/overrides")
+            .query(&self.table_overrides_query());
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn update_table_overrides(
+        &self,
+        overrides: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.check_mutable().await?;
+        let serde_json::Value::Object(patch) = overrides else {
+            return Err(Error::InvalidInput {
+                message: "table overrides update must be a JSON object".into(),
+            });
+        };
+
+        let current = self.get_table_overrides().await?;
+        let mut current = match current {
+            serde_json::Value::Object(current) => current,
+            other => {
+                return Err(Error::InvalidInput {
+                    message: format!("table overrides response must be an object, got {other}"),
+                });
+            }
+        };
+        Self::merge_table_overrides(&mut current, patch);
+        let merged = serde_json::Value::Object(current);
+        let body = self.table_overrides_set_body(merged);
+        let request = self.client.put("/admin/table/overrides").json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn reset_table_overrides(&self) -> Result<serde_json::Value> {
+        self.check_mutable().await?;
+        let request = self
+            .client
+            .post("/admin/table/overrides/reset")
+            .query(&self.table_overrides_query());
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -9043,6 +9142,116 @@ mod tests {
                 .unwrap()
         });
         assert!(table.get_lsm_write_spec().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_table_overrides() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "GET");
+            assert_eq!(request.url().path(), "/admin/table/overrides");
+            assert_eq!(request.url().query(), Some("db=default&table=my_table"));
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "job_types": {
+                            "cleanup": { "enabled": false }
+                        }
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+
+        let overrides = table.get_table_overrides().await.unwrap();
+        assert_eq!(overrides["job_types"]["cleanup"]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn test_update_table_overrides_merges_existing_fields() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            match seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => {
+                    assert_eq!(request.method(), "GET");
+                    assert_eq!(request.url().path(), "/admin/table/overrides");
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            serde_json::json!({
+                                "job_types": {
+                                    "compaction": { "enabled": true },
+                                    "reindex_vector": {
+                                        "table": { "num_workers": 3 }
+                                    }
+                                },
+                                "unknown": { "keep": true }
+                            })
+                            .to_string(),
+                        )
+                        .unwrap()
+                }
+                1 => {
+                    assert_eq!(request.method(), "PUT");
+                    assert_eq!(request.url().path(), "/admin/table/overrides");
+                    let body = request_body_json(&request);
+                    assert_eq!(body["db"], "default");
+                    assert_eq!(body["table"], "my_table");
+                    assert_eq!(body["namespace"], serde_json::json!([]));
+                    assert_eq!(
+                        body["overrides"],
+                        serde_json::json!({
+                            "job_types": {
+                                "compaction": { "enabled": true },
+                                "cleanup": { "enabled": false },
+                                "reindex_vector": {
+                                    "table": { "num_workers": 3 }
+                                }
+                            },
+                            "unknown": { "keep": true }
+                        })
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(body["overrides"].to_string())
+                        .unwrap()
+                }
+                _ => panic!("unexpected request"),
+            }
+        });
+
+        let updated = table
+            .update_table_overrides(serde_json::json!({
+                "job_types": {
+                    "cleanup": { "enabled": false }
+                }
+            }))
+            .await
+            .unwrap();
+        assert_eq!(updated["job_types"]["cleanup"]["enabled"], false);
+        assert_eq!(updated["job_types"]["compaction"]["enabled"], true);
+        assert_eq!(
+            updated["job_types"]["reindex_vector"]["table"]["num_workers"],
+            3
+        );
+        assert_eq!(updated["unknown"]["keep"], true);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_reset_table_overrides() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/admin/table/overrides/reset");
+            assert_eq!(request.url().query(), Some("db=default&table=my_table"));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+
+        assert_eq!(
+            table.reset_table_overrides().await.unwrap(),
+            serde_json::json!({})
+        );
     }
 
     /// Build a `get_lsm_stats` body for one bucket holding `generations`.
