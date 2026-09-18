@@ -2130,6 +2130,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     })
                     .collect(),
                 filter: response.filter,
+                group_by: Vec::new(),
                 limit: response.limit,
             },
         };

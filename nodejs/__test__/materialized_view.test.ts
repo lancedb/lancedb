@@ -54,7 +54,7 @@ describe("materialized views", () => {
 
     // A newer writer's layout is reported, never guessed at.
     for (const newer of [
-      `{"format":2,"query":${JSON.stringify(query)}}`,
+      `{"format":3,"query":${JSON.stringify(query)}}`,
       '{"kind":"select_v3","source_table":"people"}',
     ]) {
       expect(() => read(newer)).toThrow(/cannot refresh/);
