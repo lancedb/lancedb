@@ -20,6 +20,7 @@ import {
   VectorQuery,
   blob,
   connect,
+  makeJsonField,
   tokenize,
 } from "../lancedb";
 import {
@@ -31,6 +32,7 @@ import {
   Int32,
   Int64,
   List,
+  Map_,
   Schema,
   SchemaLike,
   Struct,
@@ -3901,15 +3903,10 @@ describe("when creating an empty table", () => {
   it("can add and query JSON data", async () => {
     const schema = new Schema([
       new Field("id", new Int32(), true),
-      new Field(
-        "meta",
-        new Utf8(),
-        true,
-        new Map([["ARROW:extension:name", "arrow.json"]]),
-      ),
+      makeJsonField("meta"),
     ]);
     const table = await con.createEmptyTable("json", schema);
-    const meta = JSON.stringify({ x: 1 });
+    const meta = JSON.stringify({ nested: { value: 1 } });
 
     await table.add([{ id: 1, meta }]);
 
@@ -3917,6 +3914,35 @@ describe("when creating an empty table", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe(1);
     expect(rows[0].meta).toBe(meta);
+
+    const parsedRows = await table.query().toArray({ parseJson: true });
+    expect(parsedRows).toEqual([{ id: 1, meta: { nested: { value: 1 } } }]);
+  });
+
+  it("preserves non-JSON maps when parsing JSON columns", async () => {
+    const schema = new Schema([
+      new Field(
+        "attributes",
+        new Map_<Utf8, Utf8>(
+          new Field(
+            "entries",
+            new Struct<{ key: Utf8; value: Utf8 }>([
+              new Field("key", new Utf8(), false),
+              new Field("value", new Utf8(), true),
+            ]),
+            false,
+          ),
+        ),
+      ),
+    ]);
+    const table = await con.createEmptyTable("map", schema);
+    await table.add([{ attributes: new Map([["key", "value"]]) }]);
+
+    const defaultRows = await table.query().toArray();
+    const rows = await table.query().toArray({ parseJson: true });
+    expect(rows[0].attributes.toArray()).toEqual(
+      defaultRows[0].attributes.toArray(),
+    );
   });
 
   it("can create an empty table from schema that specifies field types by name", async () => {
