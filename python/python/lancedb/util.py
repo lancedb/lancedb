@@ -286,7 +286,16 @@ def _query_vector_dim(query: Optional[Any]) -> Optional[int]:
         if query.ndim == 0:
             return None
         return query.shape[-1]
-    if isinstance(query, list) and query:
+    if isinstance(query, (pa.Array, pa.ChunkedArray)):
+        if len(query) == 0:
+            return None
+        if pa.types.is_fixed_size_list(query.type):
+            return query.type.list_size
+        if pa.types.is_list(query.type) or pa.types.is_large_list(query.type):
+            first = query[0].as_py()
+            return len(first) if first is not None else None
+        return len(query)
+    if isinstance(query, (list, tuple)) and query:
         first = query[0]
         if isinstance(first, (list, tuple, np.ndarray)):
             return len(first)
