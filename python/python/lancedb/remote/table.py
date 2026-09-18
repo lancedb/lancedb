@@ -1033,6 +1033,18 @@ class RemoteTable(Table):
         """Read the installed LsmWriteSpec, or ``None``."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table."""
+        return LOOP.run(self._table.get_table_overrides())
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides."""
+        return LOOP.run(self._table.update_table_overrides(**overrides))
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return LOOP.run(self._table.reset_table_overrides())
+
     def checkpoint_lsm(self) -> None:
         """Synchronous version of
         [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""

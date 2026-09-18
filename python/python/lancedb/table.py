@@ -1245,6 +1245,27 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        raise NotImplementedError
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated existing
+        overrides are preserved by the remote service update flow.
+        """
+        raise NotImplementedError
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        raise NotImplementedError
+
     def drop_index(self, name: str) -> None:
         """
         Drop an index from the table.
