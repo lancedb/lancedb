@@ -625,31 +625,74 @@ def _is_json_field(field: pa.Field) -> bool:
     return _field_extension_name(field) in ("arrow.json", "lance.json")
 
 
-def _serialize_json_value(value: Any, field: pa.Field) -> Any:
+@dataclass(frozen=True)
+class _JsonSerializationPlan:
+    arrow_field: pa.Field
+    children: Optional[Dict[str, "_JsonSerializationPlan"]] = None
+    item: Optional["_JsonSerializationPlan"] = None
+
+
+def _json_serialization_plan(field: pa.Field) -> Optional[_JsonSerializationPlan]:
+    if _is_json_field(field):
+        return _JsonSerializationPlan(field)
+
+    if pa.types.is_struct(field.type):
+        children: Dict[str, _JsonSerializationPlan] = {}
+        for child_field in field.type:
+            child_plan = _json_serialization_plan(child_field)
+            if child_plan is not None:
+                children[child_field.name] = child_plan
+        if children:
+            return _JsonSerializationPlan(field, children=children)
+
+    if _is_list_like(field.type):
+        item_plan = _json_serialization_plan(field.type.value_field)
+        if item_plan is not None:
+            return _JsonSerializationPlan(field, item=item_plan)
+
+    return None
+
+
+def _json_serialization_plans(
+    schema: pa.Schema,
+) -> Dict[str, _JsonSerializationPlan]:
+    plans: Dict[str, _JsonSerializationPlan] = {}
+    for field in schema:
+        plan = _json_serialization_plan(field)
+        if plan is not None:
+            plans[field.name] = plan
+    return plans
+
+
+def _serialize_json_value(value: Any, plan: _JsonSerializationPlan) -> Any:
     if value is None or isinstance(value, str):
         return value
-    if _is_json_field(field):
+    if _is_json_field(plan.arrow_field):
         if isinstance(value, (dict, list)):
             return json.dumps(value)
         return value
 
-    if pa.types.is_struct(field.type) and isinstance(value, dict):
-        serialized = dict(value)
-        changed = False
-        for child_field in field.type:
-            if child_field.name not in value:
+    if plan.children is not None and isinstance(value, dict):
+        serialized = None
+        for child_name, child_plan in plan.children.items():
+            if child_name not in value:
                 continue
-            child_value = _serialize_json_value(value[child_field.name], child_field)
-            if child_value is not value[child_field.name]:
-                serialized[child_field.name] = child_value
-                changed = True
-        return serialized if changed else value
+            child_value = _serialize_json_value(value[child_name], child_plan)
+            if child_value is not value[child_name]:
+                if serialized is None:
+                    serialized = dict(value)
+                serialized[child_name] = child_value
+        return serialized if serialized is not None else value
 
-    if _is_list_like(field.type) and isinstance(value, list):
-        values = [_serialize_json_value(item, field.type.value_field) for item in value]
-        return (
-            values if any(new is not old for new, old in zip(values, value)) else value
-        )
+    if plan.item is not None and isinstance(value, list):
+        serialized = None
+        for index, item in enumerate(value):
+            serialized_item = _serialize_json_value(item, plan.item)
+            if serialized_item is not item:
+                if serialized is None:
+                    serialized = list(value)
+                serialized[index] = serialized_item
+        return serialized if serialized is not None else value
 
     return value
 
@@ -658,21 +701,25 @@ def _serialize_json_values(data: Any, target_schema: Optional[pa.Schema]) -> Any
     if target_schema is None or not isinstance(data, list):
         return data
 
+    plans = _json_serialization_plans(target_schema)
+    if not plans:
+        return data
+
     serialized_rows = []
     for row in data:
         if not isinstance(row, dict):
             serialized_rows.append(row)
             continue
-        serialized_row = dict(row)
-        changed = False
-        for field in target_schema:
-            if field.name not in row:
+        serialized_row = None
+        for field_name, plan in plans.items():
+            if field_name not in row:
                 continue
-            value = _serialize_json_value(row[field.name], field)
-            if value is not row[field.name]:
-                serialized_row[field.name] = value
-                changed = True
-        serialized_rows.append(serialized_row if changed else row)
+            value = _serialize_json_value(row[field_name], plan)
+            if value is not row[field_name]:
+                if serialized_row is None:
+                    serialized_row = dict(row)
+                serialized_row[field_name] = value
+        serialized_rows.append(serialized_row if serialized_row is not None else row)
     return serialized_rows
 
 
