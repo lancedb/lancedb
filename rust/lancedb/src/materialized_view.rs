@@ -10,6 +10,7 @@
 //! plain table. Queries, indexes and search work on the view unchanged.
 
 mod grouped;
+pub use grouped::IVF_PARTITION;
 mod query;
 pub mod refresh;
 
@@ -1597,6 +1598,9 @@ async fn prepare_with(
         lineage,
         ..
     } = plan(source_schema.clone(), &definition, staging.as_ref())?;
+    if definition.is_grouped() {
+        grouped::check(native.dataset.get().await?.as_ref(), &definition).await?;
+    }
     // What later projections (`input_column`) are planned against: for an
     // unnested view the flattened schema, where the alias is a column.
     let planning_schema = match physical_unnest(&definition, staging.as_ref())? {

@@ -4489,4 +4489,302 @@ mod tests {
         .unwrap();
         assert!(grouped.input_column("x").is_err());
     }
+
+    /// Twenty nonzero vectors in two clusters far apart, ids 0-9 and 10-19.
+    /// Nonzero so every vector has a cosine direction.
+    async fn clustered_source(conn: &Connection) -> Table {
+        use arrow_array::types::Float32Type;
+        use arrow_array::{FixedSizeListArray, Int32Array};
+
+        let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..20).map(|i| {
+                let base = if i < 10 { 0.0 } else { 100.0 };
+                Some(vec![Some(base + 1.0 + i as f32 * 0.1), Some(base)])
+            }),
+            2,
+        );
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int32Array::from_iter_values(0..20)) as arrow_array::ArrayRef,
+            ),
+            ("vec", Arc::new(vectors) as arrow_array::ArrayRef),
+        ])
+        .unwrap();
+        conn.create_table("images", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn ivf_partition_groups_by_the_index_on_the_column() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        const BUCKETS: &str = "SELECT ivf_partition(vec) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(vec)";
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        let unindexed = declare(&source, "buckets", BUCKETS).await.unwrap_err();
+        assert!(
+            unindexed.to_string().contains("IVF vector index"),
+            "{unindexed}"
+        );
+
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(2)),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(&source, "buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["n", "lo", "hi"]).await,
+            ["10 0 9", "10 10 19"]
+        );
+        let buckets = rows(view.table(), &["bucket"]).await;
+        assert_eq!(buckets, ["0", "1"]);
+    }
+
+    #[tokio::test]
+    async fn ivf_partition_takes_a_column() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        for sql in [
+            "SELECT ivf_partition(id) AS b, count(*) AS n FROM images GROUP BY ivf_partition(id)",
+            "SELECT ivf_partition(vec, vec) AS b, count(*) AS n FROM images \
+             GROUP BY ivf_partition(vec, vec)",
+        ] {
+            assert!(declare(&source, "v", sql).await.is_err(), "{sql}");
+        }
+    }
+
+    /// A cosine index assigns by L2 over unit vectors, as lance's own index
+    /// path does; forwarding cosine to the assigner panics.
+    #[tokio::test]
+    async fn ivf_partition_supports_cosine_indices() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        const BUCKETS: &str = "SELECT ivf_partition(vec) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(vec)";
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(2)
+                        .distance_type(crate::DistanceType::Cosine),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(&source, "cosine_buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["n", "lo", "hi"]).await,
+            ["10 0 9", "10 10 19"]
+        );
+    }
+
+    /// Segments of one index trained separately carry different centroids;
+    /// grouping by one of them would bucket the other segments' rows wrongly.
+    #[tokio::test]
+    async fn ivf_partition_refuses_segments_with_different_models() {
+        use arrow_array::types::Float32Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+        use lance::index::DatasetIndexExt;
+        use lance::index::vector::VectorIndexParams;
+        use lance_index::IndexType;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        // A second fragment far from the first, so each segment trains its own centroids.
+        let far = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..20).map(|i| Some(vec![Some(-500.0 - i as f32), Some(-500.0)])),
+            2,
+        );
+        source
+            .add(
+                RecordBatch::try_from_iter(vec![
+                    (
+                        "id",
+                        Arc::new(Int32Array::from_iter_values(20..40)) as ArrayRef,
+                    ),
+                    ("vec", Arc::new(far) as ArrayRef),
+                ])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let dataset = source.as_native().unwrap().dataset.get().await.unwrap();
+        let mut dataset = dataset.as_ref().clone();
+        let params = VectorIndexParams::ivf_flat(2, lance_linalg::distance::DistanceType::L2);
+        let mut segments = Vec::new();
+        for fragment in dataset.get_fragments() {
+            let segment = dataset
+                .create_index_builder(&["vec"], IndexType::Vector, &params)
+                .name("shared".to_string())
+                .fragments(vec![fragment.id() as u32])
+                .execute_uncommitted()
+                .await
+                .unwrap();
+            segments.push(segment);
+        }
+        dataset
+            .commit_existing_index_segments("shared", "vec", segments)
+            .await
+            .unwrap();
+        assert_eq!(dataset.load_indices().await.unwrap().len(), 2);
+
+        let source = conn.open_table("images").execute().await.unwrap();
+        let error = declare(
+            &source,
+            "buckets",
+            "SELECT ivf_partition(vec) AS b, count(*) AS n FROM images GROUP BY ivf_partition(vec)",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("trained separately"), "{error}");
+    }
+
+    /// A vector the assigner cannot place has no bucket: it is grouped under
+    /// NULL, never under partition 0.
+    #[tokio::test]
+    async fn ivf_partition_leaves_an_unassignable_vector_unbucketed() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+        use arrow_array::types::Float32Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(2)
+                        .distance_type(crate::DistanceType::Cosine),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        // The zero vector has no direction, so cosine cannot place it.
+        let zero = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            [Some(vec![Some(0.0), Some(0.0)])],
+            2,
+        );
+        source
+            .add(
+                RecordBatch::try_from_iter(vec![
+                    ("id", Arc::new(Int32Array::from(vec![20])) as ArrayRef),
+                    ("vec", Arc::new(zero) as ArrayRef),
+                ])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(
+            &source,
+            "buckets",
+            "SELECT ivf_partition(vec) AS bucket, count(*) AS n, min(id) AS lo, max(id) AS hi \
+             FROM images GROUP BY ivf_partition(vec)",
+        )
+        .await
+        .unwrap();
+        view.refresh().execute().await.unwrap();
+        // ArrayFormatter renders NULL as the empty string; partition numbers
+        // are the index's own and not asserted.
+        let groups = rows(view.table(), &["bucket", "n", "lo", "hi"]).await;
+        let (unbucketed, bucketed): (Vec<_>, Vec<_>) =
+            groups.iter().partition(|row| row.starts_with(' '));
+        assert_eq!(unbucketed, [" 1 20 20"], "{groups:?}");
+        let mut clusters: Vec<&str> = bucketed
+            .iter()
+            .map(|row| row.split_once(' ').unwrap().1)
+            .collect();
+        clusters.sort();
+        assert_eq!(clusters, ["10 0 9", "10 10 19"], "{groups:?}");
+    }
+
+    /// Byte vectors group by a Hamming index, the phash case. The centroids
+    /// are given, as lance's own tests do: two-means over a handful of
+    /// hashes can converge with one partition empty.
+    #[tokio::test]
+    async fn ivf_partition_groups_byte_vectors_by_hamming() {
+        use arrow_array::types::UInt8Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+        use lance::index::DatasetIndexExt;
+        use lance::index::vector::VectorIndexParams;
+        use lance_index::IndexType;
+        use lance_index::vector::ivf::IvfBuildParams;
+
+        let hashes = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            (0..20u8).map(|i| {
+                let base = if i < 10 { 0x00 } else { 0xff };
+                Some(vec![
+                    Some(base ^ (i % 4)),
+                    Some(base),
+                    Some(base),
+                    Some(base),
+                ])
+            }),
+            4,
+        );
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int32Array::from_iter_values(0..20)) as ArrayRef,
+            ),
+            ("phash", Arc::new(hashes) as ArrayRef),
+        ])
+        .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("images", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let centroids = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            [Some(vec![Some(0); 4]), Some(vec![Some(0xff); 4])],
+            4,
+        );
+        let params = VectorIndexParams::with_ivf_flat_params(
+            lance_linalg::distance::DistanceType::Hamming,
+            IvfBuildParams::try_with_centroids(2, Arc::new(centroids)).unwrap(),
+        );
+        let mut dataset = source
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .as_ref()
+            .clone();
+        dataset
+            .create_index(&["phash"], IndexType::Vector, None, &params, true)
+            .await
+            .unwrap();
+        let source = conn.open_table("images").execute().await.unwrap();
+
+        const BUCKETS: &str = "SELECT ivf_partition(phash) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(phash)";
+        let view = declare(&source, "buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["bucket", "n", "lo", "hi"]).await,
+            ["0 10 0 9", "1 10 10 19"]
+        );
+    }
 }
