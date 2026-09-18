@@ -11,6 +11,7 @@ import re
 import sys
 import threading
 import time
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 import uuid
 from packaging.version import Version
@@ -30,6 +31,9 @@ def make_mock_http_handler(handler):
             handler(self)
 
         def do_POST(self):
+            handler(self)
+
+        def do_PUT(self):
             handler(self)
 
     return MockLanceDBHandler
@@ -1427,6 +1431,118 @@ def test_checkpoint_lsm_sync():
     with lsm_test_table(lsm_handler) as table:
         assert table.checkpoint_lsm() is None
         assert called == ["flush_lsm", "get_lsm_stats"]
+
+
+@contextlib.contextmanager
+def table_overrides_test_table(overrides_handler):
+    def handler(request):
+        parsed = urlparse(request.path)
+        if parsed.path in (
+            "/admin/table/overrides",
+            "/admin/table/overrides/reset",
+        ):
+            overrides_handler(request, parsed)
+        elif parsed.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        yield db.open_table("test")
+
+
+def assert_table_overrides_query(parsed):
+    query = parse_qs(parsed.query)
+    assert query == {"db": ["dev"], "table": ["test"]}
+
+
+def test_remote_table_exposes_table_overrides_methods():
+    from lancedb.remote.table import RemoteTable
+
+    for name in (
+        "get_table_overrides",
+        "update_table_overrides",
+        "reset_table_overrides",
+    ):
+        assert hasattr(RemoteTable, name)
+
+
+def test_get_table_overrides_sync_remote_table():
+    def overrides_handler(request, parsed):
+        assert request.command == "GET"
+        assert parsed.path == "/admin/table/overrides"
+        assert_table_overrides_query(parsed)
+        send_json(request, {"job_types": {"cleanup": {"enabled": False}}})
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.get_table_overrides() == {
+            "job_types": {"cleanup": {"enabled": False}}
+        }
+
+
+def test_update_table_overrides_sync_remote_table_merges_existing_fields():
+    calls = []
+
+    def overrides_handler(request, parsed):
+        calls.append(request.command)
+        assert parsed.path == "/admin/table/overrides"
+        if request.command == "GET":
+            assert_table_overrides_query(parsed)
+            send_json(
+                request,
+                {
+                    "job_types": {
+                        "compaction": {"enabled": True},
+                        "reindex_vector": {"table": {"num_workers": 3}},
+                    },
+                    "unknown": {"keep": True},
+                },
+            )
+        elif request.command == "PUT":
+            body = read_json_body(request)
+            assert body["db"] == "dev"
+            assert body["namespace"] == []
+            assert body["table"] == "test"
+            assert body["overrides"] == {
+                "job_types": {
+                    "compaction": {"enabled": True},
+                    "cleanup": {"enabled": False},
+                    "reindex_vector": {"table": {"num_workers": 3}},
+                },
+                "unknown": {"keep": True},
+            }
+            send_json(request, body["overrides"])
+        else:
+            raise AssertionError(f"unexpected method: {request.command}")
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.update_table_overrides(
+            job_types={"cleanup": {"enabled": False}}
+        ) == {
+            "job_types": {
+                "compaction": {"enabled": True},
+                "cleanup": {"enabled": False},
+                "reindex_vector": {"table": {"num_workers": 3}},
+            },
+            "unknown": {"keep": True},
+        }
+
+    assert calls == ["GET", "PUT"]
+
+
+def test_reset_table_overrides_sync_remote_table():
+    def overrides_handler(request, parsed):
+        assert request.command == "POST"
+        assert parsed.path == "/admin/table/overrides/reset"
+        assert_table_overrides_query(parsed)
+        send_json(request, {})
+
+    with table_overrides_test_table(overrides_handler) as table:
+        assert table.reset_table_overrides() == {}
 
 
 @contextlib.contextmanager

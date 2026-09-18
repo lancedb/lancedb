@@ -4,6 +4,7 @@
 
 import ctypes
 import gc
+import json
 import os
 import sys
 import threading
@@ -1638,6 +1639,66 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         name=None,
         train=True,
     )
+
+
+@patch("lancedb.table.AsyncTable.get_table_overrides")
+def test_get_table_overrides_method(mock_get_table_overrides, mem_db: DBConnection):
+    expected = {"job_types": {"cleanup": {"enabled": False}}}
+    mock_get_table_overrides.return_value = expected
+    table = mem_db.create_table("test", data=[{"id": 1}])
+
+    assert table.get_table_overrides() == expected
+    mock_get_table_overrides.assert_called_once_with()
+
+
+@patch("lancedb.table.AsyncTable.update_table_overrides")
+def test_update_table_overrides_method(
+    mock_update_table_overrides, mem_db: DBConnection
+):
+    overrides = {
+        "job_types": {
+            "cleanup": {"enabled": False},
+            "index": {
+                "scalar": {
+                    "reindex": {
+                        "row_threshold": 1000,
+                        "ttl_millis": 300000,
+                    }
+                }
+            },
+        }
+    }
+    mock_update_table_overrides.return_value = overrides
+    table = mem_db.create_table("test", data=[{"id": 1}])
+
+    assert table.update_table_overrides(**overrides) == overrides
+    mock_update_table_overrides.assert_called_once_with(**overrides)
+
+
+@patch("lancedb.table.AsyncTable.reset_table_overrides")
+def test_reset_table_overrides_method(mock_reset_table_overrides, mem_db: DBConnection):
+    expected = {}
+    mock_reset_table_overrides.return_value = expected
+    table = mem_db.create_table("test", data=[{"id": 1}])
+
+    assert table.reset_table_overrides() == expected
+    mock_reset_table_overrides.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_async_update_table_overrides_encodes_json():
+    class MockInner:
+        async def update_table_overrides(self, encoded_overrides):
+            assert json.loads(encoded_overrides) == {
+                "job_types": {"cleanup": {"enabled": False}}
+            }
+            return json.dumps({"job_types": {"cleanup": {"enabled": False}}})
+
+    table = lancedb.table.AsyncTable(MockInner())
+
+    assert await table.update_table_overrides(
+        job_types={"cleanup": {"enabled": False}}
+    ) == {"job_types": {"cleanup": {"enabled": False}}}
 
 
 @patch("lancedb.table.AsyncTable.create_index")
