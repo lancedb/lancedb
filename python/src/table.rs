@@ -1814,7 +1814,7 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            serde_json::to_string(view.definition()).map_err(|err| {
+            view.definition().to_json().map_err(|err| {
                 PyRuntimeError::new_err(format!(
                     "failed to serialize materialized-view definition: {err}"
                 ))

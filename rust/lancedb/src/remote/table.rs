@@ -2099,8 +2099,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             filter: Option<String>,
             #[serde(default)]
             limit: Option<u64>,
+            /// The defining query, once the server describes a view by it;
+            /// takes precedence over the structured fields.
             #[serde(default)]
-            inputs: Vec<String>,
+            query: Option<String>,
             #[serde(default)]
             incarnation: Option<String>,
         }
@@ -2113,10 +2115,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let response: DescribeMaterializedViewResponse =
             response.json().await.err_to_http(request_id)?;
-        Ok(MaterializedViewInfo {
-            definition: MaterializedViewDefinition {
+        let definition = match response.query {
+            Some(query) => MaterializedViewDefinition::from_sql(&query)?,
+            None => MaterializedViewDefinition {
                 source_table: response.source_table,
                 source_namespace: response.source_namespace,
+                lateral: None,
                 projections: response
                     .projections
                     .into_iter()
@@ -2127,8 +2131,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .collect(),
                 filter: response.filter,
                 limit: response.limit,
-                inputs: response.inputs,
             },
+        };
+        Ok(MaterializedViewInfo {
+            definition,
             incarnation: response.incarnation,
         })
     }
@@ -12448,7 +12454,6 @@ mod tests {
         let view = crate::MaterializedView::from_table(table).await.unwrap();
         assert_eq!(view.definition().source_table, "source");
         assert_eq!(view.definition().source_namespace, ["analytics"]);
-        assert_eq!(view.definition().inputs, ["x"]);
         assert_eq!(view.incarnation(), Some("inc-1"));
 
         let result = view
