@@ -4358,6 +4358,14 @@ describe("computed columns", () => {
     expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
   });
 
+  it("records Function errors only on remote tables", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("errors_local", [{ x: 1 }]);
+    await expect(table.functionErrors()).rejects.toThrow(
+      "LanceDB Cloud and Enterprise",
+    );
+  });
+
   it("returns a job handle from refreshColumnAsync", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed_job", [{ x: 1 }, { x: 2 }]);

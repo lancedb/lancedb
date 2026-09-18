@@ -4449,6 +4449,13 @@ async def test_computed_column_async(tmp_path):
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
 
 
+def test_function_errors_are_remote_only(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"x": 1}])
+    with pytest.raises(NotImplementedError, match="LanceDB Cloud and Enterprise"):
+        table.function_errors()
+
+
 def test_refresh_column_async_returns_job(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])

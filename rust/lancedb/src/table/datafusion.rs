@@ -33,11 +33,23 @@ use crate::{
 use arrow_schema::{DataType, Field};
 use lance_index::scalar::FullTextSearchQuery;
 
-/// Datafusion attempts to maintain batch metadata
+/// An execution plan that erases Arrow schema-level metadata from its input's batches.
 ///
-/// This is needless and it triggers bugs in DF.  This operator erases metadata from the batches.
+/// DataFusion attempts to maintain batch metadata. This is needless and it triggers bugs in
+/// DF, so [`BaseTableAdapter::scan`] wraps every scan it produces in one of these.
+///
+/// ```
+/// use std::sync::Arc;
+///
+/// use datafusion_physical_plan::ExecutionPlan;
+/// use lancedb::table::datafusion::MetadataEraserExec;
+///
+/// # fn erase_metadata(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+/// Arc::new(MetadataEraserExec::new(scan))
+/// # }
+/// ```
 #[derive(Debug)]
-struct MetadataEraserExec {
+pub struct MetadataEraserExec {
     input: Arc<dyn ExecutionPlan>,
     schema: Arc<ArrowSchema>,
     properties: Arc<PlanProperties>,
@@ -62,7 +74,8 @@ impl MetadataEraserExec {
         )
     }
 
-    fn new(input: Arc<dyn ExecutionPlan>) -> Self {
+    /// Wrap `input` in an operator that strips schema-level metadata from its batches.
+    pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         let schema = Arc::new(
             input
                 .schema()

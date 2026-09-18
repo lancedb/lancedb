@@ -856,25 +856,28 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let response = self.client.check_response(&request_id, response).await?;
         let status = response.status();
         let body = response.text().await.err_to_http(request_id.clone())?;
-        if status != StatusCode::ACCEPTED {
-            return Err(Error::Http {
-                source: "materialized-view drop must return 202 Accepted".into(),
-                request_id,
-                status_code: Some(status),
-            });
-        }
-        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
-            source: "materialized-view drop response did not contain a valid job_id".into(),
-            request_id,
-            status_code: Some(status),
-        })?;
+        let job = match status {
+            StatusCode::OK => Job::new_done(),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "materialized-view drop response did not contain a valid job_id".into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id)))
+            }
+            _ => {
+                return Err(Error::Http {
+                    source: "materialized-view drop must return 200 OK or 202 Accepted".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+        };
         self.table_cache
             .remove(&build_cache_key(name, namespace_path))
             .await;
-        Ok(Job::new(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+        Ok(job)
     }
 
     async fn list_materialized_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
@@ -1778,6 +1781,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(job.id(), Some("j1-mv-drop"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_materialized_view_completed_inline() {
+        let db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/materialized_view/adults/drop");
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        let job = db
+            .drop_materialized_view_async("adults", &[])
+            .await
+            .unwrap();
+        assert_eq!(job.id(), None);
+        assert_eq!(job.status().await.unwrap(), "finished");
+        job.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_materialized_view_rejects_incomplete_acceptance() {
+        for body in ["{}", r#"{"job_id":""}"#, r#"{"job_id":null}"#] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(202).body(body).unwrap()
+            });
+            let error = db
+                .drop_materialized_view_async("adults", &[])
+                .await
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("valid job_id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_materialized_view_rejects_unexpected_success_status() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(204).body("").unwrap()
+        });
+        let error = db
+            .drop_materialized_view_async("adults", &[])
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("200 OK or 202 Accepted"));
     }
 
     #[tokio::test]

@@ -195,6 +195,66 @@ describe("remote connection", () => {
     );
   });
 
+  it("lists the rows a Function refresh skipped", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/errors") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              `{"records": [{"job_id": "j-7", "fragment_id": 3, "row_offset": 9,
+                "column": "embedding", "function": "embed", "function_version": "2",
+                "table_version": 11, "error_type": "ValueError",
+                "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
+                "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
+                "rows_recorded": 100}], "truncated": true}`,
+            );
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const errors = await table.functionErrors({
+          jobId: "j-7",
+          column: "embedding",
+          limit: 2,
+        });
+        expect(errors.truncated).toBe(true);
+        expect(errors.records.map((r) => r.errorMessage)).toEqual([
+          "bad input 'x'",
+        ]);
+        expect(errors.records[0].rowOffset).toBe(9);
+        expect(errors.fragments[0].rowsSkipped).toBe(500);
+        await table.functionErrors();
+        await expect(table.functionErrors({ limit: -1 })).rejects.toThrow(
+          "limit must be a non-negative integer",
+        );
+      },
+    );
+    expect(bodies).toEqual([
+      JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
+      {},
+    ]);
+  });
+
   it("surfaces JSON server errors from remote table operations", async () => {
     await withMockDatabase(
       (req, res) => {

@@ -461,6 +461,12 @@ class Table:
     ) -> AddColumnsResult: ...
     async def refresh_column(self, column: str) -> RefreshColumnResult: ...
     async def refresh_column_async(self, column: str) -> Job: ...
+    async def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> FunctionErrors: ...
     async def refresh_materialized_view(
         self, full: bool = False, source_version: Optional[int] = None
     ) -> RefreshMaterializedViewResult: ...
@@ -820,6 +826,29 @@ class AddColumnsResult:
 class RefreshColumnResult:
     rows_filled: int
     version: int
+
+class FunctionErrorRecord:
+    job_id: str
+    fragment_id: int
+    row_offset: Optional[int]
+    column: str
+    function: str
+    function_version: str
+    table_version: int
+    error_type: str
+    error_message: str
+    created_at_millis: int
+
+class FunctionErrorFragment:
+    job_id: str
+    fragment_id: int
+    rows_skipped: int
+    rows_recorded: int
+
+class FunctionErrors:
+    records: list[FunctionErrorRecord]
+    fragments: list[FunctionErrorFragment]
+    truncated: bool
 
 class RefreshMaterializedViewResult:
     @staticmethod

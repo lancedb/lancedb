@@ -2099,8 +2099,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             filter: Option<String>,
             #[serde(default)]
             limit: Option<u64>,
+            /// The defining query, once the server describes a view by it;
+            /// takes precedence over the structured fields.
             #[serde(default)]
-            inputs: Vec<String>,
+            query: Option<String>,
             #[serde(default)]
             incarnation: Option<String>,
         }
@@ -2113,10 +2115,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let response: DescribeMaterializedViewResponse =
             response.json().await.err_to_http(request_id)?;
-        Ok(MaterializedViewInfo {
-            definition: MaterializedViewDefinition {
+        let definition = match response.query {
+            Some(query) => MaterializedViewDefinition::from_sql(&query)?,
+            None => MaterializedViewDefinition {
                 source_table: response.source_table,
                 source_namespace: response.source_namespace,
+                lateral: None,
                 projections: response
                     .projections
                     .into_iter()
@@ -2127,8 +2131,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .collect(),
                 filter: response.filter,
                 limit: response.limit,
-                inputs: response.inputs,
             },
+        };
+        Ok(MaterializedViewInfo {
+            definition,
             incarnation: response.incarnation,
         })
     }
@@ -3314,9 +3320,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         _read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
-        crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
+        crate::table::computed_columns::ensure_not_function_bound(
             self.schema().await?.as_ref(),
             "schema evolution",
+            crate::table::schema_evolution::new_column_names(&transforms),
         )?;
         match transforms {
             NewColumnTransform::SqlExpressions(expressions) => {
@@ -3369,9 +3376,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
-        crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
+        crate::table::computed_columns::ensure_not_function_bound(
             self.schema().await?.as_ref(),
             "schema evolution",
+            columns.iter().map(|(name, _)| name),
         )?;
         // The server plans the declaration against its table schema, including
         // Blob v2 semantics inherited by a direct field projection.
@@ -3517,6 +3525,35 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             tracked_result: TrackedJobResult::RefreshColumn,
             freshness_request: self.snapshot_freshness_headers(),
         })))
+    }
+
+    async fn function_errors(
+        &self,
+        request: &crate::function::FunctionErrorsRequest,
+    ) -> Result<crate::function::FunctionErrors> {
+        let mut body = serde_json::json!({});
+        if let Some(job_id) = &request.job_id {
+            body["job_id"] = serde_json::json!(job_id);
+        }
+        if let Some(column) = &request.column {
+            body["column"] = serde_json::json!(column);
+        }
+        if let Some(limit) = request.limit {
+            body["limit"] = serde_json::json!(limit);
+        }
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/errors", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse errors response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
@@ -7953,8 +7990,9 @@ mod tests {
         assert_eq!(result.version, 8);
     }
 
-    #[tokio::test]
-    async fn test_add_function_column_allows_an_existing_binding() {
+    /// The fixture binding's table: `title` and `body` bound as inputs, its
+    /// two outputs declared, plus an unbound `spare`.
+    fn fixture_bound_schema() -> Schema {
         let binding = crate::function::FunctionBinding::from_json(include_str!(
             "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
         ))
@@ -7981,13 +8019,78 @@ mod tests {
                 ),
             )
         }));
-        let schema = Schema::new_with_metadata(
+        fields.push(Field::new("spare", DataType::Int32, true));
+        Schema::new_with_metadata(
             fields,
             HashMap::from([(
                 crate::table::computed_columns::FUNCTION_BINDINGS_META_KEY.to_string(),
                 binding_metadata,
             )]),
-        );
+        )
+    }
+
+    /// Only a column the binding uses is refused, and it is refused before
+    /// any request goes out; the rest reach the server as usual.
+    #[tokio::test]
+    async fn test_add_columns_scopes_to_the_columns_a_binding_uses() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(describe_response(&fixture_bound_schema()))
+                .unwrap(),
+            "/v1/table/my_table/add_columns/" => http::Response::builder()
+                .status(200)
+                .body(r#"{"version":10}"#.to_string())
+                .unwrap(),
+            path => panic!("Unexpected path: {path}"),
+        });
+        table
+            .add_columns()
+            .computed("doubled", "spare * 2")
+            .execute()
+            .await
+            .unwrap();
+        table
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "eager".into(),
+                "spare + 1".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(describe_response(&fixture_bound_schema()))
+                .unwrap(),
+            path => panic!("mutation request must not be sent: {path}"),
+        });
+        for name in ["title", "search_text"] {
+            let err = table
+                .add_columns()
+                .computed(name, "1")
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "{err:?}");
+            let err = table
+                .add_columns()
+                .transform(NewColumnTransform::SqlExpressions(vec![(
+                    name.into(),
+                    "1".into(),
+                )]))
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "{err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_function_column_allows_an_existing_binding() {
+        let schema = fixture_bound_schema();
         let table =
             Table::new_with_handler("my_table", move |request| match request.url().path() {
                 "/v1/table/my_table/describe/" => http::Response::builder()
@@ -8186,6 +8289,88 @@ mod tests {
                 if message.contains("refresh_column_async")),
             "{err:?}"
         );
+    }
+
+    /// The error listing is table-addressed with optional job and column
+    /// filters, mirroring the server's SQL surface, and the two non-record
+    /// signals come back as their own fields rather than as rows.
+    #[tokio::test]
+    async fn test_function_errors_lists_the_rows_a_refresh_skipped() {
+        use crate::function::{FunctionErrorFragment, FunctionErrorRecord, FunctionErrorsRequest};
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/errors");
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"job_id": "j-7", "column": "embedding", "limit": 2})
+            );
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"records": [{"job_id": "j-7", "fragment_id": 3, "row_offset": 9,
+                        "column": "embedding", "function": "embed", "function_version": "2",
+                        "table_version": 11, "error_type": "ValueError",
+                        "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
+                        "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
+                        "rows_recorded": 100}],
+                        "truncated": true}"#,
+                )
+                .unwrap()
+        });
+
+        let errors = table
+            .function_errors(
+                FunctionErrorsRequest::new()
+                    .job_id("j-7")
+                    .column("embedding")
+                    .limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            errors.records,
+            [FunctionErrorRecord {
+                job_id: "j-7".into(),
+                fragment_id: 3,
+                row_offset: Some(9),
+                column: "embedding".into(),
+                function: "embed".into(),
+                function_version: "2".into(),
+                table_version: 11,
+                error_type: "ValueError".into(),
+                error_message: "bad input 'x'".into(),
+                created_at_millis: 1_700_000_000_000,
+            }]
+        );
+        assert_eq!(
+            errors.fragments,
+            [FunctionErrorFragment {
+                job_id: "j-7".into(),
+                fragment_id: 4,
+                rows_skipped: 500,
+                rows_recorded: 100,
+            }]
+        );
+        assert!(errors.truncated);
+
+        // No filter sends no filter, and an empty listing reads as such.
+        let table = Table::new_with_handler("my_table", |request| {
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(value, serde_json::json!({}));
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"records": []}"#)
+                .unwrap()
+        });
+        let errors = table
+            .function_errors(FunctionErrorsRequest::new())
+            .await
+            .unwrap();
+        assert_eq!(errors, crate::function::FunctionErrors::default());
     }
 
     /// The refresh handle is wrapped for read-freshness tracking, so it has to
@@ -12269,7 +12454,6 @@ mod tests {
         let view = crate::MaterializedView::from_table(table).await.unwrap();
         assert_eq!(view.definition().source_table, "source");
         assert_eq!(view.definition().source_namespace, ["analytics"]);
-        assert_eq!(view.definition().inputs, ["x"]);
         assert_eq!(view.incarnation(), Some("inc-1"));
 
         let result = view

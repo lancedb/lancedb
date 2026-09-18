@@ -996,6 +996,16 @@ class RemoteTable(Table):
     def refresh_column_async(self, column: str) -> Job[RefreshColumnResult]:
         return Job(LOOP.run(self._table.refresh_column_async(column)))
 
+    def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ):
+        return LOOP.run(
+            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+        )
+
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
     ) -> AlterColumnsResult:

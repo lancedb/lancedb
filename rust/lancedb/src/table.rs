@@ -53,6 +53,7 @@ use crate::database::Database;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::function::FunctionErrorsRequest;
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
@@ -821,6 +822,17 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         Err(Error::NotSupported {
             message: "computed columns are supported only on local tables".into(),
+        })
+    }
+    /// The per-row errors Function refreshes recorded on this table; see
+    /// [`Table::function_errors`]. The default returns `NotSupported`.
+    async fn function_errors(
+        &self,
+        _request: &crate::function::FunctionErrorsRequest,
+    ) -> Result<crate::function::FunctionErrors> {
+        Err(Error::NotSupported {
+            message: "per-row Function errors are recorded only on LanceDB Cloud and Enterprise"
+                .into(),
         })
     }
     /// Alter columns in the table.
@@ -1850,6 +1862,36 @@ impl Table {
         column: impl AsRef<str>,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
+    }
+
+    /// The per-row errors Function refreshes recorded on this table: the
+    /// rows a refresh skipped under its skip policy, with the failing input
+    /// and the error, plus a summary for any fragment whose detail was
+    /// capped. Filter by job or column through the request; a listing that
+    /// hit its limit reports [`FunctionErrors::truncated`].
+    ///
+    /// LanceDB Cloud and Enterprise only, and the caller needs read access
+    /// to the table, since a message carries the value that failed.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// use lancedb::function::FunctionErrorsRequest;
+    ///
+    /// # async fn list_errors(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let errors = table
+    ///     .function_errors(FunctionErrorsRequest::new().column("embedding"))
+    ///     .await?;
+    /// for record in &errors.records {
+    ///     println!("{}: {}", record.error_type, record.error_message);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn function_errors(
+        &self,
+        request: FunctionErrorsRequest,
+    ) -> Result<crate::function::FunctionErrors> {
+        self.inner.function_errors(&request).await
     }
 
     /// Change a column's name or nullability.
@@ -4049,6 +4091,31 @@ mod tests {
             .unwrap();
 
         assert_eq!(table.name, "test")
+    }
+
+    /// The per-row error store is a server feature; a local table says so
+    /// rather than answering with an empty listing.
+    #[tokio::test]
+    async fn test_function_errors_are_remote_only() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = make_test_batches();
+        let table = conn
+            .create_table("t", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let err = table
+            .function_errors(FunctionErrorsRequest::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("Cloud and Enterprise")),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

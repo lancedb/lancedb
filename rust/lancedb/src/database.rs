@@ -360,7 +360,7 @@ pub trait Database:
                     continue;
                 };
                 let schema = table.schema().await?;
-                if crate::materialized_view::materialized_view_kind(schema.metadata())?.is_some() {
+                if crate::materialized_view::read_definition(schema.metadata())?.is_some() {
                     names.push(name);
                 }
             }
