@@ -633,6 +633,18 @@ def test_url_retrieve_downloads_image():
     assert img.size[0] > 0 and img.size[1] > 0
 
 
+def test_open_clip_opens_percent_encoded_file_uri(tmp_path):
+    """OpenCLIP should decode local file URIs before opening them."""
+    Image = pytest.importorskip("PIL.Image")
+    from lancedb.embeddings.open_clip import OpenClipEmbeddings
+
+    image_path = tmp_path / "test image.png"
+    Image.new("RGB", (4, 4), color="red").save(image_path, format="PNG")
+
+    with OpenClipEmbeddings._to_pil(None, image_path.as_uri()) as image:
+        assert image.size == (4, 4)
+
+
 def test_jina_generate_image_input_dict_local_path(tmp_path):
     """
     JinaEmbeddings._generate_image_input_dict must accept a local image path
