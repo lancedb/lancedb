@@ -381,6 +381,58 @@ def test_bedrock_embedding(tmp_path):
 
 @pytest.mark.slow
 @pytest.mark.skipif(
+    os.environ.get("OCI_COMPARTMENT_ID") is None, reason="OCI_COMPARTMENT_ID not set"
+)
+@pytest.mark.parametrize(
+    "model_name,output_dimensions,expected_dims",
+    [
+        ("cohere.embed-v4.0", None, 1536),
+        ("cohere.embed-v4.0", 512, 512),
+        ("cohere.embed-multilingual-v3.0", None, 1024),
+    ],
+)
+def test_oci_genai_embedding(model_name, output_dimensions, expected_dims, tmp_path):
+    pytest.importorskip("oci")
+    # compartment_id comes from OCI_COMPARTMENT_ID; the profile / auth follow the
+    # OCI CLI's own OCI_CLI_PROFILE / OCI_CLI_AUTH / OCI_CLI_REGION variables so
+    # both API keys and `oci session authenticate` sessions work.
+    security_token = os.environ.get("OCI_CLI_AUTH") == "security_token"
+    model = (
+        get_registry()
+        .get("oci-genai")
+        .create(
+            name=model_name,
+            output_dimensions=output_dimensions,
+            auth_type="SECURITY_TOKEN" if security_token else "API_KEY",
+            auth_profile=os.environ.get("OCI_CLI_PROFILE", "DEFAULT"),
+            region=os.environ.get("OCI_CLI_REGION", "us-chicago-1"),
+            max_retries=0,
+        )
+    )
+    assert model.ndims() == expected_dims
+
+    class TextModel(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("oci_genai_test", schema=TextModel, mode="overwrite")
+    df = pd.DataFrame(
+        {"text": ["hello world", "goodbye world", "a recipe for lasagna", ""]}
+    )
+    tbl.add(df, on_bad_vectors="null")
+
+    tb = tbl.to_arrow()
+    assert tb.schema.field_by_name("vector").type == pa.list_(
+        pa.float32(), expected_dims
+    )
+    # the empty input is not sent to the service and is stored as null
+    assert tb["vector"].is_null().to_pylist() == [False, False, False, True]
+    assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
     os.environ.get("OPENAI_API_KEY") is None, reason="OPENAI_API_KEY not set"
 )
 def test_openai_embedding(tmp_path):
