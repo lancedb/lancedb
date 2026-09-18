@@ -320,13 +320,13 @@ export abstract class Connection {
   /**
    * Define a materialized view named `name` over the table `source`.
    *
-   * The view is created empty, with the query recorded in its schema
-   * metadata; `view.refresh()` computes the rows. The view is a normal
-   * table: it can be queried, indexed and searched, and it appears in
-   * `tableNames`. The source table must have stable row ids (create it with
+   * The view is populated before creation returns. Set `withNoData` to create
+   * only its definition and empty backing table. The view is a normal table:
+   * it can be queried, indexed and searched, and it appears in `tableNames`.
+   * The source table must have stable row ids (create it with
    * the `newTableEnableStableRowIds` storage option); they keep the view's
    * provenance valid across source compactions and cannot be enabled after
-   * a table exists. Local databases only.
+   * a table exists.
    */
   abstract createMaterializedView(
     name: string,
@@ -335,6 +335,7 @@ export abstract class Connection {
       select?: MaterializedViewSelect;
       where?: string;
       limit?: number;
+      withNoData?: boolean;
     },
   ): Promise<MaterializedView>;
 
@@ -351,6 +352,30 @@ export abstract class Connection {
    * Found by reading every table's schema, so this costs an open per table.
    */
   abstract listMaterializedViews(): Promise<string[]>;
+
+  /**
+   * Drop the materialized view named `name`.
+   *
+   * The view may become unavailable before physical cleanup finishes. Use
+   * {@link dropMaterializedViewAsync} to retain and wait for the cleanup job.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract dropMaterializedView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<void>;
+
+  /**
+   * Start dropping the materialized view named `name` and return its cleanup
+   * job without waiting for completion.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract dropMaterializedViewAsync(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<Job>;
 
   abstract openTable(
     name: string,
@@ -631,6 +656,7 @@ export class LocalConnection extends Connection {
       select?: MaterializedViewSelect;
       where?: string;
       limit?: number;
+      withNoData?: boolean;
     },
   ): Promise<MaterializedView> {
     validateNonNegativeInteger(options?.limit, "limit");
@@ -640,6 +666,7 @@ export class LocalConnection extends Connection {
       normalizeSelect(options?.select),
       options?.where,
       options?.limit,
+      options?.withNoData ?? false,
     );
     return new MaterializedView(new LocalTable(innerTable));
   }
@@ -651,6 +678,22 @@ export class LocalConnection extends Connection {
 
   async listMaterializedViews(): Promise<string[]> {
     return await this.inner.listMaterializedViews();
+  }
+
+  async dropMaterializedView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<void> {
+    return this.inner.dropMaterializedView(name, namespacePath ?? []);
+  }
+
+  async dropMaterializedViewAsync(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<Job> {
+    return new Job(
+      await this.inner.dropMaterializedViewAsync(name, namespacePath ?? []),
+    );
   }
 
   async listTables(

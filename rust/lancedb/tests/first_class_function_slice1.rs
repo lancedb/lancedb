@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use lancedb::function::{
     FunctionApplication, FunctionBinding, FunctionVersion, RefreshColumnResult,
 };
+use lancedb::secrets::{SecretBinding, SecretReference};
 use serde_json::Value;
 
 fn fixture(name: &str) -> String {
@@ -20,14 +21,41 @@ fn job_result(name: &str) -> Value {
     serde_json::from_str::<Value>(&fixture(name)).expect("remote Job fixture")["result"].clone()
 }
 
+/// No client value models a resolved credential, at any nesting depth.
+fn assert_no_secret_values(value: &Value) {
+    match value {
+        Value::Object(values) => {
+            for (key, value) in values {
+                assert!(
+                    !matches!(
+                        key.as_str(),
+                        "secret_value" | "secret_values" | "resolved_secret" | "resolved_secrets"
+                    ),
+                    "client canonical value must not model resolved secret material"
+                );
+                assert_no_secret_values(value);
+            }
+        }
+        Value::Array(values) => values.iter().for_each(assert_no_secret_values),
+        _ => {}
+    }
+}
+
 #[test]
 fn function_version_job_result_matches_shared_canonical_golden() {
     let result = job_result("remote_function_job.json");
     let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
 
     assert_eq!(version.name(), "embed");
-    assert_eq!(version.version(), "fv_01K3EXACT");
-    assert_eq!(version.runtime_digest(), "sha256:runtime");
+    assert_eq!(version.version(), "1");
+    assert_ne!(version.image().manifest_digest, version.version());
+    assert_eq!(
+        version.secret_bindings(),
+        [SecretBinding::Env {
+            variable: "HF_TOKEN".to_string(),
+            secret_ref: SecretReference::new("hf-prod"),
+        }]
+    );
     assert_eq!(
         version.to_canonical_json().expect("canonical JSON"),
         fixture("remote_function_version.canonical.json").trim()
@@ -45,16 +73,28 @@ fn version_identity_is_immutable_and_exact() {
     assert_eq!(reopened.version(), version.version());
 
     let mut changed = original;
-    changed["version"] = Value::String("fv_01K3DIFFERENT".to_string());
+    changed["version"] = Value::String("2".to_string());
     let changed = FunctionVersion::from_json(&changed.to_string()).expect("changed version");
     assert_ne!(changed, version);
+    assert_eq!(changed.image(), version.image());
+    for invalid in [
+        version.image().manifest_digest.as_str(),
+        "0",
+        "01",
+        "-1",
+        "18446744073709551616",
+    ] {
+        let mut value = serde_json::to_value(&version).unwrap();
+        value["version"] = Value::String(invalid.into());
+        assert!(FunctionVersion::from_json(&value.to_string()).is_err());
+    }
 }
 
 #[test]
 fn application_and_binding_match_shared_remote_goldens() {
     let application = FunctionApplication::from_json(&fixture("remote_function_application.json"))
         .expect("application fixture");
-    assert_eq!(application.function().version, "fv_01K3TEXT");
+    assert_eq!(application.function().version, "1");
     assert_eq!(application.output().kind, "named_struct");
     assert_eq!(application.inputs().len(), 2);
     assert_eq!(
@@ -64,7 +104,7 @@ fn application_and_binding_match_shared_remote_goldens() {
 
     let binding = FunctionBinding::from_json(&fixture("remote_function_binding.json"))
         .expect("binding fixture");
-    assert_eq!(binding.function().version, "fv_01K3TEXT");
+    assert_eq!(binding.function().version, "1");
     assert_eq!(binding.outputs()[0].output_ordinal, 0);
     assert_eq!(binding.outputs()[1].output_ordinal, 1);
     assert!(binding.input_schema().is_some());
@@ -113,22 +153,18 @@ fn refresh_job_result_matches_shared_canonical_golden() {
 fn unknown_fields_and_discriminators_are_forward_decodable() {
     let mut result = job_result("remote_function_job.json");
     result["future_version_metadata"] = serde_json::json!({"retention_class": "catalog"});
-    result["runtime"] = serde_json::json!({
-        "kind": "wasm",
-        "module_digest": "sha256:wasm"
-    });
+    result["image"]["descriptor"]["future_interface"] = serde_json::json!({"version": 2});
     result["signature"]["output"]["kind"] = Value::String("future_output_shape".to_string());
 
     let version = FunctionVersion::from_json(&result.to_string()).expect("future remote value");
-    assert_eq!(version.runtime().kind(), "wasm");
-    assert_eq!(version.runtime().python_version(), None);
+    assert_eq!(version.image().descriptor["future_interface"]["version"], 2);
     assert_eq!(version.signature().output.kind, "future_output_shape");
     assert_eq!(
         serde_json::from_str::<Value>(
             &version.to_canonical_json().expect("canonical future value")
         )
-        .expect("canonical JSON")["runtime"],
-        serde_json::json!({"kind": "wasm"})
+        .expect("canonical JSON")["image"]["descriptor"]["future_interface"],
+        serde_json::json!({"version": 2})
     );
 }
 
@@ -140,5 +176,77 @@ fn floating_point_application_literals_are_rejected_consistently() {
         error
             .to_string()
             .contains("floating-point Function literals")
+    );
+}
+
+#[test]
+fn canonical_client_values_carry_bindings_and_no_credentials() {
+    let result = job_result("remote_function_job.json");
+    let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
+    let canonical: Value = serde_json::from_str(
+        &version
+            .to_canonical_json()
+            .expect("canonical FunctionVersion"),
+    )
+    .expect("canonical JSON");
+
+    assert_eq!(
+        canonical["secret_bindings"],
+        serde_json::json!([{"kind": "env", "variable": "HF_TOKEN", "secret_ref": {"name": "hf-prod"}}])
+    );
+    assert_no_secret_values(&canonical);
+}
+
+/// A binding kind a newer server introduces must not fail the whole version.
+///
+/// This is the cost the union pays for being one field: an unknown variant is
+/// a decode error unless it is caught, so it is caught -- and the payload is
+/// dropped rather than retained, as `PythonRuntimeSpec` does, because the
+/// client does not proxy catalog values.
+#[test]
+fn an_unknown_binding_kind_is_forward_decodable() {
+    let mut result = job_result("remote_function_job.json");
+    result["secret_bindings"] = serde_json::json!([
+        {"kind": "env", "variable": "HF_TOKEN", "secret_ref": {"name": "hf-prod"}},
+        {"kind": "file", "path": "/run/secrets/tok", "secret_ref": {"name": "hf-prod"}},
+    ]);
+
+    let version = FunctionVersion::from_json(&result.to_string()).expect("future binding kind");
+
+    let kinds = version
+        .secret_bindings()
+        .iter()
+        .map(|binding| binding.kind())
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, ["env", "file"]);
+    assert_eq!(version.secret_bindings()[1].variable(), None);
+    assert_eq!(version.secret_bindings()[1].secret(), None);
+
+    // The unknown kind round-trips as its discriminator and nothing more.
+    let canonical: Value =
+        serde_json::from_str(&version.to_canonical_json().expect("canonical")).expect("JSON");
+    assert_eq!(
+        canonical["secret_bindings"][1],
+        serde_json::json!({"kind": "file"})
+    );
+}
+
+/// A Function that binds nothing carries no `secret_bindings` key: absent
+/// decodes as an empty list, and an empty list serializes back to absent.
+#[test]
+fn a_version_without_bindings_omits_the_field_in_both_directions() {
+    let mut result = job_result("remote_function_job.json");
+    result
+        .as_object_mut()
+        .expect("Function version object")
+        .remove("secret_bindings");
+    let version = FunctionVersion::from_json(&result.to_string()).expect("FunctionVersion result");
+
+    assert!(version.secret_bindings().is_empty());
+    assert!(
+        !version
+            .to_canonical_json()
+            .expect("canonical FunctionVersion")
+            .contains("secret_bindings")
     );
 }

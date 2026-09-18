@@ -381,7 +381,7 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None))]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -389,6 +389,7 @@ impl Connection {
         projections: Option<Vec<(String, String)>>,
         filter: Option<String>,
         limit: Option<u64>,
+        with_no_data: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
@@ -402,8 +403,38 @@ impl Connection {
             if let Some(limit) = limit {
                 builder = builder.limit(limit);
             }
-            let view = builder.execute().await.infer_error()?;
+            builder = builder.with_no_data(with_no_data);
+            let view = Box::pin(builder.execute()).await.infer_error()?;
             Ok(Table::new(view.table().clone()))
+        })
+    }
+
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    pub fn create_materialized_view_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        source: String,
+        projections: Option<Vec<(String, String)>>,
+        filter: Option<String>,
+        limit: Option<u64>,
+        with_no_data: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.create_materialized_view(name, source);
+            if let Some(projections) = projections {
+                builder = builder.select(projections);
+            }
+            if let Some(filter) = filter {
+                builder = builder.only_if(filter);
+            }
+            if let Some(limit) = limit {
+                builder = builder.limit(limit);
+            }
+            let job = Box::pin(builder.with_no_data(with_no_data).execute_async())
+                .await
+                .infer_error()?;
+            Ok(crate::job::Job::new(job))
         })
     }
 
@@ -411,7 +442,40 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let views = inner.list_materialized_views().await.infer_error()?;
-            Ok(views.into_iter().map(|view| view.name).collect::<Vec<_>>())
+            Ok(views)
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_materialized_view(name, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_materialized_view_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_materialized_view_async(name, &namespace_path)
+                .await
+                .infer_error()
+                .map(crate::job::Job::new)
         })
     }
 
@@ -701,6 +765,85 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             inner.drop_function(name, version).await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, value, namespace_path=None))]
+    pub fn create_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        value: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .create_secret(name, value, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, value, namespace_path=None))]
+    pub fn alter_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        value: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .alter_secret(name, value, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (namespace_path=None))]
+    pub fn list_secrets(
+        self_: PyRef<'_, Self>,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner.list_secrets(&namespace_path).await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner.drop_secret(name, &namespace_path).await.infer_error()
+        })
+    }
+
+    /// Name and timestamps as a plain tuple. `SecretInfo` carries no value, so
+    /// there is none to filter out here. Timestamps stay integers rather than
+    /// going through a string, so the caller can compare two without parsing.
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_secret(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            let info = inner
+                .describe_secret(name, &namespace_path)
+                .await
+                .infer_error()?;
+            Ok((info.name, info.created_at_millis, info.updated_at_millis))
         })
     }
 

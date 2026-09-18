@@ -4,7 +4,7 @@
 """Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
-environment bake, and execution are owned by Sophon.
+environment bake, secret resolution, and execution are owned by Sophon.
 ``RefreshColumnResult`` is also the backend-neutral result of a local
 expression-backed refresh job.
 """
@@ -25,7 +25,7 @@ import re
 import sys
 import textwrap
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import (
     Annotated,
@@ -41,6 +41,7 @@ from typing import (
 
 import pyarrow as pa
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -50,6 +51,7 @@ from pydantic import (
 )
 
 from .schema import is_blob_v2_field as _is_blob_v2_field
+from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
@@ -226,6 +228,33 @@ class FunctionOutput(_OpenRemoteValue):
     fields: tuple[FunctionResultField, ...] = ()
 
 
+class SecretReference(_RemoteValue):
+    """Where a Secret lives, carried as its parts rather than as one string.
+
+    A joined id would need a delimiter, and a delimiter has to be excluded from
+    every name and segment forever, agreed on by both sides, and re-agreed each
+    time either grows a new way to be configured. Naming the parts settles all
+    of that: nothing here is parsed, so nothing can parse two ways.
+    """
+
+    name: str
+    namespace_path: tuple[str, ...] = ()
+
+
+class SecretBinding(_RemoteValue):
+    """How a Secret reaches the Function that binds it.
+
+    One list rather than a field per delivery mode: a binding is the concept,
+    and how it arrives is a property of one. ``kind`` is open, so a binding a
+    newer service introduces decodes here instead of failing the whole
+    FunctionVersion.
+    """
+
+    kind: str
+    variable: Optional[str] = None
+    secret_ref: Optional[SecretReference] = None
+
+
 class FunctionSignature(_RemoteValue):
     inputs: tuple[FunctionParameter, ...]
     output: FunctionOutput
@@ -295,21 +324,40 @@ class PythonRuntimeSpec(_RemoteValue):
         return self
 
 
-class FunctionVersion(_RemoteValue):
-    """An exact immutable Function version returned by Enterprise.
+class FunctionImage(_RemoteValue):
+    """A complete OCI Function image identified by its exact manifest digest."""
 
-    The GPU execution requirement is part of this identity. CPU and memory sizing,
-    priority, concurrency, and retry policy belong to the execution platform.
-    """
+    manifest_digest: str
+    descriptor: Mapping[str, Any]
+    source: bool
+
+
+def _validate_object_version(value: str) -> str:
+    if int(value) > 2**64 - 1:
+        raise ValueError("Function version exceeds uint64")
+    return value
+
+
+_ObjectVersion = Annotated[
+    str,
+    Field(strict=True, pattern=r"^[1-9][0-9]*$"),
+    AfterValidator(_validate_object_version),
+]
+
+
+class FunctionVersion(_RemoteValue):
+    """A pinned object revision, independent of its executable image digest."""
 
     name: str
-    version: str
-    artifact: FunctionArtifact
+    object_id: str
+    location: str
+    version: _ObjectVersion
+    image: FunctionImage
     signature: FunctionSignature
-    runtime: PythonRuntimeSpec
-    runtime_digest: str
-    environment_digest: str
+    secret_bindings: tuple[SecretBinding, ...] = ()
     created_at: str
+    metadata: Mapping[str, str]
+    disabled: bool
 
     def __call__(self, **inputs: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.
@@ -363,24 +411,39 @@ class FunctionVersion(_RemoteValue):
                 )
             )
         return FunctionApplication(
-            function=FunctionVersionRef(name=self.name, version=self.version),
+            function=FunctionVersionRef(
+                name=self.name,
+                object_id=self.object_id,
+                location=self.location,
+                version=self.version,
+                manifest_digest=self.image.manifest_digest,
+            ),
             inputs=tuple(bindings),
             output=self.signature.output,
         )
 
 
 class FunctionRegistrationRequest(_RemoteValue):
-    """Stable remote registration envelope produced by :func:`udf`."""
+    """Stable remote registration envelope produced by :func:`udf`.
+
+    Credential values deliberately have no field here. The only secret-shaped
+    thing a client sends is ``secret_bindings``: the name of a Secret the
+    database already holds, which the remote service resolves at execution.
+    """
 
     name: str
     artifact: FunctionArtifactRequest
     signature: FunctionSignature
     runtime: PythonRuntimeSpec
+    secret_bindings: tuple[SecretBinding, ...] = ()
 
 
 class FunctionVersionRef(_OpenRemoteValue):
     name: str
-    version: str
+    object_id: str
+    location: str
+    version: _ObjectVersion
+    manifest_digest: str
 
 
 class ApplicationInput(_OpenRemoteValue):
@@ -524,6 +587,7 @@ class RefreshColumnResult(_RemoteValue):
 
 
 _FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
 _BLOB_V2_EXTENSION_NAME = "lance.blob.v2"
@@ -1265,8 +1329,72 @@ class UdfDefinition:
 
     @property
     def registration_request(self) -> FunctionRegistrationRequest:
-        """The immutable request sent by ``create_function_async``."""
+        """The immutable request sent by ``create_function_async``.
+
+        Carries no secret bindings. Binding is a registration-time decision,
+        so a Function bound to Secrets is registered through :meth:`bind_secrets`,
+        which is what ``create_function`` calls.
+        """
         return self._request
+
+    def bind_secrets(
+        self, secrets: Optional[Sequence[EnvVarSecret]]
+    ) -> FunctionRegistrationRequest:
+        """The registration request for this definition bound to ``secrets``.
+
+        Binding does not change the Function's source: each
+        [EnvVarSecret][lancedb.secrets.EnvVarSecret] names a Secret and the
+        environment variable its value should arrive in, and the Function reads
+        that variable the way it already did. Whether the named Secrets exist is
+        the server's answer, not this one.
+        """
+        bindings = () if secrets is None else tuple(secrets)
+        wrong_type = [
+            binding for binding in bindings if not isinstance(binding, EnvVarSecret)
+        ]
+        if wrong_type:
+            kinds = sorted({type(binding).__name__ for binding in wrong_type})
+            raise TypeError(
+                f"Function secrets must be EnvVarSecret values, not {kinds!r}; a "
+                "credential value is never sent to this API"
+            )
+        variables = [binding.env_variable for binding in bindings]
+        duplicates = sorted({name for name in variables if variables.count(name) > 1})
+        if duplicates:
+            raise ValueError(
+                "a Function binds each environment variable once; duplicated: "
+                f"{duplicates!r}"
+            )
+        # `env` is ordinary configuration carried in the definition, so a name in
+        # both would have a value visible in the Function's record and a value
+        # that is not. Refuse rather than pick.
+        environment = self._request.runtime.env or {}
+        overlap = sorted(set(environment) & set(variables))
+        if overlap:
+            raise ValueError(
+                f"Function env and secret bindings must be disjoint: {overlap!r}"
+            )
+        if not bindings:
+            return self._request
+        # Sorted, because the list is carried in the FunctionVersion hash and a
+        # caller's argument order is not part of what a Function is.
+        resolved = tuple(
+            sorted(
+                (
+                    SecretBinding(
+                        kind="env",
+                        variable=binding.env_variable,
+                        secret_ref=SecretReference(
+                            name=binding.secret_name,
+                            namespace_path=tuple(binding.secret_namespace_path),
+                        ),
+                    )
+                    for binding in bindings
+                ),
+                key=lambda binding: (binding.kind, binding.variable or ""),
+            )
+        )
+        return self._request._copy(update={"secret_bindings": resolved})
 
     def __call__(self, *args, **kwargs):
         return self._function(*args, **kwargs)
@@ -1332,7 +1460,9 @@ def udf(
     conda_channels : sequence of str, optional
         Conda channels in priority order; requires ``conda``.
     env : mapping of str to str, optional
-        Environment variables included in the Function definition.
+        Environment variables included in the Function definition. Not for
+        credentials -- these are ordinary configuration, stored with the
+        Function and visible wherever it is.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
     gpu : bool, default False
@@ -1402,6 +1532,7 @@ __all__ = [
     "FunctionRegistrationRequest",
     "FunctionResultField",
     "FunctionSignature",
+    "FunctionImage",
     "FunctionVersion",
     "FunctionVersionRef",
     "InputBinding",

@@ -637,6 +637,7 @@ class LanceNamespaceDBConnection(DBConnection):
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> "MaterializedView":
         """Define a materialized view over a table in the root namespace.
         See
@@ -646,11 +647,39 @@ class LanceNamespaceDBConnection(DBConnection):
             self.open_table(
                 LOOP.run(
                     self._inner.create_materialized_view(
-                        name, source, select=select, where=where, limit=limit
+                        name,
+                        source,
+                        select=select,
+                        where=where,
+                        limit=limit,
+                        with_no_data=with_no_data,
                     )
                 ).name
             )
         )
+
+    @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._inner.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
+        )
+        return Job(job)
 
     @override
     def open_materialized_view(self, name: str) -> "MaterializedView":
@@ -663,6 +692,30 @@ class LanceNamespaceDBConnection(DBConnection):
     def list_materialized_views(self) -> List[str]:
         """The names of the materialized views in the root namespace."""
         return LOOP.run(self._inner.list_materialized_views())
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(
+            self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        return Job(
+            LOOP.run(
+                self._inner.drop_materialized_view_async(
+                    name, namespace_path=namespace_path
+                )
+            )
+        )
 
     @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
@@ -1194,14 +1247,40 @@ class AsyncLanceNamespaceDBConnection:
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> "AsyncMaterializedView":
         """Define a materialized view over a table in the root namespace."""
         view = await self._inner.create_materialized_view(
-            name, source, select=select, where=where, limit=limit
+            name,
+            source,
+            select=select,
+            where=where,
+            limit=limit,
+            with_no_data=with_no_data,
         )
         # Reopen through the namespace so the view's table carries the
         # namespace client and pushdown configuration a bare inner table lacks.
         return AsyncMaterializedView(await self.open_table(view.name))
+
+    async def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> AsyncJob[None]:
+        """Submit materialized-view creation and return its job."""
+        return await self._inner.create_materialized_view_async(
+            name,
+            source,
+            select=select,
+            where=where,
+            limit=limit,
+            with_no_data=with_no_data,
+        )
 
     async def open_materialized_view(self, name: str) -> "AsyncMaterializedView":
         """Open the materialized view named ``name``."""
@@ -1212,6 +1291,24 @@ class AsyncLanceNamespaceDBConnection:
     async def list_materialized_views(self) -> List[str]:
         """The names of the materialized views in the root namespace."""
         return await self._inner.list_materialized_views()
+
+    async def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized view from the namespace."""
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+
+    async def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> AsyncJob[None]:
+        """Start dropping a materialized view and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.drop_materialized_view_async(
+            name, namespace_path=namespace_path
+        )
 
     async def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the namespace."""

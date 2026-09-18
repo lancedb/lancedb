@@ -1033,10 +1033,10 @@ impl Database for ListingDatabase {
             return self.namespace_database().create_table(request).await;
         }
         // Use provided location if available, otherwise derive from table name
-        let table_uri = request
-            .location
-            .clone()
-            .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
+        let table_uri = match request.location.clone() {
+            Some(location) => location,
+            None => self.table_uri(&request.name)?,
+        };
 
         let mut write_params = request
             .write_options
@@ -1149,10 +1149,10 @@ impl Database for ListingDatabase {
             return self.namespace_database().open_table(request).await;
         }
         // Use provided location if available, otherwise derive from table name
-        let table_uri = request
-            .location
-            .clone()
-            .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
+        let table_uri = match request.location.clone() {
+            Some(location) => location,
+            None => self.table_uri(&request.name)?,
+        };
 
         // Only modify the storage options if we actually have something to
         // inherit. There is a difference between storage_options=None and
@@ -1694,6 +1694,64 @@ mod tests {
             page.tables.is_empty(),
             "invalid empty table name was listed"
         );
+    }
+
+    /// The names a table cannot have. A name is what the database builds the table's
+    /// location out of, so one it cannot build a location from is refused rather than
+    /// turned into some other path.
+    const INVALID_TABLE_NAMES: [&str; 4] = ["", "has space", "bad/name", "a!b"];
+
+    /// Creating a table under an invalid name is an error the caller can handle, not a
+    /// panic: the name comes from the caller, and the bindings turn the error into their
+    /// own (`ValueError` in Python).
+    #[tokio::test]
+    async fn test_create_table_rejects_invalid_names() {
+        let (_tempdir, db) = setup_database().await;
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        for name in INVALID_TABLE_NAMES {
+            let result = db
+                .create_table(CreateTableRequest {
+                    name: name.to_string(),
+                    namespace_path: vec![],
+                    data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+                    mode: CreateTableMode::Create,
+                    write_options: Default::default(),
+                    location: None,
+                    namespace_client: None,
+                })
+                .await;
+
+            assert!(
+                matches!(result, Err(Error::InvalidTableName { .. })),
+                "creating {name:?} did not report an invalid table name"
+            );
+        }
+    }
+
+    /// Opening a table under an invalid name is likewise an error rather than a panic.
+    #[tokio::test]
+    async fn test_open_table_rejects_invalid_names() {
+        let (_tempdir, db) = setup_database().await;
+
+        for name in INVALID_TABLE_NAMES {
+            let result = db
+                .open_table(OpenTableRequest {
+                    name: name.to_string(),
+                    namespace_path: vec![],
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
+                })
+                .await;
+
+            assert!(
+                matches!(result, Err(Error::InvalidTableName { .. })),
+                "opening {name:?} did not report an invalid table name"
+            );
+        }
     }
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {

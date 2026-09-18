@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=12.0.0-beta.18", default-features = false, "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=12.0.0-beta.18", default-features = false, "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=12.0.0-beta.18", default-features = false, "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=12.0.0-beta.18", "tag" = "v12.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=13.0.0-beta.4", default-features = false, "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=13.0.0-beta.4", default-features = false, "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=13.0.0-beta.4", default-features = false, "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=13.0.0-beta.4", "tag" = "v13.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
@@ -41,6 +41,8 @@ arrow-select = "58.0.0"
 arrow-cast = "58.0.0"
 arrow-flight = { version = "58.0.0", features = ["flight-sql-experimental"] }
 async-trait = "0"
+# Smithy JSON 0.63 requires the pre-1.7 Document representation; allow the MSRV pin.
+aws-smithy-types = ">=1.3.6, <1.7"
 bytes = "1"
 datafusion = { version = "54.0.0", default-features = false }
 datafusion-catalog = "54.0.0"
@@ -66,6 +68,7 @@ rand = "0.9"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"
+oauth2 = { version = "5.0", default-features = false }
 regex = "1.10"
 semver = "1.0.25"
 serde = "1"

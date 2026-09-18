@@ -28,6 +28,17 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.Session
 
+## Catalogs (Synchronous)
+
+Remote catalogs manage databases through a server's root namespace. Opened databases
+are ordinary connections. Dropping a database requires it to be empty.
+
+::: lancedb.connect_catalog
+
+::: lancedb.catalog.Catalog
+
+::: lancedb.catalog.ListDatabasesResponse
+
 ## Remote SQL
 
 Submit SQL against a remote LanceDB database through the connection.
@@ -125,6 +136,10 @@ listing a storage directory.
 
 ::: lancedb.functions.UdfDefinition
 
+::: lancedb.secrets.EnvVarSecret
+
+::: lancedb.secrets.SecretInfo
+
 ::: lancedb.functions.FunctionRegistrationRequest
 
 ::: lancedb.functions.FunctionArtifactRequest
@@ -132,6 +147,8 @@ listing a storage directory.
 ::: lancedb.functions.FunctionArtifactContent
 
 ::: lancedb.functions.PythonAdapterSpec
+
+::: lancedb.functions.FunctionImage
 
 ::: lancedb.functions.FunctionVersion
 
@@ -152,6 +169,12 @@ listing a storage directory.
 ::: lancedb.functions.FunctionBinding
 
 ::: lancedb.functions.RefreshColumnResult
+
+::: lancedb.FunctionErrors
+
+::: lancedb.FunctionErrorRecord
+
+::: lancedb.FunctionErrorFragment
 
 ::: lancedb.job.Job
 
@@ -358,6 +381,10 @@ still work. Queries return descriptors. Call
       show_root_toc_entry: false
 
 ## Connections (Asynchronous)
+
+::: lancedb.connect_catalog_async
+
+::: lancedb.catalog.AsyncCatalog
 
 Connections represent a connection to a LanceDb database and
 can be used to create, list, or open tables.

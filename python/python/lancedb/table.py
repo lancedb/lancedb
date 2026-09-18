@@ -186,6 +186,7 @@ if TYPE_CHECKING:
         CompactionStats,
         Tag,
         AddColumnsResult,
+        FunctionErrors,
         RefreshColumnResult,
         AddResult,
         AlterColumnsResult,
@@ -634,26 +635,43 @@ def _align_field_types(
     return new_fields
 
 
-def _align_list_value_field(
-    value_field: pa.Field, target_value_field: pa.Field
-) -> pa.Field:
-    # A list has exactly one child, so the inferred child name ("item") aligns
-    # positionally and adopts the table's child name; pa.Table.cast renames it.
-    return _align_field(value_field, target_value_field).with_name(
-        target_value_field.name
-    )
+def _align_container_child(child: pa.Field, target_child: pa.Field) -> pa.Field:
+    # A list has one child, a map one key and one item, so an inferred child name
+    # ("item") aligns positionally and adopts the table's; pa.Table.cast renames it.
+    return _align_field(child, target_child).with_name(target_child.name)
+
+
+def _arrow_json_storage_type(input_type: pa.DataType) -> Optional[pa.DataType]:
+    """The storage type arrow.json would use for ``input_type``.
+
+    Returns None if the type cannot hold JSON text.
+    """
+    if pa.types.is_string(input_type) or pa.types.is_string_view(input_type):
+        return pa.string()
+    if pa.types.is_large_string(input_type):
+        return pa.large_string()
+    return None
 
 
 def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
-    # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
-    # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
-    # input to that storage type here merely relabels the raw JSON bytes as
+    # LanceDB exposes stored JSON columns as lance.json (JSONB-backed LargeBinary), but
+    # casting the input to that storage type here merely relabels the raw JSON bytes as
     # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
-    if (
-        _field_extension_name(field) == "arrow.json"
-        and _field_extension_name(target_field) == "lance.json"
-    ):
-        return field
+    if _field_extension_name(target_field) == "lance.json":
+        if _field_extension_name(field) == "arrow.json":
+            return field
+        # Plain JSON text, which is what pyarrow infers for a column of `str`, only
+        # needs the arrow.json label.
+        json_storage = _arrow_json_storage_type(field.type)
+        if json_storage is not None:
+            # Labelled through metadata rather than pa.json_(), which only exists on
+            # newer PyArrow; Lance reads the extension name off the field either way.
+            return pa.field(
+                field.name,
+                json_storage,
+                field.nullable,
+                {"ARROW:extension:name": "arrow.json"},
+            )
     if pa.types.is_struct(target_field.type):
         if pa.types.is_struct(field.type):
             new_type = pa.struct(
@@ -667,7 +685,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.list_(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 )
             )
@@ -676,7 +694,7 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_large_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.large_list(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 )
             )
@@ -685,10 +703,25 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
     elif pa.types.is_fixed_size_list(target_field.type):
         if _is_list_like(field.type):
             new_type = pa.list_(
-                _align_list_value_field(
+                _align_container_child(
                     field.type.value_field, target_field.type.value_field
                 ),
                 target_field.type.list_size,
+            )
+        else:
+            new_type = target_field.type
+    elif pa.types.is_map(target_field.type):
+        if pa.types.is_map(field.type):
+            # A map has exactly one key and one item field, so like a list's child they
+            # align positionally and adopt the table's names.
+            new_type = pa.map_(
+                _align_container_child(
+                    field.type.key_field, target_field.type.key_field
+                ),
+                _align_container_child(
+                    field.type.item_field, target_field.type.item_field
+                ),
+                keys_sorted=target_field.type.keys_sorted,
             )
         else:
             new_type = target_field.type
@@ -2188,10 +2221,10 @@ class Table(ABC):
             Declaring one therefore costs the same on a large table as on an
             empty one.
 
-            A refresh does not revisit rows it has already filled, so mutating
-            an input leaves the value computed at fill time; recomputing means
-            dropping the column and declaring it again. While a declaration
-            reads a column, that column cannot be renamed, retyped or dropped.
+            A refresh also recomputes the rows whose inputs changed since they
+            were computed, so a mutated input is reflected by the next refresh.
+            While a declaration reads a column, that column cannot be renamed,
+            retyped or dropped.
 
             On LanceDB Cloud and Enterprise the expression is planned by the
             server, and the refresh runs as a server job -- see
@@ -2211,7 +2244,7 @@ class Table(ABC):
         >>> table.add_columns(computed={"doubled": "x * 2"})
         AddColumnsResult(version=2)
         >>> table.refresh_column("doubled")
-        RefreshColumnResult(rows_filled=2, version=3)
+        RefreshColumnResult(rows_filled=2, version=4)
         >>> table.to_arrow().sort_by("x").to_pandas()
            x  doubled
         0  1        2
@@ -2225,8 +2258,8 @@ class Table(ABC):
 
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
-        by the next one; rows already filled are left as they are, so the call
-        is idempotent and does not observe a mutated input.
+        by the next one, and rows whose inputs changed since they were computed
+        are recomputed; everything else is left as it is.
 
         Local tables only: a remote refresh runs as a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
@@ -2274,6 +2307,47 @@ class Table(ABC):
         2
         >>> job.status()
         'finished'
+        """
+
+    @abstractmethod
+    def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """
+        The per-row errors Function refreshes recorded on this table.
+
+        A refresh running under a skip policy records each row it skipped
+        with the input that failed and the error. This lists those records,
+        newest job first, plus a summary for any fragment whose per-row
+        detail was capped. LanceDB Cloud and Enterprise only; reading errors
+        needs read access to the table, since a message carries the value
+        that failed.
+
+        Parameters
+        ----------
+        job_id: str, optional
+            Only errors recorded by this job.
+        column: str, optional
+            Only errors on this column.
+        limit: int, optional
+            At most this many records (server default 10000, cap 100000).
+
+        Returns
+        -------
+        FunctionErrors
+            ``records``, ``fragments`` and ``truncated``, the last saying
+            whether the listing stopped at its limit.
+
+        Examples
+        --------
+        >>> errors = table.function_errors(column="embedding")  # doctest: +SKIP
+        >>> for record in errors.records:  # doctest: +SKIP
+        ...     print(record.job_id, record.row_offset, record.error_message)
+        >>> if errors.truncated:  # doctest: +SKIP
+        ...     print("listing stopped at the limit")
         """
 
     @abstractmethod
@@ -4318,16 +4392,29 @@ class LanceTable(Table):
         return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
     def refresh_column(self, column: str) -> "RefreshColumnResult":
-        """Fill a computed column's unfilled rows. See
+        """Fill a computed column's unfilled rows and recompute those whose
+        inputs changed. See
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
         return LOOP.run(self._table.refresh_column(column))
 
     def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
-        """Fill a computed column's unfilled rows, returning a handle to the
-        refresh job. See
+        """Fill a computed column's unfilled rows and recompute those whose
+        inputs changed, returning a handle to the refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
         return Job(LOOP.run(self._table.refresh_column_async(column)))
+
+    def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """The per-row errors Function refreshes recorded on this table. See
+        [`Table.function_errors`][lancedb.table.Table.function_errors]."""
+        return LOOP.run(
+            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+        )
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -6312,10 +6399,10 @@ class AsyncTable:
             them from
             [`refresh_column`][lancedb.table.AsyncTable.refresh_column].
 
-            A refresh does not revisit rows it has already filled, so mutating
-            an input leaves the value computed at fill time. While a
-            declaration reads a column, that column cannot be renamed, retyped
-            or dropped.
+            A refresh also recomputes the rows whose inputs changed since they
+            were computed, so a mutated input is reflected by the next refresh.
+            While a declaration reads a column, that column cannot be renamed,
+            retyped or dropped.
 
             On LanceDB Cloud and Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
@@ -6377,8 +6464,8 @@ class AsyncTable:
 
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
-        by the next one; rows already filled are left as they are, so the call
-        is idempotent and does not observe a mutated input.
+        by the next one, and rows whose inputs changed since they were computed
+        are recomputed; everything else is left as it is.
 
         Local tables only: a remote refresh runs as a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
@@ -6394,6 +6481,49 @@ class AsyncTable:
             The number of rows filled and the new version of the table.
         """
         return await self._inner.refresh_column(column)
+
+    async def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """
+        The per-row errors Function refreshes recorded on this table.
+
+        A refresh running under a skip policy records each row it skipped
+        with the input that failed and the error. This lists those records,
+        newest job first, plus a summary for any fragment whose per-row
+        detail was capped. LanceDB Cloud and Enterprise only; reading errors
+        needs read access to the table, since a message carries the value
+        that failed.
+
+        Parameters
+        ----------
+        job_id: str, optional
+            Only errors recorded by this job.
+        column: str, optional
+            Only errors on this column.
+        limit: int, optional
+            At most this many records (server default 10000, cap 100000).
+
+        Returns
+        -------
+        FunctionErrors
+            ``records``, ``fragments`` and ``truncated``, the last saying
+            whether the listing stopped at its limit.
+
+        Examples
+        --------
+        >>> errors = await table.function_errors(column="embedding")  # doctest: +SKIP
+        >>> for record in errors.records:  # doctest: +SKIP
+        ...     print(record.job_id, record.row_offset, record.error_message)
+        >>> if errors.truncated:  # doctest: +SKIP
+        ...     print("listing stopped at the limit")
+        """
+        return await self._inner.function_errors(
+            job_id=job_id, column=column, limit=limit
+        )
 
     async def refresh_column_async(
         self, column: str

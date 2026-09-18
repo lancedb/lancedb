@@ -5,9 +5,12 @@ import * as http from "http";
 import { RequestListener } from "http";
 import packageJson = require("../package.json");
 import {
+  ClientAuthMethod,
   ClientConfig,
   Connection,
   ConnectionOptions,
+  OAuthConfig,
+  OAuthFlowType,
   TlsConfig,
   connect,
 } from "../lancedb";
@@ -82,21 +85,17 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
-  it("refuses materialized views before issuing any request", async () => {
-    const paths: string[] = [];
+  it("lists materialized views through the namespace route", async () => {
     await withMockDatabase(
       (req, res) => {
-        paths.push(req.url ?? "");
-        res.writeHead(404).end();
+        expect(req.method).toBe("GET");
+        expect(req.url).toBe("/v1/namespace/$/materialized_view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["daily_sales"] }));
       },
       async (db) => {
-        await expect(db.openMaterializedView("secret_table")).rejects.toThrow(
-          /only on local databases/,
-        );
-        await expect(db.listMaterializedViews()).rejects.toThrow(
-          /only on local databases/,
-        );
-        expect(paths).toEqual([]);
+        expect(await db.listMaterializedViews()).toEqual(["daily_sales"]);
       },
     );
   });
@@ -194,6 +193,66 @@ describe("remote connection", () => {
         },
       },
     );
+  });
+
+  it("lists the rows a Function refresh skipped", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/errors") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              `{"records": [{"job_id": "j-7", "fragment_id": 3, "row_offset": 9,
+                "column": "embedding", "function": "embed", "function_version": "2",
+                "table_version": 11, "error_type": "ValueError",
+                "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
+                "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
+                "rows_recorded": 100}], "truncated": true}`,
+            );
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const errors = await table.functionErrors({
+          jobId: "j-7",
+          column: "embedding",
+          limit: 2,
+        });
+        expect(errors.truncated).toBe(true);
+        expect(errors.records.map((r) => r.errorMessage)).toEqual([
+          "bad input 'x'",
+        ]);
+        expect(errors.records[0].rowOffset).toBe(9);
+        expect(errors.fragments[0].rowsSkipped).toBe(500);
+        await table.functionErrors();
+        await expect(table.functionErrors({ limit: -1 })).rejects.toThrow(
+          "limit must be a non-negative integer",
+        );
+      },
+    );
+    expect(bodies).toEqual([
+      JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
+      {},
+    ]);
   });
 
   it("surfaces JSON server errors from remote table operations", async () => {
@@ -440,6 +499,40 @@ describe("remote connection", () => {
       // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
       { from_branch: "exp", dry_run: true },
     ]);
+  });
+
+  describe("OAuthConfig", () => {
+    it("should expose client auth method values", () => {
+      expect(ClientAuthMethod.None).toBe("none");
+      expect(ClientAuthMethod.ClientSecretBasic).toBe("client_secret_basic");
+      expect(ClientAuthMethod.ClientSecretPost).toBe("client_secret_post");
+    });
+
+    it("should accept a confidential client with basic auth", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        clientSecret: "secret",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        clientAuthMethod: ClientAuthMethod.ClientSecretBasic,
+      };
+
+      expect(config.clientAuthMethod).toBe(ClientAuthMethod.ClientSecretBasic);
+    });
+
+    it("should accept a public PKCE client without auth method or secret", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        usePkce: true,
+      };
+
+      expect(config.clientSecret).toBeUndefined();
+      expect(config.clientAuthMethod).toBeUndefined();
+    });
   });
 
   describe("TlsConfig", () => {

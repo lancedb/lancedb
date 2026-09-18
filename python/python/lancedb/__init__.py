@@ -12,6 +12,9 @@ __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
+from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
+from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
+from ._lancedb import FunctionErrors as FunctionErrors
 from ._lancedb import LsmWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
@@ -37,6 +40,8 @@ from .functions import (
     UdfDefinition as UdfDefinition,
     udf as udf,
 )
+from .secrets import EnvVarSecret as EnvVarSecret
+from .secrets import SecretInfo as SecretInfo
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
@@ -50,6 +55,14 @@ from .namespace import (
     connect_namespace_async,
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
+)
+
+from .catalog import (
+    AsyncCatalog,
+    Catalog,
+    ListDatabasesResponse,
+    connect_catalog,
+    connect_catalog_async,
 )
 
 
@@ -561,6 +574,11 @@ async def connect_async(
 
 
 __all__ = [
+    "Catalog",
+    "AsyncCatalog",
+    "ListDatabasesResponse",
+    "connect_catalog",
+    "connect_catalog_async",
     "AsyncMaterializedView",
     "MaterializedView",
     "MaterializedViewDefinition",

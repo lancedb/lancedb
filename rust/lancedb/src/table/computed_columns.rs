@@ -71,6 +71,22 @@ pub const FUNCTION_BINDINGS_META_KEY: &str = "lancedb::function_bindings";
 /// Version of the schema-level Function binding envelope.
 pub const FUNCTION_BINDINGS_VERSION: u32 = 1;
 
+/// Field metadata key holding `{fragment id -> input signature}` as JSON,
+/// recorded by the refresh that last computed each fragment. Outside the
+/// declaration namespace on purpose: a declaration is immutable through
+/// metadata edits, this is rewritten by every refresh. Seeded empty at
+/// declaration, so a column is tracked from birth; a column without it was
+/// declared before signatures existed.
+pub const SOURCE_SIGNATURE_META_KEY: &str = "computed_refresh.source_signature";
+
+/// Field metadata key holding the definition digest a column was last
+/// computed under. A change to it makes every row stale.
+pub const DEFINITION_VERSION_META_KEY: &str = "computed_refresh.definition_version";
+
+/// Field metadata key holding the table version the signature map describes:
+/// where a refresh starts following compactions to carry freshness forward.
+pub const RECORDED_AT_VERSION_META_KEY: &str = "computed_refresh.recorded_at_version";
+
 /// Value of [`KIND_META_KEY`] for a column defined by a SQL expression.
 pub const SQL_KIND: &str = "sql";
 
@@ -139,6 +155,7 @@ fn computed_column_metadata(expression: &str, inputs: &[String]) -> HashMap<Stri
             INPUTS_META_KEY.to_string(),
             serde_json::to_string(inputs).unwrap_or_else(|_| "[]".to_string()),
         ),
+        (SOURCE_SIGNATURE_META_KEY.to_string(), "{}".to_string()),
     ])
 }
 
@@ -163,6 +180,7 @@ pub fn function_computed_column_metadata(
             INPUTS_META_KEY.to_string(),
             serde_json::to_string(inputs).unwrap_or_else(|_| "[]".to_string()),
         ),
+        (SOURCE_SIGNATURE_META_KEY.to_string(), "{}".to_string()),
     ])
 }
 
@@ -373,6 +391,9 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
     Ok(())
 }
 
+/// Refuse `operation` outright on a table with a Function binding. For
+/// operations that cannot say which columns they touch; the others use
+/// [`ensure_not_function_bound`].
 pub(crate) fn ensure_no_function_bindings_for_mutation(
     schema: &ArrowSchema,
     operation: &str,
@@ -384,6 +405,49 @@ pub(crate) fn ensure_no_function_bindings_for_mutation(
                 "{operation} is not supported on a table with registered Function bindings"
             ),
         });
+    }
+    Ok(())
+}
+
+/// Refuse `operation` only when a path in `touched` names a column a Function
+/// binding depends on: an input's root, an output, or the assignment column.
+/// A binding stores those columns' exact Arrow fields, so editing one strands it.
+pub(crate) fn ensure_not_function_bound<S: AsRef<str>>(
+    schema: &ArrowSchema,
+    operation: &str,
+    touched: impl IntoIterator<Item = S>,
+) -> Result<()> {
+    ensure_supported_function_metadata(schema)?;
+    let mut protected = BTreeSet::new();
+    for binding in function_bindings(schema)? {
+        for input in binding.inputs() {
+            protected.insert(field_root(&input.field_path)?);
+        }
+        protected.extend(
+            binding
+                .outputs()
+                .iter()
+                .map(|output| output.output_name.clone()),
+        );
+        protected.extend(
+            binding
+                .assignment()
+                .map(|assignment| assignment.output_name.clone()),
+        );
+    }
+    if protected.is_empty() {
+        return Ok(());
+    }
+    for path in touched {
+        let column = field_root(path.as_ref())?;
+        if protected.contains(&column) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "{operation} of '{column}' is not supported: a Function binding reads or \
+                     writes it"
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -521,7 +585,13 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
         object
             .get("function")
             .ok_or_else(|| invalid_function("Function binding is missing its exact version"))?,
-        &["name", "version"],
+        &[
+            "name",
+            "object_id",
+            "location",
+            "version",
+            "manifest_digest",
+        ],
         "version reference",
     )?;
     for input in object
@@ -1295,7 +1365,8 @@ pub(crate) fn ensure_not_an_input(schema: &SchemaRef, paths: &[&str]) -> Result<
 }
 
 /// Reject a write that supplies values for a computed column directly:
-/// only refresh materializes one, and refresh never revisits a filled row.
+/// only refresh materializes one, and only refresh decides what it
+/// recomputes.
 pub(crate) fn ensure_not_written<'a>(
     schema: &ArrowSchema,
     written: impl IntoIterator<Item = &'a str>,
@@ -1305,7 +1376,7 @@ pub(crate) fn ensure_not_written<'a>(
         .map(|declaration| declaration.name)
         .collect();
     for name in written {
-        if declared.iter().any(|declared| declared == root(name)) {
+        if declared.iter().any(|declared| *declared == root(name)) {
             return Err(Error::InvalidInput {
                 message: format!(
                     "column '{}' is computed; its values come from refresh and cannot be \
@@ -1470,7 +1541,9 @@ fn ensure_no_foreign_declaration(field: &ArrowField) -> Result<()> {
 /// kind, the expression, the inputs -- would bypass that validation or move
 /// a binding out from under a refresh. Drop the column and declare it again.
 pub(crate) fn is_declaration_key(key: &str) -> bool {
-    key == COMPUTED_COLUMN_META_KEY || key.starts_with("computed_column.")
+    key == COMPUTED_COLUMN_META_KEY
+        || key.starts_with("computed_column.")
+        || key.starts_with("computed_refresh.")
 }
 
 /// Reject retyping a computed column itself.
@@ -1496,9 +1569,24 @@ pub(crate) fn ensure_not_retyped(schema: &ArrowSchema, paths: &[&str]) -> Result
     Ok(())
 }
 
-/// The top-level column a possibly nested input path reads.
-pub(crate) fn root(path: &str) -> &str {
-    path.split('.').next().unwrap_or(path)
+/// The top-level column a path addresses, by the grammar lance resolves it
+/// with, so a quoted spelling names the same column as a bare one.
+pub(crate) fn field_root(path: &str) -> Result<String> {
+    parse_field_path(path)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid column path '{path}': {e}"),
+        })?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::InvalidInput {
+            message: format!("column path '{path}' is empty"),
+        })
+}
+
+/// [`field_root`], falling back to the text before the first dot for a
+/// spelling lance would not resolve.
+pub(crate) fn root(path: &str) -> String {
+    field_root(path).unwrap_or_else(|_| path.split('.').next().unwrap_or(path).to_string())
 }
 
 /// A declaration's expression bound to a schema, ready to evaluate.
@@ -1722,7 +1810,7 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
     let mut indices = Vec::with_capacity(inputs.len());
     for input in &inputs {
         let index = runtime_schema
-            .index_of(root(input))
+            .index_of(&root(input))
             .map_err(|_| invalid(format!("unknown column '{input}'")))?;
         if !indices.contains(&index) {
             indices.push(index);
@@ -1857,7 +1945,11 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
 /// assert!(validate_declarations(schema, &[("c".into(), "random()".into())]).is_err());
 /// ```
 pub fn validate_declarations(schema: SchemaRef, columns: &[(String, String)]) -> Result<()> {
-    ensure_no_function_bindings_for_mutation(schema.as_ref(), "schema evolution")?;
+    ensure_not_function_bound(
+        schema.as_ref(),
+        "schema evolution",
+        columns.iter().map(|(name, _)| name),
+    )?;
     plan(schema, columns).map(drop)
 }
 
@@ -3001,7 +3093,7 @@ mod tests {
     fn named_struct_application(columns: &str) -> FunctionApplication {
         FunctionApplication::from_json(&format!(
             r#"{{
-                "function":{{"name":"text_features","version":"fv_exact"}},
+                "function":{{"name":"text_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"}},
                 "inputs":[
                     {{"parameter":"title","kind":"column","value":{{"path":"title"}}}},
                     {{"parameter":"body","kind":"column","value":{{"path":"body"}}}}
@@ -3019,7 +3111,7 @@ mod tests {
     fn blob_application(output: &str) -> FunctionApplication {
         FunctionApplication::from_json(&format!(
             r#"{{
-                "function":{{"name":"blob_features","version":"fv_blob"}},
+                "function":{{"name":"blob_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"}},
                 "inputs":[
                     {{"parameter":"image","kind":"column","value":{{"path":"image"}}}}
                 ],
@@ -3038,7 +3130,7 @@ mod tests {
     fn single_input_application(path: &str) -> FunctionApplication {
         FunctionApplication::from_json(
             &serde_json::json!({
-                "function": {"name": "inspect", "version": "fv_nested_blob"},
+                "function": {"name": "inspect", "version": "1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [{
                     "parameter": "value",
                     "kind": "column",
@@ -3168,6 +3260,72 @@ mod tests {
             &binding,
         )
         .unwrap();
+    }
+
+    /// The scoped guard refuses exactly the columns a binding uses -- input
+    /// roots, outputs and the assignment column -- and nothing else.
+    #[test]
+    fn test_function_bound_columns_are_the_only_ones_refused() {
+        let mut raw_binding: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        raw_binding["outputs"][0]["nullable"] = Value::Bool(true);
+        raw_binding["outputs"][1]["nullable"] = Value::Bool(true);
+        raw_binding["assignment"] = serde_json::json!({
+            "output_name": "__function_assignment_fb_01K3TEXT",
+            "output_field_id": -1,
+        });
+        raw_binding["output_schema"]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "__function_assignment_fb_01K3TEXT",
+                "nullable": true,
+                "type": {"type": "bool"},
+            }));
+        let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
+        let mut fields = valid_function_binding_schema(true, true, &binding)
+            .fields()
+            .to_vec();
+        fields.push(Arc::new(ArrowField::new("spare", DataType::Int32, true)));
+        let schema = ArrowSchema::new_with_metadata(
+            fields,
+            HashMap::from([(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                function_bindings_metadata(std::slice::from_ref(&binding)).unwrap(),
+            )]),
+        );
+
+        ensure_not_function_bound(
+            &schema,
+            "schema evolution",
+            ["spare", "spare.nested", "new", "`spare`", "`spare.nested`"],
+        )
+        .unwrap();
+        for path in [
+            "title",
+            "body.nested",
+            "search_text",
+            "search_token_count",
+            "__function_assignment_fb_01K3TEXT",
+            "`title`",
+            "`body`.nested",
+            "`search_text`",
+        ] {
+            let err = ensure_not_function_bound(&schema, "schema evolution", [path]).unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidInput { message }
+                    if message.contains("a Function binding reads or writes it")),
+                "{path}: {err:?}"
+            );
+        }
+        // A spelling lance cannot resolve is refused rather than compared as text.
+        let err = ensure_not_function_bound(&schema, "schema evolution", ["`title"]).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("invalid column path")),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -3380,7 +3538,7 @@ mod tests {
         ));
         let dependent_application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"dependent","version":"fv_dependent"},
+                "function":{"name":"dependent","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[
                     {"parameter":"text","kind":"column","value":{"path":"search_text"}}
                 ],
@@ -3511,7 +3669,7 @@ mod tests {
         let input = ArrowField::new("value", DataType::Int64, false);
         let application = FunctionApplication::from_json(
             &serde_json::json!({
-                "function": {"name": "embed", "version": "fv_embed"},
+                "function": {"name": "embed", "version": "1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [{
                     "parameter": "value",
                     "kind": "column",
@@ -3716,7 +3874,7 @@ mod tests {
         ));
         let application = FunctionApplication::from_json(
             &serde_json::json!({
-                "function": {"name": "inspect", "version": "fv_nested_blob"},
+                "function": {"name": "inspect", "version": "1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs": [],
                 "output": {
                     "kind": "named_struct",
@@ -3848,7 +4006,7 @@ mod tests {
     fn test_unknown_and_mixed_version_function_contracts_fail_closed() {
         let application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"f","version":"fv"},
+                "function":{"name":"f","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[{"parameter":"title","kind":"future_source","value":{"path":"title"}}],
                 "output":{"kind":"scalar","arrow_type":"int64","nullable":false}
             }"#,
@@ -3860,7 +4018,7 @@ mod tests {
 
         let future_application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"f","version":"fv"},
+                "function":{"name":"f","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[],
                 "output":{"kind":"scalar","arrow_type":"int64","nullable":false},
                 "future_declaration":{"mode":"managed"}
@@ -3874,7 +4032,7 @@ mod tests {
 
         let nested_future_application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"f","version":"fv"},
+                "function":{"name":"f","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[],
                 "output":{"kind":"scalar","arrow_type":"int64","nullable":false,"assignment":"cell_flag"}
             }"#,
@@ -3940,7 +4098,7 @@ mod tests {
         let nested_schema = ArrowSchema::new(vec![nested_title, schema.field(1).as_ref().clone()]);
         let nested_application = FunctionApplication::from_json(
             r#"{
-                "function":{"name":"text_features","version":"fv_exact"},
+                "function":{"name":"text_features","version":"1","object_id":"fixture","location":"memory:///fixture","manifest_digest":"sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
                 "inputs":[
                     {"parameter":"title","kind":"column","value":{"path":"title.value"}},
                     {"parameter":"body","kind":"column","value":{"path":"body"}}

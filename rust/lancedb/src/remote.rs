@@ -6,6 +6,7 @@
 //! building client/server applications with LanceDB or as a client for some
 //! other custom LanceDB service.
 
+pub mod catalog;
 pub(crate) mod client;
 pub(crate) mod db;
 pub(crate) mod job;
@@ -13,6 +14,7 @@ pub mod oauth;
 mod retry;
 pub(crate) mod sql;
 pub(crate) mod table;
+pub(crate) mod token_cache;
 pub(crate) mod util;
 
 const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
@@ -31,4 +33,9 @@ fn extract_job_id(body: &str) -> Option<String> {
 
 pub use client::{ClientConfig, HeaderProvider, RetryConfig, TimeoutConfig, TlsConfig};
 pub use db::{RemoteDatabaseOptions, RemoteDatabaseOptionsBuilder};
-pub use oauth::{OAuthConfig, OAuthFlow, OAuthHeaderProvider};
+pub use oauth::{
+    AuthorizationCodeOptions, ClientAuthMethod, OAuthConfig, OAuthFlow, OAuthHeaderProvider,
+};
+pub use token_cache::{OAuthSession, SessionLogout, SessionStatus, TokenCacheOptions};
+
+pub use catalog::{RemoteCatalog, RemoteCatalogOptions};

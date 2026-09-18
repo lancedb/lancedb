@@ -21,6 +21,7 @@ import { BlobFile } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
+import { validateNonNegativeInteger } from "./materialized_view";
 import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsResult,
@@ -30,6 +31,8 @@ import {
   BranchContents,
   DeleteResult,
   DropColumnsResult,
+  FunctionErrors,
+  FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
   LsmStats,
@@ -148,7 +151,8 @@ export interface OptimizeOptions {
    * olderThan.setDate(olderThan.getDate() - 1));
    * tbl.optimize({cleanupOlderThan: olderThan});
    *
-   * // Delete all versions except the current version
+   * // Delete versions committed before this point. Versions created by the
+   * // optimize call itself are newer than the cutoff and will be retained.
    * tbl.optimize({cleanupOlderThan: new Date()});
    */
   cleanupOlderThan: Date;
@@ -572,10 +576,10 @@ export abstract class Table {
    * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
    * large table as on an empty one.
    *
-   * A refresh does not revisit rows it has already filled, so mutating an
-   * input leaves the value computed at fill time; recomputing means dropping
-   * the column and declaring it again. While a declaration reads a column,
-   * that column cannot be renamed, retyped or dropped.
+   * A refresh also recomputes the rows whose inputs changed since they were
+   * computed, so a mutated input is reflected by the next refresh. While a
+   * declaration reads a column, that column cannot be renamed, retyped or
+   * dropped.
    *
    * On LanceDB Cloud and Enterprise the expression is planned by the
    * server, and the refresh runs as a server job -- see
@@ -606,10 +610,10 @@ export abstract class Table {
   /**
    * Fill the rows of a computed column that hold no value yet.
    *
-   * Rows appended since the last refresh are filled by the next one; rows
-   * already filled are left as they are, so the call is idempotent and does
-   * not observe a mutated input. Local tables only: a remote refresh runs
-   * as a server job, through {@link Table#refreshColumnAsync}.
+   * Rows appended since the last refresh are filled by the next one, and
+   * rows whose inputs changed since they were computed are recomputed;
+   * everything else is left as it is. Local tables only: a remote refresh
+   * runs as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.
@@ -636,16 +640,40 @@ export abstract class Table {
   abstract refreshColumnAsync(column: string): Promise<Job>;
 
   /**
+   * The per-row errors Function refreshes recorded on this table.
+   *
+   * A refresh running under a skip policy records each row it skipped with
+   * the input that failed and the error. This lists those records, newest
+   * job first, plus a summary for any fragment whose per-row detail was
+   * capped. LanceDB Cloud and Enterprise only; reading errors needs read
+   * access to the table, since a message carries the value that failed.
+   * @param {FunctionErrorsOptions} options Optional filters: `jobId`,
+   * `column`, and `limit` (server default 10000, cap 100000).
+   * @returns {Promise<FunctionErrors>} The records, the capped fragments,
+   * and whether the listing stopped at its limit.
+   * @example
+   * ```ts
+   * const { records, truncated } = await table.functionErrors({ column: "embedding" });
+   * ```
+   */
+  abstract functionErrors(
+    options?: FunctionErrorsOptions,
+  ): Promise<FunctionErrors>;
+
+  /**
    * Recompute this table's contents from its materialized-view definition.
    *
    * Plumbing for {@link MaterializedView.refresh}, which is the way to call
-   * it: rejects tables that carry no view definition. Local tables only.
+   * it: rejects tables that carry no view definition.
    * @ignore
    */
   abstract refreshMaterializedView(
     full?: boolean,
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult>;
+
+  /** @ignore */
+  abstract materializedViewDefinition(): Promise<string>;
 
   /**
    * Alter the name or nullability of columns.
@@ -1359,11 +1387,22 @@ export class LocalTable extends Table {
     return new Job(await this.inner.refreshColumnAsync(column));
   }
 
+  async functionErrors(
+    options?: FunctionErrorsOptions,
+  ): Promise<FunctionErrors> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    return await this.inner.functionErrors(options);
+  }
+
   async refreshMaterializedView(
     full?: boolean,
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult> {
     return await this.inner.refreshMaterializedView(full, sourceVersion);
+  }
+
+  async materializedViewDefinition(): Promise<string> {
+    return await this.inner.materializedViewDefinition();
   }
 
   async alterColumns(
@@ -1486,16 +1525,8 @@ export class LocalTable extends Table {
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    let cleanupOlderThanMs;
-    if (
-      options?.cleanupOlderThan !== undefined &&
-      options?.cleanupOlderThan !== null
-    ) {
-      cleanupOlderThanMs =
-        new Date().getTime() - options.cleanupOlderThan.getTime();
-    }
     return await this.inner.optimize(
-      cleanupOlderThanMs,
+      options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
     );
   }

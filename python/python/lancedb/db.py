@@ -17,6 +17,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Sequence,
     Union,
 )
 from uuid import UUID
@@ -56,6 +57,12 @@ from .materialized_view import (
     MaterializedView,
     SelectArg,
     normalize_select,
+)
+from .secrets import (
+    EnvVarSecret,
+    SecretInfo,
+    validate_namespace_path,
+    validate_secret_name,
 )
 from .table import (
     AsyncTable,
@@ -529,13 +536,14 @@ class DBConnection(EnforceOverrides):
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
-        The view is created empty, with the query recorded in its schema
-        metadata; ``view.refresh()`` computes the rows. The view is a normal
-        table: it can be queried, indexed and searched, and it appears in
-        ``table_names``. Local databases only.
+        The view is populated before creation returns. Pass
+        ``with_no_data=True`` to create only its definition and empty backing
+        table. The view is a normal table: it can be queried, indexed and
+        searched, and it appears in ``table_names``.
 
         The source table must have stable row ids (create it with the
         ``new_table_enable_stable_row_ids`` storage option): they keep the
@@ -556,10 +564,33 @@ class DBConnection(EnforceOverrides):
             SQL predicate; only matching source rows appear in the view.
         limit: int, optional
             Cap the view at this many rows, in materialization order.
+        with_no_data: bool, default False
+            Skip the initial refresh and leave the backing table empty.
 
         Returns
         -------
         MaterializedView
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        """Submit materialized-view creation and return its job.
+
+        The job may already be complete for a local database. On LanceDB
+        Cloud and Enterprise, its ``id`` is the server job identifier from
+        the ``202 Accepted`` create response. Wait for the job before opening
+        or querying the view.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -580,6 +611,32 @@ class DBConnection(EnforceOverrides):
 
         Found by reading every table's schema, so this costs an open per
         table.
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized view.
+
+        The view may become unavailable before physical cleanup finishes. Use
+        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
+        job.
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        """Start dropping a materialized view and return its cleanup job.
+
+        The job may already be complete for a local database. On LanceDB Cloud
+        and Enterprise, its ``id`` is the server job identifier from the
+        ``202 Accepted`` drop response.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -692,20 +749,55 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("serialize is not supported for this connection type")
 
-    def create_function(self, definition: UdfDefinition) -> FunctionVersion:
-        """Register a scalar Python UDF and wait for its immutable version.
+    def create_function(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+    ) -> FunctionVersion:
+        """Build and register a scalar Python UDF, then return its version.
 
+        The server builds the OCI image and registers the completed artifact.
         This is the blocking counterpart of :meth:`create_function_async`.
         Local connections raise ``NotImplementedError``.
+
+        Parameters
+        ----------
+        definition : UdfDefinition
+            A callable decorated with [udf][lancedb.udf].
+        secrets : sequence of EnvVarSecret, optional
+            One [EnvVarSecret][lancedb.secrets.EnvVarSecret] per credential the
+            Function needs, each naming a Secret and the environment variable
+            its value arrives in. The Function's source is unchanged by this;
+            it reads the variable the way it already did.
+
+        Examples
+        --------
+        ```python
+        db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
+        db.create_function(
+            analyze_caption,
+            secrets=[
+                EnvVarSecret(
+                    secret_name="openai-prod", env_variable="OPENAI_API_KEY"
+                )
+            ],
+        )
+        ```
         """
-        return self.create_function_async(definition).wait()
+        return self.create_function_async(definition, secrets=secrets).wait()
 
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        """Register a scalar Python UDF through the remote Function catalog.
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+    ) -> Job[FunctionVersion]:
+        """Submit a scalar Python UDF for building and registration.
 
-        Submission returns a typed job. The immutable Function version becomes
-        available only when :meth:`Job.wait` succeeds. Local connections raise
-        ``NotImplementedError``.
+        The server-side job builds the OCI image, then registers the completed
+        artifact. Waiting on the job returns the immutable Function version.
+        Local connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -736,13 +828,79 @@ class DBConnection(EnforceOverrides):
         )
 
     def drop_function(self, name: str, *, version: str) -> bool:
-        """Drop one exact immutable Function version from the remote catalog.
+        """Remove the current Function name binding from the remote catalog.
 
-        Returns True when the version changed to Dropped and False for an
-        idempotent replay. Local connections raise NotImplementedError.
+        The requested version must exist in the currently named object.
+        Object history and existing computed-column references are retained.
+        Returns True when the name was removed and False when it was absent.
+        Local connections raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
+        )
+
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Create a named Secret in this database.
+
+        Fails if the name is taken, so a create never silently becomes a
+        rotation. Nothing reads the value back: it is bound to a Function by
+        name and resolved by the service when that Function runs. Local
+        connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Replace the credential behind an existing Secret.
+
+        Fails if it does not exist. Every Function bound to the Secret uses the
+        new value from its next job, and no new Function version is created --
+        which is how a rotation reaches columns pinned to a version registered
+        before it. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        """The names of every Secret in this database.
+
+        Names only. No method returns a stored credential, by construction
+        rather than by policy. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a Secret.
+
+        Functions bound to it fail at their next job, naming the Secret; that
+        is the revocation path. The name becomes free to reuse, and a new
+        Secret under it is picked up by everything still bound to that name.
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        """What this database records about a Secret: name and timestamps.
+
+        Never the value -- there is no code path that could return one. Local
+        connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
         )
 
     def open_job(self, job_id: str) -> Job:
@@ -1270,6 +1428,7 @@ class LanceDBConnection(DBConnection):
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -1290,16 +1449,43 @@ class LanceDBConnection(DBConnection):
         ...     select=["name", ("shout", "upper(name)")],
         ...     where="age >= 18",
         ... )
-        >>> result = view.refresh()
-        >>> result.rows_written
+        >>> view.table.count_rows()
         1
         """
         LOOP.run(
             self._conn.create_materialized_view(
-                name, source, select=select, where=where, limit=limit
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
             )
         )
         return MaterializedView(self.open_table(name))
+
+    @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._conn.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
+        )
+        return Job(job)
 
     @override
     def open_materialized_view(self, name: str) -> MaterializedView:
@@ -1312,6 +1498,25 @@ class LanceDBConnection(DBConnection):
     def list_materialized_views(self) -> List[str]:
         """The names of the materialized views in this database."""
         return LOOP.run(self._conn.list_materialized_views())
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_materialized_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._conn.drop_materialized_view_async(name, namespace_path=namespace_path)
+        )
+        return Job(job)
 
     def clone_table(
         self,
@@ -1457,8 +1662,13 @@ class LanceDBConnection(DBConnection):
         return Job(LOOP.run(self._conn.open_job(job_id)))
 
     @override
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        job = LOOP.run(self._conn.create_function_async(definition))
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+    ) -> Job[FunctionVersion]:
+        job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
         return Job(job)
 
     @override
@@ -1472,6 +1682,34 @@ class LanceDBConnection(DBConnection):
     @override
     def drop_function(self, name: str, *, version: str) -> bool:
         return LOOP.run(self._conn.drop_function(name, version=version))
+
+    @override
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.alter_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_secrets(namespace_path=namespace_path))
+
+    @override
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_secret(name, namespace_path=namespace_path))
+
+    @override
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -2080,6 +2318,7 @@ class AsyncConnection(object):
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -2091,8 +2330,33 @@ class AsyncConnection(object):
             projections=normalize_select(select),
             filter=where,
             limit=limit,
+            with_no_data=with_no_data,
         )
         return AsyncMaterializedView(AsyncTable(inner))
+
+    async def create_materialized_view_async(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> AsyncJob[None]:
+        """Submit materialized-view creation and return its job.
+
+        Wait for the returned job before opening or querying the view.
+        """
+        inner = await self._inner.create_materialized_view_async(
+            name,
+            source,
+            projections=normalize_select(select),
+            filter=where,
+            limit=limit,
+            with_no_data=with_no_data,
+        )
+        return AsyncJob(inner)
 
     async def open_materialized_view(self, name: str) -> AsyncMaterializedView:
         """Open the materialized view named ``name``.
@@ -2100,10 +2364,6 @@ class AsyncConnection(object):
         Raises ``ValueError`` if the table exists but is not a materialized
         view.
         """
-        if self.uri.startswith("db://"):
-            raise NotImplementedError(
-                "materialized views are supported only on local databases"
-            )
         view = AsyncMaterializedView(await self.open_table(name))
         await view.definition()
         return view
@@ -2115,6 +2375,41 @@ class AsyncConnection(object):
         table.
         """
         return await self._inner.list_materialized_views()
+
+    async def drop_materialized_view(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> None:
+        """Drop a materialized view.
+
+        The view may become unavailable before physical cleanup finishes. Use
+        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
+        job.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+
+    async def drop_materialized_view_async(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncJob[None]:
+        """Start dropping a materialized view and return its cleanup job.
+
+        Await :meth:`AsyncJob.wait` before assuming physical cleanup has
+        finished.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return AsyncJob(
+            await self._inner.drop_materialized_view_async(
+                name, namespace_path=namespace_path
+            )
+        )
 
     async def clone_table(
         self,
@@ -2265,18 +2560,24 @@ class AsyncConnection(object):
         return AsyncJob(await self._inner.open_job(job_id))
 
     async def create_function_async(
-        self, definition: UdfDefinition
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
     ) -> AsyncJob[FunctionVersion]:
-        """Register a scalar Python UDF through the remote Function catalog.
+        """Submit a scalar Python UDF for building and registration.
 
-        The returned typed job resolves to the immutable Function version.
-        Local connections raise ``NotImplementedError``.
+        The server-side job builds the OCI image, then registers the completed
+        artifact. Waiting on the job returns the immutable Function version.
+        ``secrets`` is a sequence of
+        [EnvVarSecret][lancedb.secrets.EnvVarSecret], each naming a Secret and
+        the environment variable its value arrives in. Local connections raise
+        ``NotImplementedError``.
         """
         if not isinstance(definition, UdfDefinition):
             raise TypeError("create_function_async requires a @udf definition")
-        inner = await self._inner.create_function_async(
-            definition.registration_request.to_canonical_json()
-        )
+        request = definition.bind_secrets(secrets)
+        inner = await self._inner.create_function_async(request.to_canonical_json())
         return _typed_job(inner, FunctionVersion.from_json)
 
     async def get_function(self, name: str, *, version: str) -> FunctionVersion:
@@ -2295,8 +2596,66 @@ class AsyncConnection(object):
         ]
 
     async def drop_function(self, name: str, *, version: str) -> bool:
-        """Drop one exact immutable Function version from the remote catalog."""
+        """Remove the current name binding, retaining the object and its history."""
         return await self._inner.drop_function(name, version)
+
+    async def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Create a named Secret in this database.
+
+        Fails if the name is taken, so a create never silently becomes a
+        rotation. Nothing reads the value back.
+        """
+        await self._inner.create_secret(
+            validate_secret_name(name),
+            value,
+            list(validate_namespace_path(namespace_path)),
+        )
+
+    async def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Replace the credential behind an existing Secret.
+
+        Fails if it does not exist. Bound Functions use the new value from
+        their next job, with no new Function version.
+        """
+        await self._inner.alter_secret(
+            validate_secret_name(name),
+            value,
+            list(validate_namespace_path(namespace_path)),
+        )
+
+    async def list_secrets(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of every Secret in this database. Names only."""
+        return await self._inner.list_secrets(
+            list(validate_namespace_path(namespace_path))
+        )
+
+    async def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a Secret. Bound Functions fail at their next job."""
+        await self._inner.drop_secret(
+            validate_secret_name(name), list(validate_namespace_path(namespace_path))
+        )
+
+    async def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        """What this database records about a Secret. Never the value."""
+        name, created_at_millis, updated_at_millis = await self._inner.describe_secret(
+            validate_secret_name(name),
+            list(validate_namespace_path(namespace_path)),
+        )
+        return SecretInfo(
+            name=name,
+            created_at_millis=created_at_millis,
+            updated_at_millis=updated_at_millis,
+        )
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
