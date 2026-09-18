@@ -234,6 +234,18 @@ def test_table_names(tmp_db: lancedb.DBConnection):
     assert len(result) == 3
 
 
+def test_table_names_lists_every_table_by_default(tmp_db: lancedb.DBConnection):
+    for idx in range(15):
+        tmp_db.create_table(f"table_{idx:02d}", data=[{"id": idx}])
+    expected = [f"table_{idx:02d}" for idx in range(15)]
+
+    assert list(tmp_db.table_names()) == expected
+
+    # An explicit limit still pages, and paging still covers the whole database.
+    assert list(tmp_db.table_names(limit=10)) == expected[:10]
+    assert list(tmp_db.table_names("table_09")) == expected[10:]
+
+
 def test_db_contains_and_len_include_all_table_name_pages(tmp_db: lancedb.DBConnection):
     for idx in range(20):
         tmp_db.create_table(f"table_{idx}", data=[{"id": idx}])
