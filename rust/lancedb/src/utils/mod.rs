@@ -473,6 +473,26 @@ pub fn supported_fts_data_type(dtype: &DataType) -> bool {
     supported_fts_data_type_impl(dtype, false)
 }
 
+/// Validate FTS input without losing the logical type in field metadata.
+pub(crate) fn validate_fts_field(field: &Field) -> Result<()> {
+    if lance_arrow::json::is_json_field(field) || supported_fts_data_type(field.data_type()) {
+        return Ok(());
+    }
+    let logical_type = field
+        .metadata()
+        .get("ARROW:extension:name")
+        .map(|name| format!(" (logical type {name})"))
+        .unwrap_or_default();
+    Err(Error::Schema {
+        message: format!(
+            "A FTS index cannot be created on the field `{}` which has data type {}{}. FTS supports strings, lists of strings, and lance.json fields stored as LargeBinary; raw binary is not supported",
+            field.name(),
+            field.data_type(),
+            logical_type,
+        ),
+    })
+}
+
 fn supported_fts_data_type_impl(dtype: &DataType, in_list: bool) -> bool {
     match (dtype, in_list) {
         (DataType::Utf8 | DataType::LargeUtf8, _) => true,
@@ -685,6 +705,43 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+
+    #[test]
+    fn test_fts_field_logical_type_validation() {
+        let json = lance_arrow::json::json_field("doc", true);
+        assert!(validate_fts_field(&json).is_ok());
+
+        for dtype in [DataType::Binary, DataType::LargeBinary] {
+            let raw = Field::new("doc", dtype.clone(), true);
+            let err = validate_fts_field(&raw).unwrap_err().to_string();
+            assert!(err.contains("raw binary is not supported"), "{err}");
+            assert!(err.contains("lance.json"), "{err}");
+
+            let other_extension = raw.with_metadata(std::collections::HashMap::from([(
+                "ARROW:extension:name".into(),
+                "other.json".into(),
+            )]));
+            let err = validate_fts_field(&other_extension)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("logical type other.json"), "{err}");
+        }
+
+        // A JSON marker on the wrong binary storage type is insufficient.
+        let wrong_storage =
+            Field::new("doc", DataType::Binary, true).with_metadata(json.metadata().clone());
+        assert!(validate_fts_field(&wrong_storage).is_err());
+        for dtype in [DataType::Utf8, DataType::LargeUtf8] {
+            let text = Field::new("text", dtype, true);
+            assert!(validate_fts_field(&text).is_ok());
+            for list_type in [
+                DataType::List(Arc::new(text.clone())),
+                DataType::LargeList(Arc::new(text.clone())),
+            ] {
+                assert!(validate_fts_field(&Field::new("texts", list_type, true)).is_ok());
+            }
+        }
+    }
 
     #[test]
     fn test_public_fts_field_path_prefers_exact_case() {

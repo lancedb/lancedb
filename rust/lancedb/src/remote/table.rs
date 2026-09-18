@@ -45,6 +45,7 @@ use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     MaxBatchLengthStream, TimeoutStream, public_fts_field_path_by_id, resolve_arrow_field_path,
     resolve_arrow_fts_field_path, supported_btree_data_type, supported_vector_data_type,
+    validate_fts_field,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -592,6 +593,7 @@ impl<S: HttpSend> RemoteTable<S> {
             Index::BloomFilter(p) => ("BLOOM_FILTER", Some(to_json(p)?)),
             Index::RTree(p) => ("RTREE", Some(to_json(p)?)),
             Index::FTS(p) => {
+                validate_fts_field(&field)?;
                 let mut params = to_json(p)?;
                 if p.get_document_granularity().is_list_element() {
                     params["document_granularity"] = "list_element".into();
