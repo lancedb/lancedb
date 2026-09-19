@@ -179,6 +179,27 @@ pub(crate) struct ViewUnnest {
 /// whose query calls a Function in `FROM` position.
 pub const STAGING_META_KEY: &str = "mv.staging";
 
+/// Schema metadata key holding the view's rows-per-fragment cap, when one was
+/// declared: refresh writes the view in fragments of at most that many rows.
+/// A Function column is filled one fragment per worker, so this is what lets
+/// a fill fan out over a view a refresh would otherwise write as one fragment.
+pub const ROWS_PER_FRAGMENT_META_KEY: &str = "mv.rows_per_fragment";
+
+/// Read the rows-per-fragment cap off a view's schema metadata, if declared.
+pub fn read_rows_per_fragment(metadata: &HashMap<String, String>) -> Result<Option<u64>> {
+    metadata
+        .get(ROWS_PER_FRAGMENT_META_KEY)
+        .map(|raw| {
+            raw.parse::<u64>()
+                .ok()
+                .filter(|rows| *rows >= 1)
+                .ok_or_else(|| Error::Runtime {
+                    message: format!("unreadable materialized view rows-per-fragment '{raw}'"),
+                })
+        })
+        .transpose()
+}
+
 /// Where a Function in `FROM` position has its output staged: a hidden
 /// table carrying every source column plus `column`, the Function's list
 /// output. Refresh scans this table in place of the query's source.
@@ -345,6 +366,9 @@ pub struct CreateMaterializedViewRequest {
     pub query: String,
     /// Whether to skip the initial population job.
     pub with_no_data: bool,
+    /// Cap on rows per fragment the refresh writes; see
+    /// [`ROWS_PER_FRAGMENT_META_KEY`].
+    pub rows_per_fragment: Option<u64>,
 }
 
 /// Prefix of the internal columns holding source columns a computed column
@@ -1071,6 +1095,44 @@ impl PreparedDeclaration {
         &self.definition
     }
 
+    /// Cap the fragments refresh writes at `rows` rows each. A Function
+    /// column is filled one fragment per worker, so a view of expensive
+    /// Function calls declares a small cap to spread them.
+    ///
+    /// ```
+    /// # #![recursion_limit = "256"]
+    /// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+    ///
+    /// # async fn declare(images: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let definition = MaterializedViewDefinition::from_sql(
+    ///     "SELECT ivf_partition(vec) AS bucket, array_agg(id) AS ids FROM images \
+    ///      GROUP BY ivf_partition(vec)",
+    /// )?;
+    /// // One group per fragment: every bucket becomes its own unit of work.
+    /// let view = prepare_definition(images, definition)
+    ///     .await?
+    ///     .with_rows_per_fragment(1)?
+    ///     .create("buckets")
+    ///     .await?;
+    /// view.refresh().execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_rows_per_fragment(mut self, rows: u64) -> Result<Self> {
+        if rows == 0 {
+            return Err(Error::InvalidInput {
+                message: "rows_per_fragment must be at least 1".to_string(),
+            });
+        }
+        let mut metadata = self.schema.metadata().clone();
+        metadata.insert(ROWS_PER_FRAGMENT_META_KEY.to_string(), rows.to_string());
+        self.schema = Arc::new(ArrowSchema::new_with_metadata(
+            self.schema.fields().clone(),
+            metadata,
+        ));
+        Ok(self)
+    }
+
     /// The schema the view will have: the declared columns in order, any
     /// internal projections added by [`PreparedDeclaration::input_column`],
     /// then [`SOURCE_ROW_ID_COLUMN`].
@@ -1659,6 +1721,7 @@ pub struct CreateMaterializedViewBuilder {
     filter: Option<String>,
     limit: Option<u64>,
     with_no_data: bool,
+    rows_per_fragment: Option<u64>,
 }
 
 impl CreateMaterializedViewBuilder {
@@ -1673,6 +1736,7 @@ impl CreateMaterializedViewBuilder {
             filter: None,
             limit: None,
             with_no_data: false,
+            rows_per_fragment: None,
         }
     }
 
@@ -1721,6 +1785,13 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
+    /// Cap the fragments refresh writes at `rows` rows each; see
+    /// [`PreparedDeclaration::with_rows_per_fragment`].
+    pub fn rows_per_fragment(mut self, rows: u64) -> Self {
+        self.rows_per_fragment = Some(rows);
+        self
+    }
+
     fn query(&self) -> String {
         fn quote(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
@@ -1766,6 +1837,7 @@ impl CreateMaterializedViewBuilder {
                     namespace_path: self.namespace.clone(),
                     query: self.query(),
                     with_no_data: self.with_no_data,
+                    rows_per_fragment: self.rows_per_fragment,
                 })
                 .await;
         }
@@ -1798,13 +1870,16 @@ impl CreateMaterializedViewBuilder {
             .namespace(self.source_namespace.clone())
             .execute()
             .await?;
-        let prepared = prepare_declaration(
+        let mut prepared = prepare_declaration(
             &source,
             (!self.projections.is_empty()).then_some(self.projections.as_slice()),
             self.filter.as_deref(),
             self.limit,
         )
         .await?;
+        if let Some(rows) = self.rows_per_fragment {
+            prepared = prepared.with_rows_per_fragment(rows)?;
+        }
         let view = prepared.create_in(&self.namespace, &self.name).await?;
         if !self.with_no_data {
             view.refresh().execute().await?;

@@ -153,6 +153,7 @@ pub(crate) async fn execute_refresh(
     };
     let definition = &definition;
     let staging = super::read_staging(&view_ds.schema().metadata)?;
+    let write = write_params(super::read_rows_per_fragment(&view_ds.schema().metadata)?);
     ensure_no_mem_wal(&view_ds, "materialized view", view.name()).await?;
 
     let source_ds = open_source(view, definition, staging.as_ref()).await?;
@@ -262,6 +263,7 @@ pub(crate) async fn execute_refresh(
             &inputs,
             unnest.as_ref(),
             true,
+            &write,
             expected_incarnation,
         )
         .await;
@@ -309,6 +311,7 @@ pub(crate) async fn execute_refresh(
             &inputs,
             None,
             persist.is_some(),
+            &write,
             expected_incarnation,
         )
         .await;
@@ -338,6 +341,7 @@ pub(crate) async fn execute_refresh(
                 unnest.as_ref(),
                 persist,
                 watermark,
+                &write,
                 expected_incarnation,
             )
             .await?;
@@ -355,6 +359,7 @@ pub(crate) async fn execute_refresh(
                         &inputs,
                         unnest.as_ref(),
                         persist.is_some(),
+                        &write,
                         expected_incarnation,
                     )
                     .await
@@ -372,11 +377,27 @@ pub(crate) async fn execute_refresh(
                 &inputs,
                 unnest.as_ref(),
                 persist.is_some(),
+                &write,
                 expected_incarnation,
             )
             .await
         }
     }
+}
+
+/// How refresh writes the view's rows: appended, in fragments capped at the
+/// declared rows-per-fragment when the view has one.
+fn write_params(rows_per_fragment: Option<u64>) -> WriteParams {
+    let mut params = WriteParams {
+        mode: WriteMode::Append,
+        ..Default::default()
+    };
+    if let Some(rows) = rows_per_fragment {
+        let rows = usize::try_from(rows).unwrap_or(usize::MAX);
+        params.max_rows_per_file = rows;
+        params.max_rows_per_group = params.max_rows_per_group.min(rows);
+    }
+    params
 }
 
 /// The source fragments whose rows are new since the watermark, or `None`
@@ -753,6 +774,7 @@ async fn incremental(
     unnest: Option<&super::ViewUnnest>,
     persist: Option<&MaterializedViewDefinition>,
     watermark: Option<u64>,
+    write: &WriteParams,
     expected_incarnation: Option<&str>,
 ) -> Result<Option<RefreshMaterializedViewResult>> {
     let new_fragments = increment.appended;
@@ -954,10 +976,7 @@ async fn incremental(
 
     let ds = Arc::new(view_ds.clone());
     let write_txn = InsertBuilder::new(WriteDestination::Dataset(ds.clone()))
-        .with_params(&WriteParams {
-            mode: WriteMode::Append,
-            ..Default::default()
-        })
+        .with_params(write)
         .execute_uncommitted_stream(stream)
         .await?;
     let Operation::Append {
@@ -1001,6 +1020,7 @@ async fn rebuild(
     inputs: &[String],
     unnest: Option<&super::ViewUnnest>,
     persist_definition: bool,
+    write: &WriteParams,
     expected_incarnation: Option<&str>,
 ) -> Result<RefreshMaterializedViewResult> {
     let rows_written = Arc::new(AtomicU64::new(0));
@@ -1027,7 +1047,8 @@ async fn rebuild(
     // that raced in the way an overwrite (which adopts its stream's schema)
     // durably would -- and it must land on the planned generation or abort.
     let replaced =
-        replace_retaining_indices(view_ds.clone(), stream, keys, expected_incarnation).await?;
+        replace_retaining_indices(view_ds.clone(), stream, keys, write, expected_incarnation)
+            .await?;
     let version = stamp_watermark(
         view_native,
         replaced,
@@ -1053,6 +1074,7 @@ async fn replace_retaining_indices(
     view_ds: Dataset,
     stream: SendableRecordBatchStream,
     keys: Arc<StdMutex<KeyExistenceFilterBuilder>>,
+    write: &WriteParams,
     expected_incarnation: Option<&str>,
 ) -> Result<Dataset> {
     let ds = Arc::new(view_ds);
@@ -1063,10 +1085,7 @@ async fn replace_retaining_indices(
     let removed_fragment_ids: Vec<u64> = ds.get_fragments().iter().map(|f| f.id() as u64).collect();
 
     let write_txn = InsertBuilder::new(WriteDestination::Dataset(ds.clone()))
-        .with_params(&WriteParams {
-            mode: WriteMode::Append,
-            ..Default::default()
-        })
+        .with_params(write)
         .execute_uncommitted_stream(stream)
         .await?;
     let Operation::Append {
@@ -4785,6 +4804,58 @@ mod tests {
         assert_eq!(
             rows(view.table(), &["bucket", "n", "lo", "hi"]).await,
             ["0 10 0 9", "1 10 10 19"]
+        );
+    }
+
+    async fn fragment_sizes(table: &Table) -> Vec<usize> {
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let mut sizes = Vec::new();
+        for fragment in dataset.get_fragments() {
+            sizes.push(fragment.count_rows(None).await.unwrap());
+        }
+        sizes
+    }
+
+    /// A declared rows-per-fragment caps every fragment refresh writes, on
+    /// the rebuild and on each increment; without one the default applies
+    /// and a small view is one fragment.
+    #[tokio::test]
+    async fn rows_per_fragment_caps_what_refresh_writes() {
+        let (conn, source) = db_with_source(vec![1, 2, 3, 4, 5]).await;
+        let capped = crate::materialized_view::prepare_definition(
+            &source,
+            MaterializedViewDefinition::from_sql("SELECT x FROM src").unwrap(),
+        )
+        .await
+        .unwrap()
+        .with_rows_per_fragment(2)
+        .unwrap()
+        .create("capped")
+        .await
+        .unwrap();
+        capped.refresh().execute().await.unwrap();
+        assert_eq!(fragment_sizes(capped.table()).await, [2, 2, 1]);
+
+        append(&source, vec![6, 7, 8]).await;
+        let result = capped.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(fragment_sizes(capped.table()).await, [2, 2, 1, 2, 1]);
+        assert_eq!(
+            read(capped.table(), "x").await,
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
+        );
+
+        let plain = declare(&source, "plain", "SELECT x FROM src")
+            .await
+            .unwrap();
+        plain.refresh().execute().await.unwrap();
+        assert_eq!(fragment_sizes(plain.table()).await, [8]);
+        assert!(
+            conn.create_materialized_view("zero", "src")
+                .rows_per_fragment(0)
+                .execute()
+                .await
+                .is_err()
         );
     }
 }

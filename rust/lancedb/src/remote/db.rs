@@ -809,10 +809,18 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let req = self
             .client
             .post(&format!("/v1/materialized_view/{identifier}/create"))
-            .json(&serde_json::json!({
-                "query": request.query,
-                "with_no_data": request.with_no_data,
-            }));
+            .json(&{
+                let mut body = serde_json::json!({
+                    "query": request.query,
+                    "with_no_data": request.with_no_data,
+                });
+                // Sent only when set: a server that predates the option
+                // rejects unknown fields.
+                if let Some(rows) = request.rows_per_fragment {
+                    body["rows_per_fragment"] = serde_json::json!(rows);
+                }
+                body
+            });
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         let status = response.status();
@@ -1756,6 +1764,7 @@ mod tests {
                 query: "SELECT age AS \"age\" FROM \"raw\".\"people\" WHERE age >= 18 LIMIT 10"
                     .into(),
                 with_no_data: false,
+                rows_per_fragment: None,
             })
             .await
             .unwrap();
