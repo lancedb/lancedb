@@ -250,12 +250,43 @@ pub(crate) async fn execute_drop_columns(
     computed_columns::ensure_not_an_input_of(&schema, &dropped, &dropped)?;
 
     if !unbinding.is_noop() {
+        // The retirement commits before the projection, so a projection that
+        // was never going to succeed must be refused before anything is
+        // written -- otherwise the binding is gone and the columns are not.
+        ensure_projection_is_valid(&dataset, &dropped)?;
         dataset = commit_function_unbinding(dataset, &unbinding).await?;
     }
     dataset.drop_columns(&dropped).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
     Ok(DropColumnsResult { version })
+}
+
+/// The two checks `Dataset::drop_columns` makes before it commits, hoisted so
+/// the retirement ahead of it is not left stranded by an input error. Mirrors
+/// lance's own tests exactly -- same lookup, same "all columns" rule -- so a
+/// drop this accepts is one lance accepts. An I/O failure in the projection
+/// can still land between the two commits; that window is the design and is
+/// stated in the PR.
+fn ensure_projection_is_valid(dataset: &Dataset, columns: &[&str]) -> Result<()> {
+    for column in columns {
+        if dataset.schema().field(column).is_none() {
+            return Err(Error::InvalidInput {
+                message: format!("Column {column} does not exist in the dataset"),
+            });
+        }
+    }
+    let survives = dataset
+        .schema()
+        .fields
+        .iter()
+        .any(|field| !columns.iter().any(|column| *column == field.name));
+    if !survives {
+        return Err(Error::InvalidInput {
+            message: "Cannot drop all columns from a dataset".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Retire the bindings a drop covers, in the commit before it.
@@ -1374,6 +1405,54 @@ mod tests {
             schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
         );
         assert!(bindings_of(&table).await.is_empty());
+        ensure_supported_function_metadata(&schema).unwrap();
+    }
+
+    /// An input error must not cost the binding. The retirement commits
+    /// first, so a projection that could never succeed is refused before it,
+    /// leaving the table exactly as it was.
+    #[rstest::rstest]
+    #[case::unknown_column(
+        &["search_text", "search_token_count", "nope"],
+        "does not exist"
+    )]
+    #[case::every_column(
+        &["title", "body", "search_text", "search_token_count", "spare"],
+        "Cannot drop all columns"
+    )]
+    #[tokio::test]
+    async fn an_invalid_drop_leaves_the_binding_in_place(
+        #[case] columns: &[&str],
+        #[case] expected: &str,
+    ) {
+        let table = bound_table().await;
+        let version = table.version().await.unwrap();
+
+        let err = table.drop_columns(columns).await.unwrap_err();
+        let Error::InvalidInput { message } = &err else {
+            panic!("{err:?}");
+        };
+        assert!(message.contains(expected), "{message}");
+
+        // Read durable state, not this handle: the error path never calls
+        // `dataset.update`, so the cached handle would report the old version
+        // even if the unbind had committed.
+        table.checkout_latest().await.unwrap();
+        assert_eq!(table.version().await.unwrap(), version);
+        let schema = table.schema().await.unwrap();
+        assert!(schema.metadata().contains_key(FUNCTION_BINDINGS_META_KEY));
+        assert_eq!(bindings_of(&table).await.len(), 1);
+        for column in ["search_text", "search_token_count"] {
+            assert!(
+                schema
+                    .field_with_name(column)
+                    .unwrap()
+                    .metadata()
+                    .keys()
+                    .any(|key| is_declaration_key(key)),
+                "{column} lost its declaration metadata"
+            );
+        }
         ensure_supported_function_metadata(&schema).unwrap();
     }
 
