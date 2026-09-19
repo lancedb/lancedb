@@ -3,6 +3,7 @@
 
 import {
   Table as ArrowTable,
+  DataType,
   type IntoVector,
   RecordBatch,
   extractVectorBuffer,
@@ -77,6 +78,135 @@ export interface QueryExecutionOptions {
    * Timeout for query execution in milliseconds
    */
   timeoutMs?: number;
+
+  /** Parse JSON extension columns into native JavaScript objects. */
+  parseJson?: boolean;
+}
+
+type JsonFieldLike = {
+  name: string;
+  metadata?: Map<string, string>;
+  type: {
+    children?: JsonFieldLike[];
+  };
+};
+
+function isJsonField(field: JsonFieldLike): boolean {
+  const extensionName = field.metadata?.get("ARROW:extension:name");
+  return extensionName === "arrow.json" || extensionName === "lance.json";
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMapRow(value: unknown): value is { toArray: () => unknown[] } {
+  return isObject(value) && typeof value.toArray === "function";
+}
+
+function isMapEntry(value: unknown): value is [unknown, unknown] {
+  return Array.isArray(value) && value.length === 2;
+}
+
+function containsJsonField(field: JsonFieldLike): boolean {
+  return (
+    isJsonField(field) ||
+    (field.type.children?.some((child) => containsJsonField(child)) ?? false)
+  );
+}
+
+function parseJsonValue(value: unknown, field: JsonFieldLike): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (isJsonField(field)) {
+    if (typeof value !== "string") {
+      return value;
+    }
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        return value;
+      }
+      throw error;
+    }
+  }
+
+  if (DataType.isMap(field.type as DataType)) {
+    if (!containsJsonField(field)) {
+      return value;
+    }
+    const entriesField = field.type.children?.[0];
+    const entryFields = entriesField?.type.children;
+    if (entryFields?.length !== 2) {
+      return value;
+    }
+    const [keyField, valueField] = entryFields;
+    const parseEntry = (key: unknown, item: unknown): [unknown, unknown] => [
+      parseJsonValue(key, keyField),
+      parseJsonValue(item, valueField),
+    ];
+
+    let entries: unknown[] | undefined;
+    if (value instanceof Map) {
+      entries = Array.from(value.entries());
+    } else if (isMapRow(value)) {
+      entries = value.toArray();
+    } else if (Array.isArray(value)) {
+      entries = value;
+    }
+
+    if (entries !== undefined) {
+      const parsedEntries: Array<[unknown, unknown]> = [];
+      for (const entry of entries) {
+        if (isMapEntry(entry)) {
+          parsedEntries.push(parseEntry(entry[0], entry[1]));
+        } else if (isObject(entry) && "key" in entry && "value" in entry) {
+          parsedEntries.push(parseEntry(entry.key, entry.value));
+        } else {
+          return value;
+        }
+      }
+      return new Map(parsedEntries);
+    }
+
+    return value;
+  }
+
+  if (isObject(value) && field.type.children !== undefined) {
+    const children = new Map(
+      field.type.children.map((child) => [child.name, child]),
+    );
+    return Object.fromEntries(
+      Object.entries(value).map(([name, childValue]) => [
+        name,
+        children.has(name)
+          ? parseJsonValue(childValue, children.get(name)!)
+          : childValue,
+      ]),
+    );
+  }
+
+  if (Array.isArray(value) && field.type.children?.length === 1) {
+    const childField = field.type.children[0];
+    return value.map((item) => parseJsonValue(item, childField));
+  }
+
+  return value;
+}
+
+function parseJsonColumns(table: ArrowTable): Array<Record<string, unknown>> {
+  const fields = table.schema.fields as unknown as JsonFieldLike[];
+  return (table.toArray() as Array<Record<string, unknown>>).map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([name, value]) => {
+        const field = fields.find((candidate) => candidate.name === name);
+        return [name, field ? parseJsonValue(value, field) : value];
+      }),
+    ),
+  );
 }
 
 export type AnalyzePlanDistributedMetrics = "aggregate" | "per_worker" | "full";
@@ -285,7 +415,7 @@ export class QueryBase<
   // biome-ignore lint/suspicious/noExplicitAny: arrow.toArrow() returns any[]
   async toArray(options?: Partial<QueryExecutionOptions>): Promise<any[]> {
     const tbl = await this.toArrow(options);
-    return tbl.toArray();
+    return options?.parseJson ? parseJsonColumns(tbl) : tbl.toArray();
   }
 
   /**

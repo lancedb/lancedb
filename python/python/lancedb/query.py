@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -107,6 +108,77 @@ def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
         f"to_pandas(), but {reason}. Use a plain scan query or remove blob "
         "columns from the projection."
     )
+
+
+def _json_extension_name(field: pa.Field) -> Optional[str]:
+    extension_name = getattr(field.type, "extension_name", None)
+    if extension_name is not None:
+        return extension_name
+
+    metadata = field.metadata or {}
+    extension_name = metadata.get(b"ARROW:extension:name") or metadata.get(
+        "ARROW:extension:name"
+    )
+    if isinstance(extension_name, bytes):
+        return extension_name.decode()
+    return extension_name
+
+
+def _parse_json_value(value: Any, field: pa.Field) -> Any:
+    if value is None:
+        return None
+
+    if _json_extension_name(field) in {"arrow.json", "lance.json"}:
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+
+    if pa.types.is_struct(field.type) and isinstance(value, dict):
+        child_fields = {child.name: child for child in field.type}
+        return {
+            name: _parse_json_value(child_value, child_fields[name])
+            if name in child_fields
+            else child_value
+            for name, child_value in value.items()
+        }
+
+    if (
+        pa.types.is_list(field.type)
+        or pa.types.is_large_list(field.type)
+        or pa.types.is_fixed_size_list(field.type)
+    ) and isinstance(value, list):
+        return [_parse_json_value(item, field.type.value_field) for item in value]
+
+    if pa.types.is_map(field.type) and isinstance(value, list):
+        entries = []
+        for entry in value:
+            if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                return value
+            key, item = entry
+            entries.append(
+                (
+                    _parse_json_value(key, field.type.key_field),
+                    _parse_json_value(item, field.type.item_field),
+                )
+            )
+        return entries
+
+    return value
+
+
+def _to_pylist(table: pa.Table, parse_json: bool) -> List[dict]:
+    rows = table.to_pylist()
+    if not parse_json:
+        return rows
+
+    fields = list(table.schema)
+    return [
+        {field.name: _parse_json_value(row[field.name], field) for field in fields}
+        for row in rows
+    ]
 
 
 def _query_is_plain_scan(query: Query) -> bool:
@@ -1139,7 +1211,12 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
-    def to_list(self, *, timeout: Optional[timedelta] = None) -> List[dict]:
+    def to_list(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+        parse_json: bool = False,
+    ) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
 
@@ -1152,8 +1229,11 @@ class LanceQueryBuilder(ABC):
         timeout: Optional[timedelta]
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+        parse_json: bool
+            If True, parse values in JSON columns into native Python objects.
+            Defaults to False, returning JSON values as strings.
         """
-        return self.to_arrow(timeout=timeout).to_pylist()
+        return _to_pylist(self.to_arrow(timeout=timeout), parse_json)
 
     def to_pydantic(
         self, model: type[T], *, timeout: Optional[timedelta] = None
@@ -2961,7 +3041,12 @@ class AsyncQueryBase(object):
             pa.Table.from_batches(await batch_iter.read_all(), schema=batch_iter.schema)
         )
 
-    async def to_list(self, timeout: Optional[timedelta] = None) -> List[dict]:
+    async def to_list(
+        self,
+        timeout: Optional[timedelta] = None,
+        *,
+        parse_json: bool = False,
+    ) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
 
@@ -2975,8 +3060,11 @@ class AsyncQueryBase(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+        parse_json: bool
+            If True, parse values in JSON columns into native Python objects.
+            Defaults to False, returning JSON values as strings.
         """
-        return (await self.to_arrow(timeout=timeout)).to_pylist()
+        return _to_pylist(await self.to_arrow(timeout=timeout), parse_json)
 
     async def to_pandas(
         self,
@@ -4233,7 +4321,12 @@ class BaseQueryBuilder(object):
         """
         return LOOP.run(self._inner.to_arrow(timeout))
 
-    def to_list(self, timeout: Optional[timedelta] = None) -> List[dict]:
+    def to_list(
+        self,
+        timeout: Optional[timedelta] = None,
+        *,
+        parse_json: bool = False,
+    ) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
 
@@ -4247,8 +4340,11 @@ class BaseQueryBuilder(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+        parse_json: bool
+            If True, parse values in JSON columns into native Python objects.
+            Defaults to False, returning JSON values as strings.
         """
-        return LOOP.run(self._inner.to_list(timeout))
+        return LOOP.run(self._inner.to_list(timeout, parse_json=parse_json))
 
     def to_pandas(
         self,
