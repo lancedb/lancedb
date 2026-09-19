@@ -98,7 +98,7 @@ pub const VIEW_VERSION_META_KEY: &str = "mv.view_version";
 pub const SOURCE_VERSION_TS_META_KEY: &str = "mv.source_version_ts";
 
 /// One refresh per view at a time within this process.
-fn refresh_lock(uri: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(super) fn refresh_lock(uri: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
     LOCKS
@@ -698,7 +698,7 @@ pub(crate) async fn ensure_no_mem_wal(dataset: &Dataset, role: &str, name: &str)
 
 /// The table refresh scans: the staging table when the query calls a
 /// Function in FROM position, otherwise the query's source.
-async fn open_source(
+pub(super) async fn open_source(
     view: &Table,
     definition: &MaterializedViewDefinition,
     staging: Option<&super::StagingBinding>,
@@ -1116,7 +1116,11 @@ async fn replace_retaining_indices(
 /// Refuse to act on a view that is not `expected`'s incarnation, judged from
 /// the latest stored manifest. Not a commit condition; see
 /// `RefreshMaterializedViewBuilder::expect_incarnation`.
-async fn ensure_incarnation(view_ds: &Dataset, expected: Option<&str>, what: &str) -> Result<()> {
+pub(super) async fn ensure_incarnation(
+    view_ds: &Dataset,
+    expected: Option<&str>,
+    what: &str,
+) -> Result<()> {
     let Some(expected) = expected else {
         return Ok(());
     };
@@ -1143,7 +1147,7 @@ async fn ensure_incarnation(view_ds: &Dataset, expected: Option<&str>, what: &st
 /// verified; on a mismatch another commit raced in between, and the stamp
 /// ABORTS rather than certify that commit as the refresh's own generation.
 /// The view is left visibly unstamped, so the next refresh rebuilds.
-async fn stamp_watermark(
+pub(super) async fn stamp_watermark(
     view_native: &NativeTable,
     mut dataset: Dataset,
     source_version: u64,
@@ -1886,11 +1890,11 @@ fn collect_source_row_ids(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 
     /// Park a refresh between planning and publication so a test can move
     /// the view underneath it. Inert unless [`DRIFT_TARGET`] names this view.
-    pub(super) async fn hold_before_publish(uri: &str) {
+    pub(in crate::materialized_view) async fn hold_before_publish(uri: &str) {
         {
             let mut target = DRIFT_TARGET.lock().unwrap();
             if target.as_deref() != Some(uri) {
@@ -1911,10 +1915,14 @@ mod tests {
         *EVICTION_CAP.lock().unwrap()
     }
 
-    pub(super) static DRIFT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    pub(super) static DRIFT_TARGET: StdMutex<Option<String>> = StdMutex::new(None);
-    pub(super) static DRIFT_PLANNED: tokio::sync::Notify = tokio::sync::Notify::const_new();
-    pub(super) static DRIFT_RELEASED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+    pub(in crate::materialized_view) static DRIFT_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
+    pub(in crate::materialized_view) static DRIFT_TARGET: StdMutex<Option<String>> =
+        StdMutex::new(None);
+    pub(in crate::materialized_view) static DRIFT_PLANNED: tokio::sync::Notify =
+        tokio::sync::Notify::const_new();
+    pub(in crate::materialized_view) static DRIFT_RELEASED: tokio::sync::Notify =
+        tokio::sync::Notify::const_new();
 
     /// Block until every participant in a cross-process race has planned and
     /// staged its write, so the commits they then attempt genuinely contend
@@ -4356,7 +4364,11 @@ mod tests {
         .unwrap()
     }
 
-    async fn declare(source: &Table, name: &str, sql: &str) -> Result<MaterializedView> {
+    pub(in crate::materialized_view) async fn declare(
+        source: &Table,
+        name: &str,
+        sql: &str,
+    ) -> Result<MaterializedView> {
         crate::materialized_view::prepare_definition(
             source,
             MaterializedViewDefinition::from_sql(sql)?,
@@ -4367,7 +4379,7 @@ mod tests {
     }
 
     /// Rows of `table` as `columns` rendered to text, sorted.
-    async fn rows(table: &Table, columns: &[&str]) -> Vec<String> {
+    pub(in crate::materialized_view) async fn rows(table: &Table, columns: &[&str]) -> Vec<String> {
         let batches = table
             .query()
             .select(Select::columns(columns))
@@ -4492,7 +4504,7 @@ mod tests {
 
     /// Twenty nonzero vectors in two clusters far apart, ids 0-9 and 10-19.
     /// Nonzero so every vector has a cosine direction.
-    async fn clustered_source(conn: &Connection) -> Table {
+    pub(in crate::materialized_view) async fn clustered_source(conn: &Connection) -> Table {
         use arrow_array::types::Float32Type;
         use arrow_array::{FixedSizeListArray, Int32Array};
 

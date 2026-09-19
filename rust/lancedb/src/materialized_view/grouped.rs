@@ -39,9 +39,11 @@ use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
 use lance_core::ROW_ID;
 use lance_datafusion::exec::SessionContextExt;
 use lance_index::metrics::NoOpMetricsCollector;
+use lance_index::vector::VectorIndex;
 use lance_index::vector::ivf::{IvfTransformer, new_ivf_transformer};
 use lance_linalg::distance::DistanceType;
 use lance_linalg::kernels::normalize_fsl;
+use roaring::RoaringBitmap;
 use uuid::Uuid;
 
 use super::refresh::to_view_batch;
@@ -61,11 +63,55 @@ pub const IVF_PARTITION: &str = "ivf_partition";
 
 /// The index `ivf_partition(column)` assigns by.
 #[derive(Debug, Clone)]
-struct IvfBinding {
+pub(super) struct IvfBinding {
     index: Uuid,
-    transformer: Arc<IvfTransformer>,
+    pub(super) transformer: Arc<IvfTransformer>,
     /// A cosine index assigns L2 over unit vectors, as lance's index path does.
-    normalize: bool,
+    pub(super) normalize: bool,
+    /// Partitions of the model; the ids `ivf_partition` returns are below it.
+    pub(super) partitions: u32,
+}
+
+/// The segments of the one IVF index on a column, opened, and the fragments
+/// they cover between them; every other fragment's rows are unindexed.
+/// `covered` is `None` when a segment does not say which fragments it holds
+/// (`fragment_bitmap: None`, which lance defines as unknown rather than
+/// empty): its rows would be read once by the partition reader and again as
+/// unindexed, so no caller may split this index.
+pub(super) struct IvfSegments {
+    pub(super) segments: Vec<IvfSegment>,
+    pub(super) covered: Option<RoaringBitmap>,
+}
+
+/// One opened segment and the fragments it holds rows for. Its postings
+/// still name rows of fragments it has since lost -- a column rewrite
+/// attaches a new file and takes the fragment out of this bitmap -- so a
+/// reader of its partitions keeps only the rows it still owns.
+pub(super) struct IvfSegment {
+    pub(super) index: Arc<dyn VectorIndex>,
+    pub(super) fragments: Option<RoaringBitmap>,
+}
+
+impl IvfSegments {
+    pub(super) fn is_unindexed(&self, fragment_id: u64) -> Option<bool> {
+        Some(!self.covered.as_ref()?.contains(fragment_id as u32))
+    }
+}
+
+/// Coverage after folding in one more segment. Lance defines a segment
+/// without a fragment bitmap as unknown coverage, not empty, and one such
+/// segment is enough to lose the coverage of the whole index.
+fn coverage(
+    covered: Option<RoaringBitmap>,
+    bitmap: Option<&RoaringBitmap>,
+) -> Option<RoaringBitmap> {
+    match (covered, bitmap) {
+        (Some(mut covered), Some(bitmap)) => {
+            covered |= bitmap;
+            Some(covered)
+        }
+        _ => None,
+    }
 }
 
 /// `bindings` maps a source column to its index; planning runs unbound.
@@ -73,6 +119,26 @@ struct IvfBinding {
 struct IvfPartition {
     signature: Signature,
     bindings: HashMap<String, IvfBinding>,
+}
+
+impl IvfBinding {
+    /// The partition of each vector, NULL where there is none: a null vector,
+    /// or one the assigner could not place (a zero vector under cosine). A
+    /// NULL bucket is honest, membership in bucket 0 is not.
+    pub(super) fn assign(&self, vectors: &FixedSizeListArray) -> lance_core::Result<UInt32Array> {
+        let normalized;
+        let vectors = if self.normalize {
+            normalized = normalize_fsl(vectors)?;
+            &normalized
+        } else {
+            vectors
+        };
+        let partitions = self.transformer.compute_partitions(vectors)?;
+        Ok(UInt32Array::new(
+            partitions.values().clone(),
+            NullBuffer::union(vectors.nulls(), partitions.nulls()),
+        ))
+    }
 }
 
 impl PartialEq for IvfPartition {
@@ -132,31 +198,14 @@ impl ScalarUDFImpl for IvfPartition {
             return datafusion_common::exec_err!("{IVF_PARTITION}({column}) has no index bound");
         };
         let vectors = args.args[0].to_array(args.number_rows)?;
-        let vectors = vectors.as_fixed_size_list();
-        let normalized;
-        let vectors = if binding.normalize {
-            normalized =
-                normalize_fsl(vectors).map_err(|e| DataFusionError::External(Box::new(e)))?;
-            &normalized
-        } else {
-            vectors
-        };
         let partitions = binding
-            .transformer
-            .compute_partitions(vectors)
+            .assign(vectors.as_fixed_size_list())
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
-        // A null vector falls in no partition, and neither does one the
-        // assigner could not place (a zero vector under cosine): a NULL bucket
-        // is honest, membership in bucket 0 is not.
-        let partitions = UInt32Array::new(
-            partitions.values().clone(),
-            NullBuffer::union(vectors.nulls(), partitions.nulls()),
-        );
         Ok(ColumnarValue::Array(Arc::new(partitions)))
     }
 }
 
-fn session(bindings: HashMap<String, IvfBinding>) -> SessionState {
+pub(super) fn session(bindings: HashMap<String, IvfBinding>) -> SessionState {
     let mut state = SessionStateBuilder::new().with_default_features().build();
     let ivf = IvfPartition {
         signature: Signature::any(1, Volatility::Immutable),
@@ -210,12 +259,17 @@ pub(super) async fn check(source: &Dataset, definition: &MaterializedViewDefinit
 
 /// Bind every `ivf_partition(column)` in `definition` to the IVF index on
 /// that column of `source`.
-async fn bind(
+pub(super) async fn bind(
     source: &Dataset,
     definition: &MaterializedViewDefinition,
 ) -> Result<HashMap<String, IvfBinding>> {
     let schema = Arc::new(ArrowSchema::from(source.schema()));
-    let planned = logical_plan(&session(HashMap::new()), empty_source(&schema), definition)?;
+    let planned = logical_plan(
+        &session(HashMap::new()),
+        empty_source(&schema),
+        definition,
+        false,
+    )?;
     let mut bindings = HashMap::new();
     for column in ivf_columns(&planned)? {
         bindings.insert(column.clone(), bind_column(source, &column).await?);
@@ -224,6 +278,16 @@ async fn bind(
 }
 
 async fn bind_column(source: &Dataset, column: &str) -> Result<IvfBinding> {
+    bind_column_with_segments(source, column)
+        .await
+        .map(|(binding, _)| binding)
+}
+
+/// The binding plus the opened segments it was read from.
+pub(super) async fn bind_column_with_segments(
+    source: &Dataset,
+    column: &str,
+) -> Result<(IvfBinding, IvfSegments)> {
     let field = source
         .schema()
         .field(column)
@@ -234,6 +298,8 @@ async fn bind_column(source: &Dataset, column: &str) -> Result<IvfBinding> {
     // on its own fragments carries its own centroids, and grouping every row
     // by one segment's model would bucket the other segments' rows wrongly.
     let mut found: Option<(String, Uuid, DistanceType, FixedSizeListArray)> = None;
+    let mut segments = Vec::new();
+    let mut covered = Some(RoaringBitmap::new());
     for index in source.load_indices().await?.iter() {
         if index.fields != [field.id] {
             continue;
@@ -248,6 +314,12 @@ async fn bind_column(source: &Dataset, column: &str) -> Result<IvfBinding> {
             continue;
         };
         let metric = vector.metric_type();
+        covered = coverage(covered, index.fragment_bitmap.as_ref());
+        let fragments = index.fragment_bitmap.clone();
+        segments.push(IvfSegment {
+            index: vector.clone(),
+            fragments,
+        });
         match &found {
             None => found = Some((index.name.clone(), index.uuid, metric, centroids)),
             Some((name, _, seen_metric, seen)) if *name == index.name => {
@@ -297,14 +369,21 @@ async fn bind_column(source: &Dataset, column: &str) -> Result<IvfBinding> {
     // Lance's index path assigns cosine by L2 over unit vectors.
     let normalize = metric == DistanceType::Cosine;
     let distance = if normalize { DistanceType::L2 } else { metric };
-    Ok(IvfBinding {
-        index: uuid,
-        transformer: Arc::new(new_ivf_transformer(centroids, distance, vec![])),
-        normalize,
-    })
+    let partitions = u32::try_from(centroids.len()).map_err(|_| Error::InvalidInput {
+        message: format!("{IVF_PARTITION}({column}): too many partitions"),
+    })?;
+    Ok((
+        IvfBinding {
+            index: uuid,
+            transformer: Arc::new(new_ivf_transformer(centroids, distance, vec![])),
+            normalize,
+            partitions,
+        },
+        IvfSegments { segments, covered },
+    ))
 }
 
-fn empty_source(source_schema: &SchemaRef) -> Arc<dyn TableSource> {
+pub(super) fn empty_source(source_schema: &SchemaRef) -> Arc<dyn TableSource> {
     let mut fields = source_schema.fields().to_vec();
     fields.push(Arc::new(ArrowField::new(ROW_ID, DataType::UInt64, false)));
     provider_as_source(Arc::new(EmptyTable::new(Arc::new(ArrowSchema::new(
@@ -313,16 +392,21 @@ fn empty_source(source_schema: &SchemaRef) -> Arc<dyn TableSource> {
 }
 
 /// The query DataFusion runs: the view's projections plus the group's
-/// smallest source row id, which stands as the row's provenance. The filter
-/// is not here; the lance scan applies it, as for any other view.
-fn sql(definition: &MaterializedViewDefinition) -> String {
+/// smallest source row id, which stands as the row's provenance. `filtered`
+/// puts the view's predicate in the query, for a caller whose rows did not
+/// come from a lance scan that already applied it.
+fn sql(definition: &MaterializedViewDefinition, filtered: bool) -> String {
     let items: Vec<String> = definition
         .projections
         .iter()
         .map(|p| format!("{} AS {}", p.expression, query::ident_sql(&p.output)))
         .collect();
+    let predicate = match (filtered, &definition.filter) {
+        (true, Some(filter)) => format!(" WHERE {filter}"),
+        _ => String::new(),
+    };
     format!(
-        "SELECT {}, min({ROW_ID}) AS {ROW_ID} FROM {SOURCE} GROUP BY {}",
+        "SELECT {}, min({ROW_ID}) AS {ROW_ID} FROM {SOURCE}{predicate} GROUP BY {}",
         items.join(", "),
         definition.group_by.join(", ")
     )
@@ -383,15 +467,16 @@ impl ContextProvider for Provider<'_> {
     }
 }
 
-fn logical_plan(
+pub(super) fn logical_plan(
     state: &SessionState,
     source: Arc<dyn TableSource>,
     definition: &MaterializedViewDefinition,
+    filtered: bool,
 ) -> Result<LogicalPlan> {
     let invalid = |e: &dyn std::fmt::Display| Error::InvalidInput {
         message: format!("invalid grouped view: {e}"),
     };
-    let statement = Parser::parse_sql(&GenericDialect {}, &sql(definition))
+    let statement = Parser::parse_sql(&GenericDialect {}, &sql(definition, filtered))
         .map_err(|e| invalid(&e))?
         .pop()
         .ok_or_else(|| invalid(&"empty query"))?;
@@ -450,6 +535,7 @@ pub(super) fn plan(
         &session(HashMap::new()),
         empty_source(&source_schema),
         &definition,
+        false,
     )?;
     ivf_columns(&planned)?;
 
@@ -510,7 +596,7 @@ pub(super) async fn stream(
     let state = session(bind(source, definition).await?);
     let ctx = SessionContext::new_with_state(state.clone());
     let source = ctx.read_one_shot(scan)?.into_view();
-    let planned = logical_plan(&state, provider_as_source(source), definition)?;
+    let planned = logical_plan(&state, provider_as_source(source), definition, false)?;
     let groups = ctx
         .execute_logical_plan(planned)
         .await?
@@ -524,4 +610,25 @@ pub(super) async fn stream(
         Ok(batch)
     });
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, mapped)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A segment that does not name the fragments it holds leaves the whole
+    /// index's coverage unknown: reading "everything it does not cover" would
+    /// read its rows a second time.
+    #[test]
+    fn one_segment_without_a_bitmap_loses_the_coverage() {
+        let first = RoaringBitmap::from_iter([0u32, 1]);
+        let second = RoaringBitmap::from_iter([2u32]);
+        let both = coverage(
+            coverage(Some(RoaringBitmap::new()), Some(&first)),
+            Some(&second),
+        );
+        assert_eq!(both, Some(RoaringBitmap::from_iter([0u32, 1, 2])));
+        assert_eq!(coverage(both, None), None);
+        assert_eq!(coverage(None, Some(&first)), None);
+    }
 }
