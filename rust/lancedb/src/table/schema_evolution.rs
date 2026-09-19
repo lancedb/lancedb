@@ -12,7 +12,7 @@ use arrow_schema::Schema as ArrowSchema;
 use lance::dataset::transaction::{Operation, Transaction, UpdateMap, UpdateMapEntry};
 use lance::dataset::{ColumnAlteration, CommitBuilder, Dataset, NewColumnTransform};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::computed_columns;
 use super::{BaseTable, NativeTable};
@@ -269,19 +269,26 @@ pub(crate) async fn execute_drop_columns(
 /// can still land between the two commits; that window is the design and is
 /// stated in the PR.
 fn ensure_projection_is_valid(dataset: &Dataset, columns: &[&str]) -> Result<()> {
+    // By field id, not by spelling: `Schema::field` resolves a path, so a
+    // quoted `` `title` `` names the same column a bare `title` does, and
+    // comparing the raw text would count it as surviving its own drop. A
+    // nested path resolves to the child, which leaves its parent standing --
+    // which is also what the projection does.
+    let mut removed = HashSet::new();
     for column in columns {
-        if dataset.schema().field(column).is_none() {
+        let Some(field) = dataset.schema().field(column) else {
             return Err(Error::InvalidInput {
                 message: format!("Column {column} does not exist in the dataset"),
             });
-        }
+        };
+        removed.insert(field.id);
     }
-    let survives = dataset
+    if !dataset
         .schema()
         .fields
         .iter()
-        .any(|field| !columns.iter().any(|column| *column == field.name));
-    if !survives {
+        .any(|field| !removed.contains(&field.id))
+    {
         return Err(Error::InvalidInput {
             message: "Cannot drop all columns from a dataset".to_string(),
         });
@@ -1418,6 +1425,10 @@ mod tests {
     )]
     #[case::every_column(
         &["title", "body", "search_text", "search_token_count", "spare"],
+        "Cannot drop all columns"
+    )]
+    #[case::every_column_quoted(
+        &["`title`", "`body`", "`search_text`", "`search_token_count`", "`spare`"],
         "Cannot drop all columns"
     )]
     #[tokio::test]
