@@ -12,7 +12,7 @@ use arrow_schema::Schema as ArrowSchema;
 use lance::dataset::transaction::{Operation, Transaction, UpdateMap, UpdateMapEntry};
 use lance::dataset::{ColumnAlteration, CommitBuilder, Dataset, NewColumnTransform};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::computed_columns;
 use super::{BaseTable, NativeTable};
@@ -250,50 +250,20 @@ pub(crate) async fn execute_drop_columns(
     computed_columns::ensure_not_an_input_of(&schema, &dropped, &dropped)?;
 
     if !unbinding.is_noop() {
-        // The retirement commits before the projection, so a projection that
-        // was never going to succeed must be refused before anything is
-        // written -- otherwise the binding is gone and the columns are not.
-        ensure_projection_is_valid(&dataset, &dropped)?;
+        // The retirement commits before the projection, so the whole
+        // projection has to be known valid against this revision first --
+        // otherwise the binding is gone and the columns are not. Lance plans
+        // it rather than this repeating the rules: dropping a struct's last
+        // child removes the struct, and data files that disagree on metadata
+        // semantics are refused, neither of which an approximation here would
+        // get right.
+        dataset.plan_drop_columns(&dropped)?;
         dataset = commit_function_unbinding(dataset, &unbinding).await?;
     }
     dataset.drop_columns(&dropped).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
     Ok(DropColumnsResult { version })
-}
-
-/// The two checks `Dataset::drop_columns` makes before it commits, hoisted so
-/// the retirement ahead of it is not left stranded by an input error. Mirrors
-/// lance's own tests exactly -- same lookup, same "all columns" rule -- so a
-/// drop this accepts is one lance accepts. An I/O failure in the projection
-/// can still land between the two commits; that window is the design and is
-/// stated in the PR.
-fn ensure_projection_is_valid(dataset: &Dataset, columns: &[&str]) -> Result<()> {
-    // By field id, not by spelling: `Schema::field` resolves a path, so a
-    // quoted `` `title` `` names the same column a bare `title` does, and
-    // comparing the raw text would count it as surviving its own drop. A
-    // nested path resolves to the child, which leaves its parent standing --
-    // which is also what the projection does.
-    let mut removed = HashSet::new();
-    for column in columns {
-        let Some(field) = dataset.schema().field(column) else {
-            return Err(Error::InvalidInput {
-                message: format!("Column {column} does not exist in the dataset"),
-            });
-        };
-        removed.insert(field.id);
-    }
-    if !dataset
-        .schema()
-        .fields
-        .iter()
-        .any(|field| !removed.contains(&field.id))
-    {
-        return Err(Error::InvalidInput {
-            message: "Cannot drop all columns from a dataset".to_string(),
-        });
-    }
-    Ok(())
 }
 
 /// Retire the bindings a drop covers, in the commit before it.
