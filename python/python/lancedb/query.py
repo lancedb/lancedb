@@ -774,7 +774,7 @@ class Query(pydantic.BaseModel):
 
     # legacy number of IVF partitions to search
     #
-    # Lance interprets this as a maximum unless maximum_nprobes is also set.
+    # Lance sets both probe bounds to this value. Explicit bounds can override it.
     nprobes: Optional[int] = None
 
     # which columns to return in the results (dict values may be str or Expr)
@@ -1683,7 +1683,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         return self
 
     def nprobes(self, nprobes: int) -> LanceVectorQueryBuilder:
-        """Set the maximum number of probes to use.
+        """Set the number of probes to use.
 
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
@@ -1692,13 +1692,13 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         for tuning advice.
 
         The value is retained as `nprobes` through client and server request
-        construction. Lance interprets it as a maximum. Unless configured separately,
-        the minimum remains at Lance's adaptive default.
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
 
         Parameters
         ----------
         nprobes: int
-            The maximum number of probes to use.
+            The number of probes to use.
 
         Returns
         -------
@@ -2458,18 +2458,18 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def nprobes(self, nprobes: int) -> LanceHybridQueryBuilder:
         """
-        Set the maximum number of probes to use for vector search.
+        Set the number of probes to use for vector search.
 
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
-        The value is retained as `nprobes` until Lance interprets it as a maximum.
-        Unless configured separately, the minimum remains at Lance's adaptive default.
+        The value is retained as `nprobes` until Lance sets both probe bounds to it.
+        Explicit minimum or maximum settings can override their respective bounds.
 
         Parameters
         ----------
         nprobes: int
-            The maximum number of probes to use.
+            The number of probes to use.
 
         Returns
         -------

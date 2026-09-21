@@ -1114,7 +1114,7 @@ pub struct VectorQueryRequest {
     pub query_vector: Vec<Arc<dyn Array>>,
     /// The legacy number of partitions to search.
     ///
-    /// Lance interprets this as a maximum unless `maximum_nprobes` is also set.
+    /// Lance sets both probe bounds to this value. Explicit bounds can override it.
     pub nprobes: Option<usize>,
     /// The minimum number of partitions to search.
     ///
@@ -1257,8 +1257,7 @@ impl VectorQuery {
     /// you the desired recall.
     ///
     /// LanceDB retains this as `nprobes` through local and remote request
-    /// construction. Lance interprets it as a maximum, so unless configured
-    /// separately, the minimum remains at Lance's adaptive default. For more
+    /// construction. Lance sets both probe bounds to this value. For more
     /// fine-grained control see [`VectorQuery::minimum_nprobes`] and
     /// [`VectorQuery::maximum_nprobes`].
     pub fn nprobes(mut self, nprobes: usize) -> Self {
