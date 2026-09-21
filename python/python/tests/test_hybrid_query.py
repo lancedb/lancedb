@@ -495,3 +495,15 @@ def test_normalize_scores():
             assert pc.equal(result, expected), (
                 f"Expected {expected} but got {result} for invert={invert}"
             )
+
+
+def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
+    # Pins the full message: the space between "hybrid search." and "But" is
+    # load-bearing (see the _validate_query literal concatenation).
+    with pytest.raises(ValueError) as excinfo:
+        sync_table.search("dog", query_type="hybrid").vector([0.5, -0.5]).to_arrow()
+    assert str(excinfo.value) == (
+        "You can either provide a string query in search() method "
+        "or set `vector()` and `text()` explicitly for hybrid search. "
+        "But not both."
+    )
