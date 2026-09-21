@@ -1005,6 +1005,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
+        Ok(self.drop_function_async(name, version).await?.0)
+    }
+
+    async fn drop_function_async(&self, name: &str, version: &str) -> Result<(bool, Job)> {
         let function_id = build_object_identifier("Function name", name, &[])?;
         let req = self
             .client
@@ -1014,8 +1018,34 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }));
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
-        let response: RemoteDropFunctionResponse = response.json().await.err_to_http(request_id)?;
-        Ok(response.dropped)
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let dropped: RemoteDropFunctionResponse =
+            serde_json::from_str(&body).map_err(|source| Error::Http {
+                source: Box::new(source),
+                request_id: request_id.clone(),
+                status_code: Some(status),
+            })?;
+        let job = match status {
+            StatusCode::OK => Job::new_done(),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "asynchronous Function drop response did not contain a valid job_id"
+                        .into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id)))
+            }
+            _ => {
+                return Err(Error::Http {
+                    source: "Function drop must return 200 OK or 202 Accepted".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+        };
+        Ok((dropped.dropped, job))
     }
 
     async fn create_secret(
@@ -1781,6 +1811,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(job.id(), Some("j1-mv-drop"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_function_async_returns_job() {
+        let db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/function/embed/drop");
+            http::Response::builder()
+                .status(202)
+                .body(serde_json::json!({"dropped": true, "job_id": "j1-fn-drop"}).to_string())
+                .unwrap()
+        });
+        let (dropped, job) = db.drop_function_async("embed", "1").await.unwrap();
+        assert!(dropped);
+        assert_eq!(job.id(), Some("j1-fn-drop"));
+    }
+
+    /// An unbound name and an inline deletion both answer `200`: the name is gone and
+    /// nothing is left to wait for, so the job is already finished.
+    #[tokio::test]
+    async fn test_drop_function_async_completed_inline() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::json!({"dropped": false}).to_string())
+                .unwrap()
+        });
+        let (dropped, job) = db.drop_function_async("embed", "1").await.unwrap();
+        assert!(!dropped);
+        assert_eq!(job.id(), None);
+        assert_eq!(job.status().await.unwrap(), "finished");
+        job.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_function_async_rejects_incomplete_acceptance() {
+        for body in [
+            r#"{"dropped":true}"#,
+            r#"{"dropped":true,"job_id":""}"#,
+            r#"{"dropped":true,"job_id":null}"#,
+        ] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(202).body(body).unwrap()
+            });
+            let error = db.drop_function_async("embed", "1").await.err().unwrap();
+            assert!(error.to_string().contains("valid job_id"));
+        }
     }
 
     #[tokio::test]

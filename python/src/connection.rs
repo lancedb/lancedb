@@ -768,6 +768,21 @@ impl Connection {
         })
     }
 
+    pub fn drop_function_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_function_async(name, version)
+                .await
+                .infer_error()
+                .map(|(dropped, job)| (dropped, crate::job::Job::new(job)))
+        })
+    }
+
     #[pyo3(signature = (name, value, namespace_path=None))]
     pub fn create_secret(
         self_: PyRef<'_, Self>,

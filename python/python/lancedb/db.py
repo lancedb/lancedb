@@ -18,6 +18,7 @@ from typing import (
     Literal,
     Optional,
     Sequence,
+    Tuple,
     Union,
 )
 from uuid import UUID
@@ -828,12 +829,26 @@ class DBConnection(EnforceOverrides):
         )
 
     def drop_function(self, name: str, *, version: str) -> bool:
-        """Remove the current Function name binding from the remote catalog.
+        """Drop a Function name and the object it was bound to.
 
-        The requested version must exist in the currently named object.
-        Object history and existing computed-column references are retained.
-        Returns True when the name was removed and False when it was absent.
-        Local connections raise NotImplementedError.
+        The requested version must exist in the currently named object. Returns
+        True when the name was removed and False when it was absent. The
+        object's content is deleted with it, which may finish after this
+        returns; use :meth:`drop_function_async` to wait for that. Local
+        connections raise NotImplementedError.
+        """
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
+
+    def drop_function_async(self, name: str, *, version: str) -> Tuple[bool, Job]:
+        """Drop a Function name and return its cleanup job.
+
+        The name is unbound before this returns; the object's content may still
+        be being deleted. Call :meth:`Job.wait` to wait for that to finish. When
+        the server deletes inline, or when nothing was bound, the returned job
+        is already finished and has no id. Local connections raise
+        NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -1682,6 +1697,11 @@ class LanceDBConnection(DBConnection):
     @override
     def drop_function(self, name: str, *, version: str) -> bool:
         return LOOP.run(self._conn.drop_function(name, version=version))
+
+    @override
+    def drop_function_async(self, name: str, *, version: str) -> Tuple[bool, Job]:
+        dropped, job = LOOP.run(self._conn.drop_function_async(name, version=version))
+        return dropped, Job(job)
 
     @override
     def create_secret(
@@ -2596,8 +2616,20 @@ class AsyncConnection(object):
         ]
 
     async def drop_function(self, name: str, *, version: str) -> bool:
-        """Remove the current name binding, retaining the object and its history."""
+        """Drop a Function name and the object it was bound to."""
         return await self._inner.drop_function(name, version)
+
+    async def drop_function_async(
+        self, name: str, *, version: str
+    ) -> Tuple[bool, AsyncJob]:
+        """Drop a Function name and return its cleanup job.
+
+        The name is unbound before this returns; the object's content may still
+        be being deleted. Await :meth:`AsyncJob.wait` to wait for that to
+        finish.
+        """
+        dropped, job = await self._inner.drop_function_async(name, version)
+        return dropped, AsyncJob(job)
 
     async def create_secret(
         self, name: str, value: str, *, namespace_path: Optional[List[str]] = None

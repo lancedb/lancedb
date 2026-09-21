@@ -393,6 +393,18 @@ pub trait Database:
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
     }
+    /// Start dropping a Function and return a handle to the cleanup job.
+    ///
+    /// Backends without asynchronous cleanup complete the drop before returning an
+    /// already-finished job.
+    async fn drop_function_async(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<(bool, crate::job::Job)> {
+        let dropped = self.drop_function(name, version).await?;
+        Ok((dropped, crate::job::Job::new_done()))
+    }
     /// Create a named Secret in this database. Fails if the name is taken, so
     /// a create can never silently become a rotation.
     async fn create_secret(

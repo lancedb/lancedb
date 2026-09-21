@@ -16,6 +16,7 @@ from typing import (
     List,
     Optional,
     Sequence,
+    Tuple,
     Union,
 )
 from urllib.parse import urlparse
@@ -875,6 +876,11 @@ class RemoteDBConnection(DBConnection):
     @override
     def drop_function(self, name: str, *, version: str) -> bool:
         return LOOP.run(self._conn.drop_function(name, version=version))
+
+    @override
+    def drop_function_async(self, name: str, *, version: str) -> Tuple[bool, Job]:
+        dropped, job = LOOP.run(self._conn.drop_function_async(name, version=version))
+        return dropped, Job(job)
 
     @override
     def create_secret(
