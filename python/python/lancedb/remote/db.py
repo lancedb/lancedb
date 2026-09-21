@@ -926,7 +926,9 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.describe_view(name, namespace_path=namespace_path))
 
     @override
-    def drop_view(self, name: str, *, namespace_path: Optional[List[str]] = None) -> None:
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
 
     @override

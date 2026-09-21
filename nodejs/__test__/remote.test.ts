@@ -110,19 +110,20 @@ describe("remote connection", () => {
             name: "adults",
             namespace: ["analytics"],
             query: "SELECT name FROM people",
+            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
             default_database: "db",
             schema: {
-              fields: [{ name: "name", nullable: true, type: { type: "utf8" } }],
+              fields: [
+                { name: "name", nullable: true, type: { type: "utf8" } },
+              ],
             },
           }),
         );
       },
       async (db) => {
-        const view = await db.createView(
-          "adults",
-          "SELECT name FROM people",
-          ["analytics"],
-        );
+        const view = await db.createView("adults", "SELECT name FROM people", [
+          "analytics",
+        ]);
         expect(view.name).toBe("adults");
         expect(view.namespacePath).toEqual(["analytics"]);
         expect(view.query).toBe("SELECT name FROM people");

@@ -23,7 +23,6 @@ import {
   validateNonNegativeInteger,
 } from "./materialized_view";
 import { Connection as LanceDbConnection } from "./native";
-import { ViewDescription, viewDescriptionFromNative } from "./view";
 import type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
@@ -32,6 +31,7 @@ import type {
   ListNamespacesResponse,
   ListTablesResponse,
 } from "./native";
+import { ViewDescription, viewDescriptionFromNative } from "./view";
 export type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,

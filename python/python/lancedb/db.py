@@ -972,7 +972,9 @@ class DBConnection(EnforceOverrides):
             "View operations are not supported for this connection type"
         )
 
-    def drop_view(self, name: str, *, namespace_path: Optional[List[str]] = None) -> None:
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         """Drop a view.
 
         The tables it reads are untouched: a view holds no rows of its own.
@@ -1821,7 +1823,9 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.describe_view(name, namespace_path=namespace_path))
 
     @override
-    def drop_view(self, name: str, *, namespace_path: Optional[List[str]] = None) -> None:
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
         LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
 
     @override
@@ -2795,9 +2799,7 @@ class AsyncConnection(object):
         [DBConnection.create_view][lancedb.DBConnection.create_view].
         """
         return _view_description(
-            await self._inner.create_view(
-                name, query, list(namespace_path or [])
-            )
+            await self._inner.create_view(name, query, list(namespace_path or []))
         )
 
     async def describe_view(

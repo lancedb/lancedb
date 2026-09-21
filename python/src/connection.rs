@@ -104,13 +104,15 @@ fn parse_default_namespace_path(path: Option<Bound<'_, PyAny>>) -> PyResult<Vec<
     }
 }
 
+/// A view description on its way to Python: name, namespace, query, default
+/// database, and the schema as pyarrow renders it.
+type PyViewDescription = (String, Vec<String>, String, String, Py<PyAny>);
+
 /// A view description as a plain tuple, with the schema converted to the
 /// pyarrow schema the caller would get from any other lancedb API. The Python
 /// layer names the fields; this keeps the binding free of a class that would
 /// have to be kept in step with the Rust struct.
-fn view_description_to_py(
-    view: lancedb::view::ViewDescription,
-) -> PyResult<(String, Vec<String>, String, String, Py<PyAny>)> {
+fn view_description_to_py(view: lancedb::view::ViewDescription) -> PyResult<PyViewDescription> {
     Python::attach(|py| {
         let schema = view.schema.to_pyarrow(py)?.unbind();
         Ok((

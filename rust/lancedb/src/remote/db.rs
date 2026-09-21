@@ -4057,7 +4057,7 @@ mod tests {
     /// view, so it is refused before it reaches a route.
     #[tokio::test]
     async fn test_view_names_that_would_resplit_are_refused() {
-        let conn = Connection::new_with_handler(|_| {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
             panic!("an invalid identifier must not reach the service")
         });
         for (name, namespace) in [
