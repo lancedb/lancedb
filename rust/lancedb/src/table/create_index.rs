@@ -159,6 +159,9 @@ impl NativeTable {
         if let Some(name) = opts.name {
             builder = builder.name(name);
         }
+        if let Some(progress) = opts.progress {
+            builder = builder.progress(progress);
+        }
         builder.await?;
         self.dataset.update(dataset);
         Ok(())
@@ -574,6 +577,111 @@ mod tests {
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_progress() {
+        use async_trait::async_trait;
+        use lance::index::IndexBuildProgress;
+        use lance_core::Result;
+        use std::iter::repeat_with;
+        use std::sync::Mutex;
+
+        let conn = connect("memory://").execute().await.unwrap();
+
+        let dimension = 16;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embeddings",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dimension,
+            ),
+            false,
+        )]));
+
+        let float_arr = Float32Array::from(
+            repeat_with(rand::random::<f32>)
+                .take(512 * dimension as usize)
+                .collect::<Vec<f32>>(),
+        );
+
+        let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
+        let batch = RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap();
+
+        let table = conn.create_table("test", batch).execute().await.unwrap();
+
+        #[derive(Debug, PartialEq, Eq)]
+        enum TestProgressCall {
+            StageStart(String, Option<u64>, String),
+            StageProgress(String, u64),
+            StageComplete(String),
+        }
+        #[derive(Debug)]
+        struct TestProgress {
+            calls: Mutex<Vec<TestProgressCall>>,
+        }
+        #[async_trait]
+        impl IndexBuildProgress for TestProgress {
+            async fn stage_start(&self, stage: &str, total: Option<u64>, unit: &str) -> Result<()> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(TestProgressCall::StageStart(
+                        stage.to_string(),
+                        total,
+                        unit.to_string(),
+                    ));
+                Ok(())
+            }
+            async fn stage_progress(&self, stage: &str, completed: u64) -> Result<()> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(TestProgressCall::StageProgress(
+                        stage.to_string(),
+                        completed,
+                    ));
+                Ok(())
+            }
+            async fn stage_complete(&self, stage: &str) -> Result<()> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(TestProgressCall::StageComplete(stage.to_string()));
+                Ok(())
+            }
+        }
+
+        let progress = Arc::new(TestProgress {
+            calls: Mutex::new(Vec::new()),
+        });
+        table
+            .create_index(&["embeddings"], Index::Auto)
+            .progress(progress.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let calls = progress.calls.lock().unwrap();
+        for stage in [
+            "train_ivf",
+            "train_quantizer",
+            "shuffle",
+            "merge_partitions",
+        ] {
+            assert!(
+                calls.iter().any(
+                    |call| matches!(call, TestProgressCall::StageStart(name, _, _) if name == stage)
+                ),
+                "expected stage_start for {stage}"
+            );
+            assert!(
+                calls.iter().any(
+                    |call| matches!(call, TestProgressCall::StageComplete(name) if name == stage)
+                ),
+                "expected stage_complete for {stage}"
+            );
+        }
     }
 
     #[tokio::test]
