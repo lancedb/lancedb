@@ -23,6 +23,7 @@ import {
   validateNonNegativeInteger,
 } from "./materialized_view";
 import { Connection as LanceDbConnection } from "./native";
+import { ViewDescription, viewDescriptionFromNative } from "./view";
 import type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
@@ -377,6 +378,45 @@ export abstract class Connection {
     namespacePath?: string[],
   ): Promise<Job>;
 
+  /**
+   * Create a view: a named query the database plans on every read.
+   *
+   * The query is planned once, at creation, so one that cannot be planned is
+   * rejected now rather than at the first read. A view holds no rows, and its
+   * readers see its sources as they are at read time.
+   *
+   * There is no replace: a name already taken is an error, and changing a
+   * view is a drop followed by a create.
+   */
+  abstract createView(
+    name: string,
+    query: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription>;
+
+  /**
+   * What this database records about the view named `name`: its defining
+   * query and the schema that query resolved to.
+   */
+  abstract describeView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription>;
+
+  /**
+   * Drop the view named `name`.
+   *
+   * The tables it reads are untouched: a view holds no rows of its own.
+   */
+  abstract dropView(name: string, namespacePath?: string[]): Promise<void>;
+
+  /**
+   * The names of the views in one namespace.
+   *
+   * Names only; a definition comes from {@link describeView}.
+   */
+  abstract listViews(namespacePath?: string[]): Promise<string[]>;
+
   abstract openTable(
     name: string,
     namespacePath?: string[],
@@ -694,6 +734,33 @@ export class LocalConnection extends Connection {
     return new Job(
       await this.inner.dropMaterializedViewAsync(name, namespacePath ?? []),
     );
+  }
+
+  async createView(
+    name: string,
+    query: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription> {
+    return viewDescriptionFromNative(
+      await this.inner.createView(name, query, namespacePath ?? []),
+    );
+  }
+
+  async describeView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription> {
+    return viewDescriptionFromNative(
+      await this.inner.describeView(name, namespacePath ?? []),
+    );
+  }
+
+  async dropView(name: string, namespacePath?: string[]): Promise<void> {
+    return this.inner.dropView(name, namespacePath ?? []);
+  }
+
+  async listViews(namespacePath?: string[]): Promise<string[]> {
+    return this.inner.listViews(namespacePath ?? []);
   }
 
   async listTables(

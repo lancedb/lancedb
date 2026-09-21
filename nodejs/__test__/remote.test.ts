@@ -100,6 +100,63 @@ describe("remote connection", () => {
     );
   });
 
+  it("creates a view and decodes the schema it resolved to", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/analytics$adults/create");
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            name: "adults",
+            namespace: ["analytics"],
+            query: "SELECT name FROM people",
+            default_database: "db",
+            schema: {
+              fields: [{ name: "name", nullable: true, type: { type: "utf8" } }],
+            },
+          }),
+        );
+      },
+      async (db) => {
+        const view = await db.createView(
+          "adults",
+          "SELECT name FROM people",
+          ["analytics"],
+        );
+        expect(view.name).toBe("adults");
+        expect(view.namespacePath).toEqual(["analytics"]);
+        expect(view.query).toBe("SELECT name FROM people");
+        expect(view.defaultDatabase).toBe("db");
+        expect(view.schema.fields.map((f) => f.name)).toEqual(["name"]);
+      },
+    );
+  });
+
+  it("lists and drops views through their own routes", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/namespace/$/view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["adults"] }));
+      },
+      async (db) => {
+        expect(await db.listViews()).toEqual(["adults"]);
+      },
+    );
+
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+      },
+      async (db) => {
+        await db.dropView("adults");
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",

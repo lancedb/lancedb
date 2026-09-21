@@ -202,6 +202,7 @@ pub mod table;
 #[cfg(test)]
 pub mod test_utils;
 pub mod utils;
+pub mod view;
 
 use std::{fmt::Display, str::FromStr};
 

@@ -47,6 +47,7 @@ from .materialized_view import (
     MaterializedView,
     MaterializedViewDefinition,
 )
+from .view import ViewDescription as ViewDescription
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -582,6 +583,7 @@ __all__ = [
     "AsyncMaterializedView",
     "MaterializedView",
     "MaterializedViewDefinition",
+    "ViewDescription",
     "connect",
     "connect_async",
     "tokenize",
