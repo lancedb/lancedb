@@ -1128,11 +1128,21 @@ class RemoteTable(Table):
         """
         return LOOP.run(self._table.uri())
 
-    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
-    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
     def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(

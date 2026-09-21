@@ -1976,6 +1976,33 @@ def test_take_queries(tmp_path):
     ]
 
 
+def test_take_queries_with_row_id(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", pa.table({"idx": range(100)}))
+
+    by_row_id = table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_row_id.column_names
+    by_offset = table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_offset.column_names
+
+    # The column is opt-in and must stay out of the default projection.
+    assert "_rowid" not in table.take_row_ids([5, 2, 17]).to_arrow().column_names
+
+
+@pytest.mark.asyncio
+async def test_take_queries_with_row_id_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test", pa.table({"idx": range(100)}))
+
+    by_row_id = await table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_row_id.column_names
+    by_offset = await table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_offset.column_names
+
+    default = await table.take_row_ids([5, 2, 17]).to_arrow()
+    assert "_rowid" not in default.column_names
+
+
 def test_take_queries_to_batches(tmp_path):
     # Regression test for the sync take-query path: `to_batches` previously
     # raised ``AttributeError: 'AsyncTakeQuery' object has no attribute
