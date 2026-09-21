@@ -960,6 +960,7 @@ mod tests {
         assert!(!requires_local_namespace_execution(&default_query));
 
         let nprobes_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
             nprobes: Some(20),
             ..Default::default()
         });
