@@ -189,8 +189,12 @@ def _query_to_namespace_request(
         kwargs["with_row_id"] = query.with_row_id
     if query.ef is not None:
         kwargs["ef"] = query.ef
+    if query.nprobes is not None:
+        kwargs["nprobes"] = query.nprobes
     if query.minimum_nprobes is not None:
-        kwargs["nprobes"] = query.minimum_nprobes
+        kwargs["minimum_nprobes"] = query.minimum_nprobes
+    if query.maximum_nprobes is not None:
+        kwargs["maximum_nprobes"] = query.maximum_nprobes
     if query.refine_factor is not None:
         kwargs["refine_factor"] = query.refine_factor
     if query.lower_bound is not None:
