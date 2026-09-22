@@ -364,6 +364,43 @@ impl ExecuteQueryAsyncBuilder {
     }
 }
 
+/// Builder for [`Connection::execute_query`].
+pub struct ExecuteQueryBuilder {
+    parent: Arc<dyn Database>,
+    query: String,
+    default_namespace_path: Vec<String>,
+}
+
+impl ExecuteQueryBuilder {
+    fn new(parent: Arc<dyn Database>, query: String) -> Self {
+        Self {
+            parent,
+            query,
+            default_namespace_path: vec!["public".to_string()],
+        }
+    }
+
+    /// Set the namespace used for unqualified table names.
+    ///
+    /// An empty path is treated as `public`, which is the SQL name for the
+    /// root Lance namespace.
+    pub fn default_namespace_path<I, S>(mut self, path: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Run the statement and stream its rows.
+    pub async fn execute(self) -> Result<crate::arrow::SendableRecordBatchStream> {
+        self.parent
+            .execute_query(&self.query, &self.default_namespace_path)
+            .await
+    }
+}
+
 impl CloneTableBuilder {
     fn new(parent: Arc<dyn Database>, target_table_name: String, source_uri: String) -> Self {
         Self {
@@ -475,6 +512,39 @@ impl Connection {
     /// ```
     pub fn execute_query_async(&self, query: impl Into<String>) -> ExecuteQueryAsyncBuilder {
         ExecuteQueryAsyncBuilder::new(self.internal.clone(), query.into())
+    }
+
+    /// Run a SQL statement in a single round trip and stream its rows.
+    ///
+    /// This is the one to reach for. The statement travels as the request
+    /// itself and the rows come back on the same call, so a query that answers
+    /// quickly costs one round trip instead of a submission followed by a
+    /// fetch.
+    ///
+    /// Use [`Self::execute_query_async`] instead when the answer is large or
+    /// slow enough that you want a handle rather than a stream: it can be
+    /// polled for progress, cancelled, and read from several endpoints at once,
+    /// and it survives the client going away.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn query(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    ///
+    /// let mut batches = db
+    ///     .execute_query("SELECT * FROM events LIMIT 10")
+    ///     .default_namespace_path(["public"])
+    ///     .execute()
+    ///     .await?;
+    /// while let Some(batch) = batches.try_next().await? {
+    ///     println!("received {} rows", batch.num_rows());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn execute_query(&self, query: impl Into<String>) -> ExecuteQueryBuilder {
+        ExecuteQueryBuilder::new(self.internal.clone(), query.into())
     }
 
     /// Describe a submitted SQL query by its connection-scoped id.

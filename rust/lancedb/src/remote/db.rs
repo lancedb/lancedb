@@ -1179,6 +1179,20 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         client.submit(query, default_namespace_path).await
     }
 
+    async fn execute_query(
+        &self,
+        query: &str,
+        default_namespace_path: &[String],
+    ) -> Result<crate::arrow::SendableRecordBatchStream> {
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".to_string(),
+            })?;
+        client.execute_one_shot(query, default_namespace_path).await
+    }
+
     async fn describe_query(&self, query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
         let client = self
             .sql_client

@@ -14,7 +14,7 @@ use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
     Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
-    FlightDescriptor, FlightEndpoint, FlightInfo, PollInfo,
+    FlightDescriptor, FlightEndpoint, FlightInfo, PollInfo, Ticket,
 };
 use arrow_schema::{Schema, SchemaRef};
 use futures::TryStreamExt;
@@ -209,6 +209,21 @@ impl SqlClient {
         .await
     }
 
+    pub(super) async fn execute_one_shot(
+        &self,
+        query: &str,
+        default_namespace_path: &[String],
+    ) -> Result<SendableRecordBatchStream> {
+        let timeout = self.inner.overall_timeout()?;
+        with_overall_timeout(timeout, "SQL query", async {
+            validate_namespace_path(default_namespace_path)?;
+            self.inner
+                .execute_one_shot(query, default_namespace_path)
+                .await
+        })
+        .await
+    }
+
     pub(super) async fn describe(&self, query_id: Uuid) -> Result<QueryDescription> {
         let query = self
             .queries
@@ -326,15 +341,29 @@ impl SqlClientInner {
         default_namespace_path: &[String],
     ) -> Result<ResultEndpointStream> {
         let request_id = uuid::Uuid::new_v4().to_string();
+        let ticket = endpoint.ticket.ok_or_else(|| {
+            sql_error(&request_id, "SQL result endpoint did not include a ticket")
+        })?;
+        self.open_ticket(ticket, default_namespace_path, request_id)
+            .await
+    }
+
+    /// Open a `DoGet` for a ticket, whoever produced it.
+    ///
+    /// Split out from [`Self::open_result_endpoint`] because a one-shot query
+    /// has a ticket without ever having been given an endpoint to take it from.
+    async fn open_ticket(
+        &self,
+        ticket: Ticket,
+        default_namespace_path: &[String],
+        request_id: String,
+    ) -> Result<ResultEndpointStream> {
         let read_timeout = resolve_timeout(
             self.client_config.timeout_config.read_timeout,
             "LANCE_CLIENT_READ_TIMEOUT",
             Some(DEFAULT_READ_TIMEOUT),
         )?
         .unwrap();
-        let ticket = endpoint.ticket.ok_or_else(|| {
-            sql_error(&request_id, "SQL result endpoint did not include a ticket")
-        })?;
         let mut endpoint_client = self
             .client_with_headers(default_namespace_path, &request_id)
             .await?;
@@ -347,6 +376,56 @@ impl SqlClientInner {
             request_id,
             read_timeout,
         })
+    }
+
+    /// Run `sql` in a single `DoGet`, with the statement as the ticket.
+    ///
+    /// The submit-and-poll path exists so a client can leave, resume, cancel,
+    /// and read a large answer in parallel. A query that returns before any of
+    /// that matters pays two round trips and two plans for nothing, and this is
+    /// the path for those: the server reads a ticket it cannot parse as a
+    /// command as the statement itself, and the schema arrives in the stream
+    /// rather than in an earlier reply.
+    ///
+    /// The trade is the one the name implies. There is no handle, so nothing to
+    /// poll or cancel, and a client that disconnects gets no second chance at
+    /// the rows — though on a server that copies results, the answer this
+    /// abandoned is filed under the name the next asker will look for.
+    pub(super) async fn execute_one_shot(
+        &self,
+        sql: &str,
+        default_namespace_path: &[String],
+    ) -> Result<SendableRecordBatchStream> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let ticket = Ticket {
+            ticket: sql.to_string().into(),
+        };
+        let mut endpoint = self
+            .open_ticket(ticket, default_namespace_path, request_id.clone())
+            .await?;
+
+        // Pulled before the stream is handed over, because the schema arrives
+        // as its own message ahead of the data and `SimpleRecordBatchStream`
+        // wants it up front. An empty answer still carries one.
+        let first = endpoint.next_batch().await?;
+        let schema = endpoint
+            .stream
+            .schema()
+            .cloned()
+            .ok_or_else(|| sql_error(&request_id, "SQL result stream carried no schema"))?;
+
+        let stream =
+            futures::stream::unfold((first, endpoint), |(pending, mut endpoint)| async move {
+                if let Some(batch) = pending {
+                    return Some((Ok(batch), (None, endpoint)));
+                }
+                match endpoint.next_batch().await {
+                    Ok(Some(batch)) => Some((Ok(batch), (None, endpoint))),
+                    Ok(None) => None,
+                    Err(error) => Some((Err(error), (None, endpoint))),
+                }
+            });
+        Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
     }
 
     async fn cancel(
