@@ -649,6 +649,22 @@ impl Connection {
             .await
     }
 
+    /// Start dropping a Function and return its cleanup job.
+    ///
+    /// The name is unbound before this returns; the object's content may still be being
+    /// deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for that to finish. When
+    /// the server deletes inline, or when nothing was bound, the returned job is already
+    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    pub async fn drop_function_async(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<(bool, crate::job::Job)> {
+        self.internal
+            .drop_function_async(name.as_ref(), version.as_ref())
+            .await
+    }
+
     /// Create a named Secret in this database.
     ///
     /// Fails if the name is taken, so a create can never silently become a
