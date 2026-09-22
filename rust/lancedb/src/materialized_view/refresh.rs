@@ -297,6 +297,22 @@ pub(crate) async fn execute_refresh(
         });
     }
 
+    // A group spans fragments: there is no per-fragment increment.
+    if definition.is_grouped() {
+        return rebuild(
+            view_native,
+            &view_ds,
+            &source_ds,
+            source_version,
+            source_ts,
+            definition,
+            &inputs,
+            None,
+            persist.is_some(),
+            expected_incarnation,
+        )
+        .await;
+    }
     let watermark = watermark.filter(|_| view_intact);
     match plan_increment(
         &source_ds,
@@ -629,8 +645,16 @@ fn same_meaning(
         || stored.limit != replanned.limit
         || stored.projections.len() != replanned.projections.len()
         || stored.filter.is_some() != replanned.filter.is_some()
+        || stored.group_by.len() != replanned.group_by.len()
     {
         return false;
+    }
+    // Lance's planner does not read aggregates; a grouped definition is
+    // compared in its canonical spelling, which planning produced.
+    if stored.is_grouped() {
+        return stored.projections == replanned.projections
+            && stored.group_by == replanned.group_by
+            && stored.filter == replanned.filter;
     }
     let schema = match unnest {
         None => source_schema.clone(),
@@ -1288,6 +1312,9 @@ async fn compute_stream(
     schema: SchemaRef,
     rows_written: Arc<AtomicU64>,
 ) -> Result<SendableRecordBatchStream> {
+    if definition.is_grouped() {
+        return super::grouped::stream(source, definition, inputs, schema, rows_written).await;
+    }
     let RowScope {
         fragments,
         created_after,
@@ -1363,29 +1390,40 @@ async fn compute_stream(
             None => batch,
             Some(expanded) => expanded.apply(&batch)?,
         };
-        let mut columns = Vec::with_capacity(out_schema.fields().len());
-        for field in out_schema.fields() {
-            if computed_column_from_field(field).is_some() {
-                columns.push(new_null_array(field.data_type(), batch.num_rows()));
-                continue;
-            }
-            let name = if field.name() == SOURCE_ROW_ID_COLUMN {
-                ROW_ID
-            } else {
-                field.name()
-            };
-            let column = batch.column_by_name(name).ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "view column '{}' is not produced by the view's definition",
-                    field.name()
-                ))
-            })?;
-            columns.push(column.clone());
-        }
+        let batch = to_view_batch(&batch, &out_schema)?;
         rows_written.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-        Ok(RecordBatch::try_new(out_schema.clone(), columns)?)
+        Ok(batch)
     });
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, mapped)))
+}
+
+/// `batch` in the view's physical schema: the row id becomes the
+/// provenance column and computed columns are written NULL for their owner
+/// to fill.
+pub(super) fn to_view_batch(
+    batch: &RecordBatch,
+    out_schema: &SchemaRef,
+) -> datafusion::common::Result<RecordBatch> {
+    let mut columns = Vec::with_capacity(out_schema.fields().len());
+    for field in out_schema.fields() {
+        if computed_column_from_field(field).is_some() {
+            columns.push(new_null_array(field.data_type(), batch.num_rows()));
+            continue;
+        }
+        let name = if field.name() == SOURCE_ROW_ID_COLUMN {
+            ROW_ID
+        } else {
+            field.name()
+        };
+        let column = batch.column_by_name(name).ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "view column '{}' is not produced by the view's definition",
+                field.name()
+            ))
+        })?;
+        columns.push(column.clone());
+    }
+    Ok(RecordBatch::try_new(out_schema.clone(), columns)?)
 }
 
 /// The post-scan half of an unnested view's refresh: the scan reads
@@ -3641,6 +3679,7 @@ mod tests {
                 },
             ],
             filter: None,
+            group_by: Vec::new(),
             limit: None,
             lateral: None,
         };
@@ -3675,6 +3714,7 @@ mod tests {
                 expression: "x".into(),
             }],
             filter: None,
+            group_by: Vec::new(),
             limit: None,
             lateral: None,
         };
@@ -4303,5 +4343,150 @@ mod tests {
                 .unwrap(),
             3
         );
+    }
+
+    async fn grouped_source(conn: &Connection) -> Table {
+        conn.create_table(
+            "src",
+            record_batch!(("k", Int32, [1, 1, 2, 3]), ("x", Int32, [10, 11, 20, 30])).unwrap(),
+        )
+        .write_options(crate::materialized_view::tests::stable_row_ids())
+        .execute()
+        .await
+        .unwrap()
+    }
+
+    async fn declare(source: &Table, name: &str, sql: &str) -> Result<MaterializedView> {
+        crate::materialized_view::prepare_definition(
+            source,
+            MaterializedViewDefinition::from_sql(sql)?,
+        )
+        .await?
+        .create(name)
+        .await
+    }
+
+    /// Rows of `table` as `columns` rendered to text, sorted.
+    async fn rows(table: &Table, columns: &[&str]) -> Vec<String> {
+        let batches = table
+            .query()
+            .select(Select::columns(columns))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let formatters: Vec<_> = batch
+                .columns()
+                .iter()
+                .map(|c| {
+                    arrow_cast::display::ArrayFormatter::try_new(c.as_ref(), &Default::default())
+                        .unwrap()
+                })
+                .collect();
+            for row in 0..batch.num_rows() {
+                let cells: Vec<String> = formatters
+                    .iter()
+                    .map(|f| f.value(row).to_string())
+                    .collect();
+                rows.push(cells.join(" "));
+            }
+        }
+        rows.sort();
+        rows
+    }
+
+    #[tokio::test]
+    async fn a_grouped_view_holds_one_row_per_group() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        let view = declare(
+            &source,
+            "groups",
+            "SELECT k, array_agg(x) AS xs, sum(x) AS total FROM src WHERE x < 30 GROUP BY k",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            view.definition().to_sql(),
+            "SELECT k, array_agg(x) AS xs, sum(x) AS total FROM src WHERE x < 30 GROUP BY k"
+        );
+
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 2);
+        assert_eq!(rows(view.table(), &["k", "total"]).await, ["1 21", "2 20"]);
+        let unchanged = view.refresh().execute().await.unwrap();
+        assert_eq!(unchanged.mode, RefreshMode::NoOp);
+
+        // Any source change recomputes every group.
+        source
+            .add(record_batch!(("k", Int32, [2]), ("x", Int32, [5])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(rows(view.table(), &["k", "total"]).await, ["1 21", "2 25"]);
+
+        // A view over the groups expands them again.
+        let expanded = declare(
+            view.table(),
+            "elements",
+            "SELECT k, e AS x FROM groups, UNNEST(xs) AS e",
+        )
+        .await
+        .unwrap();
+        expanded.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(expanded.table(), &["k", "x"]).await,
+            ["1 10", "1 11", "2 20", "2 5"]
+        );
+    }
+
+    /// Provenance is one source row per group, so the view's row-id keys
+    /// stay unique.
+    #[tokio::test]
+    async fn a_grouped_view_records_one_source_row_per_group() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        let view = declare(
+            &source,
+            "groups",
+            "SELECT k, count(*) AS n FROM src GROUP BY k",
+        )
+        .await
+        .unwrap();
+        view.refresh().execute().await.unwrap();
+        let ids = rows(view.table(), &[SOURCE_ROW_ID_COLUMN]).await;
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), 3, "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn a_grouped_view_is_planned_at_declaration() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        for sql in [
+            // x is neither a key nor aggregated
+            "SELECT k, x FROM src GROUP BY k",
+            "SELECT k, random() AS r FROM src GROUP BY k",
+            "SELECT k, count(*) AS n FROM src GROUP BY missing",
+            "SELECT k, count(*) AS __source_row_id FROM src GROUP BY k",
+            "SELECT k, count(*) AS k FROM src GROUP BY k",
+        ] {
+            assert!(declare(&source, "v", sql).await.is_err(), "{sql}");
+        }
+        let mut grouped = crate::materialized_view::prepare_definition(
+            &source,
+            MaterializedViewDefinition::from_sql("SELECT k, count(*) AS n FROM src GROUP BY k")
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(grouped.input_column("x").is_err());
     }
 }
