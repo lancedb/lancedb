@@ -62,6 +62,7 @@ pub struct ViewDescription {
     pub namespace_path: Vec<String>,
     pub query: String,
     pub default_database: String,
+    pub default_namespace_path: Vec<String>,
     /// The view's schema as an empty Arrow IPC file, the way a table reports
     /// its own.
     pub schema: Buffer,
@@ -74,6 +75,7 @@ impl ViewDescription {
             namespace_path: view.namespace_path,
             query: view.query,
             default_database: view.default_database,
+            default_namespace_path: view.default_namespace_path,
             schema: crate::util::schema_to_buffer(&view.schema)?,
         })
     }

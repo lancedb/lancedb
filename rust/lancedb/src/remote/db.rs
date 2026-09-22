@@ -801,6 +801,10 @@ struct RemoteViewDescription {
     namespace: Vec<String>,
     query: String,
     default_database: String,
+    /// A path, like `namespace`: the root is the absent field rather than a
+    /// spelling of its own.
+    #[serde(default)]
+    default_namespace: Vec<String>,
     schema: JsonArrowSchema,
 }
 
@@ -820,6 +824,7 @@ impl RemoteViewDescription {
             namespace_path: self.namespace,
             query: self.query,
             default_database: self.default_database,
+            default_namespace_path: self.default_namespace,
             schema: Arc::new(schema),
         })
     }
@@ -3930,6 +3935,7 @@ mod tests {
             "namespace": namespace,
             "query": query,
             "default_database": "db",
+            "default_namespace": namespace,
             "schema": lance_namespace::schema::arrow_schema_to_json(&schema).unwrap(),
         })
         .to_string()
@@ -3962,6 +3968,7 @@ mod tests {
         assert_eq!(view.namespace_path, vec!["analytics".to_string()]);
         assert_eq!(view.query, "SELECT id FROM people");
         assert_eq!(view.default_database, "db");
+        assert_eq!(view.default_namespace_path, vec!["analytics".to_string()]);
         assert_eq!(view.schema.field(0).name(), "id");
     }
 

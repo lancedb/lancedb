@@ -31,3 +31,10 @@ class ViewDescription:
     """The schema the defining query resolved to when the view was created."""
     namespace_path: List[str] = field(default_factory=list)
     """The namespace holding the view; empty is the root namespace."""
+    default_namespace_path: List[str] = field(default_factory=list)
+    """The namespace path those unqualified names resolve against.
+
+    Recorded with the view because it outlives the session that declared it: a
+    reader resolving the query against its own default namespace could read a
+    different table than the view was defined over.
+    """

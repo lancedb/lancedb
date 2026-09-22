@@ -32,6 +32,13 @@ pub struct ViewDescription {
     /// other than its own, so this is part of what the query means rather
     /// than a restatement of where the view lives.
     pub default_database: String,
+    /// The namespace path those unqualified names resolve against; empty is
+    /// the root namespace.
+    ///
+    /// Recorded with the view because it outlives the session that declared
+    /// it: a reader that resolved the query against its own default namespace
+    /// could read a different table than the view was defined over.
+    pub default_namespace_path: Vec<String>,
     /// The schema the defining query resolved to when the view was created.
     pub schema: SchemaRef,
 }

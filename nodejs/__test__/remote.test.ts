@@ -112,6 +112,8 @@ describe("remote connection", () => {
             query: "SELECT name FROM people",
             // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
             default_database: "db",
+            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
+            default_namespace: ["analytics"],
             schema: {
               fields: [
                 { name: "name", nullable: true, type: { type: "utf8" } },
@@ -128,6 +130,7 @@ describe("remote connection", () => {
         expect(view.namespacePath).toEqual(["analytics"]);
         expect(view.query).toBe("SELECT name FROM people");
         expect(view.defaultDatabase).toBe("db");
+        expect(view.defaultNamespacePath).toEqual(["analytics"]);
         expect(view.schema.fields.map((f) => f.name)).toEqual(["name"]);
       },
     );

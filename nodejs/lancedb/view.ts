@@ -20,6 +20,15 @@ export interface ViewDescription {
   query: string;
   /** The database that unqualified table names in {@link query} resolve against. */
   defaultDatabase: string;
+  /**
+   * The namespace path those unqualified names resolve against; empty is the
+   * root namespace.
+   *
+   * Recorded with the view because it outlives the session that declared it:
+   * a reader resolving the query against its own default namespace could read
+   * a different table than the view was defined over.
+   */
+  defaultNamespacePath: string[];
   /** The schema the defining query resolved to when the view was created. */
   schema: Schema;
 }
@@ -33,6 +42,7 @@ export function viewDescriptionFromNative(
     namespacePath: view.namespacePath,
     query: view.query,
     defaultDatabase: view.defaultDatabase,
+    defaultNamespacePath: view.defaultNamespacePath,
     schema: tableFromIPC(view.schema).schema,
   };
 }

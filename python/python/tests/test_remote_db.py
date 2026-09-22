@@ -2766,6 +2766,7 @@ def test_view_crud_addresses_its_own_routes():
                 "namespace": ["analytics"],
                 "query": "SELECT name FROM people",
                 "default_database": "dev",
+                "default_namespace": ["analytics"],
                 "schema": {
                     "fields": [
                         {"name": "name", "nullable": True, "type": {"type": "utf8"}}
@@ -2785,6 +2786,7 @@ def test_view_crud_addresses_its_own_routes():
         assert view.namespace_path == ["analytics"]
         assert view.query == "SELECT name FROM people"
         assert view.default_database == "dev"
+        assert view.default_namespace_path == ["analytics"]
         assert view.schema == pa.schema([pa.field("name", pa.utf8(), nullable=True)])
 
         described = db.describe_view("adults", namespace_path=["analytics"])

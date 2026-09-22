@@ -98,16 +98,24 @@ from .namespace_utils import (
 
 
 def _view_description(
-    described: Tuple[str, List[str], str, str, "pa.Schema"],
+    described: Tuple[str, List[str], str, str, List[str], "pa.Schema"],
 ) -> ViewDescription:
     """Name the fields the binding returns positionally."""
-    name, namespace_path, query, default_database, schema = described
+    (
+        name,
+        namespace_path,
+        query,
+        default_database,
+        default_namespace_path,
+        schema,
+    ) = described
     return ViewDescription(
         name=name,
         query=query,
         default_database=default_database,
         schema=schema,
         namespace_path=namespace_path,
+        default_namespace_path=default_namespace_path,
     )
 
 
