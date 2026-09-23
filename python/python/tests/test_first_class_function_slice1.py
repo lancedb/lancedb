@@ -169,7 +169,7 @@ def test_function_version_binding_validates_names_and_direct_columns():
 
     with pytest.raises(TypeError, match=r"missing inputs: \['text'\]"):
         version()
-    with pytest.raises(TypeError, match=r"unknown inputs: \['body'\]"):
+    with pytest.raises(TypeError, match=r"unknown arguments: \['body'\]"):
         version(text=col("text"), body=col("body"))
     with pytest.raises(TypeError, match="direct col"):
         version(text=col("text").lower())
@@ -296,9 +296,12 @@ def test_initialization_travels_on_the_application_and_binding():
         "model": "text-embedding-3-small",
         "dimensions": 512,
     }
-    assert FunctionBinding.from_json(
-        fixture("remote_function_binding.json")
-    ).initialization_row() is None
+    assert (
+        FunctionBinding.from_json(
+            fixture("remote_function_binding.json")
+        ).initialization_row()
+        is None
+    )
 
     signature = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))

@@ -20,6 +20,7 @@ import importlib
 import inspect
 import symtable
 import json
+import linecache
 import math
 import re
 import sys
@@ -367,14 +368,20 @@ class FunctionVersion(_RemoteValue):
     metadata: Mapping[str, str]
     disabled: bool
 
-    def __call__(self, **inputs: Any) -> FunctionApplication:
+    def __call__(self, **arguments: Any) -> FunctionApplication:
         """Bind this exact version to named table columns.
 
         Every input must be a direct [lancedb.col][lancedb.expr.col]
-        reference. The returned application is immutable and retains a
-        named-struct output as one binding, so every row's sibling values
-        come from one logical Function evaluation. Map result fields to table
-        columns with
+        reference. A Function that declares initialization fields takes their
+        values as further keyword arguments; they are constants of this
+        binding, fixed for every row, and every instance the binding runs is
+        created with them. A non-nullable field without a default must be
+        given; an omitted nullable field is null, and the Function's own
+        default applies to a null value.
+
+        The returned application is immutable and retains a named-struct
+        output as one binding, so every row's sibling values come from one
+        logical Function evaluation. Map result fields to table columns with
         [FunctionApplication.rename][lancedb.functions.FunctionApplication.rename],
         then pass the application to
         [Table.add_columns][lancedb.table.Table.add_columns].
@@ -390,23 +397,34 @@ class FunctionVersion(_RemoteValue):
         ...     "token_count": "search_token_count",
         ... })
         >>> table.add_columns(application)  # doctest: +SKIP
+        >>> table.add_columns({  # doctest: +SKIP
+        ...     "embedding": embed(text=col("body"), model="small", dimensions=512)
+        ... })
         """
         from lancedb.expr import Expr
 
         parameters = tuple(parameter.name for parameter in self.signature.inputs)
-        missing = [parameter for parameter in parameters if parameter not in inputs]
-        unknown = sorted(set(inputs) - set(parameters))
-        if missing or unknown:
+        fields = {field.name: field for field in self.signature.initialization}
+        missing = [parameter for parameter in parameters if parameter not in arguments]
+        missing_initialization = [
+            name
+            for name, field in fields.items()
+            if not field.nullable and name not in arguments
+        ]
+        unknown = sorted(set(arguments) - set(parameters) - set(fields))
+        if missing or missing_initialization or unknown:
             details = []
             if missing:
                 details.append(f"missing inputs: {missing!r}")
+            if missing_initialization:
+                details.append(f"missing initialization: {missing_initialization!r}")
             if unknown:
-                details.append(f"unknown inputs: {unknown!r}")
-            raise TypeError("invalid Function inputs (" + "; ".join(details) + ")")
+                details.append(f"unknown arguments: {unknown!r}")
+            raise TypeError("invalid Function arguments (" + "; ".join(details) + ")")
 
         bindings = []
         for parameter in parameters:
-            value = inputs[parameter]
+            value = arguments[parameter]
             if not isinstance(value, Expr) or value._column_path is None:
                 raise TypeError(
                     f"Function input {parameter!r} must be a direct col(...) reference"
@@ -418,6 +436,10 @@ class FunctionVersion(_RemoteValue):
                     value={"path": value._column_path},
                 )
             )
+        initialization = {}
+        for name in fields:
+            if name in arguments:
+                initialization[name] = _initialization_value(name, arguments[name])
         return FunctionApplication(
             function=FunctionVersionRef(
                 name=self.name,
@@ -428,7 +450,38 @@ class FunctionVersion(_RemoteValue):
             ),
             inputs=tuple(bindings),
             output=self.signature.output,
+            initialization=initialization,
         )
+
+
+def _initialization_value(name: str, value: Any) -> Any:
+    """One initialization value as plain JSON; the service checks its type."""
+    from lancedb.expr import Expr
+
+    def plain(value):
+        if isinstance(value, Expr):
+            raise TypeError(
+                f"initialization field {name!r} takes a constant, not a column "
+                "expression; every row of a binding shares one initialization"
+            )
+        if value is None or type(value) in (bool, int, str):
+            return value
+        if type(value) is float:
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"initialization field {name!r} must be finite, got {value!r}"
+                )
+            return value
+        if isinstance(value, (list, tuple)):
+            return [plain(child) for child in value]
+        if isinstance(value, Mapping) and all(isinstance(key, str) for key in value):
+            return {key: plain(child) for key, child in value.items()}
+        raise TypeError(
+            f"initialization field {name!r} takes booleans, numbers, strings, "
+            f"lists, and string-keyed mappings, got {type(value).__name__}"
+        )
+
+    return plain(value)
 
 
 class FunctionRegistrationRequest(_RemoteValue):
@@ -919,7 +972,12 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
             raise TypeError(
                 "Annotated Function types require exactly one PyArrow DataType"
             )
-        _, base_nullable = _annotation_type(base)
+        # A struct value is written as a dict, which has no Arrow type of its
+        # own; the Annotated metadata supplies it.
+        if base is dict or get_origin(base) is dict:
+            base_nullable = False
+        else:
+            _, base_nullable = _annotation_type(base)
         return arrow_types[0], nullable or base_nullable
 
     if isinstance(annotation, pa.DataType):
@@ -1022,8 +1080,12 @@ def _infer_signature(
     function: Callable[..., Any],
     input_schema: Optional[pa.Schema],
     output_schema: Optional[pa.DataType | pa.Field | pa.Schema],
+    *,
+    method: bool = False,
 ) -> FunctionSignature:
     parameters = _callable_parameters(function)
+    if method:
+        parameters = parameters[1:]
     if (input_schema is None) != (output_schema is None):
         raise ValueError("input_schema and output_schema must be provided together")
 
@@ -1135,10 +1197,11 @@ def _namespace_acquisition(
 
 
 def _module_references(module_source: str) -> set[str]:
-    """Names any scope in `module_source` binds or loads at module scope.
-    Python's own scope analysis on the exact text that ships: free variables
-    belong to an enclosing scope inside the function, and postponed
-    annotations are not runtime loads."""
+    """Names `module_source` loads from module scope, by Python's own scope
+    analysis on the exact text that ships: loads inside any definition, plus
+    what the definition statement itself evaluates at module scope (bases,
+    decorators, defaults). Free variables belong to an enclosing scope inside
+    the definition, and postponed annotations are not runtime loads."""
 
     def visit(table: symtable.SymbolTable, found: set[str]) -> None:
         for symbol in table.get_symbols():
@@ -1150,138 +1213,522 @@ def _module_references(module_source: str) -> set[str]:
             visit(child, found)
 
     found: set[str] = set()
-    for table in symtable.symtable(module_source, "<udf>", "exec").get_children():
+    module = symtable.symtable(module_source, "<udf>", "exec")
+    for symbol in module.get_symbols():
+        if (
+            symbol.is_referenced()
+            and not symbol.is_assigned()
+            and not symbol.is_imported()
+        ):
+            found.add(symbol.get_name())
+    for table in module.get_children():
         visit(table, found)
     return found
 
 
-def _global_source(name: str, value: Any) -> str:
-    """One module-level line that rebinds `name` to `value` in the artifact:
-    an import for modules and importable classes/functions, a literal otherwise."""
-    if isinstance(value, types.ModuleType):
-        if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
-            raise ValueError(
-                f"@udf cannot package dynamic namespace access: {value.__name__!r}"
-            )
+_SOURCE_HEADER = "from __future__ import annotations"
+_SOURCE_ENTRY_FILE = "user_function.py"
+_PYTHON_CALLABLE_ARTIFACT = "python_callable"
+_PYTHON_BUNDLE_ARTIFACT = "python_bundle"
+# Modules the Function image places beside user code.
+_RESERVED_SOURCE_MODULES = frozenset(
+    {"user_function", "lance_source", "lance_callable"}
+)
+# The service accepts bundle paths made of these components only.
+_SOURCE_PATH_COMPONENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_REQUIREMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _class_source(cls: type) -> str:
+    """Source of a module-level class.
+
+    `inspect.getsource` finds a class through its module's file, which a
+    notebook cell or a doctest does not have. A method's code object records
+    where the class body really is, so that is consulted first.
+    """
+    for member in vars(cls).values():
+        if isinstance(member, (staticmethod, classmethod)):
+            member = member.__func__
+        code = (
+            getattr(inspect.unwrap(member), "__code__", None)
+            if callable(member)
+            else None
+        )
+        if code is None:
+            continue
+        lines = linecache.getlines(code.co_filename)
         try:
-            imported = importlib.import_module(value.__name__)
-        except ImportError:
-            imported = None
-        if imported is not value:
-            raise TypeError(
-                f"Function source references module {name!r} that does not import "
-                f"as {value.__name__!r}"
-            )
-        return f"import {value.__name__} as {name}"
-    module_name = getattr(value, "__module__", None)
-    qualname = getattr(value, "__qualname__", None)
-    if (
-        isinstance(module_name, str)
-        and isinstance(qualname, str)
-        and module_name != "__main__"
-        and "." not in qualname
-        and "<" not in qualname
-    ):
-        try:
-            imported = getattr(importlib.import_module(module_name), qualname)
-        except (ImportError, AttributeError):
-            imported = None
-        if imported is value:
-            return f"from {module_name} import {qualname} as {name}"
-    return f"{name} = {_literal_source(value)}"
+            module = ast.parse("".join(lines))
+        except SyntaxError:
+            continue
+        for node in module.body:
+            if (
+                isinstance(node, ast.ClassDef)
+                and node.name == cls.__name__
+                and node.lineno <= code.co_firstlineno <= node.end_lineno
+            ):
+                start = min(
+                    [node.lineno]
+                    + [decorator.lineno for decorator in node.decorator_list]
+                )
+                return "".join(lines[start - 1 : node.end_lineno])
+    return inspect.getsource(cls)
 
 
-def _is_recursive_reference(function: Callable[..., Any], name: str) -> bool:
-    """`name` inside the body means the function itself unless the module has
-    since bound it to something else."""
-    if name != function.__name__:
-        return False
-    bound = function.__globals__.get(name, function)
-    if bound is function:
-        return True
-    # The decorator's own result is the one wrapper known to call `function`
-    # unchanged; any other binding may behave differently from a self-call.
-    return type(bound) is UdfDefinition and bound._function is function
-
-
-def _package_source(function: Callable[..., Any]) -> bytes:
-    if not inspect.isfunction(function) or inspect.iscoroutinefunction(function):
-        raise TypeError("@udf requires a synchronous Python function")
+def _definition_node(
+    target: Any, *, entry: bool
+) -> Union[ast.FunctionDef, ast.ClassDef]:
     try:
-        source = textwrap.dedent(inspect.getsource(function))
+        source = textwrap.dedent(
+            _class_source(target)
+            if inspect.isclass(target)
+            else inspect.getsource(target)
+        )
     except (OSError, TypeError) as error:
-        raise ValueError("@udf requires inspectable Python source") from error
+        raise ValueError(
+            f"@udf requires inspectable Python source for {target.__qualname__!r}"
+        ) from error
     module = ast.parse(source)
+    is_class = inspect.isclass(target)
     definitions = [
         node
         for node in module.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function.__name__
+        if isinstance(
+            node,
+            (ast.ClassDef,) if is_class else (ast.FunctionDef, ast.AsyncFunctionDef),
+        )
+        and node.name == target.__name__
     ]
-    if len(definitions) != 1 or not isinstance(definitions[0], ast.FunctionDef):
-        raise ValueError("@udf source must contain exactly one synchronous function")
+    if len(definitions) != 1 or isinstance(definitions[0], ast.AsyncFunctionDef):
+        raise ValueError(
+            "@udf source must contain exactly one "
+            + ("class" if is_class else "synchronous function")
+        )
     definition = definitions[0]
-    if any(not _is_udf_decorator(decorator) for decorator in definition.decorator_list):
-        raise ValueError("@udf cannot package additional Python decorators")
-    definition.decorator_list = []
+    if entry:
+        if any(
+            not _is_udf_decorator(decorator) for decorator in definition.decorator_list
+        ):
+            raise ValueError("@udf cannot package additional Python decorators")
+        definition.decorator_list = []
+    return definition
 
-    closure = inspect.getclosurevars(function)
-    if closure.nonlocals:
-        raise ValueError("@udf cannot package functions that capture closure values")
-    function_source = ast.unparse(definition)
-    module_header = "from __future__ import annotations"
-    references = _module_references(f"{module_header}\n\n{function_source}\n")
-    dynamic = _namespace_acquisition(definition, references)
-    if dynamic:
-        raise ValueError(f"@udf cannot package dynamic namespace access: {dynamic!r}")
-    # Resolve every module-scope reference the way the interpreter would: the
-    # function's own globals first (a module global may shadow a builtin, and
-    # nested scopes are not visible to getclosurevars), then its builtins.
+
+def _definition_namespace(target: Any) -> Mapping[str, Any]:
+    """The module namespace a function or class resolves its globals in."""
+    if inspect.isclass(target):
+        module = sys.modules.get(target.__module__)
+        if module is None:
+            raise ValueError(
+                f"@udf cannot resolve the module of {target.__qualname__!r}"
+            )
+        namespace = vars(module)
+        environment = namespace.get("__builtins__", builtins)
+        environment = (
+            vars(environment)
+            if isinstance(environment, types.ModuleType)
+            else environment
+        )
+    else:
+        namespace = target.__globals__
+        environment = target.__builtins__
     # The artifact runs under the standard builtins; only the exact mapping is
     # provably equivalent (a subclass or copy can change lookups and hooks).
-    if function.__builtins__ is not vars(builtins):
+    if environment is not vars(builtins):
         raise ValueError("@udf cannot package a non-standard builtins environment")
-    globals_source = []
-    unresolved = []
-    for name in sorted(references):
-        if name == function.__name__:
-            if not _is_recursive_reference(function, name):
-                raise ValueError(
-                    f"@udf cannot package {name!r}: the module binds that name to "
-                    "another value, which the artifact's own definition would shadow"
-                )
-            continue
-        if name in function.__globals__:
-            globals_source.append(_global_source(name, function.__globals__[name]))
-        elif hasattr(builtins, name):
-            pass
-        else:
-            unresolved.append(name)
-    if unresolved:
+    return namespace
+
+
+def _is_self_reference(target: Any, namespace: Mapping[str, Any], name: str) -> bool:
+    """`name` inside the definition means the definition itself unless the
+    module has since bound it to something else."""
+    if name != target.__name__:
+        return False
+    bound = namespace.get(name, target)
+    if bound is target:
+        return True
+    # The decorator's own result is the one wrapper known to behave like
+    # `target`; any other binding may differ from the packaged definition.
+    return type(bound) is UdfDefinition and bound._function is target
+
+
+def _packaged_by_source(value: Any) -> bool:
+    """Functions and classes defined in `__main__` -- notebook cells and
+    scripts -- have no module a worker can import, so their source travels."""
+    if not (inspect.isfunction(value) or inspect.isclass(value)):
+        return False
+    if getattr(value, "__module__", None) != "__main__":
+        return False
+    qualname = value.__qualname__
+    if "<" in qualname or "." in qualname:
         raise ValueError(
-            f"@udf source contains unresolved global names: {unresolved!r}"
+            f"@udf cannot package {qualname!r}: only module-level functions and "
+            "classes travel with a Function, not lambdas, closures, or nested "
+            "definitions"
+        )
+    return True
+
+
+def _requirement_name(requirement: str) -> str:
+    requirement = requirement.rpartition("::")[2]
+    match = _REQUIREMENT_NAME.match(requirement.strip())
+    return _normalized_distribution(match.group(0) if match else requirement)
+
+
+def _normalized_distribution(name: str) -> str:
+    return re.sub(r"[-_.]+", "_", name).lower()
+
+
+def _installed_roots() -> tuple[str, ...]:
+    import os
+    import site
+    import sysconfig
+
+    roots = set(site.getsitepackages())
+    roots.add(site.getusersitepackages())
+    paths = sysconfig.get_paths()
+    for key in ("purelib", "platlib", "stdlib", "platstdlib"):
+        if key in paths:
+            roots.add(paths[key])
+    return tuple(os.path.realpath(root) + os.sep for root in roots)
+
+
+def _module_locations(module: types.ModuleType) -> tuple[str, ...]:
+    import os
+
+    file = getattr(module, "__file__", None)
+    if file:
+        return (os.path.realpath(file),)
+    return tuple(os.path.realpath(path) for path in getattr(module, "__path__", ()))
+
+
+class _SourcePackager:
+    """Builds the entry module of a Function artifact.
+
+    The module holds the definition plus exactly the module-level names it
+    references: modules as imports, importable classes and functions as
+    imports, literals inline, and functions and classes defined in
+    ``__main__`` by source, recursively, dependencies first.
+    """
+
+    def __init__(self, code_modules: frozenset[str], requirements: frozenset[str]):
+        self._code_modules = code_modules
+        self._requirements = requirements
+        self._imports: dict[str, str] = {}
+        self._definitions: list[str] = []
+        self._packaged: set[int] = set()
+        self._names: dict[str, Any] = {}
+
+    def package(self, target: Any) -> str:
+        entry = self._definition(target, entry=True)
+        parts = [_SOURCE_HEADER]
+        if self._imports:
+            parts.extend(["", *(self._imports[name] for name in sorted(self._imports))])
+        for definition in self._definitions:
+            parts.extend(["", definition])
+        parts.extend(["", entry, ""])
+        return "\n".join(parts)
+
+    def _definition(self, target: Any, *, entry: bool) -> str:
+        definition = _definition_node(target, entry=entry)
+        if not inspect.isclass(target) and inspect.getclosurevars(target).nonlocals:
+            raise ValueError(
+                "@udf cannot package functions that capture closure values"
+            )
+        source = ast.unparse(definition)
+        references = _module_references(f"{_SOURCE_HEADER}\n\n{source}\n")
+        dynamic = _namespace_acquisition(definition, references)
+        if dynamic:
+            raise ValueError(
+                f"@udf cannot package dynamic namespace access: {dynamic!r}"
+            )
+        namespace = _definition_namespace(target)
+        self._packaged.add(id(target))
+        self._claim(target.__name__, ("definition", id(target)))
+        unresolved = []
+        for name in sorted(references):
+            if name == target.__name__:
+                if not _is_self_reference(target, namespace, name):
+                    raise ValueError(
+                        f"@udf cannot package {name!r}: the module binds that name "
+                        "to another value, which the artifact's own definition "
+                        "would shadow"
+                    )
+                continue
+            if name in namespace:
+                self._bind(name, namespace[name])
+            elif not hasattr(builtins, name):
+                unresolved.append(name)
+        if unresolved:
+            raise ValueError(
+                f"@udf source contains unresolved global names: {unresolved!r}"
+            )
+        return source
+
+    def _claim(self, name: str, meaning: Any) -> None:
+        claimed = self._names.setdefault(name, meaning)
+        if claimed != meaning:
+            raise ValueError(
+                f"@udf cannot package {name!r}: packaged definitions bind that "
+                "name to different values"
+            )
+
+    def _bind(self, name: str, value: Any) -> None:
+        if _packaged_by_source(value):
+            if value.__name__ != name:
+                raise ValueError(
+                    f"@udf packages {value.__qualname__!r} by source, so it must be "
+                    f"referenced by its own name, not {name!r}"
+                )
+            if id(value) not in self._packaged:
+                self._definitions.append(self._definition(value, entry=False))
+            self._claim(name, ("definition", id(value)))
+            return
+        line = self._global_source(name, value)
+        self._claim(name, line)
+        self._imports[name] = line
+
+    def _global_source(self, name: str, value: Any) -> str:
+        """One module-level line that rebinds `name` to `value` in the artifact:
+        an import for modules and importable classes/functions, a literal
+        otherwise."""
+        if isinstance(value, types.ModuleType):
+            if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
+                raise ValueError(
+                    f"@udf cannot package dynamic namespace access: {value.__name__!r}"
+                )
+            try:
+                imported = importlib.import_module(value.__name__)
+            except ImportError:
+                imported = None
+            if imported is not value:
+                raise TypeError(
+                    f"Function source references module {name!r} that does not "
+                    f"import as {value.__name__!r}"
+                )
+            self._require_importable(value.__name__)
+            return f"import {value.__name__} as {name}"
+        module_name = getattr(value, "__module__", None)
+        qualname = getattr(value, "__qualname__", None)
+        if (
+            isinstance(module_name, str)
+            and isinstance(qualname, str)
+            and module_name != "__main__"
+            and "." not in qualname
+            and "<" not in qualname
+        ):
+            try:
+                imported = getattr(importlib.import_module(module_name), qualname)
+            except (ImportError, AttributeError):
+                imported = None
+            if imported is value:
+                self._require_importable(module_name)
+                return f"from {module_name} import {qualname} as {name}"
+        return f"{name} = {_literal_source(value)}"
+
+    def _require_importable(self, module_name: str) -> None:
+        """Refuse an import the Function's environment has no way to satisfy:
+        a module that lives in a local source tree, is not shipped with
+        ``code=``, and names no declared package."""
+        top = module_name.partition(".")[0]
+        if (
+            top in self._code_modules
+            or top in sys.stdlib_module_names
+            or top in sys.builtin_module_names
+            or _normalized_distribution(top) in self._requirements
+        ):
+            return
+        module = sys.modules.get(top)
+        locations = () if module is None else _module_locations(module)
+        roots = _installed_roots()
+        if not locations or any(location.startswith(roots) for location in locations):
+            return
+        raise ValueError(
+            f"@udf source imports {module_name!r} from {locations[0]}, a local "
+            "module the Function's environment cannot import; ship it with "
+            f"code=[{top}] or declare the package that provides it in pip/conda"
         )
 
-    parts = [module_header]
-    if globals_source:
-        parts.extend(["", *globals_source])
-    parts.extend(["", function_source, ""])
-    packaged = "\n".join(parts)
-    return packaged.encode("utf-8")
+
+def _code_files(modules: Sequence[Any]) -> tuple[dict[str, str], frozenset[str]]:
+    """The Python source files of the modules and packages in ``code=``,
+    keyed by their path on the Function's import path."""
+    import os
+    from pathlib import Path
+
+    files: dict[str, str] = {}
+    names: set[str] = set()
+    for module in modules:
+        if not isinstance(module, types.ModuleType):
+            raise TypeError(
+                f"code= takes imported modules or packages, got {type(module).__name__}"
+            )
+        name = module.__name__
+        if "." in name:
+            raise ValueError(
+                f"code= takes top-level modules or packages; pass "
+                f"{name.partition('.')[0]!r} instead of {name!r}"
+            )
+        if (
+            name in _RESERVED_SOURCE_MODULES
+            or name == "__main__"
+            or name in sys.stdlib_module_names
+            or not _SOURCE_PATH_COMPONENT.fullmatch(name)
+        ):
+            raise ValueError(f"code= cannot ship module {name!r}")
+        if name in names:
+            raise ValueError(f"code= lists module {name!r} more than once")
+        names.add(name)
+        paths = list(getattr(module, "__path__", ()))
+        if paths:
+            if len(paths) != 1 or not getattr(module, "__file__", None):
+                raise ValueError(
+                    f"code= cannot ship namespace package {name!r}; give it an "
+                    "__init__.py"
+                )
+            root = Path(paths[0])
+            sources = []
+            for directory, subdirectories, filenames in os.walk(root):
+                # Only importable modules travel: data files, caches, and
+                # directories that are not identifiers cannot be imported.
+                subdirectories[:] = sorted(
+                    child
+                    for child in subdirectories
+                    if _SOURCE_PATH_COMPONENT.fullmatch(child)
+                    and child != "__pycache__"
+                )
+                for filename in filenames:
+                    stem, suffix = os.path.splitext(filename)
+                    if suffix == ".py" and _SOURCE_PATH_COMPONENT.fullmatch(stem):
+                        sources.append(Path(directory) / filename)
+            for path in sources:
+                relative = path.relative_to(root).as_posix()
+                files[f"{name}/{relative}"] = _source_text(path)
+        else:
+            file = getattr(module, "__file__", None)
+            if not file or not file.endswith(".py"):
+                raise ValueError(f"code= ships Python source; module {name!r} has none")
+            files[f"{name}.py"] = _source_text(Path(file))
+    return files, frozenset(names)
+
+
+def _source_text(path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"code= ships UTF-8 source; {path} is not UTF-8") from error
+
+
+def _initialization_type(data_type: pa.DataType) -> bool:
+    """Types with one unambiguous JSON and SQL literal spelling."""
+    if data_type in (
+        pa.bool_(),
+        pa.int8(),
+        pa.int16(),
+        pa.int32(),
+        pa.int64(),
+        pa.uint8(),
+        pa.uint16(),
+        pa.uint32(),
+        pa.uint64(),
+        pa.float32(),
+        pa.float64(),
+        pa.string(),
+        pa.large_string(),
+    ):
+        return True
+    if (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    ):
+        return _initialization_type(data_type.value_type)
+    if pa.types.is_struct(data_type):
+        return all(_initialization_type(field.type) for field in data_type)
+    return False
+
+
+def _initialization_signature(cls: type) -> tuple[FunctionParameter, ...]:
+    """The initialization fields a class Function's ``__init__`` declares."""
+    if cls.__init__ is object.__init__:
+        return ()
+    parameters = tuple(inspect.signature(cls.__init__).parameters.values())[1:]
+    for parameter in parameters:
+        if parameter.kind not in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            raise TypeError(
+                "Function initialization parameters must be named and "
+                f"non-variadic: {parameter.name!r}"
+            )
+    try:
+        annotations = get_type_hints(cls.__init__, include_extras=True)
+    except Exception as error:
+        raise TypeError(
+            f"failed to resolve Function initialization annotations: {error}"
+        ) from error
+    missing = [
+        parameter.name for parameter in parameters if parameter.name not in annotations
+    ]
+    if missing:
+        raise TypeError(f"missing Function initialization annotations: {missing!r}")
+    fields = []
+    for parameter in parameters:
+        data_type, nullable = _annotation_type(annotations[parameter.name])
+        if not _initialization_type(data_type):
+            raise TypeError(
+                f"Function initialization parameter {parameter.name!r} has type "
+                f"{data_type}; initialization takes booleans, integers, floats, "
+                "strings, and lists or structs of them"
+            )
+        # A parameter with a default may be omitted from a binding; a null
+        # value then takes the default.
+        if parameter.default is not inspect.Parameter.empty:
+            nullable = True
+        fields.append(
+            FunctionParameter(
+                name=parameter.name,
+                arrow_type=_canonical_arrow_field(
+                    pa.field(parameter.name, data_type, nullable=nullable)
+                ),
+                nullable=nullable,
+            )
+        )
+    return tuple(fields)
+
+
+def _class_member(cls: type, name: str) -> Any:
+    for klass in cls.__mro__:
+        if klass is not object and name in vars(klass):
+            return vars(klass)[name]
+    return None
+
+
+def _class_call(cls: type) -> Callable[..., Any]:
+    call = _class_member(cls, "__call__")
+    if not inspect.isfunction(call) or inspect.iscoroutinefunction(call):
+        raise TypeError("a class Function must define a synchronous __call__ method")
+    close = _class_member(cls, "close")
+    if close is not None and (
+        not inspect.isfunction(close) or len(inspect.signature(close).parameters) != 1
+    ):
+        raise TypeError("a class Function's close must be a method taking no arguments")
+    return call
 
 
 class UdfDefinition:
-    """A scalar Python callable prepared for remote Function registration.
+    """A Python callable prepared for remote Function registration.
 
     Instances are created with :func:`udf`. Calling an instance executes the
-    original scalar Python function, which keeps local unit testing ordinary.
-    Remote execution adapts that scalar callable to the internal Arrow batch
-    ABI described by the registration artifact.
+    original Python function, or constructs the original class, which keeps
+    local unit testing ordinary. Remote execution adapts the callable to the
+    internal Arrow batch ABI described by the registration artifact.
     """
 
     def __init__(
         self,
-        function: Callable[..., Any],
+        function: Any,
         *,
         name: Optional[str],
         input_schema: Optional[pa.Schema],
@@ -1292,7 +1739,13 @@ class UdfDefinition:
         gpu: bool = False,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
+        code: tuple[types.ModuleType, ...] = (),
     ):
+        is_class = inspect.isclass(function)
+        if not is_class and (
+            not inspect.isfunction(function) or inspect.iscoroutinefunction(function)
+        ):
+            raise TypeError("@udf requires a synchronous Python function or a class")
         function_name = name or function.__name__
         if not _FUNCTION_NAME.fullmatch(function_name):
             raise ValueError(f"invalid Function name: {function_name!r}")
@@ -1315,8 +1768,43 @@ class UdfDefinition:
             for key, value in environment.items()
         ):
             raise TypeError("Function env keys and values must be strings")
-        signature = _infer_signature(function, input_schema, output_schema)
-        source = _package_source(function)
+        if is_class:
+            if "<" in function.__qualname__ or "." in function.__qualname__:
+                raise ValueError(
+                    "@udf classes must be defined at module level; nested classes "
+                    "would capture their enclosing scope"
+                )
+            signature = _infer_signature(
+                _class_call(function), input_schema, output_schema, method=True
+            )
+            initialization = _initialization_signature(function)
+            shared = sorted(
+                {field.name for field in initialization}
+                & {parameter.name for parameter in signature.inputs}
+            )
+            if shared:
+                raise ValueError(
+                    "Function initialization parameters and inputs share names "
+                    f"{shared!r}; a binding passes both as keyword arguments"
+                )
+            signature = signature._copy(update={"initialization": initialization})
+        else:
+            signature = _infer_signature(function, input_schema, output_schema)
+        code_files, code_modules = _code_files(code)
+        entry_source = _SourcePackager(
+            code_modules, frozenset(_requirement_name(package) for package in packages)
+        ).package(function)
+        if code_files:
+            kind = _PYTHON_BUNDLE_ARTIFACT
+            source = json.dumps(
+                {"files": {**code_files, _SOURCE_ENTRY_FILE: entry_source}},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        else:
+            kind = _PYTHON_CALLABLE_ARTIFACT
+            source = entry_source.encode("utf-8")
         digest = f"sha256:{hashlib.sha256(source).hexdigest()}"
         gpu_marker = _normalize_gpu_marker(gpu)
         runtime = PythonRuntimeSpec(
@@ -1331,7 +1819,7 @@ class UdfDefinition:
         self._request = FunctionRegistrationRequest(
             name=function_name,
             artifact=FunctionArtifactRequest(
-                kind="python_callable",
+                kind=kind,
                 digest=digest,
                 entrypoint=function.__name__,
                 content=FunctionArtifactContent(
@@ -1346,7 +1834,11 @@ class UdfDefinition:
             signature=signature,
             runtime=runtime,
         )
-        functools.update_wrapper(self, function)
+        # A class's own __dict__ holds its methods; copying it would shadow
+        # this wrapper's attributes.
+        functools.update_wrapper(
+            self, function, updated=() if is_class else functools.WRAPPER_UPDATES
+        )
 
     @property
     def registration_request(self) -> FunctionRegistrationRequest:
@@ -1438,6 +1930,7 @@ def udf(
     gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
+    code: Sequence[types.ModuleType] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
 
 
@@ -1453,8 +1946,9 @@ def udf(
     gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
+    code: Sequence[types.ModuleType] = (),
 ):
-    """Prepare a scalar Python callable for remote Function registration.
+    """Prepare a Python function or class for remote Function registration.
 
     Input and output signatures are inferred from supported annotations. For
     Arrow types annotations cannot express precisely, pass ``input_schema``
@@ -1462,10 +1956,54 @@ def udf(
     named-struct field may be nullable; Enterprise preserves the struct's
     validity when the result is expanded into sibling columns.
 
+    **Functions and classes.** A decorated function is called once per row,
+    or once per batch when its parameters are annotated ``pyarrow.Array`` or
+    it takes one ``pyarrow.RecordBatch``. A decorated class is the same
+    callable with state: each remote instance calls ``__init__`` once, calls
+    ``__call__`` for every row or batch of every input it processes, and calls
+    ``close()``, if defined, once when it retires. Load models, open clients,
+    and build rate limiters in ``__init__``; every batch of the instance then
+    reuses them. An instance serves many batches of one binding, so state is
+    shared across them, but not across instances or workers.
+
+    **Initialization.** The annotated parameters of a class's ``__init__``
+    are the Function's initialization fields. Their values belong to each
+    binding, not to the Function: ``function(text=col("body"), model="small")``
+    binds column ``body`` and initializes every instance with ``model="small"``,
+    and another column can bind the same Function version with other values.
+    Initialization fields take booleans, integers, floats, strings, and lists
+    or structs of them (``Annotated[dict, pa.struct(...)]``). A parameter with
+    a default may be omitted from a binding; a null value then takes the
+    default. Use Secrets, not initialization, for credentials.
+
+    **What travels with the Function.** The artifact is a snapshot of the
+    decorated source plus exactly the module-level names it references:
+
+    - modules, and classes and functions importable from an installed
+      package, become imports; the package must be declared in ``pip`` or
+      ``conda``;
+    - literals (``None``, booleans, numbers, strings, bytes, tuples of them)
+      are inlined;
+    - functions and classes defined in ``__main__``, such as notebook cells,
+      are packaged by source, together with what they reference;
+    - modules and packages listed in ``code`` are shipped as Python source and
+      imported normally, so helpers shared by several Functions live in one
+      place.
+
+    A reference to a module in a local source tree that is neither shipped
+    with ``code`` nor provided by a declared package is rejected at
+    registration. Closures, lambdas, nested definitions, mutable module-level
+    objects, code that reaches the module namespace another way
+    (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
+    non-standard ``__builtins__`` are rejected where they can be seen and
+    otherwise unsupported. Changing any packaged source, including a module in
+    ``code``, produces a new Function version; the environment built from
+    ``pip`` or ``conda`` is reused.
+
     Parameters
     ----------
-    function : Callable, optional
-        The synchronous scalar callable to package.
+    function : function or class, optional
+        The synchronous callable, or the class whose instances are called.
     name : str, optional
         The remote Function name. Defaults to the callable name.
     input_schema : pyarrow.Schema, optional
@@ -1483,20 +2021,17 @@ def udf(
     env : mapping of str to str, optional
         Environment variables included in the Function definition. Not for
         credentials -- these are ordinary configuration, stored with the
-        Function and visible wherever it is.
+        Function and visible wherever it is. Prefer initialization for
+        values that differ between bindings.
     python_version : str, optional
         Remote Python major/minor version. Defaults to the client version.
     gpu : bool, default False
         Whether every remote execution requires a GPU. The execution platform
         selects one compatible GPU for each worker. The requirement is part of
         the immutable Function version.
-
-    The packaged artifact is a snapshot: the function source plus exactly
-    the module-level names it references (modules as imports, importable
-    classes and functions as imports, literals inline). Code that reaches the
-    module namespace another way -- ``globals()``/``eval``, ``sys.modules``,
-    ``builtins`` -- is rejected where it can be seen and otherwise
-    unsupported; closures and a non-standard ``__builtins__`` are rejected.
+    code : sequence of module, optional
+        Top-level modules or packages whose importable ``.py`` files ship
+        with the Function and are importable by their own names.
 
     Returns
     -------
@@ -1519,9 +2054,19 @@ def udf(
     ...     return value * 2
     >>> gpu_score.registration_request.runtime.gpu
     True
+    >>> @udf
+    ... class scale:
+    ...     def __init__(self, factor: float, offset: float = 0.0):
+    ...         self.factor, self.offset = factor, offset
+    ...     def __call__(self, value: float) -> float:
+    ...         return value * self.factor + self.offset
+    >>> scale(factor=2.0)(1.5)
+    3.0
+    >>> [field.name for field in scale.registration_request.signature.initialization]
+    ['factor', 'offset']
     """
 
-    def decorate(target: Callable[..., Any]) -> UdfDefinition:
+    def decorate(target: Any) -> UdfDefinition:
         return UdfDefinition(
             target,
             name=name,
@@ -1533,6 +2078,7 @@ def udf(
             gpu=gpu,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
+            code=tuple(code),
         )
 
     if function is None:
