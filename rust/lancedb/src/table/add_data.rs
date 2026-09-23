@@ -1019,14 +1019,23 @@ mod tests {
     #[case::utf8(DataType::Utf8)]
     #[case::large_utf8(DataType::LargeUtf8)]
     #[tokio::test]
-    async fn test_add_arrow_json_into_lance_json_table(#[case] input_type: DataType) {
+    async fn test_add_arrow_json_into_lance_json_table(
+        #[case] input_type: DataType,
+        #[values(false, true)] table_has_serialized_metadata: bool,
+        #[values(false, true)] input_has_serialized_metadata: bool,
+    ) {
         use arrow_array::{Array, cast::AsArray};
         use lance_arrow::ARROW_EXT_NAME_KEY;
         use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
 
         // Build a table whose "data" column is lance.json (LargeBinary +
         // ARROW:extension:name = "lance.json").
-        let lance_json_field = lance_arrow::json::json_field("data", true);
+        let mut lance_json_field = lance_arrow::json::json_field("data", true);
+        if table_has_serialized_metadata {
+            let mut metadata = lance_json_field.metadata().clone();
+            metadata.insert(lance_arrow::ARROW_EXT_META_KEY.to_string(), String::new());
+            lance_json_field = lance_json_field.with_metadata(metadata);
+        }
         let table_schema = Arc::new(Schema::new(vec![lance_json_field]));
 
         let db = connect("memory://").execute().await.unwrap();
@@ -1050,10 +1059,13 @@ mod tests {
 
         // Build an arrow.json input field (Utf8/LargeUtf8 + arrow.json extension).
         // This is what PyArrow produces for pa.json_() arrays.
-        let arrow_json_metadata = std::collections::HashMap::from([(
+        let mut arrow_json_metadata = std::collections::HashMap::from([(
             ARROW_EXT_NAME_KEY.to_string(),
             ARROW_JSON_EXT_NAME.to_string(),
         )]);
+        if input_has_serialized_metadata {
+            arrow_json_metadata.insert(lance_arrow::ARROW_EXT_META_KEY.to_string(), String::new());
+        }
         let arrow_json_field =
             Field::new("data", input_type.clone(), true).with_metadata(arrow_json_metadata);
         let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));

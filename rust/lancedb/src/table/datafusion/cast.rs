@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::StructArray;
@@ -59,7 +58,7 @@ fn build_field_exprs(
     get_input_expr: &dyn Fn(usize) -> Arc<dyn PhysicalExpr>,
 ) -> Result<Vec<(Arc<dyn PhysicalExpr>, FieldRef)>> {
     let config = Arc::new(ConfigOptions::default());
-    let mut result = Vec::new();
+    let mut result: Vec<(Arc<dyn PhysicalExpr>, FieldRef)> = Vec::new();
 
     for table_field in table_fields {
         let Some(input_idx) = input_fields
@@ -72,14 +71,7 @@ fn build_field_exprs(
         let input_field = &input_fields[input_idx];
         let input_expr = get_input_expr(input_idx);
 
-        // PyArrow's pa.json_() is already labelled arrow.json, which is what lance-core wants
-        // to see, so pass it straight through.
-        if is_json_field(table_field) && is_arrow_json_field(input_field) {
-            result.push((input_expr, Arc::clone(input_field) as FieldRef));
-            continue;
-        }
-
-        // Anything else destined for a json column needs its JSON leaves labelled; see
+        // JSON inputs need their leaves labelled with the stored metadata; see
         // `json_write_target`. Structs are excluded because the recursion below rebuilds them
         // field by field, which also handles reordered and partial input.
         if !matches!(table_field.data_type(), DataType::Struct(_))
@@ -299,11 +291,18 @@ fn arrow_json_storage_type(input: &DataType) -> Option<DataType> {
     }
 }
 
-fn arrow_json_field(name: &str, storage: DataType, nullable: bool) -> Field {
-    Field::new(name, storage, nullable).with_metadata(HashMap::from([(
+fn arrow_json_field(table_field: &Field, storage: DataType) -> Field {
+    // Empty extension metadata and absent metadata are distinct to the file
+    // writer. Keep the stored field's metadata while requesting JSONB encoding.
+    let mut metadata = table_field.metadata().clone();
+    metadata.insert(
         ARROW_EXT_NAME_KEY.to_string(),
         ARROW_JSON_EXT_NAME.to_string(),
-    )]))
+    );
+    table_field
+        .clone()
+        .with_data_type(storage)
+        .with_metadata(metadata)
 }
 
 /// Rewrite `table_field` so that every lance.json leaf the input supplies as text becomes an
@@ -320,11 +319,7 @@ fn json_write_target(input_field: &Field, table_field: &Field) -> Option<Field> 
         } else {
             arrow_json_storage_type(input_field.data_type())?
         };
-        return Some(arrow_json_field(
-            table_field.name(),
-            storage,
-            table_field.is_nullable(),
-        ));
+        return Some(arrow_json_field(table_field, storage));
     }
 
     if !has_json_fields(table_field) {
@@ -1007,7 +1002,10 @@ mod tests {
         )]);
 
         let input_item = if input_labelled {
-            Arc::new(arrow_json_field("item", item_type, true))
+            Arc::new(arrow_json_field(
+                &Field::new("item", item_type.clone(), true),
+                item_type,
+            ))
         } else {
             Arc::new(Field::new("item", item_type, true))
         };
