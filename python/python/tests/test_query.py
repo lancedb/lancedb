@@ -594,6 +594,14 @@ def test_vector_query_to_pandas_nested_blob_bytes(tmp_db, rename_parent):
         {"label": "one", "blob": b"one"},
         {"label": "two", "blob": b"two"},
     ]
+    for blob_mode in ("lazy", "descriptions"):
+        descriptors = (
+            table.search([1.0, 0.0])
+            .select(projection)
+            .limit(1)
+            .to_pandas(blob_mode=blob_mode)
+        )
+        assert "_lance_row_id" not in descriptors[parent].iloc[0]["blob"]
 
 
 @pytest.mark.asyncio
