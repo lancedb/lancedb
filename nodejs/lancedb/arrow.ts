@@ -40,7 +40,13 @@ import {
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { typedArrayToArrowType } from "./arrow_type";
-import { coerceBlobValue, isBlobField } from "./blob";
+import {
+  coerceBlobValue,
+  isBlobField,
+  needsBlobResolution,
+  normalizeBlobInput,
+  resolveBlobInput,
+} from "./blob";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import {
   EmbeddingFunctionConfig,
@@ -440,6 +446,18 @@ export function makeArrowTable(
     );
   }
 
+  if (schema !== undefined) {
+    data = mapBlobInputs(data, schema, (value, field, row) => {
+      try {
+        return normalizeBlobInput(value);
+      } catch (e) {
+        throw new Error(
+          `Invalid value for blob field ${field} at row ${row}: ${(e as Error).message}`,
+        );
+      }
+    });
+  }
+
   let schemaMetadata = schema?.metadata || new Map<string, string>();
   if (metadata !== undefined) {
     schemaMetadata = new Map([...schemaMetadata, ...metadata]);
@@ -498,6 +516,124 @@ function containsBlobField(field: Field): boolean {
   }
   return (field.type.children ?? []).some((child: Field) =>
     containsBlobField(child),
+  );
+}
+
+type BlobInputVisitor = (value: unknown, field: string, row: number) => unknown;
+
+/**
+ * Calls `visit` on every value that lands in a blob column of `schema`,
+ * including blobs nested in structs and lists, and replaces it with the
+ * result. Records and arrays are copied only where a value changed, so the
+ * caller's data is never mutated.
+ */
+function mapBlobInputs(
+  data: Array<Record<string, unknown>>,
+  schema: Schema,
+  visit: BlobInputVisitor,
+): Array<Record<string, unknown>> {
+  if (!schema.fields.some(containsBlobField)) {
+    return data;
+  }
+  return data.map((record, row) =>
+    isObject(record)
+      ? mapBlobFields(record, schema.fields, "", row, visit)
+      : record,
+  );
+}
+
+function mapBlobFields(
+  record: Record<string, unknown>,
+  fields: Field[],
+  prefix: string,
+  row: number,
+  visit: BlobInputVisitor,
+): Record<string, unknown> {
+  let out: Record<string, unknown> | undefined;
+  for (const field of fields) {
+    if (!containsBlobField(field) || !(field.name in record)) {
+      continue;
+    }
+    const value = record[field.name];
+    const mapped = mapBlobField(
+      value,
+      field,
+      `${prefix}${field.name}`,
+      row,
+      visit,
+    );
+    if (mapped !== value) {
+      out ??= { ...record };
+      out[field.name] = mapped;
+    }
+  }
+  return out ?? record;
+}
+
+function mapBlobField(
+  value: unknown,
+  field: Field,
+  label: string,
+  row: number,
+  visit: BlobInputVisitor,
+): unknown {
+  if (isBlobField(field)) {
+    return visit(value, label, row);
+  }
+  if (field.type instanceof Struct && isObject(value)) {
+    return mapBlobFields(value, field.type.children, `${label}.`, row, visit);
+  }
+  if (isList(field.type) && Array.isArray(value)) {
+    const child = field.type.children[0];
+    let out: unknown[] | undefined;
+    for (const [index, element] of value.entries()) {
+      const mapped = mapBlobField(
+        element,
+        child,
+        `${label}[${index}]`,
+        row,
+        visit,
+      );
+      if (mapped !== element) {
+        out ??= [...value];
+        out[index] = mapped;
+      }
+    }
+    return out ?? value;
+  }
+  return value;
+}
+
+/**
+ * Reads `Blob` / `File` values in the blob columns of `schema` into bytes so
+ * the synchronous conversion in {@link makeArrowTable} can accept them.
+ * Returns `data` itself when there is nothing to read.
+ */
+export async function resolveBlobInputs(
+  data: Array<Record<string, unknown>>,
+  schema?: SchemaLike,
+): Promise<Array<Record<string, unknown>>> {
+  if (schema === undefined || schema === null) {
+    return data;
+  }
+  const sanitized = sanitizeSchema(schema);
+  const pending = new Map<unknown, Promise<unknown>>();
+  mapBlobInputs(data, sanitized, (value) => {
+    if (needsBlobResolution(value) && !pending.has(value)) {
+      pending.set(value, resolveBlobInput(value));
+    }
+    return value;
+  });
+  if (pending.size === 0) {
+    return data;
+  }
+  const resolved = new Map(
+    await Promise.all(
+      [...pending].map(async ([value, bytes]) => [value, await bytes] as const),
+    ),
+  );
+  return mapBlobInputs(data, sanitized, (value) =>
+    resolved.has(value) ? resolved.get(value) : value,
   );
 }
 
@@ -1003,6 +1139,11 @@ export async function convertToTable(
       makeTableOptions.schema as Schema,
     );
   }
+
+  processedData = await resolveBlobInputs(
+    processedData,
+    makeTableOptions?.schema,
+  );
 
   const table = makeArrowTable(processedData, makeTableOptions);
   return await applyEmbeddings(table, embeddings, makeTableOptions?.schema);
