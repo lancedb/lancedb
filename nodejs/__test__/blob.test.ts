@@ -190,7 +190,7 @@ describe("makeArrowTable blob columns", () => {
     ["ArrayBuffer", new Uint8Array([104, 105]).buffer, "hi", null],
     [
       "data struct with ArrayBuffer",
-      { data: Buffer.from("hi").buffer },
+      { data: new Uint8Array([104, 105]).buffer },
       "hi",
       null,
     ],
