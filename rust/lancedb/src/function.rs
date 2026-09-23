@@ -187,6 +187,11 @@ pub struct FunctionOutput {
 pub struct FunctionSignature {
     pub inputs: Vec<FunctionParameter>,
     pub output: FunctionOutput,
+    /// Ordered fields of the single initialization row a Function instance is
+    /// created with. Each binding supplies its own values; they are not part
+    /// of the Function version. Empty when the Function takes none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initialization: Vec<FunctionParameter>,
 }
 
 /// One Python environment source.
@@ -579,6 +584,13 @@ pub struct FunctionApplication {
     output: FunctionOutput,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     columns: BTreeMap<String, String>,
+    /// Initialization values for this binding, by initialization field name.
+    /// The service validates them against the Function's initialization
+    /// schema and persists the resulting Arrow row in the binding; this JSON
+    /// is transport only and never hashed into an identity, so floating-point
+    /// values are accepted here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    initialization: BTreeMap<String, Value>,
     #[serde(default, flatten, skip_serializing)]
     unknown_fields: BTreeMap<String, Value>,
     #[serde(default, skip)]
@@ -600,6 +612,11 @@ impl FunctionApplication {
 
     pub fn columns(&self) -> &BTreeMap<String, String> {
         &self.columns
+    }
+
+    /// Initialization values supplied by this application, by field name.
+    pub fn initialization(&self) -> &BTreeMap<String, Value> {
+        &self.initialization
     }
     /// Whether a newer writer attached application fields this client cannot
     /// validate. Such applications remain readable but must not be declared.
@@ -677,6 +694,11 @@ pub struct FunctionBinding {
     /// Exact physical Arrow schema of the binding's table outputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_schema: Option<Value>,
+    /// Standard base64 of the one-row Arrow IPC stream every instance of this
+    /// binding is created with, already validated against the Function's
+    /// initialization schema. Absent when the Function takes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initialization: Option<String>,
 }
 
 impl FunctionBinding {
@@ -706,6 +728,11 @@ impl FunctionBinding {
 
     pub fn output_schema(&self) -> Option<&Value> {
         self.output_schema.as_ref()
+    }
+
+    /// Base64 one-row Arrow IPC initialization stream, if the Function takes one.
+    pub fn initialization(&self) -> Option<&str> {
+        self.initialization.as_deref()
     }
 }
 
@@ -962,6 +989,66 @@ mod tests {
         ] {
             validate_literal(&value).expect("non-float literals are canonical");
         }
+    }
+
+    /// A Function without initialization keeps its pre-initialization wire
+    /// form, so existing signatures and applications encode byte-identically.
+    #[test]
+    fn empty_initialization_is_omitted_from_the_wire() {
+        let signature: FunctionSignature = serde_json::from_str(
+            r#"{"inputs":[{"name":"x","arrow_type":"int64","nullable":true}],"output":{"kind":"scalar","arrow_type":"int64","nullable":false}}"#,
+        )
+        .unwrap();
+        assert!(signature.initialization.is_empty());
+        assert!(
+            !canonical_json(&signature)
+                .unwrap()
+                .contains("initialization")
+        );
+
+        let signature: FunctionSignature = serde_json::from_str(
+            r#"{"inputs":[],"output":{"kind":"scalar","arrow_type":"int64","nullable":false},"initialization":[{"name":"factor","arrow_type":"float64","nullable":false}]}"#,
+        )
+        .unwrap();
+        assert_eq!(signature.initialization[0].name, "factor");
+        assert!(
+            canonical_json(&signature)
+                .unwrap()
+                .contains(r#""initialization":[{"#)
+        );
+    }
+
+    /// Initialization values are transport JSON, validated and re-encoded as
+    /// Arrow by the service, so floats are accepted there while column-input
+    /// literals keep the Slice 1 domain.
+    #[test]
+    fn application_initialization_accepts_floats() {
+        let application = FunctionApplication::from_json(
+            r#"{"function":{"name":"scale","object_id":"o","location":"l","version":"1","manifest_digest":"sha256:x"},"inputs":[{"parameter":"x","kind":"column","value":{"path":"x"}}],"output":{"kind":"scalar","arrow_type":"float64","nullable":false},"initialization":{"factor":2.5,"label":"fast"}}"#,
+        )
+        .unwrap();
+        assert!(!application.has_unknown_fields());
+        assert_eq!(
+            application.initialization()["factor"],
+            serde_json::json!(2.5)
+        );
+        let encoded = application.to_canonical_json().unwrap();
+        assert!(encoded.contains(r#""initialization":{"factor":2.5,"label":"fast"}"#));
+    }
+
+    #[test]
+    fn binding_initialization_round_trips() {
+        let binding = FunctionBinding::from_json(
+            r#"{"binding_id":"fb_1","function":{"name":"scale","object_id":"o","location":"l","version":"1","manifest_digest":"sha256:x"},"inputs":[],"outputs":[],"initialization":"QUJD"}"#,
+        )
+        .unwrap();
+        assert_eq!(binding.initialization(), Some("QUJD"));
+        assert!(
+            binding
+                .to_canonical_json()
+                .unwrap()
+                .ends_with(r#""initialization":"QUJD","inputs":[],"outputs":[]}"#)
+        );
     }
 
     /// Unknown keys are how a newer server's payload reaches an older client,
