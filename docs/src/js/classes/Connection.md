@@ -319,6 +319,38 @@ Creates a new Table and initialize it with new data.
 
 ***
 
+### createView()
+
+```ts
+abstract createView(
+   name,
+   query,
+   namespacePath?): Promise<ViewDescription>
+```
+
+Create a view: a named query the database plans on every read.
+
+The query is planned once, at creation, so one that cannot be planned is
+rejected now rather than at the first read. A view holds no rows, and its
+readers see its sources as they are at read time.
+
+There is no replace: a name already taken is an error, and changing a
+view is a drop followed by a create.
+
+#### Parameters
+
+* **name**: `string`
+
+* **query**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
+
+***
+
 ### describeNamespace()
 
 ```ts
@@ -339,6 +371,27 @@ Describe a namespace, returning its properties.
 
 The namespace's properties
   (may be undefined if the namespace has none).
+
+***
+
+### describeView()
+
+```ts
+abstract describeView(name, namespacePath?): Promise<ViewDescription>
+```
+
+What this database records about the view named `name`: its defining
+query and the schema that query resolved to.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
 
 ***
 
@@ -498,6 +551,28 @@ on the returned job to know when cleanup has finished.
 
 ***
 
+### dropView()
+
+```ts
+abstract dropView(name, namespacePath?): Promise<void>
+```
+
+Drop the view named `name`.
+
+The tables it reads are untouched: a view holds no rows of its own.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### isOpen()
 
 ```ts
@@ -633,6 +708,26 @@ List a page of the tables in this database.
 
 A page of table names and an
   optional token for the tables after it.
+
+***
+
+### listViews()
+
+```ts
+abstract listViews(namespacePath?): Promise<string[]>
+```
+
+The names of the views in one namespace.
+
+Names only; a definition comes from [describeView](Connection.md#describeview).
+
+#### Parameters
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
 
 ***
 

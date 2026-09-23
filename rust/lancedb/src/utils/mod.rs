@@ -174,6 +174,27 @@ pub fn validate_secret_reference(name: &str, namespace_path: &[String]) -> Resul
     validate_secret_component("Secret name", name)
 }
 
+/// Validate a view name and every segment of the namespace path holding it.
+///
+/// Worded for a view rather than deferring to [`validate_table_name`]: a view
+/// is not a table, and a caller who mistypes one should not be told their
+/// table name is invalid. The rule is the same one every object name follows,
+/// which is what lets the `$`-joined identifier split back apart.
+pub fn validate_view_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    for segment in namespace_path {
+        validate_view_component("view namespace path segment", segment)?;
+    }
+    validate_view_component("view name", name)
+}
+
+/// Validate one component of a view identifier: a view name, or one segment of
+/// the namespace path holding it.
+pub fn validate_view_component(what: &str, value: &str) -> Result<()> {
+    check_object_name(value).map_err(|reason| Error::InvalidInput {
+        message: format!("invalid {what} '{value}': {reason}"),
+    })
+}
+
 /// Validate all components of a namespace
 ///
 /// Iterates through all namespace components and validates each one.

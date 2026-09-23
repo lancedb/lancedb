@@ -149,6 +149,7 @@
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [UpdateResult](interfaces/UpdateResult.md)
 - [Version](interfaces/Version.md)
+- [ViewDescription](interfaces/ViewDescription.md)
 - [WriteExecutionOptions](interfaces/WriteExecutionOptions.md)
 - [WriteProgress](interfaces/WriteProgress.md)
 

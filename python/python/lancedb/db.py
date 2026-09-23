@@ -75,6 +75,7 @@ from .util import (
     get_uri_scheme,
     validate_table_name,
 )
+from .view import ViewDescription
 
 import deprecation
 
@@ -94,6 +95,28 @@ from .namespace_utils import (
     _normalize_drop_namespace_mode,
     _normalize_drop_namespace_behavior,
 )
+
+
+def _view_description(
+    described: Tuple[str, List[str], str, str, List[str], "pa.Schema"],
+) -> ViewDescription:
+    """Name the fields the binding returns positionally."""
+    (
+        name,
+        namespace_path,
+        query,
+        default_database,
+        default_namespace_path,
+        schema,
+    ) = described
+    return ViewDescription(
+        name=name,
+        query=query,
+        default_database=default_database,
+        schema=schema,
+        namespace_path=namespace_path,
+        default_namespace_path=default_namespace_path,
+    )
 
 
 class DBConnection(EnforceOverrides):
@@ -918,6 +941,68 @@ class DBConnection(EnforceOverrides):
             "Secret operations are not supported for this connection type"
         )
 
+    def create_view(
+        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        """Create a view: a named query the database plans on every read.
+
+        The query is planned once, at creation, so one that cannot be planned
+        is refused now rather than at the first read. A view holds no rows, and
+        its readers see its sources as they are at read time.
+
+        There is no replace: a name already taken is an error, and changing a
+        view is a drop followed by a create. Local connections raise
+        ``NotImplementedError``.
+
+        >>> import lancedb
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> view = db.create_view(
+        ...     "adults", "SELECT name FROM people WHERE age >= 18"
+        ... )  # doctest: +SKIP
+        >>> view.schema  # doctest: +SKIP
+        name: string
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def describe_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        """What this database records about a view: its defining query and the
+        schema that query resolved to.
+
+        The schema is the one recorded at creation; a source altered since then
+        shows up when the view is read. Local connections raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a view.
+
+        The tables it reads are untouched: a view holds no rows of its own.
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        """The names of the views in one namespace.
+
+        Names only; a definition comes from
+        [describe_view][lancedb.db.DBConnection.describe_view]. Local
+        connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
     def open_job(self, job_id: str) -> Job:
         """Open a server-side job by id, returning a handle with its record
         already populated.
@@ -1730,6 +1815,30 @@ class LanceDBConnection(DBConnection):
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> SecretInfo:
         return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
+
+    @override
+    def create_view(
+        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        return LOOP.run(
+            self._conn.create_view(name, query, namespace_path=namespace_path)
+        )
+
+    @override
+    def describe_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        return LOOP.run(self._conn.describe_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
+
+    @override
+    def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -2688,6 +2797,38 @@ class AsyncConnection(object):
             created_at_millis=created_at_millis,
             updated_at_millis=updated_at_millis,
         )
+
+    async def create_view(
+        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        """Create a view: a named query the database plans on every read.
+
+        See
+        [DBConnection.create_view][lancedb.DBConnection.create_view].
+        """
+        return _view_description(
+            await self._inner.create_view(name, query, list(namespace_path or []))
+        )
+
+    async def describe_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        """What this database records about a view: query and schema."""
+        return _view_description(
+            await self._inner.describe_view(name, list(namespace_path or []))
+        )
+
+    async def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a view. The tables it reads are untouched."""
+        await self._inner.drop_view(name, list(namespace_path or []))
+
+    async def list_views(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the views in one namespace."""
+        return await self._inner.list_views(list(namespace_path or []))
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""

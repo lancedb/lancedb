@@ -2747,3 +2747,57 @@ def test_remote_job_handle_reports_its_own_detail():
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+
+def test_view_crud_addresses_its_own_routes():
+    # The view verbs are their own routes, and the schema comes back in the
+    # namespace spec's JSON encoding, decoded into a pyarrow schema.
+    paths = []
+
+    def handler(request):
+        paths.append((request.command, request.path))
+        if request.path.endswith("/view/list"):
+            body = {"views": ["adults"]}
+        elif request.path.endswith("/drop"):
+            body = {}
+        else:
+            body = {
+                "name": "adults",
+                "namespace": ["analytics"],
+                "query": "SELECT name FROM people",
+                "default_database": "dev",
+                "default_namespace": ["analytics"],
+                "schema": {
+                    "fields": [
+                        {"name": "name", "nullable": True, "type": {"type": "utf8"}}
+                    ]
+                },
+            }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(body).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        view = db.create_view(
+            "adults", "SELECT name FROM people", namespace_path=["analytics"]
+        )
+        assert view.name == "adults"
+        assert view.namespace_path == ["analytics"]
+        assert view.query == "SELECT name FROM people"
+        assert view.default_database == "dev"
+        assert view.default_namespace_path == ["analytics"]
+        assert view.schema == pa.schema([pa.field("name", pa.utf8(), nullable=True)])
+
+        described = db.describe_view("adults", namespace_path=["analytics"])
+        assert described.schema == view.schema
+
+        assert db.list_views(namespace_path=["analytics"]) == ["adults"]
+        db.drop_view("adults", namespace_path=["analytics"])
+
+    assert paths == [
+        ("POST", "/v1/view/analytics$adults/create"),
+        ("POST", "/v1/view/analytics$adults/describe"),
+        ("GET", "/v1/namespace/analytics/view/list"),
+        ("POST", "/v1/view/analytics$adults/drop"),
+    ]
