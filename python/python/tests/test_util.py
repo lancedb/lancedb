@@ -922,6 +922,39 @@ def test_cast_to_target_schema_coerces_binary_to_blob_v2():
     ]
 
 
+@pytest.mark.parametrize(
+    "string_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_cast_to_target_schema_coerces_string_to_blob_v2_uri(string_type):
+    data = pa.table({"image": pa.array(["file:///payload", None], type=string_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.to_pylist() == [
+        {"data": None, "uri": "file:///payload", "position": None, "size": None},
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "source_type, value",
+    [
+        (pa.binary(4), b"abcd"),
+        (pa.list_(pa.uint8()), [1, 2]),
+        (pa.int64(), 42),
+    ],
+)
+def test_cast_to_target_schema_rejects_unsupported_blob_input(source_type, value):
+    data = pa.table({"image": pa.array([value], type=source_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    with pytest.raises(ValueError, match="cannot coerce column 'image' with type"):
+        _cast_to_target_schema(data.to_reader(), target)
+
+
 def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
     storage = lancedb.blob("image").type.storage_type
     target = pa.schema(
