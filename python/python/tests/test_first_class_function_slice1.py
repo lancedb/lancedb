@@ -169,7 +169,7 @@ def test_function_version_binding_validates_names_and_direct_columns():
 
     with pytest.raises(TypeError, match=r"missing inputs: \['text'\]"):
         version()
-    with pytest.raises(TypeError, match=r"unknown inputs: \['body'\]"):
+    with pytest.raises(TypeError, match=r"unknown arguments: \['body'\]"):
         version(text=col("text"), body=col("body"))
     with pytest.raises(TypeError, match="direct col"):
         version(text=col("text").lower())
