@@ -2624,6 +2624,26 @@ def test_remote_connection_jobs_surface():
             request.send_header("Content-Type", "application/json")
             request.end_headers()
             request.wfile.write(b'{"job_id": "job-1"}')
+        elif request.path == "/v1/jobs/pause":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-1", "paused": true}')
+        elif request.path == "/v1/jobs/resume":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                b'{"job_id": "job-1", "resumed": false, "still_pausing": true}'
+            )
         elif request.path == "/v1/jobs/query_events":
             query_events_payloads.append(payload)
             request.send_response(200)
@@ -2643,6 +2663,9 @@ def test_remote_connection_jobs_surface():
 
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
+
+        assert db.pause_job("job-1") == "pausing"
+        assert db.resume_job("job-1") == "still_pausing"
 
         # Opening a job hands back a populated handle; a missing one fails.
         with pytest.raises(JobNotFoundError, match="missing"):
