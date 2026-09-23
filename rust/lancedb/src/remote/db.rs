@@ -4073,9 +4073,14 @@ mod tests {
             ("", vec![]),
             ("..", vec![]),
         ] {
+            let error = match conn.describe_view(name, &namespace).await {
+                Ok(_) => panic!("accepted {name:?} in {namespace:?}"),
+                Err(error) => error.to_string(),
+            };
+            // A view is not a table, so the refusal says so.
             assert!(
-                conn.describe_view(name, &namespace).await.is_err(),
-                "accepted {name:?} in {namespace:?}"
+                error.contains("view name") || error.contains("view namespace path segment"),
+                "{error}"
             );
         }
     }

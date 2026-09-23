@@ -38,7 +38,8 @@ use crate::remote::{
 };
 use crate::secrets::SecretInfo;
 use crate::utils::{
-    validate_namespace, validate_secret_component, validate_secret_reference, validate_table_name,
+    validate_namespace, validate_secret_component, validate_secret_reference,
+    validate_view_reference,
 };
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
@@ -414,16 +415,6 @@ impl CloneTableBuilder {
         let table = parent.clone_table(self.request).await?;
         Ok(Table::new(table, parent))
     }
-}
-
-/// Validate a view name and every segment of the namespace path holding it.
-///
-/// A view is addressed by the two joined into one identifier, so a segment
-/// carrying the delimiter would split back apart as a different view. Neither
-/// name accepts one, which is what lets the join have one meaning.
-fn validate_view_reference(name: &str, namespace_path: &[String]) -> Result<()> {
-    validate_namespace(namespace_path)?;
-    validate_table_name(name)
 }
 
 /// A connection to LanceDB
