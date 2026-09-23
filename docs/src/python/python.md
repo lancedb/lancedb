@@ -323,6 +323,10 @@ still work. Queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
 
+Blobs inside lists can be written and queried as descriptors. They are omitted
+from `blob_columns()` because row ids do not identify individual list elements,
+so the fetch APIs cannot read their bytes yet.
+
 ::: lancedb.blob
 
 ::: lancedb._blob.BlobFile

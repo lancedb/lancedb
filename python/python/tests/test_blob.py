@@ -660,12 +660,18 @@ def test_merge_insert_list_blob_dicts():
 
 def test_list_blob_column_queries_as_raw_descriptors():
     table = _list_blob_table("list_query")
+    assert table.blob_columns() == []
     hits = table.search().limit(10).to_arrow()
     element = hits.schema.field("images").type.value_type
     assert pa.types.is_struct(element)
     assert "_lance_row_id" not in element.names
-    with pytest.raises(ValueError, match="expected struct before segment"):
-        table.fetch_blobs("images.image", [0])
+    for column in ("images", "images.image"):
+        with pytest.raises(ValueError, match="blobs inside lists cannot be fetched"):
+            table.fetch_blobs(column, [0])
+        with pytest.raises(ValueError, match="blobs inside lists cannot be fetched"):
+            table.fetch_blob_files(column, [0])
+        with pytest.raises(ValueError, match="blobs inside lists cannot be fetched"):
+            table.fetch_blob_ranges(column, [(0, 0, 1)])
 
 
 def test_row_addressable_paths_exclude_list_children():

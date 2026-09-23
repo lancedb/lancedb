@@ -14,6 +14,8 @@ Declares a `lance.blob.v2` column.
 
 Query results are descriptors, not payload bytes. Use [Table.fetchBlobs](../classes/Table.md#fetchblobs)
 or [Table.fetchBlobFiles](../classes/Table.md#fetchblobfiles) to read bytes.
+Blobs inside lists can be written and queried as descriptors, but cannot
+currently be fetched because a row ID does not identify a list element.
 
 ## Parameters
 
