@@ -967,6 +967,9 @@ async def test_async_fetch_blob_files_lazy_read():
     handles = await table.fetch_blob_files("image", hits)
     assert len(handles) == 1
     assert await handles[0].aread() == payload
+    handles[0].close()
+    with pytest.raises(ValueError, match="read of closed file"):
+        await handles[0].aread()
 
 
 def test_fetch_blobs_from_query_result_without_row_id_raises():
@@ -1100,6 +1103,49 @@ def test_blob_file_seek_read_and_read_range():
 
     with pytest.raises(ValueError, match="whence"):
         handle.seek(0, 99)
+
+
+def test_blob_file_matches_file_error_and_range_contract():
+    payload = b"abcdef"
+    table = _blob_table("file_contract", [{"id": 1, "image": payload}])
+    row_id = _row_ids_by_id(table)[1]
+    handle = table.fetch_blob_files("image", [row_id])[0]
+
+    handle.seek(2)
+    for offset, whence in [(-1, io.SEEK_SET), (-3, io.SEEK_CUR), (-7, io.SEEK_END)]:
+        with pytest.raises(ValueError, match="negative seek value -1"):
+            handle.seek(offset, whence)
+        assert handle.tell() == 2
+
+    assert handle.read(None) == payload[2:]
+    handle.seek(2)
+    assert handle.read1(2) == payload[2:4]
+    assert handle.read1() == payload[4:]
+    handle.seek(2)
+    assert handle.read_ranges([(0, 2), (4, 2), (2, 0)]) == [b"ab", b"ef", b""]
+    assert handle.tell() == 2
+
+    with pytest.raises(ValueError):
+        handle.read_range(5, 2)
+    with pytest.raises(ValueError):
+        handle.read_ranges([(0, 1), (5, 2)])
+    assert handle.tell() == 2
+
+    handle.close()
+    with pytest.raises(ValueError, match="read of closed file"):
+        handle.read(1)
+    with pytest.raises(ValueError, match="read of closed file"):
+        handle.read(None)
+    with pytest.raises(ValueError, match="read of closed file"):
+        handle.read1(1)
+    with pytest.raises(ValueError, match="read of closed file"):
+        handle.readall()
+    with pytest.raises(ValueError, match="readinto of closed file"):
+        handle.readinto(bytearray(1))
+    with pytest.raises(ValueError):
+        handle.read_range(0, 1)
+    with pytest.raises(ValueError):
+        handle.read_ranges([])
 
 
 def test_fetch_blob_files_from_query_partial_read():

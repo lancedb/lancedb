@@ -682,6 +682,14 @@ pub struct PyBlobFile {
     inner: Arc<BlobFile>,
 }
 
+fn blob_file_error(operation: &str, error: lance_core::Error) -> pyo3::PyErr {
+    let message = format!("blob {operation} failed: {error}");
+    match error {
+        lance_core::Error::InvalidInput { .. } => PyValueError::new_err(message),
+        _ => PyRuntimeError::new_err(message),
+    }
+}
+
 #[pymethods]
 impl PyBlobFile {
     fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
@@ -689,17 +697,14 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+            .map_err(|e| blob_file_error("read", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 
     pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let bytes = inner
-                .read()
-                .await
-                .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+            let bytes = inner.read().await.map_err(|e| blob_file_error("read", e))?;
             Python::attach(|py| Ok(PyBytes::new(py, bytes.as_ref()).unbind()))
         })
     }
@@ -709,7 +714,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.close().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob close failed: {e}")))
+            .map_err(|e| blob_file_error("close", e))
     }
 
     fn is_closed(self_: PyRef<'_, Self>) -> bool {
@@ -724,7 +729,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.seek(position).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob seek failed: {e}")))
+            .map_err(|e| blob_file_error("seek", e))
     }
 
     fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
@@ -732,7 +737,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.tell().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob tell failed: {e}")))
+            .map_err(|e| blob_file_error("tell", e))
     }
 
     fn size(self_: PyRef<'_, Self>) -> u64 {
@@ -748,8 +753,30 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read_range(offset..end).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read_range failed: {e}")))?;
+            .map_err(|e| blob_file_error("read_range", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
+    }
+
+    /// Read blob-local byte ranges without moving the cursor.
+    fn read_ranges(self_: PyRef<'_, Self>, ranges: Vec<(u64, u64)>) -> PyResult<Vec<Py<PyBytes>>> {
+        let ranges = ranges
+            .into_iter()
+            .map(|(offset, length)| {
+                offset
+                    .checked_add(length)
+                    .map(|end| offset..end)
+                    .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let inner = self_.inner.clone();
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read_ranges(&ranges).await }))
+            .map_err(|e| blob_file_error("read_ranges", e))?;
+        Ok(bytes
+            .iter()
+            .map(|bytes| PyBytes::new(py, bytes.as_ref()).unbind())
+            .collect())
     }
 
     fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
@@ -757,7 +784,7 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read_up_to(length).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read_up_to failed: {e}")))?;
+            .map_err(|e| blob_file_error("read_up_to", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 }

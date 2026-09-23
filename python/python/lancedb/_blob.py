@@ -33,14 +33,17 @@ FetchBlobsAsync = Callable[[str, pa.Table], Awaitable[pa.Array | pa.ChunkedArray
 class BlobFile(io.RawIOBase):
     """Seekable lazy handle from :meth:`~lancedb.table.Table.fetch_blob_files`.
 
-    Bytes load on ``read`` or ``read_range``, not when the handle is opened.
-    Use :meth:`aread` from async code.
+    Bytes load on ``read``, ``read1``, ``read_range``, or ``read_ranges``, not
+    when the handle is opened. Range reads leave the cursor unchanged. Use
+    :meth:`aread` from async code.
     """
 
     def __init__(self, inner) -> None:
         self._inner = inner
 
     async def aread(self) -> bytes:
+        if self.closed:
+            raise ValueError("read of closed file")
         return await self._inner.read()
 
     def close(self) -> None:
@@ -58,13 +61,16 @@ class BlobFile(io.RawIOBase):
 
     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
         if whence == io.SEEK_SET:
-            self._inner.seek(offset)
+            position = offset
         elif whence == io.SEEK_CUR:
-            self._inner.seek(self._inner.tell() + offset)
+            position = self._inner.tell() + offset
         elif whence == io.SEEK_END:
-            self._inner.seek(self._inner.size() + offset)
+            position = self._inner.size() + offset
         else:
             raise ValueError(f"invalid whence: {whence}")
+        if position < 0:
+            raise ValueError(f"negative seek value {position}")
+        self._inner.seek(position)
         return self._inner.tell()
 
     def tell(self) -> int:
@@ -74,17 +80,39 @@ class BlobFile(io.RawIOBase):
         return self._inner.size()
 
     def readall(self) -> bytes:
+        if self.closed:
+            raise ValueError("read of closed file")
         return self._inner.read_bytes()
 
-    def read(self, size: int = -1) -> bytes:
-        if size == -1:
+    def read(self, size: Optional[int] = -1) -> bytes:
+        if self.closed:
+            raise ValueError("read of closed file")
+        if size is None or size < 0:
             return self._inner.read_bytes()
         return super().read(size)
 
+    def read1(self, size: Optional[int] = -1) -> bytes:
+        """Read up to ``size`` bytes with one underlying read."""
+        if self.closed:
+            raise ValueError("read of closed file")
+        if size is None or size < 0:
+            size = io.DEFAULT_BUFFER_SIZE
+        return self._inner.read_up_to(size)
+
     def read_range(self, offset: int, length: int) -> bytes:
+        if self.closed:
+            raise ValueError("read of closed file")
         return self._inner.read_range(offset, length)
 
+    def read_ranges(self, ranges: list[tuple[int, int]]) -> list[bytes]:
+        """Read ``(offset, length)`` pairs without moving the cursor."""
+        if self.closed:
+            raise ValueError("read of closed file")
+        return self._inner.read_ranges(ranges)
+
     def readinto(self, b: WriteableBuffer) -> int:
+        if self.closed:
+            raise ValueError("readinto of closed file")
         view = memoryview(b).cast("B")
         chunk = self._inner.read_up_to(len(view))
         view[: len(chunk)] = chunk

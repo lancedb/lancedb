@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import timedelta
 import http.server
+import io
 import json
 import multiprocessing as mp
 import pickle
@@ -2470,6 +2471,28 @@ def test_remote_blob_files_are_lazy_seekable_handles():
         assert alpha.read_range(1, 3) == b"lph"
         gamma.seek(2)
         assert gamma.read() == b"mma"
+
+
+def test_remote_blob_file_matches_file_error_and_range_contract():
+    with blob_remote_table() as table:
+        handle = table.fetch_blob_files("image", [10])[0]
+        handle.seek(2)
+
+        with pytest.raises(ValueError, match="negative seek value -1"):
+            handle.seek(-3, io.SEEK_CUR)
+        assert handle.tell() == 2
+        assert handle.read(None) == b"pha"
+
+        handle.seek(2)
+        assert handle.read1(2) == b"ph"
+        assert handle.read_ranges([(0, 2), (3, 2)]) == [b"al", b"ha"]
+        assert handle.tell() == 4
+        with pytest.raises(ValueError):
+            handle.read_range(4, 2)
+
+        handle.close()
+        with pytest.raises(ValueError, match="read of closed file"):
+            handle.read(1)
 
 
 def test_remote_blob_fetch_accepts_query_table():
