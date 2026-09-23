@@ -9,16 +9,21 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use arrow_array::{Array, BooleanArray, RecordBatch};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, FixedSizeListArray, LargeListArray, ListArray, RecordBatch,
+};
+use arrow_cast::cast;
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
 use arrow_select::nullif::nullif;
 use datafusion::functions::core::{get_field, named_struct};
-use datafusion_common::ScalarValue;
 use datafusion_common::config::ConfigOptions;
+use datafusion_common::{DataFusionError, ScalarValue};
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::ScalarFunctionExpr;
 use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::PhysicalExpr;
+use datafusion_physical_plan::expressions::Column;
+use lance_arrow::FieldExt;
 
 use crate::error::{Error, Result};
 
@@ -157,6 +162,195 @@ pub(super) fn coerce_blob_expr(
     Ok((expr, table_field.clone()))
 }
 
+/// Apply the normal blob coercion to list values while retaining the list's
+/// offsets and validity. A child batch lets the existing blob expression handle
+/// binary, null, and descriptor inputs exactly as it does for top-level fields.
+pub(super) fn coerce_blob_list_expr(
+    input_expr: Arc<dyn PhysicalExpr>,
+    input_field: &Field,
+    table_field: &FieldRef,
+    config: &Arc<ConfigOptions>,
+) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>> {
+    let (DataType::List(input_item)
+    | DataType::LargeList(input_item)
+    | DataType::FixedSizeList(input_item, _)) = input_field.data_type()
+    else {
+        return Ok(None);
+    };
+    let (DataType::List(table_item)
+    | DataType::LargeList(table_item)
+    | DataType::FixedSizeList(table_item, _)) = table_field.data_type()
+    else {
+        return Ok(None);
+    };
+    if !table_item.is_blob_v2() || input_item == table_item {
+        return Ok(None);
+    }
+
+    let (item_expr, _) = coerce_blob_expr(
+        Arc::new(Column::new(input_item.name(), 0)),
+        input_item,
+        table_item,
+        config,
+    )?;
+    let expr: Arc<dyn PhysicalExpr> = Arc::new(CoerceBlobList {
+        source: input_expr,
+        input_item: input_item.clone(),
+        item_expr,
+        field: table_field.clone(),
+    });
+    Ok(Some((expr, table_field.clone())))
+}
+
+#[derive(Debug, Clone)]
+struct CoerceBlobList {
+    source: Arc<dyn PhysicalExpr>,
+    input_item: FieldRef,
+    item_expr: Arc<dyn PhysicalExpr>,
+    field: FieldRef,
+}
+
+impl fmt::Display for CoerceBlobList {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "coerce_blob_list({})", self.source)
+    }
+}
+
+impl PartialEq for CoerceBlobList {
+    fn eq(&self, other: &Self) -> bool {
+        self.source.eq(&other.source)
+            && self.input_item == other.input_item
+            && self.item_expr.eq(&other.item_expr)
+            && self.field == other.field
+    }
+}
+
+impl Eq for CoerceBlobList {}
+
+impl Hash for CoerceBlobList {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.source.hash(state);
+        self.input_item.hash(state);
+        self.item_expr.hash(state);
+        self.field.hash(state);
+    }
+}
+
+impl PhysicalExpr for CoerceBlobList {
+    fn return_field(&self, _input_schema: &Schema) -> datafusion_common::Result<FieldRef> {
+        Ok(self.field.clone())
+    }
+
+    fn nullable(&self, _input_schema: &Schema) -> datafusion_common::Result<bool> {
+        Ok(self.field.is_nullable())
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+        let source = self.source.evaluate(batch)?.into_array(batch.num_rows())?;
+        // First convert the outer list kind, if needed, while keeping its binary
+        // item type. PyArrow commonly infers List even for a LargeList column.
+        let intermediate_type = match self.field.data_type() {
+            DataType::List(_) => DataType::List(self.input_item.clone()),
+            DataType::LargeList(_) => DataType::LargeList(self.input_item.clone()),
+            DataType::FixedSizeList(_, size) => {
+                DataType::FixedSizeList(self.input_item.clone(), *size)
+            }
+            _ => unreachable!("validated list type when building the expression"),
+        };
+        let source = if source.data_type() == &intermediate_type {
+            source
+        } else {
+            cast(source.as_ref(), &intermediate_type)?
+        };
+        let values = match source.data_type() {
+            DataType::List(_) => source
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap()
+                .values(),
+            DataType::LargeList(_) => source
+                .as_any()
+                .downcast_ref::<LargeListArray>()
+                .unwrap()
+                .values(),
+            DataType::FixedSizeList(_, _) => source
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .unwrap()
+                .values(),
+            other => {
+                return Err(DataFusionError::Internal(format!(
+                    "coerce_blob_list expected a list, got {other}"
+                )));
+            }
+        };
+        let item_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![self.input_item.clone()])),
+            vec![values.clone()],
+        )?;
+        let coerced = self
+            .item_expr
+            .evaluate(&item_batch)?
+            .into_array(values.len())?;
+
+        let rebuilt: ArrayRef = match (source.data_type(), self.field.data_type()) {
+            (DataType::List(_), DataType::List(item)) => {
+                let list = source.as_any().downcast_ref::<ListArray>().unwrap();
+                Arc::new(ListArray::try_new(
+                    item.clone(),
+                    list.offsets().clone(),
+                    coerced,
+                    list.nulls().cloned(),
+                )?)
+            }
+            (DataType::LargeList(_), DataType::LargeList(item)) => {
+                let list = source.as_any().downcast_ref::<LargeListArray>().unwrap();
+                Arc::new(LargeListArray::try_new(
+                    item.clone(),
+                    list.offsets().clone(),
+                    coerced,
+                    list.nulls().cloned(),
+                )?)
+            }
+            (DataType::FixedSizeList(_, _), DataType::FixedSizeList(item, size)) => {
+                let list = source
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .unwrap();
+                Arc::new(FixedSizeListArray::try_new_with_length(
+                    item.clone(),
+                    *size,
+                    coerced,
+                    list.nulls().cloned(),
+                    list.len(),
+                )?)
+            }
+            _ => unreachable!("validated list types when building the expression"),
+        };
+        Ok(ColumnarValue::Array(rebuilt))
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.source]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+        Ok(Arc::new(Self {
+            source: children[0].clone(),
+            input_item: self.input_item.clone(),
+            item_expr: self.item_expr.clone(),
+            field: self.field.clone(),
+        }))
+    }
+
+    fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
 /// Carries the source column's nullity onto the struct built for it.
 ///
 /// This is its own expression rather than a `CASE` because the projection
@@ -253,9 +447,11 @@ mod tests {
     use super::*;
     use crate::blob::blob;
     use arrow_array::{
-        Array, ArrayRef, BinaryArray, BinaryViewArray, Int32Array, Int64Array, LargeBinaryArray,
-        NullArray, RecordBatch, StringArray, StringViewArray, StructArray, UInt8Array, UInt64Array,
+        Array, ArrayRef, BinaryArray, BinaryViewArray, FixedSizeListArray, Int32Array, Int64Array,
+        LargeBinaryArray, LargeListArray, ListArray, NullArray, RecordBatch, StringArray,
+        StringViewArray, StructArray, UInt8Array, UInt64Array,
     };
+    use arrow_buffer::{NullBuffer, OffsetBuffer};
     use arrow_schema::Schema;
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
@@ -364,6 +560,131 @@ mod tests {
                 .unwrap()
                 .is_blob_v2()
         );
+    }
+
+    #[tokio::test]
+    async fn binary_list_items_coerce_to_blobs_without_losing_list_shape() {
+        for kind in [
+            "list",
+            "large_list",
+            "large_list_from_list",
+            "fixed_size_list",
+        ] {
+            let input_item = Arc::new(Field::new("item", DataType::Binary, true));
+            let table_item = Arc::new(wide_blob_field("item"));
+            let values: ArrayRef = Arc::new(BinaryArray::from_iter(vec![
+                Some(b"a".as_slice()),
+                None,
+                Some(b"".as_slice()),
+                Some(b"ignored".as_slice()),
+                None,
+                None,
+            ]));
+            let (input_type, table_type, list): (DataType, DataType, ArrayRef) = match kind {
+                "list" => (
+                    DataType::List(input_item.clone()),
+                    DataType::List(table_item.clone()),
+                    Arc::new(ListArray::new(
+                        input_item,
+                        OffsetBuffer::new(vec![0, 3, 3].into()),
+                        values,
+                        Some(NullBuffer::from(vec![true, false])),
+                    )),
+                ),
+                "large_list" => (
+                    DataType::LargeList(input_item.clone()),
+                    DataType::LargeList(table_item.clone()),
+                    Arc::new(LargeListArray::new(
+                        input_item,
+                        OffsetBuffer::new(vec![0_i64, 3, 3].into()),
+                        values,
+                        Some(NullBuffer::from(vec![true, false])),
+                    )),
+                ),
+                "large_list_from_list" => (
+                    DataType::List(input_item.clone()),
+                    DataType::LargeList(table_item.clone()),
+                    Arc::new(ListArray::new(
+                        input_item,
+                        OffsetBuffer::new(vec![0, 3, 3].into()),
+                        values,
+                        Some(NullBuffer::from(vec![true, false])),
+                    )),
+                ),
+                "fixed_size_list" => (
+                    DataType::FixedSizeList(input_item.clone(), 3),
+                    DataType::FixedSizeList(table_item.clone(), 3),
+                    Arc::new(FixedSizeListArray::new(
+                        input_item,
+                        3,
+                        values,
+                        Some(NullBuffer::from(vec![true, false])),
+                    )),
+                ),
+                _ => unreachable!(),
+            };
+            let batch = batch_with_image(Field::new("image", input_type, true), list);
+            let schema = Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("image", table_type, true),
+            ]);
+            let coerced = coerce(batch, &schema).await;
+            let image = coerced.column_by_name("image").unwrap();
+            let output_schema = coerced.schema();
+            let (DataType::List(item_field)
+            | DataType::LargeList(item_field)
+            | DataType::FixedSizeList(item_field, _)) =
+                output_schema.field_with_name("image").unwrap().data_type()
+            else {
+                unreachable!()
+            };
+            assert!(item_field.is_blob_v2(), "{kind} lost blob metadata");
+            let (offsets, items): (Vec<i64>, &StructArray) = match kind {
+                "list" => {
+                    let array = image.as_any().downcast_ref::<ListArray>().unwrap();
+                    assert!(array.is_null(1));
+                    (
+                        array.offsets().iter().map(|v| i64::from(*v)).collect(),
+                        array.values().as_any().downcast_ref().unwrap(),
+                    )
+                }
+                "large_list" | "large_list_from_list" => {
+                    let array = image.as_any().downcast_ref::<LargeListArray>().unwrap();
+                    assert!(array.is_null(1));
+                    (
+                        array.offsets().iter().copied().collect(),
+                        array.values().as_any().downcast_ref().unwrap(),
+                    )
+                }
+                "fixed_size_list" => {
+                    let array = image.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+                    assert!(array.is_null(1));
+                    (
+                        vec![0, 3, 6],
+                        array.values().as_any().downcast_ref().unwrap(),
+                    )
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                offsets,
+                if kind == "fixed_size_list" {
+                    vec![0, 3, 6]
+                } else {
+                    vec![0, 3, 3]
+                }
+            );
+            let data: &LargeBinaryArray = items
+                .column_by_name("data")
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            assert_eq!(data.value(0), b"a");
+            assert!(items.is_null(1));
+            assert_eq!(data.value(2), b"");
+            assert!(!items.is_null(2));
+        }
     }
 
     #[tokio::test]
