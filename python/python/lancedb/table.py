@@ -4565,13 +4565,6 @@ class LanceTable(Table):
         [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
-    def _hybrid_pk_fusion_learned(self) -> bool:
-        # `self._table` is the async table, which owns the Rust handle.
-        return self._table._hybrid_pk_fusion_learned()
-
-    def _note_hybrid_pk_fusion(self) -> None:
-        self._table._note_hybrid_pk_fusion()
-
     def checkpoint_lsm(self) -> None:
         """Synchronous version of
         [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""

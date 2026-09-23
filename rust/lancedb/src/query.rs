@@ -1258,19 +1258,6 @@ fn inject_pk_columns(select: &mut Select, pk_columns: &[String]) {
     }
 }
 
-/// Drop `columns` from `batch`, ignoring any that are not present.
-fn drop_columns(batch: RecordBatch, columns: &[String]) -> Result<RecordBatch> {
-    let keep: Vec<usize> = batch
-        .schema()
-        .fields()
-        .iter()
-        .enumerate()
-        .filter(|(_, field)| !columns.iter().any(|name| name == field.name()))
-        .map(|(idx, _)| idx)
-        .collect();
-    Ok(batch.project(&keep)?)
-}
-
 impl VectorQuery {
     fn new(base: Query) -> Self {
         Self {
@@ -1633,7 +1620,13 @@ impl VectorQuery {
             // has already refused the query if they did.
             FusionKey::PrimaryKey { injected, .. } => {
                 results = results.drop_column(ROW_ID)?;
-                results = drop_columns(results, injected)?;
+                for column in injected {
+                    // A reranker is free to reshape its output, so only drop
+                    // what actually came back.
+                    if results.schema().column_with_name(column).is_some() {
+                        results = results.drop_column(column)?;
+                    }
+                }
             }
         }
 

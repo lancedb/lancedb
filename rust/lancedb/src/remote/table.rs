@@ -79,7 +79,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::RwLock;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
@@ -91,12 +91,13 @@ const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
-/// How long a hybrid query remembers that this table refused `_rowid`. Nothing
-/// fetches this — it is seeded by the refusal itself — so the TTL only bounds
-/// how long the memory outlives a write spec someone removed, and being late to
-/// notice costs a base-only read that is still correct.
+/// How long a hybrid query remembers that this table refused `_rowid`.
+///
+/// Nothing fetches this — the refusal seeds it — so the bound exists only to
+/// stop the memory outliving a write spec someone removed through another
+/// handle. Being late to notice keeps the query on the primary key, which on a
+/// base table is still a valid read; the window is what stops that lasting.
 const WAL_FUSION_MEMORY_TTL: Duration = Duration::from_secs(30);
-const WAL_FUSION_MEMORY_REFRESH_WINDOW: Duration = Duration::from_secs(5);
 const SCHEMA_SELECTOR_CHANGED: &str = "table selector changed while fetching schema";
 
 fn fts_query_requires_document_granularity_support(query: &FtsQuery) -> bool {
@@ -503,7 +504,7 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     version: Arc<RwLock<Option<u64>>>,
     location: RwLock<Option<String>>,
     schema_cache: BackgroundCache<SchemaRef, Error>,
-    wal_pk_fusion: BackgroundCache<bool, Error>,
+    wal_pk_fusion: Mutex<Option<Instant>>,
     freshness: Arc<Mutex<FreshnessState>>,
     /// The branch this handle is scoped to, or `None` for the main branch.
     /// Stamped onto every branch-accepting request so reads and writes resolve
@@ -672,10 +673,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-            wal_pk_fusion: BackgroundCache::new(
-                WAL_FUSION_MEMORY_TTL,
-                WAL_FUSION_MEMORY_REFRESH_WINDOW,
-            ),
+            wal_pk_fusion: Mutex::new(None),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
         }
@@ -709,10 +707,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-            wal_pk_fusion: BackgroundCache::new(
-                WAL_FUSION_MEMORY_TTL,
-                WAL_FUSION_MEMORY_REFRESH_WINDOW,
-            ),
+            wal_pk_fusion: Mutex::new(None),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
         }
@@ -1448,7 +1443,7 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     fn invalidate_wal_pk_fusion(&self) {
-        self.wal_pk_fusion.invalidate();
+        *self.wal_pk_fusion.lock().unwrap() = None;
     }
 
     fn handle_error_invalidation(&self, error: &Error) {
@@ -1634,10 +1629,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                wal_pk_fusion: BackgroundCache::new(
-                    WAL_FUSION_MEMORY_TTL,
-                    WAL_FUSION_MEMORY_REFRESH_WINDOW,
-                ),
+                wal_pk_fusion: Mutex::new(None),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -1662,10 +1654,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                wal_pk_fusion: BackgroundCache::new(
-                    WAL_FUSION_MEMORY_TTL,
-                    WAL_FUSION_MEMORY_REFRESH_WINDOW,
-                ),
+                wal_pk_fusion: Mutex::new(None),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -1699,10 +1688,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                wal_pk_fusion: BackgroundCache::new(
-                    WAL_FUSION_MEMORY_TTL,
-                    WAL_FUSION_MEMORY_REFRESH_WINDOW,
-                ),
+                wal_pk_fusion: Mutex::new(None),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -3253,7 +3239,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
-        self.invalidate_wal_pk_fusion();
         Ok(())
     }
 
@@ -3333,11 +3318,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     fn hybrid_pk_fusion_learned(&self) -> bool {
-        self.wal_pk_fusion.try_get().unwrap_or(false)
+        self.wal_pk_fusion
+            .lock()
+            .unwrap()
+            .is_some_and(|learned| learned.elapsed() < WAL_FUSION_MEMORY_TTL)
     }
 
     fn note_hybrid_pk_fusion(&self) {
-        self.wal_pk_fusion.seed(true);
+        *self.wal_pk_fusion.lock().unwrap() = Some(Instant::now());
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
