@@ -282,24 +282,6 @@ def _scanner_to_pandas(
     return tbl.to_pandas(**kwargs)
 
 
-def _set_blob_frame_values(df: "pd.DataFrame", path: str, values: list) -> None:
-    """Replace a blob output column, including a blob inside a struct column."""
-    if path in df.columns:
-        df[path] = values
-        return
-
-    top, *nested = path.split(".")
-    if top not in df.columns or not nested:
-        raise ValueError(f"blob output column {path!r} is missing from query results")
-    for record, value in zip(df[top], values):
-        for part in nested[:-1]:
-            if record is None:
-                break
-            record = record[part]
-        if record is not None:
-            record[nested[-1]] = value
-
-
 def _finish_plain_scan_pandas(
     scanner: _LanceScanner,
     *,
@@ -3038,8 +3020,9 @@ class AsyncQueryBase(object):
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
             Controls how blob columns are returned. Local plain scan queries
-            use Lance native conversion; remote queries use server blob fetch
-            APIs for blob v2 "bytes" and "lazy" modes.
+            use Lance native conversion. Remote queries support descriptions,
+            but cannot safely materialize bytes or lazy handles without a
+            stable table snapshot across the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
@@ -3085,10 +3068,8 @@ class AsyncQueryBase(object):
         blob_mode: BlobMode,
         **kwargs,
     ) -> "pd.DataFrame":
-        # to_arrow() runs the query on the server and keeps the row ids needed
-        # by the server-side blob fetch APIs in the v2 descriptors.
-        table = self._table
-        assert table is not None
+        # A live remote table can be replaced between query and blob fetch.
+        # Row ids and version numbers do not identify the producing table.
         tbl = await self.to_arrow(timeout=timeout)
         projected_blob_paths = set(blob_column_paths(tbl.schema))
         if not projected_blob_paths:
@@ -3098,32 +3079,11 @@ class AsyncQueryBase(object):
             tbl = strip_auto_row_ids(tbl, self._blob_paths)
             return flatten_columns(tbl, flatten).to_pandas(**kwargs)
 
-        schema = await table.schema()
-        blob_sources = blob_v2_projection_sources(
-            schema, self.to_query_object().columns
+        raise NotImplementedError(
+            f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
+            "blob columns without a stable table snapshot; "
+            "use blob_mode='descriptions'"
         )
-        if not projected_blob_paths.issubset(blob_sources):
-            raise NotImplementedError(
-                f"remote to_pandas(blob_mode={blob_mode!r}) requires row-addressable "
-                "blob v2 columns"
-            )
-
-        values = {}
-        for output_name, source_name in blob_sources.items():
-            if output_name not in projected_blob_paths:
-                continue
-            if blob_mode == "bytes":
-                values[output_name] = (
-                    await table.fetch_blobs(source_name, tbl)
-                ).to_pylist()
-            else:
-                values[output_name] = await table.fetch_blob_files(source_name, tbl)
-
-        tbl = strip_auto_row_ids(tbl, self._blob_paths)
-        df = flatten_columns(tbl, flatten).to_pandas(**kwargs)
-        for output_name, column_values in values.items():
-            _set_blob_frame_values(df, output_name, column_values)
-        return df
 
     async def _plain_scan_to_pandas(
         self,

@@ -5479,8 +5479,9 @@ class AsyncTable:
         Parameters
         ----------
         blob_mode: str, default "lazy"
-            Controls how Lance blob columns are returned. On remote tables,
-            blob v2 data is fetched through the server for "bytes" and "lazy".
+            Controls how Lance blob columns are returned. Remote tables support
+            "descriptions"; "bytes" and "lazy" require a stable table snapshot
+            that the server does not yet provide.
         **kwargs
             Forwarded to PyArrow / Lance pandas conversion.
 
