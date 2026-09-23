@@ -1,0 +1,33 @@
+[package]
+name = "lance-arrow"
+version = "13.0.0-beta.8"
+edition = "2024"
+authors = ["Lance Devs <dev@lance.org>"]
+license = "Apache-2.0"
+repository = "https://github.com/lance-format/lance"
+readme = "README.md"
+description = "Arrow Extension for Lance"
+keywords = ["data-format", "data-science", "machine-learning", "apache-arrow", "data-analytics"]
+categories = ["database-implementations"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arrow-array = "58.0.0"
+arrow-buffer = "58.0.0"
+arrow-data = "58.0.0"
+arrow-ipc = { version = "58.0.0", features = ["zstd"] }
+arrow-ord = "58.0.0"
+arrow-schema = "58.0.0"
+arrow-select = "58.0.0"
+bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }
+bytes = "1.11.1"
+futures = "0.3"
+half = { version = "2.1", default-features = false, features = ["num-traits", "std", "bytemuck"] }
+jsonb = { version = "0.5.3", default-features = false, features = ["databend"] }
+num-traits = "0.2"
+rand = { version = "0.9.1", features = ["small_rng"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

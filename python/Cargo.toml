@@ -22,6 +22,9 @@ bytes.workspace = true
 lancedb.workspace = true
 datafusion-common.workspace = true
 lance-core.workspace = true
+# Make the patched Lance Arrow crate an explicit path dependency so Maturin
+# includes it at the path used by the workspace patch in source distributions.
+lance-arrow = { version = "=13.0.0-beta.8", path = "vendor/lance-arrow" }
 lance-namespace.workspace = true
 lance-namespace-impls.workspace = true
 lance-io.workspace = true
