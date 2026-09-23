@@ -256,8 +256,16 @@ class SecretBinding(_RemoteValue):
 
 
 class FunctionSignature(_RemoteValue):
+    """Ordered inputs, output, and initialization fields of a Function.
+
+    ``initialization`` lists the fields of the single row each Function
+    instance is created with. Values come from each binding, not from the
+    Function version; the tuple is empty when the Function takes none.
+    """
+
     inputs: tuple[FunctionParameter, ...]
     output: FunctionOutput
+    initialization: tuple[FunctionParameter, ...] = ()
 
 
 class PythonEnvironmentSpec(_RemoteValue):
@@ -478,6 +486,10 @@ class FunctionApplication(_OpenRemoteValue):
     inputs: tuple[ApplicationInput, ...]
     output: FunctionOutput
     columns: Mapping[str, str] = Field(default_factory=dict)
+    # Transport JSON: the service validates it against the Function's
+    # initialization schema and persists the Arrow row in the binding, so it is
+    # never hashed and floating-point values are allowed.
+    initialization: Mapping[str, Any] = Field(default_factory=dict)
 
     def _known_dict(self) -> dict[str, Any]:
         value = super()._known_dict()
@@ -560,6 +572,15 @@ class FunctionBinding(_RemoteValue):
     assignment: Optional[AssignmentMapping] = None
     input_schema: Optional[Mapping[str, Any]] = None
     output_schema: Optional[Mapping[str, Any]] = None
+    initialization: Optional[str] = None
+    """Standard base64 of the validated one-row Arrow IPC initialization stream."""
+
+    def initialization_row(self) -> Optional[dict[str, Any]]:
+        """The initialization values this binding creates instances with."""
+        if self.initialization is None:
+            return None
+        reader = pa.ipc.open_stream(base64.b64decode(self.initialization))
+        return reader.read_all().to_pylist()[0]
 
 
 class RefreshColumnResult(_RemoteValue):
