@@ -28,6 +28,39 @@ describe("materialized views", () => {
   });
   afterEach(() => tmpDir.removeCallback());
 
+  it("reads stored queries and legacy layouts", () => {
+    const read = (stored: string) =>
+      definitionFromMetadata(new Map([[DEFINITION_META_KEY, stored]]), "v");
+    const query =
+      "SELECT id, c.chunk FROM ns.docs, UNNEST(chunks) AS c WHERE id > 1";
+    expect(read(`{"format":1,"query":${JSON.stringify(query)}}`).query).toBe(
+      query,
+    );
+
+    // The structured layout written before the format number reads as the
+    // query it described, under either of its kind tags.
+    expect(
+      read(
+        '{"kind":"namespaced_select","source_table":"people","source_namespace":["ns"],' +
+          '"projections":[{"output":"name","expression":"`name`"},' +
+          '{"output":"Shout","expression":"upper(name)"}],"filter":"age >= 18","limit":42}',
+      ).query,
+    ).toBe(
+      "SELECT `name`, upper(name) AS `Shout` FROM ns.people WHERE age >= 18 LIMIT 42",
+    );
+    expect(read('{"kind":"select","source_table":"people"}').query).toBe(
+      "SELECT * FROM people",
+    );
+
+    // A newer writer's layout is reported, never guessed at.
+    for (const newer of [
+      `{"format":3,"query":${JSON.stringify(query)}}`,
+      '{"kind":"select_v3","source_table":"people"}',
+    ]) {
+      expect(() => read(newer)).toThrow(/cannot refresh/);
+    }
+  });
+
   it("rejects a stored limit a number cannot carry", () => {
     const big = new Map([
       [
@@ -38,36 +71,6 @@ describe("materialized views", () => {
     expect(() => definitionFromMetadata(big, "v")).toThrow(
       /too large to represent exactly/,
     );
-
-    const safe = new Map([
-      [
-        DEFINITION_META_KEY,
-        '{"kind":"select","source_table":"people","limit":42}',
-      ],
-    ]);
-    expect(definitionFromMetadata(safe, "v").limit).toBe(42);
-  });
-
-  it("reads the namespaced select kind and refuses unknown kinds", () => {
-    // "namespaced_select" is the namespaced form of "select": same shape, a
-    // separate kind so readers that predate it refuse instead of resolving
-    // the source at the root.
-    const namespaced = new Map([
-      [
-        DEFINITION_META_KEY,
-        '{"kind":"namespaced_select","source_table":"people","source_namespace":["ns"]}',
-      ],
-    ]);
-    const definition = definitionFromMetadata(namespaced, "v");
-    expect(definition.sourceTable).toBe("people");
-    expect(definition.sourceNamespace).toEqual(["ns"]);
-
-    const unknown = new Map([
-      [DEFINITION_META_KEY, '{"kind":"select_v3","source_table":"people"}'],
-    ]);
-    expect(() => definitionFromMetadata(unknown, "v")).toThrow(
-      /cannot refresh/,
-    );
   });
 
   it("creates, refreshes and queries a view", async () => {
@@ -76,11 +79,7 @@ describe("materialized views", () => {
       where: "age >= 18",
     });
     expect(view.name).toBe("adults");
-    expect(await view.table().countRows()).toBe(0);
-
-    const result = await view.refresh();
-    expect(result.mode).toBe("rebuild");
-    expect(Number(result.rowsWritten)).toBe(2);
+    expect(await view.table().countRows()).toBe(2);
 
     const rows = await view.table().query().toArray();
     expect(rows.map((r) => r.shout).sort()).toEqual(["ADA", "GRACE"]);
@@ -92,17 +91,15 @@ describe("materialized views", () => {
     });
     const view = await db.openMaterializedView("adults");
     const definition = await view.definition();
-    expect(definition.sourceTable).toBe("people");
-    expect(definition.filter).toBe("age >= 18");
-    expect(definition.projections).toEqual([
-      ["name", "`name`"],
-      ["age", "`age`"],
-    ]);
-    expect(definition.inputs).toEqual(["age", "name"]);
+    expect(definition.query).toBe(
+      "SELECT name, age FROM people WHERE age >= 18",
+    );
   });
 
   it("refreshes incrementally after an append", async () => {
-    const view = await db.createMaterializedView("copy", "people");
+    const view = await db.createMaterializedView("copy", "people", {
+      withNoData: true,
+    });
     await view.refresh();
 
     const people = await db.openTable("people");
@@ -123,6 +120,21 @@ describe("materialized views", () => {
     await expect(db.openMaterializedView("people")).rejects.toThrow(
       "not a materialized view",
     );
+    await expect(db.dropMaterializedView("people")).rejects.toThrow(
+      "not a materialized view",
+    );
+
+    await db.dropMaterializedView("adults");
+    expect(await db.listMaterializedViews()).toEqual([]);
+  });
+
+  it("returns a job when dropping a view asynchronously", async () => {
+    await db.createMaterializedView("adults", "people");
+
+    const job = await db.dropMaterializedViewAsync("adults");
+    expect(job.id).toBeNull();
+    await job.wait();
+    expect(await db.listMaterializedViews()).toEqual([]);
   });
 
   it("rejects an invalid expression at create time", async () => {
@@ -155,6 +167,7 @@ describe("materialized views", () => {
     });
     const view = await db.createMaterializedView("quoted", "odd_names", {
       select: ["order item"],
+      withNoData: true,
     });
     const result = await view.refresh();
     expect(Number(result.rowsWritten)).toBe(1);

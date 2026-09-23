@@ -14,7 +14,7 @@
 //!  * Tables may be managed by a database system (e.g. Postgres)
 //!  * A custom table implementation (e.g. remote table, etc.) may be used
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,7 +28,11 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::job::Job;
+use crate::materialized_view::CreateMaterializedViewRequest;
+use crate::secrets::SecretInfo;
 use crate::table::{BaseTable, WriteOptions};
+use crate::view::ViewDescription;
 
 pub mod listing;
 pub mod namespace;
@@ -249,6 +253,18 @@ fn function_catalog_not_supported<T>() -> Result<T> {
     })
 }
 
+fn secret_catalog_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Secret operations are not supported by this database".to_string(),
+    })
+}
+
+fn view_ops_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "View operations are not supported by this database".to_string(),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -294,12 +310,79 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
-    /// Register an immutable Function version through the remote catalog.
+    /// Submit a Function creation job that builds an image and registers it.
     async fn create_function_async(
         &self,
         _request: crate::function::FunctionRegistrationRequest,
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
+    }
+    /// Create a materialized view through a remote catalog and return its
+    /// initial-population job. Local connections use the native declaration
+    /// path directly.
+    #[doc(hidden)]
+    async fn create_materialized_view_async(
+        &self,
+        _request: CreateMaterializedViewRequest,
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view creation")
+    }
+    /// Drop a materialized view through its resource endpoint and return its
+    /// cleanup job. Local connections validate the view and use table drop.
+    #[doc(hidden)]
+    async fn drop_materialized_view_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view drop")
+    }
+    /// List materialized-view names in a namespace.
+    #[doc(hidden)]
+    async fn list_materialized_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut page_token = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let response = self
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace_path.to_vec()),
+                    page_token: page_token.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            for name in response.tables {
+                let Ok(table) = self
+                    .open_table(OpenTableRequest {
+                        name: name.clone(),
+                        namespace_path: namespace_path.to_vec(),
+                        index_cache_size: None,
+                        lance_read_params: None,
+                        location: None,
+                        namespace_client: None,
+                        managed_versioning: None,
+                    })
+                    .await
+                else {
+                    continue;
+                };
+                let schema = table.schema().await?;
+                if crate::materialized_view::read_definition(schema.metadata())?.is_some() {
+                    names.push(name);
+                }
+            }
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(crate::Error::Runtime {
+                    message: "materialized-view listing repeated a page token".into(),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(names)
     }
     /// Look up one exact immutable Function version.
     async fn get_function(
@@ -313,9 +396,88 @@ pub trait Database:
     async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
-    /// Drop one exact immutable Function version from the remote catalog.
+    /// Remove the current Function name binding, retaining the object history.
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
+    }
+    /// Start dropping a Function and return a handle to the cleanup job.
+    ///
+    /// Backends without asynchronous cleanup complete the drop before returning an
+    /// already-finished job.
+    async fn drop_function_async(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<(bool, crate::job::Job)> {
+        let dropped = self.drop_function(name, version).await?;
+        Ok((dropped, crate::job::Job::new_done()))
+    }
+    /// Create a named Secret in this database. Fails if the name is taken, so
+    /// a create can never silently become a rotation.
+    async fn create_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// Replace the credential behind an existing Secret. Fails if it does not
+    /// exist. Every Function bound to it resolves the new value from its next
+    /// execution, with no new Function version.
+    async fn alter_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// The names of every Secret in this database.
+    ///
+    /// Names only. No API path returns a stored credential, by construction
+    /// rather than by policy.
+    async fn list_secrets(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a Secret. Functions bound to it fail at their next job, which is
+    /// the revocation path.
+    async fn drop_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// What the database records about one Secret: its name and timestamps,
+    /// never its value.
+    async fn describe_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<SecretInfo> {
+        secret_catalog_not_supported()
+    }
+    /// Create a view from a defining query. The query is planned once, by the
+    /// database, so one that cannot be planned is refused now rather than at
+    /// the first read.
+    async fn create_view(
+        &self,
+        _name: &str,
+        _query: &str,
+        _namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        view_ops_not_supported()
+    }
+    /// What the database records about one view: its defining query and the
+    /// schema that query resolved to.
+    async fn describe_view(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        view_ops_not_supported()
+    }
+    /// Drop a view. Its sources are untouched -- a view holds no rows of its
+    /// own.
+    async fn drop_view(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        view_ops_not_supported()
+    }
+    /// The names of the views in one namespace.
+    async fn list_views(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+        view_ops_not_supported()
     }
     /// Open a job by id, returning a handle with its record already
     /// populated. Fails with [`crate::Error::JobNotFound`] when the server has

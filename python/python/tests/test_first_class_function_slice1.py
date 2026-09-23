@@ -13,7 +13,9 @@ from lancedb.functions import (
     FunctionBinding,
     FunctionVersion,
     PythonRuntimeSpec,
+    SecretBinding,
     RefreshColumnResult,
+    SecretReference,
 )
 from lancedb.table import AsyncTable
 
@@ -35,6 +37,22 @@ def fixture(name: str) -> str:
 
 def job_result(name: str) -> dict:
     return json.loads(fixture(name))["result"]
+
+
+def assert_no_secret_values(value):
+    """No client value models a resolved credential, at any nesting depth."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            assert key not in {
+                "secret_value",
+                "secret_values",
+                "resolved_secret",
+                "resolved_secrets",
+            }
+            assert_no_secret_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            assert_no_secret_values(child)
 
 
 def test_public_function_values_are_in_api_reference():
@@ -66,6 +84,18 @@ def test_public_function_values_are_in_api_reference():
             False,
         ),
         (
+            "remote_initialized_function_application.json",
+            "remote_initialized_function_application.canonical.json",
+            FunctionApplication,
+            False,
+        ),
+        (
+            "remote_initialized_function_binding.json",
+            "remote_initialized_function_binding.canonical.json",
+            FunctionBinding,
+            False,
+        ),
+        (
             "remote_refresh_job.json",
             "remote_refresh_result.canonical.json",
             RefreshColumnResult,
@@ -93,16 +123,27 @@ def test_function_version_identity_is_immutable_and_exact():
     value = job_result("remote_function_job.json")
     version = FunctionVersion.from_json(json.dumps(value))
     assert version.name == "embed"
-    assert version.version == "fv_01K3EXACT"
+    assert version.version == "1"
+    assert version.image.manifest_digest.startswith("sha256:")
+    assert version.version != version.image.manifest_digest
+    assert list(version.secret_bindings) == [
+        SecretBinding(
+            kind="env", variable="HF_TOKEN", secret_ref=SecretReference(name="hf-prod")
+        )
+    ]
 
     with pytest.raises((TypeError, ValueError)):
-        version.version = "fv_changed"
+        version.version = "1"
     with pytest.raises(TypeError, match="immutable"):
-        version.runtime.env["TOKENIZERS_PARALLELISM"] = "true"
+        version.image.descriptor["format_version"] = "changed"
 
     changed = dict(value)
-    changed["version"] = "fv_changed"
+    changed["version"] = "2"
     assert FunctionVersion(**changed) != version
+    assert FunctionVersion(**changed).image == version.image
+    for invalid in [version.image.manifest_digest, "0", "01", "-1", str(2**64)]:
+        with pytest.raises(ValueError):
+            FunctionVersion(**{**value, "version": invalid})
 
 
 def test_function_version_binds_named_columns_as_one_immutable_application():
@@ -128,7 +169,7 @@ def test_function_version_binding_validates_names_and_direct_columns():
 
     with pytest.raises(TypeError, match=r"missing inputs: \['text'\]"):
         version()
-    with pytest.raises(TypeError, match=r"unknown inputs: \['body'\]"):
+    with pytest.raises(TypeError, match=r"unknown arguments: \['body'\]"):
         version(text=col("text"), body=col("body"))
     with pytest.raises(TypeError, match="direct col"):
         version(text=col("text").lower())
@@ -137,7 +178,7 @@ def test_function_version_binding_validates_names_and_direct_columns():
 def test_function_version_keeps_named_struct_outputs_in_one_application():
     value = job_result("remote_function_job.json")
     value["name"] = "text_features"
-    value["version"] = "fv_multi_output"
+    value["version"] = "1"
     value["signature"] = {
         "inputs": [
             {"name": "title", "arrow_type": "utf8", "nullable": True},
@@ -182,14 +223,14 @@ def test_function_version_keeps_named_struct_outputs_in_one_application():
 def test_unknown_fields_and_discriminators_are_forward_decodable():
     value = job_result("remote_function_job.json")
     value["future_version_metadata"] = {"retention_class": "catalog"}
-    value["runtime"] = {"kind": "wasm", "module_digest": "sha256:wasm"}
+    value["image"]["descriptor"]["future_interface"] = {"kind": "wasm"}
     value["signature"]["output"]["kind"] = "future_output_shape"
 
     version = FunctionVersion.from_json(json.dumps(value))
-    assert version.runtime.kind == "wasm"
-    assert version.runtime.python_version is None
-    assert version.runtime.environment is None
-    assert json.loads(version.to_canonical_json())["runtime"] == {"kind": "wasm"}
+    assert version.image.descriptor["future_interface"] == {"kind": "wasm"}
+    assert json.loads(version.to_canonical_json())["image"]["descriptor"][
+        "future_interface"
+    ] == {"kind": "wasm"}
     assert version.signature.output.kind == "future_output_shape"
 
 
@@ -222,7 +263,7 @@ def test_function_application_uses_rename_columns_only():
 
 def test_binding_and_refresh_result_keep_stable_remote_fields():
     binding = FunctionBinding.from_json(fixture("remote_function_binding.json"))
-    assert binding.function.version == "fv_01K3TEXT"
+    assert binding.function.version == "1"
     assert [output.output_ordinal for output in binding.outputs] == [0, 1]
     assert binding.input_schema is not None
     assert binding.output_schema is not None
@@ -238,6 +279,35 @@ def test_binding_and_refresh_result_keep_stable_remote_fields():
     )
     assert result.published_version is None
     assert RefreshColumnResult.from_json(result.to_canonical_json()) == result
+
+
+def test_initialization_travels_on_the_application_and_binding():
+    application = FunctionApplication.from_json(
+        fixture("remote_initialized_function_application.json")
+    )
+    assert application.initialization["temperature"] == 0.25
+    assert application.initialization["retry"]["backoff"] == (1, 2, 4)
+    application._ensure_declarable()
+
+    binding = FunctionBinding.from_json(
+        fixture("remote_initialized_function_binding.json")
+    )
+    assert binding.initialization_row() == {
+        "model": "text-embedding-3-small",
+        "dimensions": 512,
+    }
+    assert (
+        FunctionBinding.from_json(
+            fixture("remote_function_binding.json")
+        ).initialization_row()
+        is None
+    )
+
+    signature = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    ).signature
+    assert signature.initialization == ()
+    assert "initialization" not in json.loads(signature.to_canonical_json())
 
 
 def test_function_literal_numeric_domain_matches_rust():
@@ -274,6 +344,31 @@ def test_refresh_result_rejects_non_u64_values(field):
     value[field] = "1"
     with pytest.raises(ValueError):
         RefreshColumnResult.from_json(json.dumps(value))
+
+
+def test_canonical_client_values_carry_bindings_and_no_credentials():
+    """A binding names a Secret; the credential behind it has no client field."""
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+    canonical = json.loads(version.to_canonical_json())
+    assert canonical["secret_bindings"] == [
+        {"kind": "env", "variable": "HF_TOKEN", "secret_ref": {"name": "hf-prod"}}
+    ]
+    assert_no_secret_values(canonical)
+
+
+def test_a_version_without_bindings_omits_the_field_in_both_directions():
+    """A Function that binds nothing carries no ``secret_bindings`` key.
+
+    Absent decodes as an empty list, and an empty list serializes back to
+    absent.
+    """
+    value = job_result("remote_function_job.json")
+    del value["secret_bindings"]
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert list(version.secret_bindings) == []
+    assert "secret_bindings" not in json.loads(version.to_canonical_json())
 
 
 class _FunctionDeclarationInner:
@@ -339,7 +434,16 @@ def test_rename_requires_named_struct_and_keeps_partial_mapping_immutable():
     scalar = FunctionApplication.from_json(
         json.dumps(
             {
-                "function": {"name": "embed", "version": "fv_exact"},
+                "function": {
+                    "name": "embed",
+                    "version": "1",
+                    "object_id": "fixture",
+                    "location": "memory:///fixture",
+                    "manifest_digest": (
+                        "sha256:"
+                        "7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
+                    ),
+                },
                 "inputs": [],
                 "output": {
                     "kind": "scalar",

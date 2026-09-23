@@ -180,13 +180,13 @@ abstract createMaterializedView(
 
 Define a materialized view named `name` over the table `source`.
 
-The view is created empty, with the query recorded in its schema
-metadata; `view.refresh()` computes the rows. The view is a normal
-table: it can be queried, indexed and searched, and it appears in
-`tableNames`. The source table must have stable row ids (create it with
+The view is populated before creation returns. Set `withNoData` to create
+only its definition and empty backing table. The view is a normal table:
+it can be queried, indexed and searched, and it appears in `tableNames`.
+The source table must have stable row ids (create it with
 the `newTableEnableStableRowIds` storage option); they keep the view's
 provenance valid across source compactions and cannot be enabled after
-a table exists. Local databases only.
+a table exists.
 
 #### Parameters
 
@@ -201,6 +201,8 @@ a table exists. Local databases only.
 * **options.select?**: [`MaterializedViewSelect`](../type-aliases/MaterializedViewSelect.md)
 
 * **options.where?**: `string`
+
+* **options.withNoData?**: `boolean`
 
 #### Returns
 
@@ -317,6 +319,38 @@ Creates a new Table and initialize it with new data.
 
 ***
 
+### createView()
+
+```ts
+abstract createView(
+   name,
+   query,
+   namespacePath?): Promise<ViewDescription>
+```
+
+Create a view: a named query the database plans on every read.
+
+The query is planned once, at creation, so one that cannot be planned is
+rejected now rather than at the first read. A view holds no rows, and its
+readers see its sources as they are at read time.
+
+There is no replace: a name already taken is an error, and changing a
+view is a drop followed by a create.
+
+#### Parameters
+
+* **name**: `string`
+
+* **query**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
+
+***
+
 ### describeNamespace()
 
 ```ts
@@ -337,6 +371,27 @@ Describe a namespace, returning its properties.
 
 The namespace's properties
   (may be undefined if the namespace has none).
+
+***
+
+### describeView()
+
+```ts
+abstract describeView(name, namespacePath?): Promise<ViewDescription>
+```
+
+What this database records about the view named `name`: its defining
+query and the schema that query resolved to.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
 
 ***
 
@@ -370,6 +425,54 @@ Drop all tables in the database.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### dropMaterializedView()
+
+```ts
+abstract dropMaterializedView(name, namespacePath?): Promise<void>
+```
+
+Drop the materialized view named `name`.
+
+The view may become unavailable before physical cleanup finishes. Use
+[dropMaterializedViewAsync](Connection.md#dropmaterializedviewasync) to retain and wait for the cleanup job.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### dropMaterializedViewAsync()
+
+```ts
+abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping the materialized view named `name` and return its cleanup
+job without waiting for completion.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 
@@ -445,6 +548,28 @@ on the returned job to know when cleanup has finished.
 #### Returns
 
 `Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
+### dropView()
+
+```ts
+abstract dropView(name, namespacePath?): Promise<void>
+```
+
+Drop the view named `name`.
+
+The tables it reads are untouched: a view holds no rows of its own.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 
@@ -583,6 +708,26 @@ List a page of the tables in this database.
 
 A page of table names and an
   optional token for the tables after it.
+
+***
+
+### listViews()
+
+```ts
+abstract listViews(namespacePath?): Promise<string[]>
+```
+
+The names of the views in one namespace.
+
+Names only; a definition comes from [describeView](Connection.md#describeview).
+
+#### Parameters
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
 
 ***
 

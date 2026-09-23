@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
@@ -15,6 +15,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
+use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
@@ -330,6 +331,44 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn blob_columns(&self) -> napi::Result<Vec<String>> {
+        self.inner_ref()?.blob_columns().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn fetch_blobs(
+        &self,
+        column: String,
+        row_ids: Vec<BigInt>,
+    ) -> napi::Result<Vec<Option<Buffer>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let array = self
+            .inner_ref()?
+            .fetch_blobs(column.as_str(), &row_ids)
+            .await
+            .default_error()?;
+        Ok(copy_blob_buffers(array))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn fetch_blob_files(
+        &self,
+        column: String,
+        row_ids: Vec<BigInt>,
+    ) -> napi::Result<Vec<Option<BlobFile>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let files = self
+            .inner_ref()?
+            .fetch_blob_files(column.as_str(), &row_ids)
+            .await
+            .default_error()?;
+        Ok(files
+            .into_iter()
+            .map(|file| file.map(BlobFile::new))
+            .collect())
+    }
+
+    #[napi(catch_unwind)]
     pub fn vector_search(&self, vector: Float32Array) -> napi::Result<VectorQuery> {
         self.query()?.nearest_to(vector)
     }
@@ -389,6 +428,32 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn function_errors(
+        &self,
+        options: Option<FunctionErrorsOptions>,
+    ) -> napi::Result<FunctionErrors> {
+        let options = options.unwrap_or_default();
+        let limit = options
+            .limit
+            .map(|limit| {
+                usize::try_from(limit)
+                    .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))
+            })
+            .transpose()?;
+        let request = lancedb::function::FunctionErrorsRequest {
+            job_id: options.job_id,
+            column: options.column,
+            limit,
+        };
+        let errors = self
+            .inner_ref()?
+            .function_errors(request)
+            .await
+            .default_error()?;
+        Ok(errors.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn refresh_materialized_view(
         &self,
         full: Option<bool>,
@@ -406,6 +471,19 @@ impl Table {
         }
         let result = builder.execute().await.default_error()?;
         Ok(result.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn materialized_view_definition(&self) -> napi::Result<String> {
+        let inner = self.inner_ref()?.clone();
+        let view = lancedb::MaterializedView::from_table(inner)
+            .await
+            .default_error()?;
+        view.definition().to_json().map_err(|err| {
+            napi::Error::from_reason(format!(
+                "failed to serialize materialized-view definition: {err}"
+            ))
+        })
     }
 
     #[napi(catch_unwind)]
@@ -638,22 +716,20 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn optimize(
         &self,
-        older_than_ms: Option<i64>,
+        before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
     ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
-        let older_than = if let Some(ms) = older_than_ms {
-            if ms == i64::MIN {
-                return Err(napi::Error::from_reason(format!(
-                    "older_than_ms can not be {}",
-                    i32::MIN,
-                )));
-            }
-            Duration::try_milliseconds(ms)
-        } else {
-            None
-        };
+        let before_timestamp = before_timestamp_ms
+            .map(|ms| {
+                DateTime::from_timestamp_millis(ms).ok_or_else(|| {
+                    napi::Error::from_reason(format!(
+                        "cleanupOlderThan timestamp is out of range: {ms}"
+                    ))
+                })
+            })
+            .transpose()?;
 
         let compaction_stats = inner
             .optimize(OptimizeAction::Compact {
@@ -664,16 +740,22 @@ impl Table {
             .default_error()?
             .compaction
             .unwrap();
-        let prune_stats = inner
-            .optimize(OptimizeAction::Prune {
-                older_than,
-                delete_unverified,
-                error_if_tagged_old_versions: None,
-            })
-            .await
-            .default_error()?
-            .prune
-            .unwrap();
+        let prune_stats = if let Some(before_timestamp) = before_timestamp {
+            inner
+                .optimize_prune_before(before_timestamp, delete_unverified, None)
+                .await
+        } else {
+            inner
+                .optimize(OptimizeAction::Prune {
+                    older_than: None,
+                    delete_unverified,
+                    error_if_tagged_old_versions: None,
+                })
+                .await
+        }
+        .default_error()?
+        .prune
+        .unwrap();
         inner
             .optimize(lancedb::table::OptimizeAction::Index(
                 OptimizeOptions::default(),
@@ -1418,6 +1500,97 @@ pub struct AddColumnsResult {
 pub struct RefreshColumnResult {
     pub rows_filled: i64,
     pub version: i64,
+}
+
+/// Which per-row Function errors to list; every filter is optional.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct FunctionErrorsOptions {
+    /// Only errors recorded by this job.
+    pub job_id: Option<String>,
+    /// Only errors on this column.
+    pub column: Option<String>,
+    /// At most this many records (server default 10000, cap 100000).
+    pub limit: Option<i64>,
+}
+
+/// One row a Function refresh skipped, as the server recorded it.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorRecord {
+    pub job_id: String,
+    pub fragment_id: i64,
+    /// The row's offset within the fragment; absent when the fragment's
+    /// detail was capped.
+    pub row_offset: Option<i64>,
+    pub column: String,
+    pub function: String,
+    pub function_version: String,
+    pub table_version: i64,
+    pub error_type: String,
+    pub error_message: String,
+    pub created_at_millis: i64,
+}
+
+impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
+    fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
+        Self {
+            job_id: record.job_id,
+            fragment_id: record.fragment_id as i64,
+            row_offset: record.row_offset.map(i64::from),
+            column: record.column,
+            function: record.function,
+            function_version: record.function_version,
+            table_version: record.table_version as i64,
+            error_type: record.error_type,
+            error_message: record.error_message,
+            created_at_millis: record.created_at_millis,
+        }
+    }
+}
+
+/// A fragment whose per-row error detail was capped: `rowsSkipped` rows
+/// failed, of which only `rowsRecorded` have a record of their own.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorFragment {
+    pub job_id: String,
+    pub fragment_id: i64,
+    pub rows_skipped: i64,
+    pub rows_recorded: i64,
+}
+
+impl From<lancedb::function::FunctionErrorFragment> for FunctionErrorFragment {
+    fn from(fragment: lancedb::function::FunctionErrorFragment) -> Self {
+        Self {
+            job_id: fragment.job_id,
+            fragment_id: fragment.fragment_id as i64,
+            rows_skipped: fragment.rows_skipped as i64,
+            rows_recorded: fragment.rows_recorded as i64,
+        }
+    }
+}
+
+/// A table's per-row Function errors.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrors {
+    /// The recorded rows, newest job first.
+    pub records: Vec<FunctionErrorRecord>,
+    /// Fragments whose detail was capped.
+    pub fragments: Vec<FunctionErrorFragment>,
+    /// Whether the listing stopped at its limit.
+    pub truncated: bool,
+}
+
+impl From<lancedb::function::FunctionErrors> for FunctionErrors {
+    fn from(errors: lancedb::function::FunctionErrors) -> Self {
+        Self {
+            records: errors.records.into_iter().map(Into::into).collect(),
+            fragments: errors.fragments.into_iter().map(Into::into).collect(),
+            truncated: errors.truncated,
+        }
+    }
 }
 
 #[napi(object)]

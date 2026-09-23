@@ -36,6 +36,12 @@ use crate::remote::{
         OPT_REMOTE_SQL_HOST_OVERRIDE,
     },
 };
+use crate::secrets::SecretInfo;
+use crate::utils::{
+    validate_namespace, validate_secret_component, validate_secret_reference,
+    validate_view_reference,
+};
+use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
 #[cfg(feature = "remote")]
@@ -581,11 +587,13 @@ impl Connection {
         )
     }
 
-    /// Register a Python callable as a new immutable Function version.
+    /// Build and register a Python callable as an immutable Function version.
     ///
-    /// Registration is remote-only and always asynchronous. Waiting on the
-    /// returned typed job yields the durable [`crate::function::FunctionVersion`].
+    /// The server-side job builds the OCI image, then registers the completed
+    /// artifact. Waiting on the returned typed job yields the durable
+    /// [`crate::function::FunctionVersion`]. Creation is remote-only.
     /// Local databases return [`Error::NotSupported`].
+    ///
     pub async fn create_function_async(
         &self,
         request: crate::function::FunctionRegistrationRequest,
@@ -630,7 +638,7 @@ impl Connection {
         self.internal.list_functions().await
     }
 
-    /// Drop one exact immutable Function version from the remote catalog.
+    /// Remove the current Function name binding, retaining the object history.
     ///
     /// Returns `true` when the server appended a Dropped transition and
     /// `false` for an idempotent replay. Local databases return
@@ -643,6 +651,192 @@ impl Connection {
         self.internal
             .drop_function(name.as_ref(), version.as_ref())
             .await
+    }
+
+    /// Start dropping a Function and return its cleanup job.
+    ///
+    /// The name is unbound before this returns; the object's content may still be being
+    /// deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for that to finish. When
+    /// the server deletes inline, or when nothing was bound, the returned job is already
+    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    pub async fn drop_function_async(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<(bool, crate::job::Job)> {
+        self.internal
+            .drop_function_async(name.as_ref(), version.as_ref())
+            .await
+    }
+
+    /// Create a named Secret in this database.
+    ///
+    /// Fails if the name is taken, so a create can never silently become a
+    /// rotation. There is no API that reads a stored credential back; the only
+    /// consumer is a Function that binds the Secret by name. Local databases
+    /// return [`Error::NotSupported`].
+    pub async fn create_secret(
+        &self,
+        name: impl AsRef<str>,
+        value: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_secret(name.as_ref(), value.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Replace the credential behind an existing Secret.
+    ///
+    /// Fails if it does not exist. Every Function bound to the Secret resolves
+    /// the new value from its next execution, and no new Function version is
+    /// minted -- which is what lets a rotation reach columns pinned to a
+    /// version registered before it. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn alter_secret(
+        &self,
+        name: impl AsRef<str>,
+        value: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .alter_secret(name.as_ref(), value.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of every Secret in this database.
+    ///
+    /// Names only. No path in this API returns a stored credential, by
+    /// construction rather than by policy. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        for segment in namespace_path {
+            validate_secret_component("Secret namespace path segment", segment)?;
+        }
+        self.internal.list_secrets(namespace_path).await
+    }
+
+    /// Drop a Secret.
+    ///
+    /// Functions bound to it fail at their next job, naming the Secret; that
+    /// is the revocation path. The name becomes free to reuse, and a new
+    /// Secret under it is picked up by everything still bound to that name.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn drop_secret(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_secret(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// What this database records about one Secret: its name and timestamps.
+    ///
+    /// Never the value. The type it returns has no field for one, so this is a
+    /// property of the API rather than of what the caller chooses to read.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn describe_secret(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<SecretInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_secret(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Create a view: a named query the database plans on every read.
+    ///
+    /// The query is planned once, here, so one that cannot be planned is
+    /// refused now rather than at the first read. A view holds no rows, and
+    /// its readers see its sources as they are at read time.
+    ///
+    /// There is no replace: a name already taken is an error, and changing a
+    /// view is a drop followed by a create, each authorized against what it
+    /// actually touches. Local databases return [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn view_lifecycle(
+    /// #     connection: &lancedb::Connection,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let namespace = vec!["analytics".to_string()];
+    ///
+    /// let view = connection
+    ///     .create_view(
+    ///         "recent_orders",
+    ///         "SELECT id, total FROM orders WHERE total > 100",
+    ///         &namespace,
+    ///     )
+    ///     .await?;
+    /// println!("{} has {} columns", view.name, view.schema.fields().len());
+    ///
+    /// // The query comes back as it was recorded, with the defaults its
+    /// // unqualified names resolve against.
+    /// let described = connection.describe_view("recent_orders", &namespace).await?;
+    /// println!("{} in {:?}", described.query, described.default_namespace_path);
+    ///
+    /// let names = connection.list_views(&namespace).await?;
+    /// assert!(names.iter().any(|name| name == "recent_orders"));
+    ///
+    /// // Dropping the view leaves `orders` untouched.
+    /// connection.drop_view("recent_orders", &namespace).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_view(
+        &self,
+        name: impl AsRef<str>,
+        query: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_view(name.as_ref(), query.as_ref(), namespace_path)
+            .await
+    }
+
+    /// What this database records about one view: its defining query and the
+    /// schema that query resolved to.
+    ///
+    /// The schema is the one recorded at creation. A source altered since then
+    /// shows up when the view is read, not here. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn describe_view(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_view(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a view.
+    ///
+    /// The tables it reads are untouched: a view holds no rows of its own.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn drop_view(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal.drop_view(name.as_ref(), namespace_path).await
+    }
+
+    /// The names of the views in one namespace.
+    ///
+    /// Names only; a definition is query metadata and comes from
+    /// [`Self::describe_view`]. The client walks all server pages before
+    /// returning. Local databases return [`Error::NotSupported`].
+    pub async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        validate_namespace(namespace_path)?;
+        self.internal.list_views(namespace_path).await
     }
 
     /// Rename a table in the database.
@@ -1545,7 +1739,11 @@ mod tests {
             client_secret: Some("secret".to_string()),
             scopes: vec!["scope".to_string()],
             flow: crate::remote::OAuthFlow::ClientCredentials,
+            client_auth_method: None,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
+            token_cache: None,
         };
 
         let result = ConnectBuilder::new("db://my-container/my-prefix")
@@ -1587,7 +1785,11 @@ mod tests {
             client_secret: Some("secret".to_string()),
             scopes: vec!["scope".to_string()],
             flow: crate::remote::OAuthFlow::ClientCredentials,
+            client_auth_method: None,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
+            token_cache: None,
         };
         let client_config = crate::remote::ClientConfig {
             header_provider: Some(

@@ -9,7 +9,13 @@ from typing import List, Optional
 from lancedb import __version__
 
 from .header import HeaderProvider
-from .oauth import OAuthConfig, OAuthFlowType
+from .oauth import (
+    ClientAuthMethod,
+    OAuthConfig,
+    OAuthFlowType,
+    OAuthSession,
+    TokenCacheOptions,
+)
 
 # The API reference renders this module with a single mkdocstrings directive,
 # which only picks up names listed here. New public names must be added to this
@@ -22,6 +28,9 @@ __all__ = [
     "HeaderProvider",
     "OAuthConfig",
     "OAuthFlowType",
+    "ClientAuthMethod",
+    "OAuthSession",
+    "TokenCacheOptions",
 ]
 
 
@@ -164,7 +173,10 @@ class ClientConfig:
     extra_headers: Optional[dict]
         Additional headers to include in requests.
     id_delimiter: Optional[str]
-        The delimiter to use when constructing object identifiers.
+        The delimiter joining a namespace path and a name into one object
+        identifier. ``"$"`` is the only supported value, and leaving this
+        unset is how to get it; anything else is rejected when the connection
+        is created.
     tls_config: Optional[TlsConfig]
         TLS/mTLS configuration for secure connections.
     header_provider: Optional[HeaderProvider]

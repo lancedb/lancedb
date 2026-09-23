@@ -53,6 +53,7 @@ use crate::database::Database;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::function::FunctionErrorsRequest;
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
@@ -75,6 +76,7 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod freshness;
 pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
@@ -562,6 +564,29 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Read this table's materialized-view definition and incarnation.
+    #[doc(hidden)]
+    async fn materialized_view_info(
+        &self,
+    ) -> Result<crate::materialized_view::MaterializedViewInfo> {
+        let schema = self.schema().await?;
+        crate::materialized_view::materialized_view_info_from_metadata(
+            self.name(),
+            schema.metadata(),
+        )
+    }
+    /// Submit a materialized-view refresh.
+    #[doc(hidden)]
+    async fn refresh_materialized_view_async(
+        &self,
+        _full: bool,
+        _source_version: Option<u64>,
+        _expected_incarnation: Option<&str>,
+    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
+        Err(Error::NotSupported {
+            message: "remote materialized-view refresh is not supported on this table type".into(),
+        })
+    }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
     /// The returned handle is independent from later refreshes or checkouts on
@@ -801,7 +826,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
         })
     }
-    /// Fill a computed column's unfilled rows.
+    /// Fill a computed column's unfilled rows and recompute those whose
+    /// inputs changed.
     ///
     /// The default returns `NotSupported`; Lance-backed tables override it.
     async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
@@ -809,14 +835,25 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are supported only on local tables".into(),
         })
     }
-    /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
-    /// the operation.
+    /// Fill a computed column's unfilled rows and recompute those whose
+    /// inputs changed, returning a [`Job`] tracking the operation.
     async fn refresh_column_async(
         &self,
         _column: &str,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         Err(Error::NotSupported {
             message: "computed columns are supported only on local tables".into(),
+        })
+    }
+    /// The per-row errors Function refreshes recorded on this table; see
+    /// [`Table::function_errors`]. The default returns `NotSupported`.
+    async fn function_errors(
+        &self,
+        _request: &crate::function::FunctionErrorsRequest,
+    ) -> Result<crate::function::FunctionErrors> {
+        Err(Error::NotSupported {
+            message: "per-row Function errors are recorded only on LanceDB Cloud and Enterprise"
+                .into(),
         })
     }
     /// Alter columns in the table.
@@ -1762,6 +1799,33 @@ impl Table {
         self.inner.optimize(action).await
     }
 
+    /// Prune versions committed before an absolute timestamp.
+    ///
+    /// This is an internal entry point for language bindings whose public API
+    /// accepts an absolute cleanup cutoff.
+    #[doc(hidden)]
+    pub async fn optimize_prune_before(
+        &self,
+        before_timestamp: chrono::DateTime<chrono::Utc>,
+        delete_unverified: Option<bool>,
+        error_if_tagged_old_versions: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        let native = self.as_native().ok_or_else(|| Error::NotSupported {
+            message: "optimize is not supported on LanceDB cloud.".into(),
+        })?;
+        let prune = optimize::cleanup_old_versions_before(
+            native,
+            before_timestamp,
+            delete_unverified,
+            error_if_tagged_old_versions,
+        )
+        .await?;
+        Ok(OptimizeStats {
+            compaction: None,
+            prune: Some(prune),
+        })
+    }
+
     /// Add new columns to the table, providing values to fill in.
     pub fn add_columns(&self) -> AddColumnsBuilder {
         AddColumnsBuilder::new(self.inner.clone())
@@ -1772,9 +1836,10 @@ impl Table {
     /// Declared with
     /// [`AddColumnsBuilder::computed`](add_columns::AddColumnsBuilder::computed),
     /// a column starts empty and gets its values here. Fragments appended
-    /// since the last refresh are filled by the next one; fragments already
-    /// filled are left as they are, so the call is idempotent and does not
-    /// observe a mutated input.
+    /// since the last refresh are filled by the next one, and fragments whose
+    /// inputs changed since they were computed are recomputed (see
+    /// [`freshness`](crate::table::freshness)); everything else is left as
+    /// it is.
     ///
     /// Local tables only: a remote refresh runs as a server job, through
     /// [`Table::refresh_column_async`].
@@ -1818,6 +1883,36 @@ impl Table {
         column: impl AsRef<str>,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
+    }
+
+    /// The per-row errors Function refreshes recorded on this table: the
+    /// rows a refresh skipped under its skip policy, with the failing input
+    /// and the error, plus a summary for any fragment whose detail was
+    /// capped. Filter by job or column through the request; a listing that
+    /// hit its limit reports [`FunctionErrors::truncated`].
+    ///
+    /// LanceDB Cloud and Enterprise only, and the caller needs read access
+    /// to the table, since a message carries the value that failed.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// use lancedb::function::FunctionErrorsRequest;
+    ///
+    /// # async fn list_errors(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let errors = table
+    ///     .function_errors(FunctionErrorsRequest::new().column("embedding"))
+    ///     .await?;
+    /// for record in &errors.records {
+    ///     println!("{}: {}", record.error_type, record.error_message);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn function_errors(
+        &self,
+        request: FunctionErrorsRequest,
+    ) -> Result<crate::function::FunctionErrors> {
+        self.inner.function_errors(&request).await
     }
 
     /// Change a column's name or nullability.
@@ -4017,6 +4112,31 @@ mod tests {
             .unwrap();
 
         assert_eq!(table.name, "test")
+    }
+
+    /// The per-row error store is a server feature; a local table says so
+    /// rather than answering with an empty listing.
+    #[tokio::test]
+    async fn test_function_errors_are_remote_only() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = make_test_batches();
+        let table = conn
+            .create_table("t", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let err = table
+            .function_errors(FunctionErrorsRequest::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("Cloud and Enterprise")),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

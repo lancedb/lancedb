@@ -25,9 +25,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt64Type;
 use arrow_array::{RecordBatch, UInt64Array, new_null_array};
-use arrow_schema::{FieldRef, Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, Field as ArrowField, FieldRef, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::ScalarValue;
 use datafusion::error::DataFusionError;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::{col, lit};
@@ -41,6 +42,8 @@ use lance::dataset::write::merge_insert::inserted_rows::{
 };
 use lance::dataset::{CommitBuilder, InsertBuilder, WriteDestination, WriteMode, WriteParams};
 use lance_core::{ROW_CREATED_AT_VERSION, ROW_ID, ROW_LAST_UPDATED_AT_VERSION};
+
+use lance_datafusion::planner::Planner;
 use lance_file::version::ConcreteFileVersion;
 use lance_table::format::Fragment;
 use serde::{Deserialize, Serialize};
@@ -95,7 +98,7 @@ pub const VIEW_VERSION_META_KEY: &str = "mv.view_version";
 pub const SOURCE_VERSION_TS_META_KEY: &str = "mv.source_version_ts";
 
 /// One refresh per view at a time within this process.
-fn refresh_lock(uri: &str) -> Arc<tokio::sync::Mutex<()>> {
+pub(super) fn refresh_lock(uri: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
     LOCKS
@@ -131,12 +134,12 @@ pub(crate) async fn execute_refresh(
 
     // The definition a handle cached at open may since have been replaced;
     // what refresh executes and what it stamps must be one generation.
-    let definition = match super::materialized_view_kind(&view_ds.schema().metadata)? {
-        Some(super::MaterializedViewKind::Select(definition)) => definition,
-        Some(super::MaterializedViewKind::Unrecognized { kind }) => {
+    let definition = match super::read_definition(&view_ds.schema().metadata)? {
+        Some(super::StoredDefinition::Query(definition)) => definition,
+        Some(super::StoredDefinition::Newer { format }) => {
             return Err(Error::NotSupported {
                 message: format!(
-                    "materialized view '{}' is defined by '{kind}', which this \
+                    "materialized view '{}' is stored in format {format}, which this \
                      version of lancedb cannot refresh",
                     view.name()
                 ),
@@ -149,9 +152,10 @@ pub(crate) async fn execute_refresh(
         }
     };
     let definition = &definition;
+    let staging = super::read_staging(&view_ds.schema().metadata)?;
     ensure_no_mem_wal(&view_ds, "materialized view", view.name()).await?;
 
-    let source_ds = open_source(view, definition).await?;
+    let source_ds = open_source(view, definition, staging.as_ref()).await?;
     let source_ds = match pinned {
         Some(version) => source_ds.checkout_version(version).await?,
         None => source_ds,
@@ -164,20 +168,30 @@ pub(crate) async fn execute_refresh(
     // require its planned output to be exactly the view's physical schema: a
     // definition the stored table cannot represent must not be certified.
     let source_schema = Arc::new(ArrowSchema::from(source_ds.schema()));
-    let projections: Vec<(String, String)> = definition
-        .projections
-        .iter()
-        .map(|p| (p.output.clone(), p.expression.clone()))
-        .collect();
-    validate_inputs(&source_ds, definition)?;
-    let (replanned, planned_fields, _renames) = super::plan(
-        source_schema,
-        &definition.source_table,
-        &definition.source_namespace,
-        Some(&projections),
-        definition.filter.as_deref(),
-        definition.limit,
-    )?;
+    let super::Planned {
+        definition: replanned,
+        fields: planned_fields,
+        inputs,
+        ..
+    } = super::plan(source_schema.clone(), definition, staging.as_ref()).map_err(|e| match e {
+        // The stored query planned when the view was declared; what changed
+        // since is the source.
+        Error::InvalidExpression { column, message } => Error::Schema {
+            message: format!(
+                "view column '{column}' no longer plans against '{}' (a source column \
+                 was dropped or renamed): {message}",
+                definition.source_table
+            ),
+        },
+        Error::InvalidInput { message } => Error::Schema {
+            message: format!(
+                "the stored query no longer plans against '{}' (a source column was \
+                 dropped or renamed): {message}",
+                definition.source_table
+            ),
+        },
+        e => e,
+    })?;
     let mut planned_fields = planned_fields;
     planned_fields.push(arrow_schema::Field::new(
         SOURCE_ROW_ID_COLUMN,
@@ -224,14 +238,19 @@ pub(crate) async fn execute_refresh(
             ),
         });
     }
-    let definition_changed =
-        definition.filter != replanned.filter || definition.inputs != replanned.inputs;
+    // The stored query is rewritten whenever its stored form differs from
+    // the current one: a legacy layout, or a spelling the canonicalizer no
+    // longer produces. Whether the rows change is a separate question: a
+    // legacy raw filter like `"Party" = 'D'` read the double quotes as a
+    // string literal, so its watermark certifies different rows than the
+    // canonical predicate, and only a rebuild can replace them.
+    let current = definition_to_metadata(&replanned)?;
+    let persist = view_ds.schema().metadata.get(DEFINITION_META_KEY) != Some(&current);
+    let unnest = super::physical_unnest(&replanned, staging.as_ref())?;
+    let definition_changed = !same_meaning(&source_schema, definition, &replanned, unnest.as_ref());
     let definition = &replanned;
+    let persist = persist.then_some(definition);
 
-    // A watermark written for a legacy raw filter certifies the rows that
-    // filter produced, not the canonical predicate above. Rebuild instead of
-    // accepting or advancing it, and persist the migrated definition in the
-    // same metadata commit that certifies the replacement rows.
     if definition_changed {
         return rebuild(
             view_native,
@@ -240,6 +259,8 @@ pub(crate) async fn execute_refresh(
             source_version,
             source_ts,
             definition,
+            &inputs,
+            unnest.as_ref(),
             true,
             expected_incarnation,
         )
@@ -276,6 +297,22 @@ pub(crate) async fn execute_refresh(
         });
     }
 
+    // A group spans fragments: there is no per-fragment increment.
+    if definition.is_grouped() {
+        return rebuild(
+            view_native,
+            &view_ds,
+            &source_ds,
+            source_version,
+            source_ts,
+            definition,
+            &inputs,
+            None,
+            persist.is_some(),
+            expected_incarnation,
+        )
+        .await;
+    }
     let watermark = watermark.filter(|_| view_intact);
     match plan_increment(
         &source_ds,
@@ -284,6 +321,7 @@ pub(crate) async fn execute_refresh(
         recorded_ts,
         full,
         definition,
+        &inputs,
     )
     .await
     {
@@ -296,6 +334,9 @@ pub(crate) async fn execute_refresh(
                 source_ts,
                 increment,
                 definition,
+                &inputs,
+                unnest.as_ref(),
+                persist,
                 watermark,
                 expected_incarnation,
             )
@@ -311,7 +352,9 @@ pub(crate) async fn execute_refresh(
                         source_version,
                         source_ts,
                         definition,
-                        false,
+                        &inputs,
+                        unnest.as_ref(),
+                        persist.is_some(),
                         expected_incarnation,
                     )
                     .await
@@ -326,7 +369,9 @@ pub(crate) async fn execute_refresh(
                 source_version,
                 source_ts,
                 definition,
-                false,
+                &inputs,
+                unnest.as_ref(),
+                persist.is_some(),
                 expected_incarnation,
             )
             .await
@@ -345,6 +390,7 @@ async fn plan_increment(
     recorded_ts: Option<u128>,
     full: bool,
     definition: &MaterializedViewDefinition,
+    inputs: &[String],
 ) -> Option<Increment> {
     if full {
         return None;
@@ -414,7 +460,7 @@ async fn plan_increment(
         });
     }
 
-    is_pure_append(&old, source_ds, &relevant_field_ids(source_ds, definition)).then(|| Increment {
+    is_pure_append(&old, source_ds, &relevant_field_ids(source_ds, inputs)).then(|| Increment {
         appended: live
             .into_iter()
             .filter(|f| !old_ids.contains(&f.id))
@@ -567,7 +613,7 @@ fn fragment_signature(metadata: &Fragment, relevant: &HashSet<i32>) -> (u64, Str
 }
 
 /// Field ids (with struct descendants) of the source columns the view reads.
-fn relevant_field_ids(source: &Dataset, definition: &MaterializedViewDefinition) -> HashSet<i32> {
+fn relevant_field_ids(source: &Dataset, inputs: &[String]) -> HashSet<i32> {
     fn collect(field: &lance_core::datatypes::Field, ids: &mut HashSet<i32>) {
         ids.insert(field.id);
         for child in &field.children {
@@ -575,7 +621,7 @@ fn relevant_field_ids(source: &Dataset, definition: &MaterializedViewDefinition)
         }
     }
     let mut ids = HashSet::new();
-    for input in &definition.inputs {
+    for input in inputs {
         if let Some(field) = source.schema().field(input) {
             collect(field, &mut ids);
         }
@@ -583,20 +629,54 @@ fn relevant_field_ids(source: &Dataset, definition: &MaterializedViewDefinition)
     ids
 }
 
-/// Error if a column the view reads no longer exists in the source.
-fn validate_inputs(source: &Dataset, definition: &MaterializedViewDefinition) -> Result<()> {
-    for input in &definition.inputs {
-        if source.schema().field(input).is_none() {
-            return Err(Error::Schema {
-                message: format!(
-                    "source column '{input}' read by the view no longer exists \
-                     (dropped or renamed in '{}')",
-                    definition.source_table
-                ),
-            });
-        }
+/// Whether two plannings of a view compute the same rows and columns: the
+/// same source, unnest and limit, and expressions the planner reads as the
+/// same logical expression, whatever their spelling. A definition that does
+/// not plan compares as different.
+fn same_meaning(
+    source_schema: &SchemaRef,
+    stored: &MaterializedViewDefinition,
+    replanned: &MaterializedViewDefinition,
+    unnest: Option<&super::ViewUnnest>,
+) -> bool {
+    if stored.source_table != replanned.source_table
+        || stored.source_namespace != replanned.source_namespace
+        || stored.lateral != replanned.lateral
+        || stored.limit != replanned.limit
+        || stored.projections.len() != replanned.projections.len()
+        || stored.filter.is_some() != replanned.filter.is_some()
+        || stored.group_by.len() != replanned.group_by.len()
+    {
+        return false;
     }
-    Ok(())
+    // Lance's planner does not read aggregates; a grouped definition is
+    // compared in its canonical spelling, which planning produced.
+    if stored.is_grouped() {
+        return stored.projections == replanned.projections
+            && stored.group_by == replanned.group_by
+            && stored.filter == replanned.filter;
+    }
+    let schema = match unnest {
+        None => source_schema.clone(),
+        Some(unnest) => match super::flattened_schema(source_schema, unnest) {
+            Ok(schema) => schema,
+            Err(_) => return false,
+        },
+    };
+    let planner = Planner::new(schema);
+    let same_expr = |a: &str, b: &str| match (planner.parse_expr(a), planner.parse_expr(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    stored
+        .projections
+        .iter()
+        .zip(&replanned.projections)
+        .all(|(a, b)| a.output == b.output && same_expr(&a.expression, &b.expression))
+        && match (&stored.filter, &replanned.filter) {
+            (Some(a), Some(b)) => same_expr(a, b),
+            _ => true,
+        }
 }
 
 /// Reject MemWAL/LSM state on a refresh participant: un-compacted tiers are
@@ -616,14 +696,27 @@ pub(crate) async fn ensure_no_mem_wal(dataset: &Dataset, role: &str, name: &str)
     Ok(())
 }
 
-async fn open_source(view: &Table, definition: &MaterializedViewDefinition) -> Result<Dataset> {
+/// The table refresh scans: the staging table when the query calls a
+/// Function in FROM position, otherwise the query's source.
+pub(super) async fn open_source(
+    view: &Table,
+    definition: &MaterializedViewDefinition,
+    staging: Option<&super::StagingBinding>,
+) -> Result<Dataset> {
     let database = view.database_opt().ok_or_else(|| Error::InvalidInput {
         message: "the view was not opened through a database connection".into(),
     })?;
+    let (name, namespace_path) = match staging {
+        Some(staging) => (staging.table.clone(), staging.namespace.clone()),
+        None => (
+            definition.source_table.clone(),
+            definition.source_namespace.clone(),
+        ),
+    };
     let source = database
         .open_table(OpenTableRequest {
-            name: definition.source_table.clone(),
-            namespace_path: definition.source_namespace.clone(),
+            name,
+            namespace_path,
             index_cache_size: None,
             lance_read_params: None,
             location: None,
@@ -656,6 +749,9 @@ async fn incremental(
     source_ts: u128,
     increment: Increment,
     definition: &MaterializedViewDefinition,
+    inputs: &[String],
+    unnest: Option<&super::ViewUnnest>,
+    persist: Option<&MaterializedViewDefinition>,
     watermark: Option<u64>,
     expected_incarnation: Option<&str>,
 ) -> Result<Option<RefreshMaterializedViewResult>> {
@@ -739,7 +835,7 @@ async fn incremental(
             view_ds.clone(),
             source_version,
             source_ts,
-            None,
+            persist,
             expected_incarnation,
         )
         .await?;
@@ -761,7 +857,7 @@ async fn incremental(
             published,
             source_version,
             source_ts,
-            None,
+            persist,
             expected_incarnation,
         )
         .await?;
@@ -778,6 +874,8 @@ async fn incremental(
     let mut stream = compute_stream(
         source_ds,
         definition,
+        inputs,
+        unnest,
         RowScope {
             fragments: Some(new_fragments),
             // An update rewrites whole fragments, so a fragment new at head
@@ -799,6 +897,8 @@ async fn incremental(
         let recomputed = compute_stream(
             source_ds,
             definition,
+            inputs,
+            unnest,
             RowScope {
                 updated_between: Some((watermark_version, source_version)),
                 ..Default::default()
@@ -833,7 +933,7 @@ async fn incremental(
             published,
             source_version,
             source_ts,
-            None,
+            persist,
             expected_incarnation,
         )
         .await?;
@@ -883,7 +983,7 @@ async fn incremental(
         appended,
         source_version,
         source_ts,
-        None,
+        persist,
         expected_incarnation,
     )
     .await?;
@@ -898,6 +998,8 @@ async fn rebuild(
     source_version: u64,
     source_ts: u128,
     definition: &MaterializedViewDefinition,
+    inputs: &[String],
+    unnest: Option<&super::ViewUnnest>,
     persist_definition: bool,
     expected_incarnation: Option<&str>,
 ) -> Result<RefreshMaterializedViewResult> {
@@ -906,6 +1008,8 @@ async fn rebuild(
     let stream = compute_stream(
         source_ds,
         definition,
+        inputs,
+        unnest,
         RowScope {
             limit: definition.limit,
             ..Default::default()
@@ -1012,7 +1116,11 @@ async fn replace_retaining_indices(
 /// Refuse to act on a view that is not `expected`'s incarnation, judged from
 /// the latest stored manifest. Not a commit condition; see
 /// `RefreshMaterializedViewBuilder::expect_incarnation`.
-async fn ensure_incarnation(view_ds: &Dataset, expected: Option<&str>, what: &str) -> Result<()> {
+pub(super) async fn ensure_incarnation(
+    view_ds: &Dataset,
+    expected: Option<&str>,
+    what: &str,
+) -> Result<()> {
     let Some(expected) = expected else {
         return Ok(());
     };
@@ -1039,7 +1147,7 @@ async fn ensure_incarnation(view_ds: &Dataset, expected: Option<&str>, what: &st
 /// verified; on a mismatch another commit raced in between, and the stamp
 /// ABORTS rather than certify that commit as the refresh's own generation.
 /// The view is left visibly unstamped, so the next refresh rebuilds.
-async fn stamp_watermark(
+pub(super) async fn stamp_watermark(
     view_native: &NativeTable,
     mut dataset: Dataset,
     source_version: u64,
@@ -1124,8 +1232,9 @@ struct RowScope {
 
 /// Whether every commit on the view after `recorded` is a fill of its
 /// computed columns: a column rewrite or data replacement touching only
-/// those fields and neither adding nor removing rows. A version whose
-/// transaction cannot be read is not proven, so it counts as drift.
+/// those fields and neither adding nor removing rows, or the freshness
+/// stamp a fill leaves on them. A version whose transaction cannot be read
+/// is not proven, so it counts as drift.
 async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Result<bool> {
     // A fill may write any field under a computed column, so the whole
     // subtree counts, not only the root.
@@ -1176,6 +1285,19 @@ async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Resul
                                 .all(|field| computed_fields.contains(&(*field as u32)))
                     })
             }
+            // The stamp `refresh_column` writes after its fill (see
+            // `table::freshness`): field metadata on computed columns, no data.
+            Operation::UpdateConfig {
+                config_updates: None,
+                table_metadata_updates: None,
+                schema_metadata_updates: None,
+                field_metadata_updates,
+            } => {
+                !field_metadata_updates.is_empty()
+                    && field_metadata_updates
+                        .keys()
+                        .all(|field| computed_fields.contains(&(*field as u32)))
+            }
             _ => false,
         };
         if !fill {
@@ -1188,10 +1310,15 @@ async fn only_computed_rewrites_since(view_ds: &Dataset, recorded: u64) -> Resul
 async fn compute_stream(
     source: &Dataset,
     definition: &MaterializedViewDefinition,
+    inputs: &[String],
+    unnest: Option<&super::ViewUnnest>,
     scope: RowScope,
     schema: SchemaRef,
     rows_written: Arc<AtomicU64>,
 ) -> Result<SendableRecordBatchStream> {
+    if definition.is_grouped() {
+        return super::grouped::stream(source, definition, inputs, schema, rows_written).await;
+    }
     let RowScope {
         fragments,
         created_after,
@@ -1219,6 +1346,7 @@ async fn compute_stream(
     let clauses: Vec<String> = definition
         .filter
         .clone()
+        .filter(|_| unnest.is_none())
         .map(|f| format!("({f})"))
         .into_iter()
         .chain(updated_filter)
@@ -1227,12 +1355,23 @@ async fn compute_stream(
     if !clauses.is_empty() {
         scanner.filter(&clauses.join(" AND "))?;
     }
-    let transforms: Vec<(&str, &str)> = definition
-        .projections
-        .iter()
-        .map(|p| (p.output.as_str(), p.expression.as_str()))
-        .collect();
-    scanner.project_with_transform(&transforms)?;
+    // An expanded view cannot project or filter in the scan: both read the
+    // unnested element, which exists only after the per-batch expansion.
+    let expanded = match unnest {
+        Some(unnest) => Some(UnnestPlan::new(source, definition, inputs, unnest)?),
+        None => {
+            let transforms: Vec<(&str, &str)> = definition
+                .projections
+                .iter()
+                .map(|p| (p.output.as_str(), p.expression.as_str()))
+                .collect();
+            scanner.project_with_transform(&transforms)?;
+            None
+        }
+    };
+    if let Some(expanded) = &expanded {
+        scanner.project(&expanded.raw_inputs)?;
+    }
     // A scan reads a limit of zero as no limit at all, so a view capped at
     // nothing is answered without one.
     if limit == Some(0) {
@@ -1251,29 +1390,230 @@ async fn compute_stream(
     let out_schema = schema.clone();
     let mapped = scanner.try_into_stream().await?.map(move |batch| {
         let batch = batch.map_err(|e| DataFusionError::External(Box::new(e)))?;
-        let mut columns = Vec::with_capacity(out_schema.fields().len());
-        for field in out_schema.fields() {
-            if computed_column_from_field(field).is_some() {
-                columns.push(new_null_array(field.data_type(), batch.num_rows()));
-                continue;
-            }
-            let name = if field.name() == SOURCE_ROW_ID_COLUMN {
-                ROW_ID
-            } else {
-                field.name()
-            };
-            let column = batch.column_by_name(name).ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "view column '{}' is not produced by the view's definition",
-                    field.name()
-                ))
-            })?;
-            columns.push(column.clone());
-        }
+        let batch = match &expanded {
+            None => batch,
+            Some(expanded) => expanded.apply(&batch)?,
+        };
+        let batch = to_view_batch(&batch, &out_schema)?;
         rows_written.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-        Ok(RecordBatch::try_new(out_schema.clone(), columns)?)
+        Ok(batch)
     });
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, mapped)))
+}
+
+/// `batch` in the view's physical schema: the row id becomes the
+/// provenance column and computed columns are written NULL for their owner
+/// to fill.
+pub(super) fn to_view_batch(
+    batch: &RecordBatch,
+    out_schema: &SchemaRef,
+) -> datafusion::common::Result<RecordBatch> {
+    let mut columns = Vec::with_capacity(out_schema.fields().len());
+    for field in out_schema.fields() {
+        if computed_column_from_field(field).is_some() {
+            columns.push(new_null_array(field.data_type(), batch.num_rows()));
+            continue;
+        }
+        let name = if field.name() == SOURCE_ROW_ID_COLUMN {
+            ROW_ID
+        } else {
+            field.name()
+        };
+        let column = batch.column_by_name(name).ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "view column '{}' is not produced by the view's definition",
+                field.name()
+            ))
+        })?;
+        columns.push(column.clone());
+    }
+    Ok(RecordBatch::try_new(out_schema.clone(), columns)?)
+}
+
+/// The post-scan half of an unnested view's refresh: the scan reads
+/// `raw_inputs` plus the row id, and each batch is unnested on the list
+/// column, filtered, then projected by expressions typed against
+/// `read_schema`, where the element sits under the alias.
+struct UnnestPlan {
+    column: String,
+    raw_inputs: Vec<String>,
+    read_schema: SchemaRef,
+    projections: Vec<(String, Arc<dyn PhysicalExpr>)>,
+    filter: Option<Arc<dyn PhysicalExpr>>,
+}
+
+impl UnnestPlan {
+    fn new(
+        source: &Dataset,
+        definition: &MaterializedViewDefinition,
+        inputs: &[String],
+        unnest: &super::ViewUnnest,
+    ) -> Result<Self> {
+        // Whole root columns: a nested input is projected by the expression.
+        let mut raw_inputs: Vec<String> = inputs
+            .iter()
+            .map(|input| super::root(input).to_string())
+            .chain(std::iter::once(unnest.column.clone()))
+            .collect();
+        raw_inputs.sort();
+        raw_inputs.dedup();
+        let flattened = super::flattened_schema(&ArrowSchema::from(source.schema()), unnest)?;
+        // Physical expressions index columns by position, so the schema is
+        // exactly the scan's output: `raw_inputs` in order, then the row id.
+        let mut read_fields = Vec::with_capacity(raw_inputs.len() + 1);
+        for name in &raw_inputs {
+            let name = if *name == unnest.column {
+                &unnest.alias
+            } else {
+                name
+            };
+            let field = flattened
+                .field_with_name(name)
+                .map_err(|_| Error::Runtime {
+                    message: format!("source column '{name}' read by the view is missing"),
+                })?;
+            read_fields.push(field.clone());
+        }
+        read_fields.push(ArrowField::new(ROW_ID, DataType::UInt64, false));
+        let read_schema = Arc::new(ArrowSchema::new(read_fields));
+        let planner = Planner::new(read_schema.clone());
+        let physical = |what: &str, sql: &str| -> Result<Arc<dyn PhysicalExpr>> {
+            let err = |e: lance::Error| Error::Runtime {
+                message: format!("{what}: {e}"),
+            };
+            let parsed = planner.parse_expr(sql).map_err(err)?;
+            let optimized = planner.optimize_expr(parsed).map_err(err)?;
+            planner.create_physical_expr(&optimized).map_err(err)
+        };
+        let mut projections = Vec::with_capacity(definition.projections.len());
+        for projection in &definition.projections {
+            let expr = physical(
+                &format!("view column '{}'", projection.output),
+                &projection.expression,
+            )?;
+            projections.push((projection.output.clone(), expr));
+        }
+        let filter = definition
+            .filter
+            .as_deref()
+            .map(|sql| physical("view filter", sql))
+            .transpose()?;
+        Ok(Self {
+            column: unnest.column.clone(),
+            raw_inputs,
+            read_schema,
+            projections,
+            filter,
+        })
+    }
+
+    fn apply(&self, batch: &RecordBatch) -> datafusion::common::Result<RecordBatch> {
+        let unnested = unnest_batch(batch, &self.column)
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        // Same columns, renamed: the list column is now the element under the alias.
+        let unnested = RecordBatch::try_new(self.read_schema.clone(), unnested.columns().to_vec())?;
+        let unnested = match &self.filter {
+            None => unnested,
+            Some(filter) => {
+                let keep = filter
+                    .evaluate(&unnested)?
+                    .into_array(unnested.num_rows())?;
+                let keep = keep.as_boolean_opt().ok_or_else(|| {
+                    DataFusionError::Internal("view filter did not evaluate to a boolean".into())
+                })?;
+                arrow_select::filter::filter_record_batch(&unnested, keep)?
+            }
+        };
+        let mut columns = Vec::with_capacity(self.projections.len() + 1);
+        for (output, expr) in &self.projections {
+            let value = expr.evaluate(&unnested)?.into_array(unnested.num_rows())?;
+            columns.push((output.clone(), value));
+        }
+        let row_id = unnested
+            .column_by_name(ROW_ID)
+            .expect("scan carries the row id")
+            .clone();
+        columns.push((ROW_ID.to_string(), row_id));
+        Ok(RecordBatch::try_from_iter(columns)?)
+    }
+}
+
+/// Expand `list_column` one row per element, repeating every other column
+/// for each element; an empty or null list contributes no rows. The list
+/// column is replaced by its element type, so a projection reads the
+/// element's fields as `alias.field` after this. This is the row-cardinality
+/// step of an `expanded_select` view, applied per batch on the scan stream.
+fn unnest_batch(batch: &RecordBatch, list_column: &str) -> Result<RecordBatch> {
+    use arrow_array::{Array, ListArray, UInt32Array};
+    use arrow_select::take::take;
+
+    let (list_index, _) = batch
+        .schema()
+        .column_with_name(list_column)
+        .ok_or_else(|| Error::Runtime {
+            message: format!("expansion column '{list_column}' is not in the batch"),
+        })?;
+    let list = batch
+        .column(list_index)
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .ok_or_else(|| Error::Runtime {
+            message: format!(
+                "expansion column '{list_column}' is {}, not a list",
+                batch.column(list_index).data_type()
+            ),
+        })?;
+
+    // One take index per element, naming the source row it came from. A null
+    // list has no elements; its offsets are equal, so it repeats nothing.
+    let offsets = list.value_offsets();
+    let mut repeat = Vec::with_capacity(list.values().len());
+    for row in 0..list.len() {
+        if list.is_valid(row) {
+            let count = (offsets[row + 1] - offsets[row]) as usize;
+            repeat.extend(std::iter::repeat_n(row as u32, count));
+        }
+    }
+    let repeat = UInt32Array::from(repeat);
+    // The flattened elements, in the same order as `repeat`: only the ranges
+    // valid rows cover, so a null row's stale range (if any) is skipped.
+    let elements = {
+        let mut ranges = Vec::new();
+        for row in 0..list.len() {
+            if list.is_valid(row) {
+                ranges.extend((offsets[row] as u32)..(offsets[row + 1] as u32));
+            }
+        }
+        take(list.values().as_ref(), &UInt32Array::from(ranges), None)?
+    };
+
+    let mut fields = Vec::with_capacity(batch.num_columns());
+    let mut columns = Vec::with_capacity(batch.num_columns());
+    for (index, field) in batch.schema().fields().iter().enumerate() {
+        if index == list_index {
+            let element = match field.data_type() {
+                arrow_schema::DataType::List(element) => element.clone(),
+                other => {
+                    return Err(Error::Runtime {
+                        message: format!("expansion column '{list_column}' is {other}, not a list"),
+                    });
+                }
+            };
+            fields.push(Arc::new(
+                arrow_schema::Field::new(field.name(), element.data_type().clone(), true)
+                    .with_metadata(field.metadata().clone()),
+            ));
+            columns.push(elements.clone());
+        } else {
+            fields.push(field.clone());
+            columns.push(take(batch.column(index).as_ref(), &repeat, None)?);
+        }
+    }
+    let schema = Arc::new(ArrowSchema::new_with_metadata(
+        fields,
+        batch.schema().metadata().clone(),
+    ));
+    Ok(RecordBatch::try_new(schema, columns)?)
 }
 
 /// Commit the view's removals and additions as one change, on the exact
@@ -1550,11 +1890,11 @@ fn collect_source_row_ids(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 
     /// Park a refresh between planning and publication so a test can move
     /// the view underneath it. Inert unless [`DRIFT_TARGET`] names this view.
-    pub(super) async fn hold_before_publish(uri: &str) {
+    pub(in crate::materialized_view) async fn hold_before_publish(uri: &str) {
         {
             let mut target = DRIFT_TARGET.lock().unwrap();
             if target.as_deref() != Some(uri) {
@@ -1575,10 +1915,14 @@ mod tests {
         *EVICTION_CAP.lock().unwrap()
     }
 
-    pub(super) static DRIFT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    pub(super) static DRIFT_TARGET: StdMutex<Option<String>> = StdMutex::new(None);
-    pub(super) static DRIFT_PLANNED: tokio::sync::Notify = tokio::sync::Notify::const_new();
-    pub(super) static DRIFT_RELEASED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+    pub(in crate::materialized_view) static DRIFT_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
+    pub(in crate::materialized_view) static DRIFT_TARGET: StdMutex<Option<String>> =
+        StdMutex::new(None);
+    pub(in crate::materialized_view) static DRIFT_PLANNED: tokio::sync::Notify =
+        tokio::sync::Notify::const_new();
+    pub(in crate::materialized_view) static DRIFT_RELEASED: tokio::sync::Notify =
+        tokio::sync::Notify::const_new();
 
     /// Block until every participant in a cross-process race has planned and
     /// staged its write, so the commits they then attempt genuinely contend
@@ -1643,6 +1987,7 @@ mod tests {
 
     async fn doubled_view(conn: &Connection) -> MaterializedView {
         conn.create_materialized_view("doubled", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -1655,6 +2000,247 @@ mod tests {
         let view = doubled_view(&conn).await;
         view.refresh().execute().await.unwrap();
         (conn, source, view)
+    }
+
+    /// The per-batch expansion behind an `expanded_select` view: every
+    /// element of the list column becomes a row, the other columns repeat
+    /// for each, and an empty or null list contributes no rows at all --
+    /// which is exactly "zero rows out" for a table-valued function.
+    /// Four documents with a `list<struct<chunk, ordinal>>` column named
+    /// `c`: doc 1 has two chunks, doc 2 none, doc 3 a null list, doc 4 one.
+    fn chunked_batch() -> RecordBatch {
+        use arrow_array::builder::{Int32Builder, ListBuilder, StringBuilder, StructBuilder};
+        use arrow_array::{ArrayRef, Int64Array};
+        use arrow_schema::{DataType, Field, Fields};
+
+        let element_fields = Fields::from(vec![
+            Field::new("chunk", DataType::Utf8, true),
+            Field::new("ordinal", DataType::Int32, true),
+        ]);
+        let mut list = ListBuilder::new(StructBuilder::new(
+            element_fields,
+            vec![
+                Box::new(StringBuilder::new()),
+                Box::new(Int32Builder::new()),
+            ],
+        ));
+        for chunks in [Some(vec!["a", "b"]), Some(vec![]), None, Some(vec!["c"])] {
+            match chunks {
+                Some(chunks) => {
+                    for (i, c) in chunks.iter().enumerate() {
+                        let s = list.values();
+                        s.field_builder::<StringBuilder>(0).unwrap().append_value(c);
+                        s.field_builder::<Int32Builder>(1)
+                            .unwrap()
+                            .append_value(i as i32);
+                        s.append(true);
+                    }
+                    list.append(true);
+                }
+                None => list.append(false),
+            }
+        }
+        let meta = arrow_array::StructArray::from(vec![(
+            Arc::new(Field::new("title", DataType::Utf8, true)),
+            Arc::new(arrow_array::StringArray::from(vec!["t1", "t2", "t3", "t4"])) as ArrayRef,
+        )]);
+        RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4])) as ArrayRef,
+            ),
+            ("meta", Arc::new(meta) as ArrayRef),
+            ("c", Arc::new(list.finish()) as ArrayRef),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn unnest_repeats_siblings_per_element_and_drops_empty_lists() {
+        use arrow_array::{StringArray, StructArray};
+        use arrow_schema::{DataType, Field, Fields};
+
+        let batch = chunked_batch();
+        let element_fields = Fields::from(vec![
+            Field::new("chunk", DataType::Utf8, true),
+            Field::new("ordinal", DataType::Int32, true),
+        ]);
+        let out = unnest_batch(&batch, "c").unwrap();
+        assert_eq!(out.num_rows(), 3, "{out:?}");
+        let ids: Vec<i64> = out["id"]
+            .as_primitive::<arrow_array::types::Int64Type>()
+            .values()
+            .to_vec();
+        assert_eq!(ids, [1, 1, 4]);
+        let element = out["c"].as_any().downcast_ref::<StructArray>().unwrap();
+        let chunks: Vec<&str> = element
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .iter()
+            .flatten()
+            .collect();
+        assert_eq!(chunks, ["a", "b", "c"]);
+        let ordinals: Vec<i32> = element
+            .column(1)
+            .as_primitive::<arrow_array::types::Int32Type>()
+            .values()
+            .to_vec();
+        assert_eq!(ordinals, [0, 1, 0]);
+        // the element column is now the struct itself, not a list of it
+        assert_eq!(
+            out.schema().field_with_name("c").unwrap().data_type(),
+            &DataType::Struct(element_fields)
+        );
+    }
+
+    /// A Function in FROM position is refreshed from its staging table: the
+    /// query on the view stays the one the user wrote, the staging binding
+    /// says which table and list column refresh reads, and rows come out one
+    /// per element as with UNNEST. Without a staging, a local database
+    /// refuses the query rather than guess.
+    #[tokio::test]
+    async fn a_function_in_from_position_refreshes_from_its_staging() {
+        use arrow_array::StringArray;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let staging = conn
+            .create_table("docs__chunk", chunked_batch())
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let query =
+            "SELECT id AS doc, e.chunk AS text, e.ordinal FROM docs, chunk(meta.title, 2) AS e";
+        let definition = MaterializedViewDefinition::from_sql(query).unwrap();
+
+        let err = crate::materialized_view::prepare_definition(&staging, definition.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("reads 'docs'")),
+            "{err:?}"
+        );
+
+        let view = crate::materialized_view::prepare_staged_definition(&staging, definition, "c")
+            .await
+            .unwrap()
+            .create("chunks")
+            .await
+            .unwrap();
+        assert_eq!(view.definition().to_sql(), query);
+        let metadata = view.table().schema().await.unwrap().metadata().clone();
+        assert_eq!(
+            crate::materialized_view::read_staging(&metadata).unwrap(),
+            Some(crate::materialized_view::StagingBinding {
+                table: "docs__chunk".into(),
+                namespace: Vec::new(),
+                column: "c".into(),
+            })
+        );
+
+        view.refresh().execute().await.unwrap();
+        assert_eq!(read(view.table(), "ordinal").await, [0, 0, 1]);
+        let batches = view
+            .table()
+            .query()
+            .select(Select::columns(&["text"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let out = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+        let texts: Vec<&str> = out["text"]
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .iter()
+            .flatten()
+            .collect();
+        assert_eq!(texts, ["a", "b", "c"]);
+
+        // The reopened view reads the same logical query and refreshes
+        // incrementally from the staging.
+        staging.add(chunked_batch()).execute().await.unwrap();
+        let reopened = conn.open_materialized_view("chunks").await.unwrap();
+        assert_eq!(reopened.definition().to_sql(), query);
+        let result = reopened.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(read(reopened.table(), "ordinal").await, [0, 0, 0, 0, 1, 1]);
+    }
+
+    /// An expanded view materializes one row per list element, with the
+    /// projections reading the element through the alias and the other
+    /// source columns repeated alongside; sources with no elements yield
+    /// no rows. The lineage is the list column, so a change to it is what
+    /// drives incremental refresh.
+    #[tokio::test]
+    async fn an_expanded_view_materializes_one_row_per_element() {
+        use arrow_array::{Int64Array, StringArray};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("docs", chunked_batch())
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let mut view = crate::materialized_view::prepare_definition(
+            &source,
+            MaterializedViewDefinition::from_sql(
+                "SELECT id AS doc, meta.title AS title, e.ordinal + 1 AS nth \
+                 FROM docs, UNNEST(c) AS e WHERE e.ordinal < 5",
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        // A computed column's input read through the alias is an element
+        // field; the recorded source input is the list column.
+        let text = view.input_column("e.chunk").unwrap();
+        assert!(view.definition.lateral.is_some());
+        let view = view.create("chunks").await.unwrap();
+        view.refresh().execute().await.unwrap();
+
+        let batches = view
+            .table()
+            .query()
+            .select(Select::columns(&["doc", &text, "title"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let out = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+        let docs: Vec<i64> = out["doc"]
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        let strings = |column: &str| -> Vec<String> {
+            out[column]
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .iter()
+                .flatten()
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(docs, [1, 1, 4]);
+        assert_eq!(strings(&text), ["a", "b", "c"]);
+        assert_eq!(strings("title"), ["t1", "t1", "t4"]);
+        assert_eq!(read(view.table(), "nth").await, [1, 1, 2]);
+
+        // Appended documents expand incrementally; the existing rows stay.
+        source.add(chunked_batch()).execute().await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(read(view.table(), "nth").await, [1, 1, 1, 1, 2, 2]);
     }
 
     async fn read(table: &Table, column: &str) -> Vec<i32> {
@@ -1710,6 +2296,7 @@ mod tests {
         let (conn, _) = db_with_source(vec![1, 20, 3, 40]).await;
         let view = conn
             .create_materialized_view("big", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .only_if("x > 10")
             .execute()
@@ -1735,6 +2322,7 @@ mod tests {
             .await
             .unwrap();
         conn.create_materialized_view("democrats", "src")
+            .with_no_data(true)
             .select([("id", "id")])
             .only_if(r#""PartyAbbrev" = 'D'"#)
             .execute()
@@ -1748,11 +2336,60 @@ mod tests {
             view.definition().filter.as_deref(),
             Some("`PartyAbbrev` = 'D'")
         );
-        assert_eq!(view.definition().inputs, ["PartyAbbrev", "id"]);
 
         let result = view.refresh().execute().await.unwrap();
         assert_eq!(result.rows_written, 2);
         assert_eq!(read(view.table(), "id").await, vec![1, 3]);
+    }
+
+    /// A legacy layout whose query means what the canonical one means is
+    /// rewritten in the current layout on the next refresh, without a
+    /// rebuild: the rows it certified are the rows the query produces.
+    #[tokio::test]
+    async fn a_legacy_layout_with_the_same_meaning_is_rewritten_without_a_rebuild() {
+        let (conn, source, view) = refreshed_doubled(vec![1]).await;
+        let legacy = serde_json::json!({
+            "kind": "select",
+            "source_table": "src",
+            "projections": [
+                {"output": "x", "expression": "`x`"},
+                {"output": "twice", "expression": "x*2"},
+            ],
+            "inputs": ["x"],
+        })
+        .to_string();
+        let native = view.table().as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        let predicted = dataset.version().version + 1;
+        dataset
+            .update_schema_metadata([
+                (DEFINITION_META_KEY.to_string(), Some(legacy)),
+                (
+                    VIEW_VERSION_META_KEY.to_string(),
+                    Some(predicted.to_string()),
+                ),
+            ])
+            .await
+            .unwrap();
+        native.dataset.update(dataset);
+
+        append(&source, vec![2]).await;
+        let reopened = conn.open_materialized_view("doubled").await.unwrap();
+        let result = reopened.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Incremental);
+        assert_eq!(read(reopened.table(), "twice").await, vec![2, 4]);
+        let stored: serde_json::Value = serde_json::from_str(
+            &reopened.table().schema().await.unwrap().metadata()[DEFINITION_META_KEY],
+        )
+        .unwrap();
+        assert_eq!(
+            stored,
+            serde_json::json!({
+                "kind": "query",
+                "format": 1,
+                "query": "SELECT x, x * 2 AS twice FROM src",
+            })
+        );
     }
 
     #[tokio::test]
@@ -1770,6 +2407,7 @@ mod tests {
             .unwrap();
         let view = conn
             .create_materialized_view("legacy_view", "legacy_src")
+            .with_no_data(true)
             .select([("id", "id")])
             .only_if(r#""PartyAbbrev" = 'X'"#)
             .execute()
@@ -1779,18 +2417,20 @@ mod tests {
 
         // Model a definition and up-to-date watermark written before filter
         // canonicalization was applied to materialized views.
-        let mut legacy = view.definition().clone();
-        legacy.filter = Some(r#""PartyAbbrev" = 'D'"#.into());
-        legacy.inputs = vec!["id".into()];
+        let legacy = serde_json::json!({
+            "kind": "select",
+            "source_table": "legacy_src",
+            "projections": [{"output": "id", "expression": "id"}],
+            "filter": r#""PartyAbbrev" = 'D'"#,
+            "inputs": ["id"],
+        })
+        .to_string();
         let native = view.table().as_native().unwrap();
         let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
         let predicted = dataset.version().version + 1;
         dataset
             .update_schema_metadata([
-                (
-                    DEFINITION_META_KEY.to_string(),
-                    Some(definition_to_metadata(&legacy).unwrap()),
-                ),
+                (DEFINITION_META_KEY.to_string(), Some(legacy)),
                 (
                     VIEW_VERSION_META_KEY.to_string(),
                     Some(predicted.to_string()),
@@ -1813,7 +2453,6 @@ mod tests {
             migrated.definition().filter.as_deref(),
             Some("`PartyAbbrev` = 'D'")
         );
-        assert_eq!(migrated.definition().inputs, ["PartyAbbrev", "id"]);
         assert_eq!(
             migrated.refresh().execute().await.unwrap().mode,
             RefreshMode::NoOp
@@ -1837,6 +2476,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 20]).await;
         let view = conn
             .create_materialized_view("big", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .only_if("x > 10")
             .execute()
@@ -1858,6 +2498,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![20]).await;
         let view = conn
             .create_materialized_view("big", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .only_if("x > 10")
             .execute()
@@ -1915,6 +2556,7 @@ mod tests {
             .unwrap();
         let view = conn
             .create_materialized_view("legacy_doubled", "legacy_src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -1993,6 +2635,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("drifting_view", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2079,6 +2722,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("atomic_view", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2181,6 +2825,7 @@ mod tests {
         let (conn, _) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("raced_rebuild", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2277,6 +2922,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("raced_incremental", "src")
+            .with_no_data(true)
             .select([("x", "x"), ("twice", "x * 2")])
             .execute()
             .await
@@ -2395,6 +3041,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("empty", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .limit(0)
             .execute()
@@ -2562,6 +3209,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2]).await;
         let view = conn
             .create_materialized_view("capped", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .limit(2)
             .execute()
@@ -2594,6 +3242,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1, 2, 3]).await;
         let view = conn
             .create_materialized_view("capped", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .limit(4)
             .execute()
@@ -2663,6 +3312,7 @@ mod tests {
         let (conn, _) = db_with_source(vec![1, 2]).await;
         let view = conn
             .create_materialized_view("none", "src")
+            .with_no_data(true)
             .select([("x", "x")])
             .only_if("x > 100")
             .execute()
@@ -2706,6 +3356,7 @@ mod tests {
         let (conn, source) = db_with_source(vec![1]).await;
         let view = conn
             .create_materialized_view("v", "src")
+            .with_no_data(true)
             .select([("twice", "x * 2")])
             .execute()
             .await
@@ -2728,7 +3379,11 @@ mod tests {
         source.drop_columns(&["x"]).await.unwrap();
 
         let err = view.refresh().execute().await.unwrap_err();
-        assert!(matches!(err, Error::Schema { message } if message.contains("'x'")));
+        assert!(
+            matches!(&err, Error::Schema { message }
+                if message.contains("dropped or renamed") && message.contains("No field named x")),
+            "{err:?}"
+        );
     }
 
     /// A pinned refresh materializes the source as of `version`; catching up
@@ -2765,6 +3420,7 @@ mod tests {
 
         let second = conn
             .create_materialized_view("second", "doubled")
+            .with_no_data(true)
             .only_if("twice > 10")
             .execute()
             .await
@@ -3031,8 +3687,9 @@ mod tests {
                 },
             ],
             filter: None,
+            group_by: Vec::new(),
             limit: None,
-            inputs: vec!["x".into()],
+            lateral: None,
         };
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -3065,8 +3722,9 @@ mod tests {
                 expression: "x".into(),
             }],
             filter: None,
+            group_by: Vec::new(),
             limit: None,
-            inputs: vec!["x".into()],
+            lateral: None,
         };
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -3132,6 +3790,7 @@ mod tests {
         let (conn, _) = db_with_source(vec![1, 2]).await;
         let view = conn
             .create_materialized_view("v", "src")
+            .with_no_data(true)
             .select([("double value", "x * 2")])
             .execute()
             .await
@@ -3185,6 +3844,7 @@ mod tests {
         // An active-LSM source is refused at create.
         let err = conn
             .create_materialized_view("v", "src")
+            .with_no_data(true)
             .execute()
             .await
             .unwrap_err();
@@ -3195,6 +3855,7 @@ mod tests {
         table.unset_lsm_write_spec().await.unwrap();
         let view = conn
             .create_materialized_view("v", "src")
+            .with_no_data(true)
             .execute()
             .await
             .unwrap();
@@ -3356,6 +4017,46 @@ mod tests {
         assert_eq!(
             view.refresh().execute().await.unwrap().mode,
             RefreshMode::NoOp
+        );
+    }
+
+    /// Field metadata on `field` only, the commit shape of the freshness
+    /// stamp `refresh_column` leaves after its fill.
+    async fn commit_field_metadata(view: &MaterializedView, field: &str, key: &str) {
+        let native = view.table().as_native().unwrap();
+        native.dataset.reload().await.unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_field_metadata()
+            .update(field, [(key.to_string(), "{}".to_string())])
+            .unwrap()
+            .await
+            .unwrap();
+    }
+
+    /// The stamp is metadata on the computed column and rewrites nothing
+    /// refresh certifies, so it is not drift; the same commit shape on a
+    /// projected column is, like any other write to it.
+    #[tokio::test]
+    async fn test_a_freshness_stamp_is_not_drift() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = refreshed_computed_view(&conn).await;
+
+        commit_field_metadata(
+            &view,
+            "emb",
+            crate::table::computed_columns::SOURCE_SIGNATURE_META_KEY,
+        )
+        .await;
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+
+        commit_field_metadata(&view, "id", "probe").await;
+        assert_eq!(
+            view.refresh().execute().await.unwrap().mode,
+            RefreshMode::Rebuild
         );
     }
 
@@ -3524,9 +4225,9 @@ mod tests {
     }
 
     /// A SQL declaration is filled by `refresh_column` on the view, which
-    /// commits a data replacement; the next refresh continues from its
-    /// watermark and keeps what the fill wrote, and only rows the view added
-    /// since come back unfilled.
+    /// commits a data replacement and then its freshness stamp; the next
+    /// refresh continues from its watermark and keeps what the fill wrote,
+    /// and only rows the view added since come back unfilled.
     #[tokio::test]
     async fn test_a_sql_fill_is_not_drift() {
         use crate::materialized_view::tests::{people, sql_field};
@@ -3649,6 +4350,453 @@ mod tests {
                 .await
                 .unwrap(),
             3
+        );
+    }
+
+    async fn grouped_source(conn: &Connection) -> Table {
+        conn.create_table(
+            "src",
+            record_batch!(("k", Int32, [1, 1, 2, 3]), ("x", Int32, [10, 11, 20, 30])).unwrap(),
+        )
+        .write_options(crate::materialized_view::tests::stable_row_ids())
+        .execute()
+        .await
+        .unwrap()
+    }
+
+    pub(in crate::materialized_view) async fn declare(
+        source: &Table,
+        name: &str,
+        sql: &str,
+    ) -> Result<MaterializedView> {
+        crate::materialized_view::prepare_definition(
+            source,
+            MaterializedViewDefinition::from_sql(sql)?,
+        )
+        .await?
+        .create(name)
+        .await
+    }
+
+    /// Rows of `table` as `columns` rendered to text, sorted.
+    pub(in crate::materialized_view) async fn rows(table: &Table, columns: &[&str]) -> Vec<String> {
+        let batches = table
+            .query()
+            .select(Select::columns(columns))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let formatters: Vec<_> = batch
+                .columns()
+                .iter()
+                .map(|c| {
+                    arrow_cast::display::ArrayFormatter::try_new(c.as_ref(), &Default::default())
+                        .unwrap()
+                })
+                .collect();
+            for row in 0..batch.num_rows() {
+                let cells: Vec<String> = formatters
+                    .iter()
+                    .map(|f| f.value(row).to_string())
+                    .collect();
+                rows.push(cells.join(" "));
+            }
+        }
+        rows.sort();
+        rows
+    }
+
+    #[tokio::test]
+    async fn a_grouped_view_holds_one_row_per_group() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        let view = declare(
+            &source,
+            "groups",
+            "SELECT k, array_agg(x) AS xs, sum(x) AS total FROM src WHERE x < 30 GROUP BY k",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            view.definition().to_sql(),
+            "SELECT k, array_agg(x) AS xs, sum(x) AS total FROM src WHERE x < 30 GROUP BY k"
+        );
+
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 2);
+        assert_eq!(rows(view.table(), &["k", "total"]).await, ["1 21", "2 20"]);
+        let unchanged = view.refresh().execute().await.unwrap();
+        assert_eq!(unchanged.mode, RefreshMode::NoOp);
+
+        // Any source change recomputes every group.
+        source
+            .add(record_batch!(("k", Int32, [2]), ("x", Int32, [5])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(rows(view.table(), &["k", "total"]).await, ["1 21", "2 25"]);
+
+        // A view over the groups expands them again.
+        let expanded = declare(
+            view.table(),
+            "elements",
+            "SELECT k, e AS x FROM groups, UNNEST(xs) AS e",
+        )
+        .await
+        .unwrap();
+        expanded.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(expanded.table(), &["k", "x"]).await,
+            ["1 10", "1 11", "2 20", "2 5"]
+        );
+    }
+
+    /// Provenance is one source row per group, so the view's row-id keys
+    /// stay unique.
+    #[tokio::test]
+    async fn a_grouped_view_records_one_source_row_per_group() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        let view = declare(
+            &source,
+            "groups",
+            "SELECT k, count(*) AS n FROM src GROUP BY k",
+        )
+        .await
+        .unwrap();
+        view.refresh().execute().await.unwrap();
+        let ids = rows(view.table(), &[SOURCE_ROW_ID_COLUMN]).await;
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), 3, "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn a_grouped_view_is_planned_at_declaration() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        for sql in [
+            // x is neither a key nor aggregated
+            "SELECT k, x FROM src GROUP BY k",
+            "SELECT k, random() AS r FROM src GROUP BY k",
+            "SELECT k, count(*) AS n FROM src GROUP BY missing",
+            "SELECT k, count(*) AS __source_row_id FROM src GROUP BY k",
+            "SELECT k, count(*) AS k FROM src GROUP BY k",
+        ] {
+            assert!(declare(&source, "v", sql).await.is_err(), "{sql}");
+        }
+        let mut grouped = crate::materialized_view::prepare_definition(
+            &source,
+            MaterializedViewDefinition::from_sql("SELECT k, count(*) AS n FROM src GROUP BY k")
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(grouped.input_column("x").is_err());
+    }
+
+    /// Twenty nonzero vectors in two clusters far apart, ids 0-9 and 10-19.
+    /// Nonzero so every vector has a cosine direction.
+    pub(in crate::materialized_view) async fn clustered_source(conn: &Connection) -> Table {
+        use arrow_array::types::Float32Type;
+        use arrow_array::{FixedSizeListArray, Int32Array};
+
+        let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..20).map(|i| {
+                let base = if i < 10 { 0.0 } else { 100.0 };
+                Some(vec![Some(base + 1.0 + i as f32 * 0.1), Some(base)])
+            }),
+            2,
+        );
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int32Array::from_iter_values(0..20)) as arrow_array::ArrayRef,
+            ),
+            ("vec", Arc::new(vectors) as arrow_array::ArrayRef),
+        ])
+        .unwrap();
+        conn.create_table("images", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn ivf_partition_groups_by_the_index_on_the_column() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        const BUCKETS: &str = "SELECT ivf_partition(vec) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(vec)";
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        let unindexed = declare(&source, "buckets", BUCKETS).await.unwrap_err();
+        assert!(
+            unindexed.to_string().contains("IVF vector index"),
+            "{unindexed}"
+        );
+
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(2)),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(&source, "buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["n", "lo", "hi"]).await,
+            ["10 0 9", "10 10 19"]
+        );
+        let buckets = rows(view.table(), &["bucket"]).await;
+        assert_eq!(buckets, ["0", "1"]);
+    }
+
+    #[tokio::test]
+    async fn ivf_partition_takes_a_column() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        for sql in [
+            "SELECT ivf_partition(id) AS b, count(*) AS n FROM images GROUP BY ivf_partition(id)",
+            "SELECT ivf_partition(vec, vec) AS b, count(*) AS n FROM images \
+             GROUP BY ivf_partition(vec, vec)",
+        ] {
+            assert!(declare(&source, "v", sql).await.is_err(), "{sql}");
+        }
+    }
+
+    /// A cosine index assigns by L2 over unit vectors, as lance's own index
+    /// path does; forwarding cosine to the assigner panics.
+    #[tokio::test]
+    async fn ivf_partition_supports_cosine_indices() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        const BUCKETS: &str = "SELECT ivf_partition(vec) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(vec)";
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(2)
+                        .distance_type(crate::DistanceType::Cosine),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(&source, "cosine_buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["n", "lo", "hi"]).await,
+            ["10 0 9", "10 10 19"]
+        );
+    }
+
+    /// Segments of one index trained separately carry different centroids;
+    /// grouping by one of them would bucket the other segments' rows wrongly.
+    #[tokio::test]
+    async fn ivf_partition_refuses_segments_with_different_models() {
+        use arrow_array::types::Float32Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+        use lance::index::DatasetIndexExt;
+        use lance::index::vector::VectorIndexParams;
+        use lance_index::IndexType;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        // A second fragment far from the first, so each segment trains its own centroids.
+        let far = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..20).map(|i| Some(vec![Some(-500.0 - i as f32), Some(-500.0)])),
+            2,
+        );
+        source
+            .add(
+                RecordBatch::try_from_iter(vec![
+                    (
+                        "id",
+                        Arc::new(Int32Array::from_iter_values(20..40)) as ArrayRef,
+                    ),
+                    ("vec", Arc::new(far) as ArrayRef),
+                ])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let dataset = source.as_native().unwrap().dataset.get().await.unwrap();
+        let mut dataset = dataset.as_ref().clone();
+        let params = VectorIndexParams::ivf_flat(2, lance_linalg::distance::DistanceType::L2);
+        let mut segments = Vec::new();
+        for fragment in dataset.get_fragments() {
+            let segment = dataset
+                .create_index_builder(&["vec"], IndexType::Vector, &params)
+                .name("shared".to_string())
+                .fragments(vec![fragment.id() as u32])
+                .execute_uncommitted()
+                .await
+                .unwrap();
+            segments.push(segment);
+        }
+        dataset
+            .commit_existing_index_segments("shared", "vec", segments)
+            .await
+            .unwrap();
+        assert_eq!(dataset.load_indices().await.unwrap().len(), 2);
+
+        let source = conn.open_table("images").execute().await.unwrap();
+        let error = declare(
+            &source,
+            "buckets",
+            "SELECT ivf_partition(vec) AS b, count(*) AS n FROM images GROUP BY ivf_partition(vec)",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("trained separately"), "{error}");
+    }
+
+    /// A vector the assigner cannot place has no bucket: it is grouped under
+    /// NULL, never under partition 0.
+    #[tokio::test]
+    async fn ivf_partition_leaves_an_unassignable_vector_unbucketed() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+        use arrow_array::types::Float32Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(2)
+                        .distance_type(crate::DistanceType::Cosine),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        // The zero vector has no direction, so cosine cannot place it.
+        let zero = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            [Some(vec![Some(0.0), Some(0.0)])],
+            2,
+        );
+        source
+            .add(
+                RecordBatch::try_from_iter(vec![
+                    ("id", Arc::new(Int32Array::from(vec![20])) as ArrayRef),
+                    ("vec", Arc::new(zero) as ArrayRef),
+                ])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(
+            &source,
+            "buckets",
+            "SELECT ivf_partition(vec) AS bucket, count(*) AS n, min(id) AS lo, max(id) AS hi \
+             FROM images GROUP BY ivf_partition(vec)",
+        )
+        .await
+        .unwrap();
+        view.refresh().execute().await.unwrap();
+        // ArrayFormatter renders NULL as the empty string; partition numbers
+        // are the index's own and not asserted.
+        let groups = rows(view.table(), &["bucket", "n", "lo", "hi"]).await;
+        let (unbucketed, bucketed): (Vec<_>, Vec<_>) =
+            groups.iter().partition(|row| row.starts_with(' '));
+        assert_eq!(unbucketed, [" 1 20 20"], "{groups:?}");
+        let mut clusters: Vec<&str> = bucketed
+            .iter()
+            .map(|row| row.split_once(' ').unwrap().1)
+            .collect();
+        clusters.sort();
+        assert_eq!(clusters, ["10 0 9", "10 10 19"], "{groups:?}");
+    }
+
+    /// Byte vectors group by a Hamming index, the phash case. The centroids
+    /// are given, as lance's own tests do: two-means over a handful of
+    /// hashes can converge with one partition empty.
+    #[tokio::test]
+    async fn ivf_partition_groups_byte_vectors_by_hamming() {
+        use arrow_array::types::UInt8Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+        use lance::index::DatasetIndexExt;
+        use lance::index::vector::VectorIndexParams;
+        use lance_index::IndexType;
+        use lance_index::vector::ivf::IvfBuildParams;
+
+        let hashes = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            (0..20u8).map(|i| {
+                let base = if i < 10 { 0x00 } else { 0xff };
+                Some(vec![
+                    Some(base ^ (i % 4)),
+                    Some(base),
+                    Some(base),
+                    Some(base),
+                ])
+            }),
+            4,
+        );
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int32Array::from_iter_values(0..20)) as ArrayRef,
+            ),
+            ("phash", Arc::new(hashes) as ArrayRef),
+        ])
+        .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("images", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let centroids = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            [Some(vec![Some(0); 4]), Some(vec![Some(0xff); 4])],
+            4,
+        );
+        let params = VectorIndexParams::with_ivf_flat_params(
+            lance_linalg::distance::DistanceType::Hamming,
+            IvfBuildParams::try_with_centroids(2, Arc::new(centroids)).unwrap(),
+        );
+        let mut dataset = source
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .as_ref()
+            .clone();
+        dataset
+            .create_index(&["phash"], IndexType::Vector, None, &params, true)
+            .await
+            .unwrap();
+        let source = conn.open_table("images").execute().await.unwrap();
+
+        const BUCKETS: &str = "SELECT ivf_partition(phash) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(phash)";
+        let view = declare(&source, "buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["bucket", "n", "lo", "hi"]).await,
+            ["0 10 0 9", "1 10 10 19"]
         );
     }
 }

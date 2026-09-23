@@ -982,6 +982,71 @@ def test_remote_refresh_async_returns_typed_terminal_result():
     assert result.version == 8
 
 
+def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
+    listing = {
+        "records": [
+            {
+                "job_id": "j-7",
+                "fragment_id": 3,
+                "row_offset": 9,
+                "column": "embedding",
+                "function": "embed",
+                "function_version": "2",
+                "table_version": 11,
+                "error_type": "ValueError",
+                "error_message": "bad input 'x'",
+                "created_at_millis": 1700000000000,
+            }
+        ],
+        "fragments": [
+            {
+                "job_id": "j-7",
+                "fragment_id": 4,
+                "rows_skipped": 500,
+                "rows_recorded": 100,
+            }
+        ],
+        "truncated": True,
+    }
+    bodies = []
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/errors":
+            bodies.append(json.loads(body))
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(listing).encode())
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": []}}).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        errors = table.function_errors(job_id="j-7", column="embedding", limit=2)
+        everything = table.function_errors()
+
+    assert bodies == [{"job_id": "j-7", "column": "embedding", "limit": 2}, {}]
+    assert errors.truncated is True
+    assert [r.error_message for r in errors.records] == ["bad input 'x'"]
+    assert errors.records[0].row_offset == 9
+    assert errors.records[0].function_version == "2"
+    assert (errors.fragments[0].rows_skipped, errors.fragments[0].rows_recorded) == (
+        500,
+        100,
+    )
+    assert everything.truncated is True
+
+
 def test_remote_job_wait_raises_on_failure():
     from lancedb.exceptions import JobFailedError
     from lancedb.index import BTree
@@ -2682,3 +2747,57 @@ def test_remote_job_handle_reports_its_own_detail():
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+
+def test_view_crud_addresses_its_own_routes():
+    # The view verbs are their own routes, and the schema comes back in the
+    # namespace spec's JSON encoding, decoded into a pyarrow schema.
+    paths = []
+
+    def handler(request):
+        paths.append((request.command, request.path))
+        if request.path.endswith("/view/list"):
+            body = {"views": ["adults"]}
+        elif request.path.endswith("/drop"):
+            body = {}
+        else:
+            body = {
+                "name": "adults",
+                "namespace": ["analytics"],
+                "query": "SELECT name FROM people",
+                "default_database": "dev",
+                "default_namespace": ["analytics"],
+                "schema": {
+                    "fields": [
+                        {"name": "name", "nullable": True, "type": {"type": "utf8"}}
+                    ]
+                },
+            }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(body).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        view = db.create_view(
+            "adults", "SELECT name FROM people", namespace_path=["analytics"]
+        )
+        assert view.name == "adults"
+        assert view.namespace_path == ["analytics"]
+        assert view.query == "SELECT name FROM people"
+        assert view.default_database == "dev"
+        assert view.default_namespace_path == ["analytics"]
+        assert view.schema == pa.schema([pa.field("name", pa.utf8(), nullable=True)])
+
+        described = db.describe_view("adults", namespace_path=["analytics"])
+        assert described.schema == view.schema
+
+        assert db.list_views(namespace_path=["analytics"]) == ["adults"]
+        db.drop_view("adults", namespace_path=["analytics"])
+
+    assert paths == [
+        ("POST", "/v1/view/analytics$adults/create"),
+        ("POST", "/v1/view/analytics$adults/describe"),
+        ("GET", "/v1/namespace/analytics/view/list"),
+        ("POST", "/v1/view/analytics$adults/drop"),
+    ]

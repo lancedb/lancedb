@@ -26,6 +26,7 @@ export {
   MaterializedViewDefinition,
   MaterializedViewSelect,
 } from "./materialized_view";
+export { ViewDescription } from "./view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 // OpenTelemetry metrics bridge. Only the high-level entry point is public; the
@@ -56,6 +57,10 @@ export {
   AddResult,
   AddColumnsResult,
   RefreshColumnResult,
+  FunctionErrors,
+  FunctionErrorsOptions,
+  FunctionErrorRecord,
+  FunctionErrorFragment,
   RefreshMaterializedViewResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
@@ -72,10 +77,14 @@ export {
 
 export {
   makeArrowTable,
+  makeJsonField,
   MakeArrowTableOptions,
   Data,
   VectorColumnOptions,
 } from "./arrow";
+
+export { blob, isBlobField, BlobFile } from "./blob";
+export type { BlobOptions } from "./blob";
 
 export {
   Connection,
@@ -167,7 +176,15 @@ export {
   TokenResponse,
 } from "./header";
 
-export { OAuthConfig, OAuthFlowType } from "./oauth";
+export {
+  ClientAuthMethod,
+  OAuthConfig,
+  OAuthFlowType,
+  OAuthSession,
+  SessionLogout,
+  SessionStatus,
+  TokenCacheOptions,
+} from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 
@@ -617,3 +634,10 @@ export async function connectNamespace(
   );
   return new LocalConnection(nativeConn);
 }
+
+export {
+  Catalog,
+  CatalogOptions,
+  ListDatabasesResponse,
+  connectCatalog,
+} from "./catalog";
