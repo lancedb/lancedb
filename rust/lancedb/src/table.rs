@@ -3763,7 +3763,21 @@ impl BaseTable for NativeTable {
             let Some(segment) = segments.first() else {
                 continue;
             };
-            let params = load_segment_params(&dataset, segment).await?;
+            // The tokenizer config lives in the index files. If those are gone
+            // (partial copy, external cleanup), keep the entry with the manifest
+            // details rather than failing the whole listing, so callers can still
+            // find the broken index and rebuild or drop it.
+            let params = match load_segment_params(&dataset, segment).await {
+                Ok(params) => params,
+                Err(e) => {
+                    log::warn!(
+                        "Failed to load full text search params for index '{}': {}",
+                        index.name,
+                        e
+                    );
+                    continue;
+                }
+            };
             let details = serde_json::to_string(&params).map_err(|source| Error::Other {
                 message: format!(
                     "Failed to serialize full text search configuration for index '{}'",
