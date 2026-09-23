@@ -771,12 +771,13 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
         if json_storage is not None:
             # Labelled through metadata rather than pa.json_(), which only exists on
             # newer PyArrow; Lance reads the extension name off the field either way.
-            return pa.field(
-                field.name,
-                json_storage,
-                field.nullable,
-                {"ARROW:extension:name": "arrow.json"},
-            )
+            # The other metadata keys mirror the table field's: Lance swaps the name
+            # back to lance.json on write and then requires the field to match the
+            # stored one exactly, including the empty ``ARROW:extension:metadata``
+            # that pyarrow records for a ``pa.json_()`` column.
+            metadata = dict(target_field.metadata or {})
+            metadata[b"ARROW:extension:name"] = b"arrow.json"
+            return pa.field(field.name, json_storage, field.nullable, metadata)
     if pa.types.is_struct(target_field.type):
         if pa.types.is_struct(field.type):
             new_type = pa.struct(
