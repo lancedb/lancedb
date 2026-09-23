@@ -10,7 +10,70 @@
 //! plain table. Queries, indexes and search work on the view unchanged.
 
 mod grouped;
+mod grouped_units;
 pub use grouped::IVF_PARTITION;
+/// Refreshing a view grouped by [`IVF_PARTITION`] in units, one per index
+/// partition, so the work can be spread over several processes. The caller
+/// plans once, computes every unit of that plan wherever it likes, and
+/// commits the whole set; a unit is bound to the view and plan it was
+/// computed for, and the commit publishes all of them or none.
+///
+/// ```no_run
+/// # #![recursion_limit = "256"]
+/// # use lancedb::materialized_view::{
+/// #     commit_grouped_refresh, plan_grouped_refresh, write_grouped_unit, WrittenUnit,
+/// # };
+/// # use lancedb::materialized_view::MaterializedView;
+/// # async fn refresh_in_units(view: &MaterializedView) -> Result<(), Box<dyn std::error::Error>> {
+/// // The view this refresh was requested for. Every path below carries it,
+/// // including the fallbacks: a view dropped and recreated meanwhile is a
+/// // different view, and refreshing it in place of this one is the identity
+/// // crossing the units path refuses.
+/// let incarnation = view.incarnation().map(str::to_string);
+///
+/// async fn in_one_pass(view: &MaterializedView, incarnation: Option<&str>) -> lancedb::Result<()> {
+///     let mut refresh = view.refresh();
+///     if let Some(token) = incarnation {
+///         refresh = refresh.expect_incarnation(token);
+///     }
+///     refresh.execute().await?;
+///     Ok(())
+/// }
+///
+/// // No plan means this view cannot be refreshed in units: it is not
+/// // grouped by the partition of an indexed column, its index no longer
+/// // says which fragments it covers, or it carries no incarnation to bind
+/// // the units to.
+/// let Some(plan) = plan_grouped_refresh(view.table(), None).await? else {
+///     in_one_pass(view, incarnation.as_deref()).await?;
+///     return Ok(());
+/// };
+///
+/// // Each unit is independent; this loop stands in for dispatching them.
+/// // A unit whose view was dropped and recreated, or whose plan is stale,
+/// // fails here rather than producing rows for the wrong view.
+/// let mut units: Vec<WrittenUnit> = Vec::new();
+/// for unit in 0..plan.units {
+///     units.push(write_grouped_unit(view.table(), unit, &plan).await?);
+/// }
+///
+/// match commit_grouped_refresh(view.table(), &plan, units, incarnation.as_deref()).await {
+///     Ok(result) => println!("{} rows at version {}", result.rows_written, result.version),
+///     Err(err) => {
+///         // The refresh is unrecorded, but it is not necessarily inert: a
+///         // commit that raced a concurrent write can have landed without a
+///         // watermark. Refresh from scratch rather than assuming either.
+///         eprintln!("refresh in units unrecorded ({err}); refreshing in one pass");
+///         in_one_pass(view, incarnation.as_deref()).await?;
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub use grouped_units::{
+    GroupedRefreshPlan, WrittenUnit, commit_grouped_refresh, plan_grouped_refresh,
+    write_grouped_unit,
+};
 mod query;
 pub mod refresh;
 
