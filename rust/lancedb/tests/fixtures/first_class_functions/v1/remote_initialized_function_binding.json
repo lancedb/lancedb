@@ -26,5 +26,36 @@
       "nullable": false
     }
   ],
+  "input_schema": {
+    "fields": [
+      {
+        "name": "text",
+        "nullable": true,
+        "type": {
+          "type": "utf8"
+        }
+      }
+    ]
+  },
+  "output_schema": {
+    "fields": [
+      {
+        "name": "embedding",
+        "nullable": true,
+        "type": {
+          "type": "list",
+          "fields": [
+            {
+              "name": "item",
+              "nullable": false,
+              "type": {
+                "type": "float32"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
   "initialization": "/////7AAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAIAAABUAAAABAAAAMT///8AAAACEAAAACQAAAAEAAAAAAAAAAoAAABkaW1lbnNpb25zAAAIAAwACAAHAAgAAAAAAAABIAAAABAAFAAIAAAABwAMAAAAEAAQAAAAAAAABRAAAAAcAAAABAAAAAAAAAAFAAAAbW9kZWwAAAAEAAQABAAAAP/////IAAAAFAAAAAAAAAAMABYABgAFAAgADAAMAAAAAAMEABgAAAAoAAAAAAAAAAAACgAYAAwABAAIAAoAAABsAAAAEAAAAAEAAAAAAAAAAAAAAAUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAgAAAAAAAAAFgAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAEAAAAAAAAAAAAAAACAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAFgAAAHRleHQtZW1iZWRkaW5nLTMtc21hbGwAAAACAAAAAAAA/////wAAAAA="
 }
