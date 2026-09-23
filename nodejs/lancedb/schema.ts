@@ -62,6 +62,12 @@ class SchemaInferrer {
   }
 
   private observe(path: string[], value: unknown, row: number): void {
+    if (isUnsupportedObject(value)) {
+      throw new Error(
+        `Unsupported object value for field ${path.join(".")} at row ${row}.`,
+      );
+    }
+
     const current = this.fields.get(path);
     if (current === undefined) {
       this.addField(path, value, row);
@@ -430,16 +436,34 @@ function* recordPathsAndValues(
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
   return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    !(value instanceof RegExp) &&
-    !(value instanceof Date) &&
-    !(value instanceof Set) &&
-    !(value instanceof Map) &&
-    !(value instanceof Buffer) &&
-    !ArrayBuffer.isView(value)
+    (prototype === Object.prototype || prototype === null) &&
+    Object.keys(value).length > 0
+  );
+}
+
+function isUnsupportedObject(value: unknown): boolean {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    isRecord(value)
+  ) {
+    return false;
+  }
+  // Preserve the object types already passed through to Arrow. Other objects
+  // must not disappear while walking struct fields.
+  return !(
+    value instanceof RegExp ||
+    value instanceof Date ||
+    value instanceof Set ||
+    value instanceof Map ||
+    Buffer.isBuffer(value) ||
+    ArrayBuffer.isView(value)
   );
 }
 

@@ -601,6 +601,49 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         );
       });
 
+      it.each([
+        ["ArrayBuffer", new Uint8Array([104]).buffer],
+        ["URL", new URL("https://example.com/")],
+        ["empty object", {}],
+        [
+          "class instance with enumerable fields",
+          Object.assign(new Blob(["x"]), { position: 0 }),
+        ],
+      ])("rejects %s values without a schema", (_name, value) => {
+        expect(() => makeArrowTable([{ id: 1, value }])).toThrow(
+          /field value at row 0/,
+        );
+        expect(() => makeArrowTable([{ value }])).toThrow(
+          /field value at row 0/,
+        );
+      });
+
+      it.each([
+        ["Binary", new Binary(), new Uint8Array([104]).buffer],
+        ["Utf8", new Utf8(), new URL("https://example.com/")],
+      ])("rejects %s values with a schema", (_name, type, value) => {
+        const schema = new Schema([new Field("value", type, true)]);
+        expect(() => makeArrowTable([{ value }], { schema })).toThrow(
+          /field value at row 0/,
+        );
+      });
+
+      it("rejects unsupported values in nested struct fields", () => {
+        const schema = new Schema([
+          new Field(
+            "metadata",
+            new Struct([new Field("bytes", new Binary(), true)]),
+            true,
+          ),
+        ]);
+        expect(() =>
+          makeArrowTable(
+            [{ metadata: { bytes: new Uint8Array([104]).buffer } }],
+            { schema },
+          ),
+        ).toThrow(/field metadata\.bytes at row 0/);
+      });
+
       it("will ignore generated dictionary IDs when comparing inferred types", function () {
         const table = makeArrowTable([{ str: "a" }, { str: "b" }], {
           dictionaryEncodeStrings: true,
