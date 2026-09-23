@@ -12,6 +12,7 @@ use std::sync::Arc;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeListArray, LargeListArray, ListArray, RecordBatch,
 };
+use arrow_buffer::OffsetBuffer;
 use arrow_cast::cast;
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
 use arrow_select::nullif::nullif;
@@ -263,21 +264,24 @@ impl PhysicalExpr for CoerceBlobList {
             cast(source.as_ref(), &intermediate_type)?
         };
         let values = match source.data_type() {
-            DataType::List(_) => source
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap()
-                .values(),
-            DataType::LargeList(_) => source
-                .as_any()
-                .downcast_ref::<LargeListArray>()
-                .unwrap()
-                .values(),
+            DataType::List(_) => {
+                let list = source.as_any().downcast_ref::<ListArray>().unwrap();
+                let first = list.offsets()[0] as usize;
+                let last = *list.offsets().last().unwrap() as usize;
+                list.values().slice(first, last - first)
+            }
+            DataType::LargeList(_) => {
+                let list = source.as_any().downcast_ref::<LargeListArray>().unwrap();
+                let first = list.offsets()[0] as usize;
+                let last = *list.offsets().last().unwrap() as usize;
+                list.values().slice(first, last - first)
+            }
             DataType::FixedSizeList(_, _) => source
                 .as_any()
                 .downcast_ref::<FixedSizeListArray>()
                 .unwrap()
-                .values(),
+                .values()
+                .clone(),
             other => {
                 return Err(DataFusionError::Internal(format!(
                     "coerce_blob_list expected a list, got {other}"
@@ -298,7 +302,7 @@ impl PhysicalExpr for CoerceBlobList {
                 let list = source.as_any().downcast_ref::<ListArray>().unwrap();
                 Arc::new(ListArray::try_new(
                     item.clone(),
-                    list.offsets().clone(),
+                    OffsetBuffer::from_lengths(list.offsets().lengths()),
                     coerced,
                     list.nulls().cloned(),
                 )?)
@@ -307,7 +311,7 @@ impl PhysicalExpr for CoerceBlobList {
                 let list = source.as_any().downcast_ref::<LargeListArray>().unwrap();
                 Arc::new(LargeListArray::try_new(
                     item.clone(),
-                    list.offsets().clone(),
+                    OffsetBuffer::from_lengths(list.offsets().lengths()),
                     coerced,
                     list.nulls().cloned(),
                 )?)
@@ -674,6 +678,7 @@ mod tests {
                     vec![0, 3, 3]
                 }
             );
+            assert_eq!(items.len(), if kind == "fixed_size_list" { 6 } else { 3 });
             let data: &LargeBinaryArray = items
                 .column_by_name("data")
                 .unwrap()
@@ -684,6 +689,81 @@ mod tests {
             assert!(items.is_null(1));
             assert_eq!(data.value(2), b"");
             assert!(!items.is_null(2));
+        }
+    }
+
+    #[tokio::test]
+    async fn sliced_binary_lists_only_coerce_visible_items() {
+        for large in [false, true] {
+            let input_item = Arc::new(Field::new("item", DataType::Binary, true));
+            let table_item = Arc::new(wide_blob_field("item"));
+            let values: ArrayRef = Arc::new(BinaryArray::from_iter(vec![
+                Some(b"before".as_slice()),
+                Some(b"a".as_slice()),
+                None,
+                Some(b"after".as_slice()),
+                Some(b"tail".as_slice()),
+            ]));
+            let (input_type, table_type, list): (DataType, DataType, ArrayRef) = if large {
+                (
+                    DataType::LargeList(input_item.clone()),
+                    DataType::LargeList(table_item),
+                    Arc::new(
+                        LargeListArray::new(
+                            input_item,
+                            OffsetBuffer::new(vec![0_i64, 1, 3, 4, 5].into()),
+                            values,
+                            None,
+                        )
+                        .slice(1, 2),
+                    ),
+                )
+            } else {
+                (
+                    DataType::List(input_item.clone()),
+                    DataType::List(table_item),
+                    Arc::new(
+                        ListArray::new(
+                            input_item,
+                            OffsetBuffer::new(vec![0, 1, 3, 4, 5].into()),
+                            values,
+                            None,
+                        )
+                        .slice(1, 2),
+                    ),
+                )
+            };
+            let batch = batch_with_image(Field::new("image", input_type, true), list);
+            let schema = Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("image", table_type, true),
+            ]);
+            let coerced = coerce(batch, &schema).await;
+            let image = coerced.column_by_name("image").unwrap();
+            let (offsets, items): (Vec<i64>, &StructArray) = if large {
+                let list = image.as_any().downcast_ref::<LargeListArray>().unwrap();
+                (
+                    list.offsets().iter().copied().collect(),
+                    list.values().as_any().downcast_ref().unwrap(),
+                )
+            } else {
+                let list = image.as_any().downcast_ref::<ListArray>().unwrap();
+                (
+                    list.offsets().iter().map(|v| i64::from(*v)).collect(),
+                    list.values().as_any().downcast_ref().unwrap(),
+                )
+            };
+            assert_eq!(offsets, [0, 2, 3]);
+            assert_eq!(items.len(), 3);
+            let data: &LargeBinaryArray = items
+                .column_by_name("data")
+                .unwrap()
+                .as_any()
+                .downcast_ref()
+                .unwrap();
+            assert_eq!(data.value(0), b"a");
+            assert!(items.is_null(1));
+            assert_eq!(data.value(2), b"after");
         }
     }
 
