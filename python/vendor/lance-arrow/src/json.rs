@@ -7,13 +7,15 @@
 use std::convert::TryFrom;
 use std::sync::Arc;
 
-use arrow_array::builder::{LargeBinaryBuilder, StringBuilder};
+use arrow_array::builder::{GenericStringBuilder, LargeBinaryBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::{
-    Array, ArrayRef, FixedSizeListArray, LargeBinaryArray, LargeListArray, LargeStringArray,
-    ListArray, MapArray, RecordBatch, StringArray, StructArray,
+    Array, ArrayRef, FixedSizeListArray, GenericStringArray, LargeBinaryArray, LargeListArray,
+    LargeStringArray, ListArray, MapArray, OffsetSizeTrait, RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, Fields, Schema};
+use jsonb::OwnedJsonb;
+use jsonb::jsonpath::{JsonPath, Selector};
 
 use crate::ARROW_EXT_NAME_KEY;
 
@@ -73,6 +75,72 @@ pub fn has_arrow_json_fields(field: &ArrowField) -> bool {
         }
         DataType::Map(f, _) => has_arrow_json_fields(f),
         _ => false,
+    }
+}
+
+/// The Arrow representation holding a JSON field's values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonEncoding {
+    /// JSONB bytes: [`JSON_EXT_NAME`] over `LargeBinary`. Lance stores JSON
+    /// this way.
+    Jsonb,
+    /// JSON text: [`ARROW_JSON_EXT_NAME`] over `Utf8` or `LargeUtf8`. Callers
+    /// write JSON this way, and reads return it this way by default.
+    Text,
+}
+
+impl JsonEncoding {
+    /// The encoding of `field`'s values, or `None` when `field` does not hold
+    /// JSON.
+    pub fn of_field(field: &ArrowField) -> Option<Self> {
+        if is_json_field(field) {
+            Some(Self::Jsonb)
+        } else if is_arrow_json_field(field) {
+            Some(Self::Text)
+        } else {
+            None
+        }
+    }
+}
+
+/// The values of a JSON column, readable as JSONB or as text whichever
+/// encoding they arrived in.
+///
+/// Code that computes on JSON, such as tokenizers and indices, reads values
+/// through this type, so its behavior does not depend on whether they come
+/// from storage or from a caller.
+#[derive(Debug, Clone, Copy)]
+pub struct JsonValues<'a> {
+    encoding: JsonEncoding,
+    array: &'a ArrayRef,
+}
+
+impl<'a> JsonValues<'a> {
+    /// Read `array` as the values of `field`, or `None` when `field` does not
+    /// hold JSON.
+    pub fn try_new(field: &ArrowField, array: &'a ArrayRef) -> Option<Self> {
+        JsonEncoding::of_field(field).map(|encoding| Self { encoding, array })
+    }
+
+    pub fn encoding(&self) -> JsonEncoding {
+        self.encoding
+    }
+
+    /// The values as JSONB. Text values are parsed, so invalid JSON fails.
+    pub fn to_jsonb(&self) -> Result<LargeBinaryArray, ArrowError> {
+        match self.encoding {
+            JsonEncoding::Jsonb => Ok(self.array.as_binary::<i64>().clone()),
+            JsonEncoding::Text => Ok(JsonArray::try_from(self.array.clone())?.into_inner()),
+        }
+    }
+
+    /// The values as JSON text: the input array when it already holds text,
+    /// otherwise `LargeUtf8` decoded from JSONB.
+    pub fn to_text(&self) -> ArrayRef {
+        match self.encoding {
+            JsonEncoding::Jsonb => Arc::new(decode_jsonb_array::<i64>(self.array.as_binary())),
+            JsonEncoding::Text => self.array.clone(),
+        }
     }
 }
 
@@ -150,28 +218,13 @@ impl JsonArray {
             return Ok(None);
         }
 
-        let jsonb_bytes = self.inner.value(i);
-        get_json_path(jsonb_bytes, path).map_err(|e| {
-            ArrowError::InvalidArgumentError(format!("Failed to extract JSONPath: {}", e))
-        })
+        let path = parse_json_path(path)?;
+        Ok(select_json_path(self.inner.value(i), &path)?.map(|value| value.to_string()))
     }
 
     /// Convert to Arrow string array (JSON as UTF-8)
     pub fn to_arrow_json(&self) -> ArrayRef {
-        let mut builder = arrow_array::builder::StringBuilder::new();
-
-        for i in 0..self.inner.len() {
-            if self.inner.is_null(i) {
-                builder.append_null();
-            } else {
-                let jsonb_bytes = self.inner.value(i);
-                let json_str = decode_json(jsonb_bytes);
-                builder.append_value(&json_str);
-            }
-        }
-
-        // Return as UTF-8 string array (Arrow represents JSON as strings)
-        Arc::new(builder.finish())
+        Arc::new(decode_jsonb_array::<i32>(&self.inner))
     }
 
     pub fn len(&self) -> usize {
@@ -200,23 +253,7 @@ impl TryFrom<&StringArray> for JsonArray {
     type Error = ArrowError;
 
     fn try_from(array: &StringArray) -> Result<Self, Self::Error> {
-        let mut builder = LargeBinaryBuilder::with_capacity(array.len(), array.value_data().len());
-
-        for i in 0..array.len() {
-            if array.is_null(i) {
-                builder.append_null();
-            } else {
-                let json_str = array.value(i);
-                let encoded = encode_json(json_str).map_err(|e| {
-                    ArrowError::InvalidArgumentError(format!("Failed to encode JSON: {}", e))
-                })?;
-                builder.append_value(&encoded);
-            }
-        }
-
-        Ok(Self {
-            inner: builder.finish(),
-        })
+        encode_json_text_array(array)
     }
 }
 
@@ -232,24 +269,40 @@ impl TryFrom<&LargeStringArray> for JsonArray {
     type Error = ArrowError;
 
     fn try_from(array: &LargeStringArray) -> Result<Self, Self::Error> {
-        let mut builder = LargeBinaryBuilder::with_capacity(array.len(), array.value_data().len());
+        encode_json_text_array(array)
+    }
+}
 
-        for i in 0..array.len() {
-            if array.is_null(i) {
-                builder.append_null();
-            } else {
-                let json_str = array.value(i);
+fn encode_json_text_array<O: OffsetSizeTrait>(
+    array: &GenericStringArray<O>,
+) -> Result<JsonArray, ArrowError> {
+    let mut builder = LargeBinaryBuilder::with_capacity(array.len(), array.value_data().len());
+    for value in array {
+        match value {
+            Some(json_str) => {
                 let encoded = encode_json(json_str).map_err(|e| {
                     ArrowError::InvalidArgumentError(format!("Failed to encode JSON: {}", e))
                 })?;
                 builder.append_value(&encoded);
             }
+            None => builder.append_null(),
         }
-
-        Ok(Self {
-            inner: builder.finish(),
-        })
     }
+    Ok(JsonArray {
+        inner: builder.finish(),
+    })
+}
+
+fn decode_jsonb_array<O: OffsetSizeTrait>(array: &LargeBinaryArray) -> GenericStringArray<O> {
+    let mut builder =
+        GenericStringBuilder::<O>::with_capacity(array.len(), array.value_data().len());
+    for value in array {
+        match value {
+            Some(jsonb_bytes) => builder.append_value(decode_json(jsonb_bytes)),
+            None => builder.append_null(),
+        }
+    }
+    builder.finish()
 }
 
 impl TryFrom<ArrayRef> for JsonArray {
@@ -293,21 +346,46 @@ pub fn decode_json(jsonb_bytes: &[u8]) -> String {
     raw_jsonb.to_string()
 }
 
-/// Extract JSONPath value from JSONB
-fn get_json_path(
-    jsonb_bytes: &[u8],
-    path: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let json_path = jsonb::jsonpath::parse_json_path(path.as_bytes())?;
-    let raw_jsonb = jsonb::RawJsonb::new(jsonb_bytes);
-    let mut selector = jsonb::jsonpath::Selector::new(raw_jsonb);
+/// Parse a JSONPath expression.
+pub fn parse_json_path(path: &str) -> Result<JsonPath<'_>, ArrowError> {
+    jsonb::jsonpath::parse_json_path(path.as_bytes())
+        .map_err(|e| ArrowError::InvalidArgumentError(format!("Invalid JSONPath '{path}': {e}")))
+}
 
-    let values = selector.select_values(&json_path)?;
-    if values.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(values[0].to_string()))
-    }
+/// Select the value at `path` in a JSONB value.
+///
+/// A path matching several values selects them together as one JSON array,
+/// so no match is silently dropped.
+pub fn select_json_path(
+    jsonb_bytes: &[u8],
+    path: &JsonPath<'_>,
+) -> Result<Option<OwnedJsonb>, ArrowError> {
+    Selector::new(jsonb::RawJsonb::new(jsonb_bytes))
+        .select_value(path)
+        .map_err(|e| {
+            ArrowError::InvalidArgumentError(format!("Failed to select JSONPath {path}: {e}"))
+        })
+}
+
+/// Whether `path` matches any value in a JSONB value.
+pub fn json_path_exists(jsonb_bytes: &[u8], path: &JsonPath<'_>) -> Result<bool, ArrowError> {
+    Selector::new(jsonb::RawJsonb::new(jsonb_bytes))
+        .exists(path)
+        .map_err(|e| {
+            ArrowError::InvalidArgumentError(format!("Failed to match JSONPath {path}: {e}"))
+        })
+}
+
+/// Select every value matched by `path` in a JSONB value.
+pub fn select_json_path_values(
+    jsonb_bytes: &[u8],
+    path: &JsonPath<'_>,
+) -> Result<Vec<OwnedJsonb>, ArrowError> {
+    Selector::new(jsonb::RawJsonb::new(jsonb_bytes))
+        .select_values(path)
+        .map_err(|e| {
+            ArrowError::InvalidArgumentError(format!("Failed to select JSONPath {path}: {e}"))
+        })
 }
 
 /// Convert an Arrow JSON field to Lance JSON field (with JSONB storage)
@@ -532,25 +610,9 @@ fn convert_lance_json_array(
 ) -> Result<(ArrowField, ArrayRef, bool), ArrowError> {
     convert_json_array(field, array, &|field, array| {
         if is_json_field(field) {
-            let binary_array = array
-                .as_any()
-                .downcast_ref::<LargeBinaryArray>()
-                .expect("Lance JSON field must be LargeBinaryArray");
-            let mut builder = StringBuilder::new();
-
-            for i in 0..binary_array.len() {
-                if binary_array.is_null(i) {
-                    builder.append_null();
-                } else {
-                    let jsonb_bytes = binary_array.value(i);
-                    let json_str = decode_json(jsonb_bytes);
-                    builder.append_value(&json_str);
-                }
-            }
-
             Ok(Some((
                 lance_json_to_arrow_json(field),
-                Arc::new(builder.finish()) as ArrayRef,
+                Arc::new(decode_jsonb_array::<i32>(array.as_binary())) as ArrayRef,
             )))
         } else {
             Ok(None)
@@ -677,6 +739,41 @@ mod tests {
 
         let age = json_array.json_path(1, "$.user.age").unwrap();
         assert_eq!(age, None);
+
+        // Several matches are selected together, as the SQL JSON functions do.
+        let json_array =
+            JsonArray::try_from_iter(vec![Some(r#"{"a": [{"b": 1}, {"b": 2}]}"#)]).unwrap();
+        let bs = json_array.json_path(0, "$.a[*].b").unwrap();
+        assert_eq!(bs, Some("[1,2]".to_string()));
+    }
+
+    #[test]
+    fn test_json_values_read_either_encoding() {
+        let docs = vec![Some(r#"{"a":1}"#), None];
+        let text: ArrayRef = Arc::new(StringArray::from(docs.clone()));
+        let jsonb: ArrayRef = Arc::new(JsonArray::try_from_iter(docs).unwrap().into_inner());
+        let mut text_field = ArrowField::new("j", DataType::Utf8, true);
+        text_field.set_metadata(std::collections::HashMap::from([(
+            ARROW_EXT_NAME_KEY.to_string(),
+            ARROW_JSON_EXT_NAME.to_string(),
+        )]));
+        let jsonb_field = json_field("j", true);
+
+        let from_text = JsonValues::try_new(&text_field, &text).unwrap();
+        let from_jsonb = JsonValues::try_new(&jsonb_field, &jsonb).unwrap();
+        assert_eq!(from_text.encoding(), JsonEncoding::Text);
+        assert_eq!(from_jsonb.encoding(), JsonEncoding::Jsonb);
+
+        assert_eq!(&from_text.to_jsonb().unwrap(), jsonb.as_binary::<i64>());
+        assert_eq!(&from_jsonb.to_jsonb().unwrap(), jsonb.as_binary::<i64>());
+        assert_eq!(&from_text.to_text(), &text);
+        let decoded = from_jsonb.to_text();
+        let decoded = decoded.as_string::<i64>();
+        assert_eq!(decoded.value(0), r#"{"a":1}"#);
+        assert!(decoded.is_null(1));
+
+        let plain = ArrowField::new("j", DataType::Utf8, true);
+        assert!(JsonValues::try_new(&plain, &text).is_none());
     }
 
     #[test]
@@ -1301,12 +1398,7 @@ mod tests {
         // Invalid JSONPath syntax should return error
         let result = json_array.json_path(0, "invalid path without $");
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Failed to extract JSONPath")
-        );
+        assert!(result.unwrap_err().to_string().contains("Invalid JSONPath"));
     }
 
     #[test]

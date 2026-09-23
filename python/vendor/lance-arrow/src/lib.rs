@@ -472,7 +472,11 @@ pub fn iter_str_array(arr: &dyn Array) -> Box<dyn Iterator<Item = Option<&str>> 
     match arr.data_type() {
         DataType::Utf8 => Box::new(arr.as_string::<i32>().iter()),
         DataType::LargeUtf8 => Box::new(arr.as_string::<i64>().iter()),
-        _ => panic!("Expecting Utf8 or LargeUtf8, found {:?}", arr.data_type()),
+        DataType::Utf8View => Box::new(arr.as_string_view().iter()),
+        _ => panic!(
+            "Expecting Utf8, LargeUtf8 or Utf8View, found {:?}",
+            arr.data_type()
+        ),
     }
 }
 

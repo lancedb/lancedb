@@ -1,6 +1,6 @@
 [package]
 name = "lance-arrow"
-version = "13.0.0-beta.8"
+version = "13.0.0-beta.12"
 edition = "2024"
 authors = ["Lance Devs <dev@lance.org>"]
 license = "Apache-2.0"
