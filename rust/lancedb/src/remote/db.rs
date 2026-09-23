@@ -1210,11 +1210,39 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_view(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        self.drop_view_async(name, namespace_path)
+            .await?
+            .wait()
+            .await
+    }
+
+    async fn drop_view_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
         let view_id = build_object_identifier("View name", name, namespace_path)?;
         let req = self.client.post(&format!("/v1/view/{view_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
-        self.client.check_response(&request_id, response).await?;
-        Ok(())
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        match status {
+            // Nothing was bound to the name, so nothing is being deleted.
+            StatusCode::OK => Ok(Job::new_done()),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "view drop response did not contain a valid job_id".into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Ok(Job::new(Box::new(RemoteJob::new(
+                    self.client.clone(),
+                    job_id,
+                ))))
+            }
+            _ => Err(Error::Http {
+                source: "view drop must return 200 OK or 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            }),
+        }
     }
 
     async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
@@ -4044,6 +4072,55 @@ mod tests {
         conn.drop_view("adults", &["analytics".into()])
             .await
             .unwrap();
+    }
+
+    /// An accepted drop hands back the job so a caller can wait on the delete,
+    /// and the waiting `drop_view` does that for them.
+    #[tokio::test]
+    async fn test_drop_view_async_reports_the_cleanup_job() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j1-do-abc"}"#)
+                .unwrap()
+        });
+        let job = db.drop_view_async("adults", &[]).await.unwrap();
+        assert_eq!(job.id(), Some("j1-do-abc"));
+    }
+
+    /// Nothing was bound, so nothing is being deleted and the job is already done.
+    #[tokio::test]
+    async fn test_drop_view_async_reports_a_finished_job_when_nothing_was_bound() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        let job = db.drop_view_async("adults", &[]).await.unwrap();
+        assert_eq!(job.id(), None);
+        assert_eq!(job.status().await.unwrap(), "finished");
+        job.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_view_rejects_incomplete_acceptance() {
+        for body in ["{}", r#"{"job_id":""}"#, r#"{"job_id":null}"#] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(202).body(body).unwrap()
+            });
+            let error = db.drop_view_async("adults", &[]).await.err().unwrap();
+            assert!(error.to_string().contains("valid job_id"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_view_rejects_unexpected_success_status() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(204).body("").unwrap()
+        });
+        let error = db.drop_view_async("adults", &[]).await.err().unwrap();
+        assert!(
+            error.to_string().contains("200 OK or 202 Accepted"),
+            "{error}"
+        );
     }
 
     /// A schema the client cannot decode is a broken response, not a view

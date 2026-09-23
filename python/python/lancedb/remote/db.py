@@ -932,6 +932,13 @@ class RemoteDBConnection(DBConnection):
         LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
 
     @override
+    def drop_view_async(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        job = LOOP.run(self._conn.drop_view_async(name, namespace_path=namespace_path))
+        return Job(job)
+
+    @override
     def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
         return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
 

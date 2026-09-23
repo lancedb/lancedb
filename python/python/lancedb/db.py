@@ -983,10 +983,25 @@ class DBConnection(EnforceOverrides):
     def drop_view(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
-        """Drop a view.
+        """Drop a view and wait for its definition to be deleted.
 
-        The tables it reads are untouched: a view holds no rows of its own.
+        The tables it reads are untouched: a view holds no rows of its own. Use
+        :meth:`drop_view_async` to get the cleanup job instead of waiting on it.
         Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def drop_view_async(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> "Job[None]":
+        """Start dropping a view and return the job deleting its definition.
+
+        The name is free before this returns. Call :meth:`Job.wait` to wait for
+        the definition dataset to be deleted. When nothing was bound to the
+        name, the returned job is already finished and has no id. Local
+        connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "View operations are not supported for this connection type"
@@ -1835,6 +1850,14 @@ class LanceDBConnection(DBConnection):
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
         LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_view_async(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> "Job[None]":
+        return Job(
+            LOOP.run(self._conn.drop_view_async(name, namespace_path=namespace_path))
+        )
 
     @override
     def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
@@ -2821,8 +2844,29 @@ class AsyncConnection(object):
     async def drop_view(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
-        """Drop a view. The tables it reads are untouched."""
+        """Drop a view and wait for its definition to be deleted.
+
+        The tables it reads are untouched. Use :meth:`drop_view_async` to get
+        the cleanup job instead of waiting on it.
+        """
         await self._inner.drop_view(name, list(namespace_path or []))
+
+    async def drop_view_async(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncJob[None]:
+        """Start dropping a view and return the job deleting its definition.
+
+        The name is free before this returns. Await :meth:`AsyncJob.wait` before
+        assuming the definition dataset is gone.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return AsyncJob(
+            await self._inner.drop_view_async(name, namespace_path=namespace_path)
+        )
 
     async def list_views(
         self, *, namespace_path: Optional[List[str]] = None
