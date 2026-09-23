@@ -62,11 +62,7 @@ class SchemaInferrer {
   }
 
   private observe(path: string[], value: unknown, row: number): void {
-    if (isUnsupportedObject(value)) {
-      throw new Error(
-        `Unsupported object value for field ${path.join(".")} at row ${row}.`,
-      );
-    }
+    assertSupportedValue(value, path.join("."), row);
 
     const current = this.fields.get(path);
     if (current === undefined) {
@@ -465,6 +461,26 @@ function isUnsupportedObject(value: unknown): boolean {
     Buffer.isBuffer(value) ||
     ArrayBuffer.isView(value)
   );
+}
+
+function assertSupportedValue(
+  value: unknown,
+  field: string,
+  row: number,
+): void {
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      assertSupportedValue(item, `${field}[${index}]`, row);
+    }
+  } else if (isRecord(value)) {
+    for (const [name, child] of Object.entries(value)) {
+      assertSupportedValue(child, `${field}.${name}`, row);
+    }
+  } else if (isUnsupportedObject(value)) {
+    throw new Error(
+      `Unsupported object value for field ${field} at row ${row}.`,
+    );
+  }
 }
 
 function fieldAtPath(schema: Schema, path: string[]): Field | undefined {

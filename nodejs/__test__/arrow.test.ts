@@ -644,6 +644,60 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         ).toThrow(/field metadata\.bytes at row 0/);
       });
 
+      it("rejects unsupported objects in list elements", () => {
+        const schema = new Schema([
+          new Field(
+            "images",
+            new List(new Field("item", new Binary(), true)),
+            true,
+          ),
+        ]);
+        expect(() =>
+          makeArrowTable([{ images: [new Blob(["abc"])] }], { schema }),
+        ).toThrow(/field images\[0\] at row 0/);
+      });
+
+      it("rejects unsupported objects in nested lists", () => {
+        const schema = new Schema([
+          new Field(
+            "images",
+            new List(
+              new Field(
+                "item",
+                new List(new Field("item", new Binary(), true)),
+                true,
+              ),
+            ),
+            true,
+          ),
+        ]);
+        expect(() =>
+          makeArrowTable([{ images: [[new Blob(["abc"])]] }], { schema }),
+        ).toThrow(/field images\[0\]\[0\] at row 0/);
+      });
+
+      it("rejects unsupported nested struct fields in lists", () => {
+        const schema = new Schema([
+          new Field(
+            "items",
+            new List(
+              new Field(
+                "item",
+                new Struct([new Field("bytes", new Binary(), true)]),
+                true,
+              ),
+            ),
+            true,
+          ),
+        ]);
+        expect(() =>
+          makeArrowTable(
+            [{ items: [{ bytes: new Uint8Array([104]).buffer }] }],
+            { schema },
+          ),
+        ).toThrow(/field items\[0\]\.bytes at row 0/);
+      });
+
       it("will ignore generated dictionary IDs when comparing inferred types", function () {
         const table = makeArrowTable([{ str: "a" }, { str: "b" }], {
           dictionaryEncodeStrings: true,
