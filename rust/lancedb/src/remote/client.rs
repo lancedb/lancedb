@@ -767,6 +767,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.post(full_uri)
     }
 
+    pub fn put(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.put(full_uri)
+    }
+
     /// Apply dynamic headers from the header provider if configured
     pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
         if let Some(ref provider) = self.header_provider {

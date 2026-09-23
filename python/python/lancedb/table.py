@@ -1349,6 +1349,27 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        raise NotImplementedError
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated existing
+        overrides are preserved by the remote service update flow.
+        """
+        raise NotImplementedError
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        raise NotImplementedError
+
     def drop_index(self, name: str) -> None:
         """
         Drop an index from the table.
@@ -4554,6 +4575,36 @@ class LanceTable(Table):
         [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
+    def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        return LOOP.run(self._table.get_table_overrides())
+
+    def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated overrides
+        from the current read snapshot are preserved.
+
+        Examples
+        --------
+        >>> table.update_table_overrides(  # doctest: +SKIP
+        ...     job_types={
+        ...         "compaction": {"enabled": True},
+        ...         "cleanup": {"enabled": False},
+        ...     }
+        ... )
+        """
+        return LOOP.run(self._table.update_table_overrides(**overrides))
+
+    def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return LOOP.run(self._table.reset_table_overrides())
+
     def checkpoint_lsm(self) -> None:
         """Synchronous version of
         [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
@@ -5292,6 +5343,37 @@ class AsyncTable:
         resolved when the spec was set — ``None`` never round-trips.
         """
         return await self._inner.get_lsm_write_spec()
+
+    async def get_table_overrides(self) -> dict[str, Any]:
+        """Read Enterprise table overrides for this table.
+
+        Table overrides configure Enterprise-managed background behavior such as
+        automatic compaction, cleanup, and reindex execution. This method is
+        supported only on remote Enterprise tables.
+        """
+        return json.loads(await self._inner.get_table_overrides())
+
+    async def update_table_overrides(self, **overrides: Any) -> dict[str, Any]:
+        """Merge Enterprise table overrides into the current table overrides.
+
+        Only fields supplied in ``overrides`` are changed; unrelated overrides
+        from the current read snapshot are preserved.
+
+        Examples
+        --------
+        >>> await table.update_table_overrides(  # doctest: +SKIP
+        ...     job_types={
+        ...         "compaction": {"enabled": True},
+        ...         "cleanup": {"enabled": False},
+        ...     }
+        ... )
+        """
+        encoded = json.dumps(overrides)
+        return json.loads(await self._inner.update_table_overrides(encoded))
+
+    async def reset_table_overrides(self) -> dict[str, Any]:
+        """Clear Enterprise table overrides for this table."""
+        return json.loads(await self._inner.reset_table_overrides())
 
     async def checkpoint_lsm(self) -> None:
         """Converge this table's LSM write path into its base table.

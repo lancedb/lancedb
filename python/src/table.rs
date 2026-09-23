@@ -1603,6 +1603,45 @@ impl Table {
         })
     }
 
+    pub fn get_table_overrides(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let overrides = inner.get_table_overrides().await.infer_error()?;
+            serde_json::to_string(&overrides).map_err(|err| {
+                PyRuntimeError::new_err(format!("Failed to serialize table overrides: {err}"))
+            })
+        })
+    }
+
+    pub fn update_table_overrides<'a>(
+        self_: PyRef<'a, Self>,
+        overrides_json: String,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let overrides = serde_json::from_str(&overrides_json).map_err(|err| {
+                PyValueError::new_err(format!("Invalid table overrides JSON: {err}"))
+            })?;
+            let overrides = inner
+                .update_table_overrides(overrides)
+                .await
+                .infer_error()?;
+            serde_json::to_string(&overrides).map_err(|err| {
+                PyRuntimeError::new_err(format!("Failed to serialize table overrides: {err}"))
+            })
+        })
+    }
+
+    pub fn reset_table_overrides(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let overrides = inner.reset_table_overrides().await.infer_error()?;
+            serde_json::to_string(&overrides).map_err(|err| {
+                PyRuntimeError::new_err(format!("Failed to serialize table overrides: {err}"))
+            })
+        })
+    }
+
     /// Converge the table's LSM write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last
