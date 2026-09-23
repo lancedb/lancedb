@@ -1,0 +1,30 @@
+{
+  "binding_id": "fb_01K3EMBED",
+  "function": {
+    "name": "openai_embed",
+    "version": "1",
+    "object_id": "fixture",
+    "location": "memory:///fixture",
+    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"
+  },
+  "inputs": [
+    {
+      "parameter": "text",
+      "field_id": 12,
+      "field_path": "body",
+      "arrow_type": "utf8",
+      "nullable": true
+    }
+  ],
+  "outputs": [
+    {
+      "result_field": "result",
+      "output_name": "embedding",
+      "output_field_id": 21,
+      "output_ordinal": 0,
+      "arrow_type": "list<float32>",
+      "nullable": false
+    }
+  ],
+  "initialization": "/////7AAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAIAAABUAAAABAAAAMT///8AAAACEAAAACQAAAAEAAAAAAAAAAoAAABkaW1lbnNpb25zAAAIAAwACAAHAAgAAAAAAAABIAAAABAAFAAIAAAABwAMAAAAEAAQAAAAAAAABRAAAAAcAAAABAAAAAAAAAAFAAAAbW9kZWwAAAAEAAQABAAAAP/////IAAAAFAAAAAAAAAAMABYABgAFAAgADAAMAAAAAAMEABgAAAAoAAAAAAAAAAAACgAYAAwABAAIAAoAAABsAAAAEAAAAAEAAAAAAAAAAAAAAAUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAgAAAAAAAAAFgAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAEAAAAAAAAAAAAAAACAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAFgAAAHRleHQtZW1iZWRkaW5nLTMtc21hbGwAAAACAAAAAAAA/////wAAAAA="
+}
