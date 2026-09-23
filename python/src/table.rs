@@ -1481,13 +1481,17 @@ impl Table {
         })
     }
 
-    /// Whether reads on this table route through the MemWAL. Cached by the
-    /// remote table, so the hybrid query path can ask on every call.
-    pub fn lsm_enabled(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner_ref()?.clone();
-        future_into_py(self_.py(), async move {
-            inner.lsm_enabled().await.infer_error()
-        })
+    /// Whether a hybrid query on this table has already been refused `_rowid`.
+    /// Learned from a previous refusal, never probed, so this is free.
+    pub fn hybrid_pk_fusion_learned(self_: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(self_.inner_ref()?.base_table().hybrid_pk_fusion_learned())
+    }
+
+    /// Remember that this table refused `_rowid`, so later hybrid queries skip
+    /// straight to the primary-key fusion.
+    pub fn note_hybrid_pk_fusion(self_: PyRef<'_, Self>) -> PyResult<()> {
+        self_.inner_ref()?.base_table().note_hybrid_pk_fusion();
+        Ok(())
     }
 
     /// Converge the table's LSM write path into its base table.

@@ -2467,13 +2467,16 @@ class Table(ABC):
         to check if the table is already using the new path style.
         """
 
-    def lsm_enabled(self) -> bool:
-        """Whether reads on this table route through the MemWAL.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        """Whether a hybrid query here has already been refused ``_rowid``.
 
-        ``False`` for table types that have no MemWAL write path, which is what
-        lets query paths ask unconditionally.
+        Learned from a refusal, never probed, so asking is free. ``False`` for
+        table types that never refuse.
         """
         return False
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        """Remember a ``_rowid`` refusal, so later hybrid queries skip it."""
 
 
 class LanceTable(Table):
@@ -4370,10 +4373,12 @@ class LanceTable(Table):
         [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
-    def lsm_enabled(self) -> bool:
-        """Whether reads route through the MemWAL. See
-        [`AsyncTable.lsm_enabled`][lancedb.AsyncTable.lsm_enabled]."""
-        return LOOP.run(self._table.lsm_enabled())
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        # `self._table` is the async table, which owns the Rust handle.
+        return self._table._hybrid_pk_fusion_learned()
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        self._table._note_hybrid_pk_fusion()
 
     def checkpoint_lsm(self) -> None:
         """Synchronous version of
@@ -5114,13 +5119,13 @@ class AsyncTable:
         """
         return await self._inner.get_lsm_write_spec()
 
-    async def lsm_enabled(self) -> bool:
-        """Whether reads on this table route through the MemWAL.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        """See [`Table._hybrid_pk_fusion_learned`][lancedb.table.Table]."""
+        return self._inner.hybrid_pk_fusion_learned()
 
-        Equivalent to testing `get_lsm_write_spec` for ``None``, but cached by
-        the remote table, so query paths can ask on every call.
-        """
-        return await self._inner.lsm_enabled()
+    def _note_hybrid_pk_fusion(self) -> None:
+        """See [`Table._note_hybrid_pk_fusion`][lancedb.table.Table]."""
+        self._inner.note_hybrid_pk_fusion()
 
     async def checkpoint_lsm(self) -> None:
         """Converge this table's LSM write path into its base table.

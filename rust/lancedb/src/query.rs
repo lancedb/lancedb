@@ -1176,6 +1176,35 @@ pub struct VectorQuery {
     request: VectorQueryRequest,
 }
 
+/// The part of the MemWAL `with_row_id` refusal that identifies it.
+///
+/// Both layers raise this same sentence verbatim — sophon's
+/// `LSM_WITH_ROW_ID_UNSUPPORTED` says so in as many words, and the OSS LSM
+/// scanner builds it from the same words — so this substring survives either
+/// path and the wrapping each adds. It is a coupling to a message rather than
+/// a code, because the refusal arrives as a generic 400; if the server ever
+/// rewords it the fallback stops firing and hybrid on a MemWAL table goes back
+/// to erroring visibly, which is loud rather than silently wrong.
+const WAL_ROW_ID_REFUSAL: &str = "does not support with_row_id";
+
+/// Whether `error` is the server declining `_rowid` because the table is
+/// MemWAL-backed, as opposed to any other failure the query might hit.
+fn is_wal_row_id_refusal(error: &Error) -> bool {
+    error.to_string().contains(WAL_ROW_ID_REFUSAL)
+}
+
+/// Why a hybrid query on a MemWAL table cannot hand back `_rowid`, raised
+/// whether the refusal was anticipated or came back from the server.
+fn wal_row_id_unsupported() -> Error {
+    Error::NotSupported {
+        message: "hybrid search on a MemWAL table cannot return _rowid: the fresh tier has no \
+                  stable row id, and the ids the fusion joins on are synthesized from the \
+                  primary key. Set use_lsm(false) to read the base table only (results will \
+                  exclude un-compacted MemWAL data)"
+            .to_string(),
+    }
+}
+
 /// How the hybrid fusion identifies the same row across its two legs.
 enum FusionKey {
     /// Lance's `_rowid`, requested from the server. Every table that can supply
@@ -1474,13 +1503,43 @@ impl VectorQuery {
         self
     }
 
+    /// Ask for `_rowid` first and fall back to the primary key only when the
+    /// server refuses, rather than paying a round trip up front to find out.
+    ///
+    /// Only a MemWAL table refuses, so probing would tax every table to learn
+    /// something almost none of them need — and the refusal has to be handled
+    /// regardless, since a write spec installed elsewhere can arrive between
+    /// any two queries. The refusal costs nothing server-side: it is raised
+    /// before the query is planned.
     pub async fn execute_hybrid(
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        let key = self.fusion_key().await?;
+        let optimistic = matches!(key, FusionKey::RowId);
+        match self.run_hybrid(key, options.clone()).await {
+            // A caller who asked for `_rowid` gets the reason, not a bare 400 —
+            // the same message the learned path would have raised up front.
+            Err(e) if optimistic && self.request.base.with_row_id && is_wal_row_id_refusal(&e) => {
+                Err(wal_row_id_unsupported())
+            }
+            Err(e) if optimistic && is_wal_row_id_refusal(&e) => {
+                // Learned, so later queries on this table skip straight to it.
+                self.parent.note_hybrid_pk_fusion();
+                let key = self.pk_fusion_key().await?;
+                self.run_hybrid(key, options).await
+            }
+            other => other,
+        }
+    }
+
+    async fn run_hybrid(
+        &self,
+        key: FusionKey,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
         let max_batch_length = options.max_batch_length as usize;
         let internal_options = options.without_output_batch_length_limit();
-        let key = self.fusion_key().await?;
 
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
@@ -1583,18 +1642,20 @@ impl VectorQuery {
 
     /// Whether this hybrid query can join its legs on `_rowid`, or has to build
     /// a surrogate from the primary key because the table is MemWAL-backed.
+    /// The key to try first: `_rowid` unless a previous query on this table has
+    /// already been refused it.
     async fn fusion_key(&self) -> Result<FusionKey> {
-        if self.request.base.use_lsm == Some(false) || !self.parent.lsm_enabled().await? {
+        if self.request.base.use_lsm == Some(false) || !self.parent.hybrid_pk_fusion_learned() {
             return Ok(FusionKey::RowId);
         }
+        self.pk_fusion_key().await
+    }
+
+    /// Resolve the primary key the legs will be fused on. Needs the schema,
+    /// which the table has already fetched and cached for its own reasons.
+    async fn pk_fusion_key(&self) -> Result<FusionKey> {
         if self.request.base.with_row_id {
-            return Err(Error::NotSupported {
-                message: "hybrid search on a MemWAL table cannot return _rowid: the fresh tier \
-                          has no stable row id, and the ids the fusion joins on are synthesized \
-                          from the primary key. Set use_lsm(false) to read the base table only \
-                          (results will exclude un-compacted MemWAL data)"
-                    .to_string(),
-            });
+            return Err(wal_row_id_unsupported());
         }
         let schema = self.parent.schema().await?;
         let columns = crate::table::primary_key::pk_columns(&schema);

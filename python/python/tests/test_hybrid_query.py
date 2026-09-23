@@ -498,9 +498,10 @@ def test_normalize_scores():
 
 
 def _wal_table(schema: pa.Schema) -> mock.Mock:
-    """A stand-in for a MemWAL-backed table: the fusion cannot use `_rowid`."""
+    """A MemWAL-backed table a previous query has already been refused
+    `_rowid` on, so the fusion goes straight to the primary key."""
     table = mock.Mock()
-    table.lsm_enabled.return_value = True
+    table._hybrid_pk_fusion_learned.return_value = True
     table.schema = schema
     return table
 
@@ -554,7 +555,7 @@ def test_wal_hybrid_without_a_projection_leaves_it_alone():
 
 def test_base_table_hybrid_still_joins_on_row_ids():
     table = mock.Mock()
-    table.lsm_enabled.return_value = False
+    table._hybrid_pk_fusion_learned.return_value = False
     builder = LanceHybridQueryBuilder(table).vector([0.1, 0.2]).text("puppy")
     builder._create_query_builders()
 

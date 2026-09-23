@@ -2208,6 +2208,29 @@ def _pk_columns(schema: pa.Schema) -> List[str]:
     return [name for *_, name in sorted(keyed)]
 
 
+# Both layers raise this same sentence verbatim -- sophon's
+# `LSM_WITH_ROW_ID_UNSUPPORTED` says so explicitly, and the OSS LSM scanner
+# builds it from the same words -- so this substring survives either path and
+# the wrapping each adds. It is a coupling to a message rather than a code,
+# because the refusal arrives as a generic 400; if the server ever rewords it
+# the fallback stops firing and hybrid on a MemWAL table errors visibly again,
+# which is loud rather than silently wrong.
+_WAL_ROW_ID_REFUSAL = "does not support with_row_id"
+
+_WAL_ROW_ID_UNSUPPORTED = (
+    "hybrid search on a MemWAL table cannot return _rowid: the fresh tier has "
+    "no stable row id, and the ids the fusion joins on are synthesized from "
+    "the primary key. Set use_lsm(False) to read the base table only (results "
+    "will exclude un-compacted MemWAL data)"
+)
+
+
+def _is_wal_row_id_refusal(error: BaseException) -> bool:
+    """Whether `error` is the server declining `_rowid` because the table is
+    MemWAL-backed, as opposed to any other failure the query might hit."""
+    return _WAL_ROW_ID_REFUSAL in str(error)
+
+
 def _with_pk_columns(columns, pk_columns: List[str]):
     """Add the key columns a projection is missing.
 
@@ -2352,6 +2375,28 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+        """Ask for `_rowid` first, falling back to the primary key only when the
+        server refuses, rather than paying a round trip up front to find out.
+
+        Only a MemWAL table refuses, and the refusal has to be handled anyway
+        -- a write spec installed elsewhere can arrive between any two queries.
+        It costs nothing server-side: it is raised before the query is planned.
+        """
+        try:
+            return self._run_hybrid(timeout=timeout)
+        except Exception as e:
+            if self._fusion_pk is not None or not _is_wal_row_id_refusal(e):
+                raise
+            # `return_score="all"` turns row ids on for the reranker, not the
+            # caller, so it still falls back; only a caller who asked for them
+            # is refused, and with the reason rather than a bare 400.
+            if self._user_requested_row_id() and not self._reranker_requested_row_id:
+                raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED) from e
+            # Learned, so later queries on this table skip straight to it.
+            self._table._note_hybrid_pk_fusion()
+            return self._run_hybrid(timeout=timeout)
+
+    def _run_hybrid(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         self._create_query_builders()
         fts_query, vector_query = self._fts_query, self._vector_query
         if self._fusion_pk is None:
@@ -2379,21 +2424,20 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def _resolve_fusion_pk(self) -> Optional[List[str]]:
         """The key columns the two legs must be fused on, or None for `_rowid`.
 
-        A MemWAL table rejects `with_row_id` before it plans, because the fresh
-        tier has no stable row id, so there the legs are joined on a surrogate
-        built from the primary key instead.
+        `_rowid` until a MemWAL table refuses it, after which the legs are
+        joined on a surrogate built from the primary key. The refusal is what
+        teaches us, rather than a round trip up front that every table would
+        pay to learn something almost none of them need.
         """
-        # Only an unambiguous True forks to PK mode: a table type that does not
-        # answer the question properly keeps today's `_rowid` behavior.
-        if self._use_lsm is False or self._table.lsm_enabled() is not True:
+        # Only an unambiguous True forks to the key: a table type that answers
+        # the question loosely keeps the `_rowid` path.
+        if (
+            self._use_lsm is False
+            or self._table._hybrid_pk_fusion_learned() is not True
+        ):
             return None
         if self._user_requested_row_id() and not self._reranker_requested_row_id:
-            raise NotImplementedError(
-                "hybrid search on a MemWAL table cannot return _rowid: the fresh "
-                "tier has no stable row id, and the ids the fusion joins on are "
-                "synthesized from the primary key. Set use_lsm(False) to read the "
-                "base table only (results will exclude un-compacted MemWAL data)"
-            )
+            raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED)
         if self._blob_auto_row_id_enabled():
             raise NotImplementedError(
                 "hybrid search cannot project a blob column on a MemWAL table: "
@@ -4061,25 +4105,20 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
     async def _resolve_fusion_pk(self) -> Optional[List[str]]:
         """The key columns the two legs must be fused on, or None for `_rowid`.
 
-        A MemWAL table rejects `with_row_id` before it plans, because the fresh
-        tier has no stable row id, so there the legs are joined on a surrogate
-        built from the primary key instead.
+        `_rowid` until a MemWAL table refuses it, after which the legs are
+        joined on a surrogate built from the primary key. The refusal is what
+        teaches us, rather than a round trip up front that every table would
+        pay to learn something almost none of them need.
         """
         if self._table is None:
             return None
         if self._inner.to_query_request().use_lsm is False:
             return None
-        # Only an unambiguous True forks to PK mode: a table type that does not
-        # answer the question properly keeps today's `_rowid` behavior.
-        if (await self._table.lsm_enabled()) is not True:
+        # Only an unambiguous True forks to the key; see the sync resolver.
+        if self._table._hybrid_pk_fusion_learned() is not True:
             return None
         if self._user_requested_row_id():
-            raise NotImplementedError(
-                "hybrid search on a MemWAL table cannot return _rowid: the fresh "
-                "tier has no stable row id, and the ids the fusion joins on are "
-                "synthesized from the primary key. Set use_lsm(False) to read the "
-                "base table only (results will exclude un-compacted MemWAL data)"
-            )
+            raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED)
         schema = await self._table.schema()
         if blob_auto_row_id_for_scan(
             schema,
@@ -4150,6 +4189,28 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         return fts_query, vec_query, limit, offset
 
     async def to_batches(
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> AsyncRecordBatchReader:
+        """See `LanceHybridQueryBuilder.to_arrow` for why the key is learned
+        from a refusal rather than probed for."""
+        try:
+            return await self._run_hybrid(
+                max_batch_length=max_batch_length, timeout=timeout
+            )
+        except Exception as e:
+            if self._fusion_pk is not None or not _is_wal_row_id_refusal(e):
+                raise
+            if self._user_requested_row_id():
+                raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED) from e
+            self._table._note_hybrid_pk_fusion()
+            return await self._run_hybrid(
+                max_batch_length=max_batch_length, timeout=timeout
+            )
+
+    async def _run_hybrid(
         self,
         *,
         max_batch_length: Optional[int] = None,
