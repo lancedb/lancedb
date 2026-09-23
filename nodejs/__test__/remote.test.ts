@@ -231,6 +231,15 @@ describe("remote connection", () => {
     );
   });
 
+  it("rejects a zero blob request concurrency limit", async () => {
+    await expect(
+      connect("db://dev", {
+        apiKey: "fake",
+        clientConfig: { blobRequestConcurrency: 0 },
+      }),
+    ).rejects.toThrow("blob_request_concurrency");
+  });
+
   it("shows the full error messages on retry errors", async () => {
     await withMockDatabase(
       (_req, res) => {

@@ -1313,6 +1313,9 @@ impl Table {
     ///
     /// Same length and order as `row_ids`. Null rows are `None`. Bytes are not
     /// read from disk until a call to [`BlobFile::read`].
+    /// Remote blob requests share a connection-wide concurrency limit. Set
+    /// `ClientConfig::blob_request_concurrency` or the
+    /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` environment variable to tune it.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids.
