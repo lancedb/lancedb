@@ -44,7 +44,6 @@ import {
   coerceBlobValue,
   isBlobField,
   needsBlobResolution,
-  normalizeBlobInput,
   resolveBlobInput,
 } from "./blob";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
@@ -447,9 +446,15 @@ export function makeArrowTable(
   }
 
   if (schema !== undefined) {
+    // Validate blob values up front and give every one the full
+    // `{ data, uri }` shape, so inference sees the same struct whether a row
+    // passed bytes, a URI, or a partial struct.
     data = mapBlobInputs(data, schema, (value, field, row) => {
+      if (value === undefined) {
+        return value;
+      }
       try {
-        return normalizeBlobInput(value);
+        return coerceBlobValue(value);
       } catch (e) {
         throw new Error(
           `Invalid value for blob field ${field} at row ${row}: ${(e as Error).message}`,

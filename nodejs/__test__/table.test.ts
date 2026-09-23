@@ -2503,6 +2503,8 @@ describe("when dealing with blob columns", () => {
   it.each([
     ["URI string", (uri: string) => uri],
     ["URI struct", (uri: string) => ({ uri })],
+    ["URL", (uri: string) => new URL(uri)],
+    ["URL struct", (uri: string) => ({ uri: new URL(uri) })],
   ])(
     "round-trips an external blob from a %s after reopening",
     async (_label, blobValue) => {
@@ -2596,39 +2598,32 @@ describe("when dealing with blob columns", () => {
     expect(bytes[0]).toEqual(payload);
   });
 
-  it("accepts ArrayBuffer, Blob, File, and URL in createTable and add", async () => {
+  it("accepts ArrayBuffer, Blob, and File in createTable and add", async () => {
     const db = await connect(tmpDir.name);
     const schema = new Schema([
       new Field("id", new Int64(), true),
       blob("image"),
     ]);
     const rows: { id: bigint; image: BlobInput }[] = [
-      { id: 1n, image: Buffer.from("array-buffer").buffer },
+      { id: 1n, image: new TextEncoder().encode("array-buffer").buffer },
       { id: 2n, image: new Blob(["blob"]) },
       { id: 3n, image: { data: new File(["file"], "f.txt") } },
-      { id: 4n, image: new URL("https://example.com/remote.png") },
-      { id: 5n, image: { uri: new URL("file:///tmp/local.png") } },
     ];
-    const table = await db.createTable("widened", rows.slice(0, 3), {
+    const table = await db.createTable("widened", rows.slice(0, 2), {
       schema,
     });
-    await table.add(rows.slice(3));
-    await table.add([{ id: 6n, image: new Blob(["added"]) }]);
+    await table.add(rows.slice(2));
 
     const results = await table.query().select(["id"]).withRowId().toArray();
     results.sort((a, b) => Number(a.id - b.id));
-    const rowIds = results.map((row) => row._rowid as bigint);
-    const inline = await table.fetchBlobs("image", [
-      rowIds[0],
-      rowIds[1],
-      rowIds[2],
-      rowIds[5],
-    ]);
-    expect(inline.map((b) => b?.toString())).toEqual([
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual([
       "array-buffer",
       "blob",
       "file",
-      "added",
     ]);
   });
 
