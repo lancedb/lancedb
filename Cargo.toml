@@ -1,6 +1,5 @@
 [workspace]
 members = ["rust/lancedb", "nodejs", "python"]
-exclude = ["python/vendor/lance-arrow"]
 resolver = "2"
 
 [workspace.package]
@@ -27,7 +26,7 @@ lance-table = { "version" = "=13.0.0-beta.8", "tag" = "v13.0.0-beta.8", "git" = 
 lance-testing = { "version" = "=13.0.0-beta.8", "tag" = "v13.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
 lance-datafusion = { "version" = "=13.0.0-beta.8", "tag" = "v13.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
 lance-encoding = { "version" = "=13.0.0-beta.8", "tag" = "v13.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=13.0.0-beta.8", "tag" = "v13.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { version = "=13.0.0-beta.8", path = "python/vendor/lance-arrow" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
