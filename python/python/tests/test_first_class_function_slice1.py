@@ -296,9 +296,12 @@ def test_initialization_travels_on_the_application_and_binding():
         "model": "text-embedding-3-small",
         "dimensions": 512,
     }
-    assert FunctionBinding.from_json(
-        fixture("remote_function_binding.json")
-    ).initialization_row() is None
+    assert (
+        FunctionBinding.from_json(
+            fixture("remote_function_binding.json")
+        ).initialization_row()
+        is None
+    )
 
     signature = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))
