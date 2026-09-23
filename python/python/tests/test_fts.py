@@ -321,6 +321,20 @@ def test_custom_stop_words_list(table):
         )
 
 
+def test_list_indices_with_missing_fts_files(table):
+    # Regression test for https://github.com/lancedb/lancedb/issues/4250
+    table.create_fts_index("text")
+    table.create_scalar_index("id")
+
+    fts = next(i for i in table.list_indices() if i.index_type == "FTS")
+    shutil.rmtree(Path(table.uri) / "_indices" / fts.index_uuid)
+
+    indices = {i.name: i for i in table.list_indices()}
+    assert set(indices) == {"text_idx", "id_idx"}
+    assert indices["text_idx"].index_type == "FTS"
+    assert indices["text_idx"].columns == ["text"]
+
+
 def test_search_fts(table):
     table.create_fts_index("text")
     results = table.search("puppy").select(["id", "text"]).limit(5).to_list()
