@@ -1226,7 +1226,10 @@ impl Table {
     /// Materialize blob bytes for the given row ids.
     ///
     /// Output matches `row_ids` in length and order. Null blobs are null;
-    /// valid empty blobs contain empty byte strings. Prefer
+    /// valid empty blobs contain empty byte strings. Cloud limits individual
+    /// requests to 1024 row ids and 64 MiB of blob bytes; the remote client
+    /// splits requests and reads a single larger blob through the Range route.
+    /// This method still materializes all bytes in memory, so prefer
     /// [`Self::fetch_blob_files`] for large selections.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable

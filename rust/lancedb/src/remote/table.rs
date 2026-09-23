@@ -5168,6 +5168,181 @@ mod tests {
         assert_eq!(blobs.value(2), b"gamma");
     }
 
+    #[tokio::test]
+    async fn test_fetch_blobs_splits_row_id_requests_and_preserves_order() {
+        let request_sizes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = request_sizes.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
+                let body = request_body_json(&request);
+                let ids = body["row_ids"].as_array().unwrap();
+                seen.lock().unwrap().push(ids.len());
+                if ids.len() > 1024 {
+                    return http::Response::builder()
+                        .status(400)
+                        .body(b"fetch_blobs accepts at most 1024 row IDs".to_vec())
+                        .unwrap();
+                }
+                let mut builder = LargeBinaryBuilder::new();
+                for id in ids {
+                    let id = id.as_u64().unwrap();
+                    if id == 1023 {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(id.to_string().as_bytes());
+                    }
+                }
+                let batch = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new(
+                        "image",
+                        DataType::LargeBinary,
+                        true,
+                    )])),
+                    vec![Arc::new(builder.finish())],
+                )
+                .unwrap();
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .body(write_ipc_stream_uncompressed(&batch))
+                    .unwrap()
+            },
+        );
+
+        let ids: Vec<u64> = (0..1024).chain([42]).collect();
+        let blobs = table.fetch_blobs("image", &ids).await.unwrap();
+        assert_eq!(blobs.len(), 1025);
+        assert_eq!(blobs.value(0), b"0");
+        assert_eq!(blobs.value(1022), b"1022");
+        assert!(blobs.is_null(1023));
+        assert_eq!(blobs.value(1024), b"42");
+        assert_eq!(request_sizes.lock().unwrap().as_slice(), &[1024, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_splits_byte_limited_requests_and_reads_large_blob_by_range() {
+        // Simulate a lower byte cap so this test exercises the same 400 response
+        // without allocating 64 MiB of blob data.
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                let path = request.url().path();
+                if path == "/v1/table/my_table/describe/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(br#"{"version":42,"schema":{"fields":[]}}"#.to_vec())
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/fetch_blobs/" {
+                    let body = request_body_json(&request);
+                    assert_eq!(body["version"], 42);
+                    let ids = body["row_ids"].as_array().unwrap();
+                    seen.lock().unwrap().push(format!("POST {}", ids.len()));
+                    let mut builder = LargeBinaryBuilder::new();
+                    let mut total_bytes = 0;
+                    for id in ids {
+                        let value: Option<&[u8]> = match id.as_u64().unwrap() {
+                            10 => Some(b"aaaa"),
+                            20 => Some(b"bbb"),
+                            30 => None,
+                            40 => Some(b"0123456789"),
+                            id => panic!("unexpected row id {id}"),
+                        };
+                        if let Some(value) = value {
+                            total_bytes += value.len();
+                            builder.append_value(value);
+                        } else {
+                            builder.append_null();
+                        }
+                    }
+                    if total_bytes > 6 {
+                        return http::Response::builder()
+                            .status(400)
+                            .body(br#"{"error":"Bad request: fetch_blobs accepts at most 67108864 total blob bytes"}"#.to_vec())
+                            .unwrap();
+                    }
+                    let batch = RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![Field::new(
+                            "image",
+                            DataType::LargeBinary,
+                            true,
+                        )])),
+                        vec![Arc::new(builder.finish())],
+                    )
+                    .unwrap();
+                    return http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(write_ipc_stream_uncompressed(&batch))
+                        .unwrap();
+                }
+                assert_eq!(path, "/v1/table/my_table/blob/image/40/bytes");
+                assert!(request.url().query().unwrap().contains("version=42"));
+                let range = request
+                    .headers()
+                    .get(reqwest::header::RANGE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                seen.lock().unwrap().push(format!("GET {range}"));
+                match range {
+                    "bytes=0-0" => http::Response::builder()
+                        .status(206)
+                        .header(reqwest::header::CONTENT_RANGE, "bytes 0-0/10")
+                        .body(b"0".to_vec())
+                        .unwrap(),
+                    "bytes=0-" => http::Response::builder()
+                        .status(206)
+                        .header(reqwest::header::CONTENT_RANGE, "bytes 0-9/10")
+                        .body(b"0123456789".to_vec())
+                        .unwrap(),
+                    _ => panic!("unexpected range: {range}"),
+                }
+            },
+        );
+        table.checkout(42).await.unwrap();
+
+        let blobs = table
+            .fetch_blobs("image", &[10, 20, 30, 40, 20])
+            .await
+            .unwrap();
+        assert_eq!(blobs.len(), 5);
+        assert_eq!(blobs.value(0), b"aaaa");
+        assert_eq!(blobs.value(1), b"bbb");
+        assert!(blobs.is_null(2));
+        assert_eq!(blobs.value(3), b"0123456789");
+        assert_eq!(blobs.value(4), b"bbb");
+        let requests = requests.lock().unwrap();
+        assert!(requests.contains(&"GET bytes=0-0".to_string()));
+        assert!(requests.contains(&"GET bytes=0-".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_does_not_split_unrelated_bad_requests() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), move |_| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(400)
+                    .body(b"unknown blob column".to_vec())
+                    .unwrap()
+            });
+
+        assert_fetch_blobs_http_error(
+            table.fetch_blobs("missing", &[10, 20]).await.unwrap_err(),
+            "unknown blob column",
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
     fn table_with_fetch_blobs_response(body: Vec<u8>) -> Table {
         table_with_fetch_blobs_content_type(Some(ARROW_STREAM_CONTENT_TYPE), body)
     }
