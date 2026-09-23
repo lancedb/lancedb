@@ -608,3 +608,46 @@ def test_wal_hybrid_fuses_on_the_key_and_drops_it_again():
     assert "_rowid" not in results.column_names, "the surrogate is internal"
     assert "id" not in results.column_names, "the caller selected only `text`"
     assert sorted(results.column("text").to_pylist()) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    "row_id_first", [True, False], ids=["row_id_first", "rerank_first"]
+)
+def test_wal_hybrid_refuses_row_id_even_with_return_score_all(row_id_first: bool):
+    """`return_score="all"` sets the same flag the caller's request does, so
+    asking for both must still be refused — in either call order."""
+    builder = _wal_hybrid()
+    reranker = RRFReranker(return_score="all")
+    if row_id_first:
+        builder = builder.with_row_id(True).rerank(reranker)
+    else:
+        builder = builder.rerank(reranker).with_row_id(True)
+
+    with pytest.raises(NotImplementedError, match="use_lsm"):
+        builder._create_query_builders()
+
+
+def test_wal_hybrid_refuses_a_blob_projection_with_return_score_all():
+    """A projected blob needs a real row id to fetch through, which the
+    reranker turning `_with_row_id` on does not provide."""
+    schema = pa.schema(
+        [
+            pa.field(
+                "id",
+                pa.string(),
+                metadata={b"lance-schema:unenforced-primary-key:position": b"1"},
+            ),
+            pa.field("text", pa.string()),
+            lancedb.blob("blob"),
+        ]
+    )
+    builder = (
+        LanceHybridQueryBuilder(_wal_table(schema))
+        .vector([0.1, 0.2])
+        .text("puppy")
+        .select(["blob"])
+        .rerank(RRFReranker(return_score="all"))
+    )
+
+    with pytest.raises(NotImplementedError, match="blob"):
+        builder._create_query_builders()

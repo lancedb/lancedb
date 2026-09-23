@@ -13745,6 +13745,52 @@ mod tests {
         assert_eq!(batch.num_rows(), 2, "`a` is in both legs and fuses");
     }
 
+    /// A hybrid query that matches nothing must return nothing, not fail.
+    /// When both legs come back empty, `query_schemas` synthesizes a schema
+    /// that already carries `_rowid`, which the stamping has to tolerate.
+    #[tokio::test]
+    async fn test_hybrid_with_no_matches_returns_an_empty_result() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&pk_schema()).into_bytes())
+                    .unwrap(),
+                "/v1/table/my_table/query/" => {
+                    let body = request_body_json(&request);
+                    if body["with_row_id"] == serde_json::Value::Bool(true) {
+                        return http::Response::builder()
+                            .status(400)
+                            .body(WAL_ROW_ID_REFUSAL_BODY.as_bytes().to_vec())
+                            .unwrap();
+                    }
+                    // A leg that matched nothing: schema, no batches.
+                    let schema =
+                        Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+                    let mut body = Vec::new();
+                    {
+                        let mut writer =
+                            arrow_ipc::writer::FileWriter::try_new(&mut body, &schema).unwrap();
+                        writer.finish().unwrap();
+                    }
+                    http::Response::builder().status(200).body(body).unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            }
+        });
+
+        let results = hybrid(&table)
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.iter().map(|b| b.num_rows()).sum::<usize>(), 0);
+    }
+
     /// The refusal is paid once: the second query goes straight to the key.
     #[tokio::test]
     async fn test_hybrid_remembers_the_refusal() {

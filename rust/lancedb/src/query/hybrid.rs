@@ -244,7 +244,14 @@ pub fn stamp_surrogate_row_ids(batches: &mut [RecordBatch], pk_columns: &[String
             }))
         };
 
-        *batch = batch.try_with_column(
+        // `query_schemas` synthesizes a schema carrying `ROW_ID` when a leg came
+        // back empty, so the column can already be there — and it is ours to
+        // define either way.
+        let base = match batch.schema().column_with_name(ROW_ID) {
+            Some(_) => batch.drop_column(ROW_ID)?,
+            None => batch.clone(),
+        };
+        *batch = base.try_with_column(
             Field::new(ROW_ID, DataType::UInt64, false),
             Arc::new(row_ids),
         )?;
@@ -507,18 +514,6 @@ mod test {
             RecordBatch::new_empty(Arc::new(empty_vec_schema())),
             RecordBatch::new_empty(Arc::new(empty_fts_schema())),
         ];
-        // The synthesized schemas already carry ROW_ID, so stamping would
-        // duplicate the field name; drop it first the way the caller does.
-        for b in batches.iter_mut() {
-            let keep: Vec<_> = b
-                .schema()
-                .fields()
-                .iter()
-                .filter(|f| f.name() != ROW_ID)
-                .map(|f| b.schema().index_of(f.name()).unwrap())
-                .collect();
-            *b = b.project(&keep).unwrap();
-        }
         stamp_surrogate_row_ids(&mut batches, &["id".to_string()]).unwrap();
         assert_eq!(row_ids(&batches[0]), Vec::<u64>::new());
     }

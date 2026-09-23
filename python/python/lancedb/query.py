@@ -2332,8 +2332,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # to make that possible.
         self._fusion_pk = None
         self._injected_pk = []
-        # `rerank(return_score="all")` turns `_with_row_id` on for its own use.
-        self._reranker_requested_row_id = False
+        # `_with_row_id` is also turned on by `rerank(return_score="all")` for
+        # the reranker's own use, so it cannot answer "did the caller ask?".
+        self._caller_requested_row_id = False
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -2354,6 +2355,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             raise ValueError("Text query must be a string or FullTextQuery")
 
         return vector_query, text_query
+
+    def with_row_id(self, with_row_id: bool) -> Self:
+        """Set whether to return row ids.
+
+        Recorded separately from `_with_row_id`, which `rerank(return_score=
+        "all")` also sets for its own use — on a MemWAL table only a caller who
+        asked is refused, and the reranker still falls back to the primary key.
+        """
+        self._caller_requested_row_id = with_row_id
+        return super().with_row_id(with_row_id)
 
     def phrase_query(self, phrase_query: bool = True) -> LanceHybridQueryBuilder:
         """Set whether to use phrase query.
@@ -2390,7 +2401,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             # `return_score="all"` turns row ids on for the reranker, not the
             # caller, so it still falls back; only a caller who asked for them
             # is refused, and with the reason rather than a bare 400.
-            if self._user_requested_row_id() and not self._reranker_requested_row_id:
+            if self._caller_requested_row_id:
                 raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED) from e
             # Learned, so later queries on this table skip straight to it.
             self._table._note_hybrid_pk_fusion()
@@ -2436,9 +2447,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             or self._table._hybrid_pk_fusion_learned() is not True
         ):
             return None
-        if self._user_requested_row_id() and not self._reranker_requested_row_id:
+        if self._caller_requested_row_id:
             raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED)
-        if self._blob_auto_row_id_enabled():
+        # Not `_blob_auto_row_id_enabled`: that reports whether a row id would
+        # be added *automatically*, so it goes quiet once anything else has
+        # turned `_with_row_id` on — including `return_score="all"`. A projected
+        # blob needs a real row id to fetch through either way.
+        if blob_v2_projection_sources(self._table.schema, self._columns):
             raise NotImplementedError(
                 "hybrid search cannot project a blob column on a MemWAL table: "
                 "fetching blobs needs a real _rowid, and the fresh tier has no "
@@ -2640,8 +2655,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             # The reranker needs the join column to carry the per-leg scores
             # across; the caller did not ask for row ids and must not be
             # refused on a MemWAL table because of it.
-            self._reranker_requested_row_id = True
-            self.with_row_id(True)
+            # Deliberately not through `with_row_id`, which records caller intent.
+            self._with_row_id = True
 
         return self
 
