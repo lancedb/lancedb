@@ -110,6 +110,26 @@ async def _create_blob_v2_query_table_async(db, name):
     return table
 
 
+def _nested_blob_v2_query_schema():
+    return pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            pa.field(
+                "info",
+                pa.struct([pa.field("label", pa.string()), lancedb.blob("blob")]),
+            ),
+        ]
+    )
+
+
+def _nested_blob_v2_query_rows():
+    return [
+        {"id": 1, "vector": [1.0, 0.0], "info": {"label": "one", "blob": b"one"}},
+        {"id": 2, "vector": [2.0, 0.0], "info": {"label": "two", "blob": b"two"}},
+    ]
+
+
 def _assert_lazy_blob(value, expected: bytes):
     assert hasattr(value, "readall")
     assert value.readall() == expected
@@ -549,6 +569,54 @@ def test_blob_v2_non_scan_query_shapes_to_pandas(tmp_db):
             for row_id in df["id"]
         ]
         assert "_rowid" not in df.columns
+
+
+@pytest.mark.parametrize("rename_parent", [False, True])
+def test_vector_query_to_pandas_nested_blob_bytes(tmp_db, rename_parent):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        f"test_vector_nested_blob_{rename_parent}",
+        schema=_nested_blob_v2_query_schema(),
+    )
+    table.add(_nested_blob_v2_query_rows())
+
+    projection = {"id": "id", "renamed": "info"} if rename_parent else ["id", "info"]
+    df = (
+        table.search([1.0, 0.0])
+        .select(projection)
+        .limit(2)
+        .to_pandas(blob_mode="bytes")
+    )
+
+    assert df["id"].tolist() == [1, 2]
+    parent = "renamed" if rename_parent else "info"
+    assert df[parent].tolist() == [
+        {"label": "one", "blob": b"one"},
+        {"label": "two", "blob": b"two"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_vector_query_to_pandas_nested_blob_bytes(tmp_db_async):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_vector_nested_blob",
+        schema=_nested_blob_v2_query_schema(),
+    )
+    await table.add(_nested_blob_v2_query_rows())
+
+    df = await (
+        table.vector_search([1.0, 0.0])
+        .select(["id", "info"])
+        .limit(2)
+        .to_pandas(blob_mode="bytes")
+    )
+
+    assert df["id"].tolist() == [1, 2]
+    assert df["info"].tolist() == [
+        {"label": "one", "blob": b"one"},
+        {"label": "two", "blob": b"two"},
+    ]
 
 
 def test_blob_v2_vector_projection_and_plain_scan_options(tmp_db, monkeypatch):
