@@ -143,7 +143,7 @@ describe("resolveBlobInputs", () => {
     expect(Buffer.from(images[1].data).toString()).toBe("same");
     // Rows without Blob values and the caller's records are left alone.
     expect(resolved[1]).toBe(data[1]);
-    expect(data[0].images[0]).toBe(shared);
+    expect(data[0].images?.[0]).toBe(shared);
   });
 
   it("returns the input when there is nothing to read", async () => {
