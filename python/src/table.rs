@@ -882,6 +882,11 @@ impl Table {
         self.inner.is_some()
     }
 
+    /// Whether this table has a local Lance dataset that the client may open.
+    pub fn _is_native(&self) -> PyResult<bool> {
+        Ok(self.inner_ref()?.as_native().is_some())
+    }
+
     /// Closes the table, releasing any resources associated with it.
     pub fn close(&mut self) {
         self.inner.take();
