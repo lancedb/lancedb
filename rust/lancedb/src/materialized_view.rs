@@ -9,6 +9,8 @@
 //! query this version cannot maintain reads back as unrefreshable, not as a
 //! plain table. Queries, indexes and search work on the view unchanged.
 
+mod grouped;
+pub use grouped::IVF_PARTITION;
 mod query;
 pub mod refresh;
 
@@ -79,13 +81,21 @@ const EMBEDDING_FUNCTIONS_META_KEY: &str = "embedding_functions";
 /// produces, which is what lets a query embed its own text.
 const COLUMN_DEFINITIONS_META_KEY: &str = "lancedb::column_definitions";
 
-/// The layout this version writes under [`DEFINITION_META_KEY`]:
-/// `{"format": 1, "query": "<SQL>"}`, the query as
-/// [`MaterializedViewDefinition::to_sql`] renders it. A reader refuses a
-/// newer format rather than guess at it. The layout also carries
-/// `"kind": "query"`, which readers older than the format number report
-/// as an unrefreshable view instead of failing to read the metadata.
-pub const DEFINITION_FORMAT: u64 = 1;
+/// The newest layout this version reads under [`DEFINITION_META_KEY`]:
+/// `{"format": N, "query": "<SQL>"}`, the query as
+/// [`MaterializedViewDefinition::to_sql`] renders it. Format 2 is a query
+/// with `GROUP BY`; every other query is written as format 1, so a reader
+/// that predates grouping reports a grouped view as unrefreshable rather
+/// than failing to parse it. A reader refuses a newer format rather than
+/// guess at it. The layout also carries `"kind": "query"`, which readers
+/// older than the format number report as an unrefreshable view instead of
+/// failing to read the metadata.
+pub const DEFINITION_FORMAT: u64 = 2;
+
+/// The format `definition` is written in; see [`DEFINITION_FORMAT`].
+fn format_of(definition: &MaterializedViewDefinition) -> u64 {
+    if definition.is_grouped() { 2 } else { 1 }
+}
 
 /// Legacy `kind` tag of the structured layout written before
 /// [`DEFINITION_FORMAT`] existed; still read, never written.
@@ -240,6 +250,9 @@ pub struct MaterializedViewDefinition {
     pub projections: Vec<ViewProjection>,
     /// SQL predicate selecting the rows the view holds.
     pub filter: Option<String>,
+    /// `GROUP BY` expressions. A grouped view holds one row per group and is
+    /// recomputed in full whenever its source changes.
+    pub group_by: Vec<String>,
     /// Cap on the number of rows the view holds, in materialization order.
     pub limit: Option<u64>,
 }
@@ -250,7 +263,7 @@ impl MaterializedViewDefinition {
     /// ```sql
     /// SELECT <column | expr AS name | *>, ...
     /// FROM [ns.]table [, function(args) AS alias | , UNNEST(column) AS alias]
-    /// [WHERE predicate] [LIMIT n]
+    /// [WHERE predicate] [GROUP BY expr, ...] [LIMIT n]
     /// ```
     ///
     /// A Function in `FROM` position yields one row per element it returns;
@@ -281,6 +294,11 @@ impl MaterializedViewDefinition {
     /// the language bindings hand it across.
     pub fn to_json(&self) -> Result<String> {
         definition_to_metadata(self)
+    }
+
+    /// Whether the query has a `GROUP BY`.
+    pub fn is_grouped(&self) -> bool {
+        !self.group_by.is_empty()
     }
 
     /// Whether the query is `SELECT *`.
@@ -359,7 +377,7 @@ struct LegacyDefinition {
 pub(crate) fn definition_to_metadata(definition: &MaterializedViewDefinition) -> Result<String> {
     Ok(serde_json::json!({
         "kind": "query",
-        "format": DEFINITION_FORMAT,
+        "format": format_of(definition),
         "query": definition.to_sql(),
     })
     .to_string())
@@ -389,6 +407,13 @@ pub fn read_definition(metadata: &HashMap<String, String>) -> Result<Option<Stor
             return Err(unreadable(&"missing query"));
         };
         let definition = MaterializedViewDefinition::from_sql(sql).map_err(|e| unreadable(&e))?;
+        // No correct writer tags a query below the format its shape needs.
+        if format < format_of(&definition) {
+            return Err(unreadable(&format!(
+                "format {format} cannot carry this query; it needs {}",
+                format_of(&definition)
+            )));
+        }
         return Ok(Some(StoredDefinition::Query(definition)));
     }
     let kind = value
@@ -415,6 +440,7 @@ pub fn read_definition(metadata: &HashMap<String, String>) -> Result<Option<Stor
         lateral: None,
         projections: legacy.projections,
         filter: legacy.filter,
+        group_by: Vec::new(),
         limit: legacy.limit,
     })))
 }
@@ -476,6 +502,9 @@ pub(crate) fn plan(
             },
             err => err,
         })?;
+    if definition.is_grouped() {
+        return grouped::plan(source_schema, definition, filter);
+    }
     // Projections are typed against the source, or for an unnested view
     // against the source with the list column replaced by its element
     // under the alias, where `c.chunk` is an ordinary nested path.
@@ -616,34 +645,7 @@ pub(crate) fn plan(
     }
 
     if let Some(filter) = filter.as_deref() {
-        let expr = planner
-            .parse_filter(filter)
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?;
-        ensure_immutable(&expr, |message| Error::InvalidInput {
-            message: format!("invalid view filter: {message}"),
-        })?;
-        let filter_inputs = resolve_inputs(&source_schema, &expr, |message| Error::InvalidInput {
-            message: format!("invalid view filter: {message}"),
-        })?;
-        // A committed filter has to be usable as a predicate.
-        let read_schema = project_schema(&source_schema, &filter_inputs);
-        let data_type = Planner::new(read_schema.clone())
-            .create_physical_expr(&expr)
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?
-            .data_type(read_schema.as_ref())
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?;
-        if data_type != DataType::Boolean {
-            return Err(Error::InvalidInput {
-                message: format!("view filter must be a boolean predicate, not {data_type}"),
-            });
-        }
-        inputs.extend(filter_inputs);
+        inputs.extend(plan_filter(&source_schema, filter)?);
     }
 
     let definition = MaterializedViewDefinition {
@@ -655,6 +657,7 @@ pub(crate) fn plan(
             .map(|(output, expression)| ViewProjection { output, expression })
             .collect(),
         filter,
+        group_by: Vec::new(),
         limit,
     };
     let mut inputs: Vec<String> = inputs
@@ -669,6 +672,39 @@ pub(crate) fn plan(
         lineage,
         inputs,
     })
+}
+
+/// Check that `filter` is an immutable boolean predicate over `source_schema`,
+/// returning the columns it reads.
+pub(crate) fn plan_filter(source_schema: &SchemaRef, filter: &str) -> Result<Vec<String>> {
+    let expr = Planner::new(source_schema.clone())
+        .parse_filter(filter)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?;
+    ensure_immutable(&expr, |message| Error::InvalidInput {
+        message: format!("invalid view filter: {message}"),
+    })?;
+    let filter_inputs = resolve_inputs(source_schema, &expr, |message| Error::InvalidInput {
+        message: format!("invalid view filter: {message}"),
+    })?;
+    // A committed filter has to be usable as a predicate.
+    let read_schema = project_schema(source_schema, &filter_inputs);
+    let data_type = Planner::new(read_schema.clone())
+        .create_physical_expr(&expr)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?
+        .data_type(read_schema.as_ref())
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?;
+    if data_type != DataType::Boolean {
+        return Err(Error::InvalidInput {
+            message: format!("view filter must be a boolean predicate, not {data_type}"),
+        });
+    }
+    Ok(filter_inputs)
 }
 
 /// The schema a projection over an unnested view is planned against: the
@@ -1046,6 +1082,15 @@ impl PreparedDeclaration {
     /// read: the column the view projects it to, if any, otherwise an
     /// internal projection added here, named by [`input_column_name`].
     pub fn input_column(&mut self, source_column: &str) -> Result<String> {
+        // A grouped view's rows are groups; no source row carries a value into one.
+        if self.definition.is_grouped() {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "a computed column on a grouped view cannot read source column \
+                     '{source_column}'; declare it on a view over the grouped view"
+                ),
+            });
+        }
         if let Some(output) = self.lineage.get(source_column).and_then(|o| o.first()) {
             return Ok(output.clone());
         }
@@ -1357,6 +1402,7 @@ pub async fn prepare_declaration(
                 .collect(),
         },
         filter: filter.map(str::to_string),
+        group_by: Vec::new(),
         limit,
     };
     prepare_definition(source, definition).await
@@ -1378,6 +1424,26 @@ pub async fn prepare_declaration(
 /// let view = prepare_definition(events, definition)
 ///     .await?
 ///     .create("event_tags")
+///     .await?;
+/// view.refresh().execute().await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// A grouped view holds one row per group and is recomputed in full on
+/// every refresh after a source change:
+///
+/// ```
+/// # #![recursion_limit = "256"]
+/// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+///
+/// # async fn declare(events: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let definition = MaterializedViewDefinition::from_sql(
+///     "SELECT kind, count(*) AS n, array_agg(id) AS ids FROM events GROUP BY kind",
+/// )?;
+/// let view = prepare_definition(events, definition)
+///     .await?
+///     .create("events_by_kind")
 ///     .await?;
 /// view.refresh().execute().await?;
 /// # Ok(())
@@ -1532,6 +1598,9 @@ async fn prepare_with(
         lineage,
         ..
     } = plan(source_schema.clone(), &definition, staging.as_ref())?;
+    if definition.is_grouped() {
+        grouped::check(native.dataset.get().await?.as_ref(), &definition).await?;
+    }
     // What later projections (`input_column`) are planned against: for an
     // unnested view the flattened schema, where the alias is a column.
     let planning_schema = match physical_unnest(&definition, staging.as_ref())? {
@@ -2067,6 +2136,7 @@ mod tests {
                     },
                 ],
                 filter: Some("age >= 18".into()),
+                group_by: Vec::new(),
                 limit: Some(10),
                 lateral: None,
             }
@@ -3110,6 +3180,7 @@ mod tests {
                 expression: "name".to_string(),
             }],
             filter: None,
+            group_by: Vec::new(),
             limit: None,
         }
     }
@@ -3187,8 +3258,8 @@ mod tests {
     #[test]
     fn a_newer_format_is_reported_not_guessed() {
         assert_eq!(
-            read(r#"{"format":2,"query":"SELECT name FROM people"}"#).unwrap(),
-            Some(StoredDefinition::Newer { format: "2".into() })
+            read(r#"{"format":3,"query":"SELECT name FROM people"}"#).unwrap(),
+            Some(StoredDefinition::Newer { format: "3".into() })
         );
         assert_eq!(
             read(r#"{"kind":"join"}"#).unwrap(),
@@ -3201,6 +3272,7 @@ mod tests {
             r#"{"format":"one"}"#,
             r#"{"format":1}"#,
             r#"{"format":1,"query":"SELECT name FROM people GROUP BY name"}"#,
+            r#"{"format":2,"query":"SELECT name FROM people ORDER BY name"}"#,
         ] {
             assert!(read(stored).is_err(), "{stored}");
         }
@@ -3399,7 +3471,7 @@ mod tests {
         // The stored definition is the query alone; bindings live beside it.
         let stored: serde_json::Value =
             serde_json::from_str(&schema.metadata()[DEFINITION_META_KEY]).unwrap();
-        assert_eq!(stored["format"], DEFINITION_FORMAT);
+        assert_eq!(stored["format"], 1);
         assert_eq!(view.definition().projections.len(), 2);
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
         assert_eq!(conn.open_materialized_view("v").await.unwrap().name(), "v");

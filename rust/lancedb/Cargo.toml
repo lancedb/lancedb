@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.40.0-beta.3"
+version = "0.40.0-beta.6"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -106,6 +106,9 @@ sha2 = "0.10"
 [dev-dependencies]
 anyhow = "1"
 lance-testing = { workspace = true }
+# RestAdapter is only used by cfg(test) code. Keep rest-adapter off the
+# production remote feature so Python wheels do not resolve its Axum 0.7 stack.
+lance-namespace-impls = { workspace = true, features = ["rest-adapter"] }
 tempfile = { workspace = true }
 random_word = { version = "0.4.3", features = ["en"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "test-util"] }
@@ -169,7 +172,6 @@ remote = [
     "dep:webbrowser",
     "dep:fs4",
     "lance-namespace-impls/rest",
-    "lance-namespace-impls/rest-adapter",
 ]
 # Publish LanceDB's internal metrics (currently object store request counts,
 # bytes, latency, errors, and throttles) through the `metrics` crate facade,

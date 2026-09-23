@@ -16,6 +16,7 @@ from typing import (
     List,
     Optional,
     Sequence,
+    Tuple,
     Union,
 )
 from urllib.parse import urlparse
@@ -40,6 +41,7 @@ from ..sql import Query as SqlQuery
 from ..sql import QueryDescription
 from ..materialized_view import MaterializedView, SelectArg
 from ..secrets import EnvVarSecret, SecretInfo
+from ..view import ViewDescription
 
 if TYPE_CHECKING:
     from .._lancedb import JobInfo
@@ -877,6 +879,11 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.drop_function(name, version=version))
 
     @override
+    def drop_function_async(self, name: str, *, version: str) -> Tuple[bool, Job]:
+        dropped, job = LOOP.run(self._conn.drop_function_async(name, version=version))
+        return dropped, Job(job)
+
+    @override
     def create_secret(
         self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
@@ -903,6 +910,30 @@ class RemoteDBConnection(DBConnection):
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
         LOOP.run(self._conn.drop_secret(name, namespace_path=namespace_path))
+
+    @override
+    def create_view(
+        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        return LOOP.run(
+            self._conn.create_view(name, query, namespace_path=namespace_path)
+        )
+
+    @override
+    def describe_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        return LOOP.run(self._conn.describe_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
+
+    @override
+    def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List["JobInfo"]:

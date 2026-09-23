@@ -29,9 +29,10 @@ SelectArg = Union[
 ]
 
 
-DEFINITION_FORMAT = 1
-"""The stored layout this version reads: ``{"format": 1, "query": "<SQL>"}``.
-A ``kind`` key beside it is for readers older than the format number."""
+DEFINITION_FORMAT = 2
+"""The newest stored layout this version reads: ``{"format": N, "query": "<SQL>"}``,
+format 2 being a query with ``GROUP BY``. A ``kind`` key beside it is for
+readers older than the format number."""
 
 
 @dataclass
@@ -40,7 +41,7 @@ class MaterializedViewDefinition:
 
         SELECT columns
         FROM [ns.]table [, function(args) AS alias | , UNNEST(column) AS alias]
-        [WHERE predicate] [LIMIT n]
+        [WHERE predicate] [GROUP BY expr, ...] [LIMIT n]
 
     A Function in ``FROM`` position yields one row per element it returns.
     """

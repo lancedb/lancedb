@@ -13,7 +13,11 @@ use crate::{
     runtime::future_into_py,
     table::Table,
 };
-use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
+use arrow::{
+    datatypes::Schema,
+    ffi_stream::ArrowArrayStreamReader,
+    pyarrow::{FromPyArrow, ToPyArrow},
+};
 use lancedb::{
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
@@ -98,6 +102,28 @@ fn parse_default_namespace_path(path: Option<Bound<'_, PyAny>>) -> PyResult<Vec<
         }
         None => Ok(vec!["public".to_string()]),
     }
+}
+
+/// A view description on its way to Python: name, namespace, query, default
+/// database, and the schema as pyarrow renders it.
+type PyViewDescription = (String, Vec<String>, String, String, Vec<String>, Py<PyAny>);
+
+/// A view description as a plain tuple, with the schema converted to the
+/// pyarrow schema the caller would get from any other lancedb API. The Python
+/// layer names the fields; this keeps the binding free of a class that would
+/// have to be kept in step with the Rust struct.
+fn view_description_to_py(view: lancedb::view::ViewDescription) -> PyResult<PyViewDescription> {
+    Python::attach(|py| {
+        let schema = view.schema.to_pyarrow(py)?.unbind();
+        Ok((
+            view.name,
+            view.namespace_path,
+            view.query,
+            view.default_database,
+            view.default_namespace_path,
+            schema,
+        ))
+    })
 }
 
 #[pymethods]
@@ -768,6 +794,21 @@ impl Connection {
         })
     }
 
+    pub fn drop_function_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_function_async(name, version)
+                .await
+                .infer_error()
+                .map(|(dropped, job)| (dropped, crate::job::Job::new(job)))
+        })
+    }
+
     #[pyo3(signature = (name, value, namespace_path=None))]
     pub fn create_secret(
         self_: PyRef<'_, Self>,
@@ -844,6 +885,66 @@ impl Connection {
                 .await
                 .infer_error()?;
             Ok((info.name, info.created_at_millis, info.updated_at_millis))
+        })
+    }
+
+    #[pyo3(signature = (name, query, namespace_path=None))]
+    pub fn create_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        query: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            let view = inner
+                .create_view(name, query, &namespace_path)
+                .await
+                .infer_error()?;
+            view_description_to_py(view)
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            let view = inner
+                .describe_view(name, &namespace_path)
+                .await
+                .infer_error()?;
+            view_description_to_py(view)
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner.drop_view(name, &namespace_path).await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (namespace_path=None))]
+    pub fn list_views(
+        self_: PyRef<'_, Self>,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner.list_views(&namespace_path).await.infer_error()
         })
     }
 

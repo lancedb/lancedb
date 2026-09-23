@@ -984,6 +984,9 @@ class RemoteTable(Table):
         self,
         transforms: Dict[str, str | FunctionApplication]
         | FunctionApplication
+        | pa.Field
+        | List[pa.Field]
+        | pa.Schema
         | None = None,
         *,
         computed: Dict[str, str] | None = None,

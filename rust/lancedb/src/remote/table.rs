@@ -1486,6 +1486,20 @@ fn resolve_arrow_ipc_framing(
     })
 }
 
+/// An Arrow IPC stream carrying `schema` and no batches.
+///
+/// The body of an all-null `add_columns`: the server reads the fields to
+/// add straight off the schema message, so nothing but the field list is
+/// worth sending.
+fn write_ipc_schema(schema: &arrow_schema::Schema) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    {
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, schema)?;
+        writer.finish()?;
+    }
+    Ok(body)
+}
+
 /// Strip media-type parameters before matching against the Arrow content types.
 fn base_media_type(content_type: &str) -> &str {
     match content_type.split_once(';') {
@@ -2130,6 +2144,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     })
                     .collect(),
                 filter: response.filter,
+                group_by: Vec::new(),
                 limit: response.limit,
             },
         };
@@ -3325,7 +3340,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "schema evolution",
             crate::table::schema_evolution::new_column_names(&transforms),
         )?;
-        match transforms {
+        let path = format!("/v1/table/{}/add_columns/", self.identifier);
+        let request = match transforms {
             NewColumnTransform::SqlExpressions(expressions) => {
                 let body = expressions
                     .into_iter()
@@ -3338,40 +3354,55 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .collect::<Vec<_>>();
                 let mut body = serde_json::json!({ "new_columns": body });
                 self.apply_branch_body(&mut body);
-                let request = self
-                    .client
-                    .post(&format!("/v1/table/{}/add_columns/", self.identifier))
-                    .json(&body);
-                let freshness_request = self.snapshot_freshness_headers();
-                let (request_id, response) = self
-                    .send_with_freshness(request, true, freshness_request)
-                    .await?;
-                let response = self.check_table_response(&request_id, response).await?;
-                let body = response.text().await.err_to_http(request_id.clone())?;
-
-                if body.trim().is_empty() {
-                    // Backward compatible with old servers
-                    return Ok(AddColumnsResult { version: 0 });
-                }
-
-                let result: AddColumnsResult =
-                    serde_json::from_str(&body).map_err(|e| Error::Http {
-                        source: format!("Failed to parse add_columns response: {}", e).into(),
-                        request_id,
-                        status_code: None,
-                    })?;
-
-                self.invalidate_schema_cache();
-                self.track_write_version(freshness_request, result.version);
-
-                Ok(result)
+                self.client.post(&path).json(&body)
+            }
+            // Every field becomes a column that reads null for existing
+            // rows. The schema goes over the wire as Arrow IPC rather than
+            // a JSON description of the types: that is what the server
+            // takes, and it is the only encoding that round-trips a field
+            // whole, including decimal precision and a timestamp's unit and
+            // timezone. With no JSON envelope the branch rides the query
+            // string, as it does for the other binary-bodied endpoints.
+            NewColumnTransform::AllNulls(schema) => {
+                let body = write_ipc_schema(schema.as_ref())?;
+                self.apply_branch_query(
+                    self.client
+                        .post(&path)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(body),
+                )
             }
             _ => {
                 return Err(Error::NotSupported {
-                    message: "Only SQL expressions are supported for adding columns".into(),
+                    message: "Only SQL expressions and all-null column schemas are supported \
+                              for adding columns"
+                        .into(),
                 });
             }
+        };
+
+        let freshness_request = self.snapshot_freshness_headers();
+        let (request_id, response) = self
+            .send_with_freshness(request, true, freshness_request)
+            .await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body.trim().is_empty() {
+            // Backward compatible with old servers
+            return Ok(AddColumnsResult { version: 0 });
         }
+
+        let result: AddColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse add_columns response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        self.invalidate_schema_cache();
+        self.track_write_version(freshness_request, result.version);
+
+        Ok(result)
     }
 
     async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
@@ -7911,6 +7942,82 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.version, if old_server { 0 } else { 43 });
+    }
+
+    /// A pyarrow schema goes over the wire as an Arrow IPC schema under an
+    /// Arrow content type, not as a JSON description of the types, so a
+    /// field arrives exactly as sent. The branch has no JSON envelope to
+    /// ride in and goes on the query string.
+    #[tokio::test]
+    async fn test_add_columns_sends_an_arrow_schema_for_all_nulls() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => simple_describe_response(),
+            "/v1/table/my_table/add_columns/" => {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    ARROW_STREAM_CONTENT_TYPE
+                );
+                assert_eq!(
+                    request.url().query_pairs().find(|(k, _)| k == "branch"),
+                    None,
+                    "the main branch sends no branch parameter"
+                );
+
+                // The payload decodes back to the exact schema, types and
+                // field metadata included.
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let reader =
+                    arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(body), None)
+                        .unwrap();
+                let sent = reader.schema();
+                assert_eq!(sent.fields().len(), 2);
+                assert_eq!(sent.field(0).name(), "ts");
+                assert_eq!(
+                    sent.field(0).data_type(),
+                    &DataType::Timestamp(
+                        arrow_schema::TimeUnit::Nanosecond,
+                        Some("America/New_York".into())
+                    )
+                );
+                assert!(sent.field(0).is_nullable());
+                assert_eq!(sent.field(1).name(), "price");
+                assert_eq!(sent.field(1).data_type(), &DataType::Decimal128(38, 10));
+                assert_eq!(
+                    sent.field(1).metadata().get("unit").map(String::as_str),
+                    Some("cents")
+                );
+
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 7}"#.to_string())
+                    .unwrap()
+            }
+            path => panic!("Unexpected request path: {path}"),
+        });
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "ts",
+                DataType::Timestamp(
+                    arrow_schema::TimeUnit::Nanosecond,
+                    Some("America/New_York".into()),
+                ),
+                true,
+            ),
+            Field::new("price", DataType::Decimal128(38, 10), true).with_metadata(
+                std::collections::HashMap::from([("unit".to_string(), "cents".to_string())]),
+            ),
+        ]));
+
+        let result = table
+            .add_columns()
+            .transform(NewColumnTransform::AllNulls(schema))
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 7);
     }
 
     /// A declaration is sent as `{name, computed}` for the server to plan; the

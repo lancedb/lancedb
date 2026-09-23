@@ -14,8 +14,8 @@ use reqwest::header::CONTENT_TYPE;
 
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
-    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
-    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, JsonArrowSchema,
+    ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
 };
 
 use crate::Error;
@@ -36,6 +36,7 @@ use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 use crate::utils::{reject_relative_segment, validate_table_name};
+use crate::view::ViewDescription;
 
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, ID_DELIMITER, RequestResultExt, RestfulLanceDbClient,
@@ -784,6 +785,59 @@ struct RemoteListedSecret {
     name: String,
 }
 
+/// Define a view from a query. The name and its namespace are the path
+/// identifier, so neither appears here.
+#[derive(serde::Serialize)]
+struct RemoteCreateViewRequest<'a> {
+    query: &'a str,
+}
+
+/// What the service reports about one view. The schema arrives as the
+/// namespace spec's JSON encoding, which is what `describe_table` uses too.
+#[derive(serde::Deserialize)]
+struct RemoteViewDescription {
+    name: String,
+    #[serde(default)]
+    namespace: Vec<String>,
+    query: String,
+    default_database: String,
+    /// A path, like `namespace`: the root is the absent field rather than a
+    /// spelling of its own.
+    #[serde(default)]
+    default_namespace: Vec<String>,
+    schema: JsonArrowSchema,
+}
+
+impl RemoteViewDescription {
+    fn into_description(self, request_id: String) -> Result<ViewDescription> {
+        let schema =
+            lance_namespace::schema::convert_json_arrow_schema(&self.schema).map_err(|source| {
+                Error::Http {
+                    source: format!("View '{}' has an undecodable schema: {source}", self.name)
+                        .into(),
+                    request_id,
+                    status_code: None,
+                }
+            })?;
+        Ok(ViewDescription {
+            name: self.name,
+            namespace_path: self.namespace,
+            query: self.query,
+            default_database: self.default_database,
+            default_namespace_path: self.default_namespace,
+            schema: Arc::new(schema),
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListViewsResponse {
+    #[serde(default)]
+    views: Vec<String>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -1005,6 +1059,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
+        Ok(self.drop_function_async(name, version).await?.0)
+    }
+
+    async fn drop_function_async(&self, name: &str, version: &str) -> Result<(bool, Job)> {
         let function_id = build_object_identifier("Function name", name, &[])?;
         let req = self
             .client
@@ -1014,8 +1072,34 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }));
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
-        let response: RemoteDropFunctionResponse = response.json().await.err_to_http(request_id)?;
-        Ok(response.dropped)
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let dropped: RemoteDropFunctionResponse =
+            serde_json::from_str(&body).map_err(|source| Error::Http {
+                source: Box::new(source),
+                request_id: request_id.clone(),
+                status_code: Some(status),
+            })?;
+        let job = match status {
+            StatusCode::OK => Job::new_done(),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "asynchronous Function drop response did not contain a valid job_id"
+                        .into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id)))
+            }
+            _ => {
+                return Err(Error::Http {
+                    source: "Function drop must return 200 OK or 202 Accepted".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+        };
+        Ok((dropped.dropped, job))
     }
 
     async fn create_secret(
@@ -1090,6 +1174,79 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         response.json().await.err_to_http(request_id)
+    }
+
+    async fn create_view(
+        &self,
+        name: &str,
+        query: &str,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        let view_id = build_object_identifier("View name", name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/view/{view_id}/create"))
+            .json(&RemoteCreateViewRequest { query });
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let description: RemoteViewDescription =
+            response.json().await.err_to_http(request_id.clone())?;
+        description.into_description(request_id)
+    }
+
+    async fn describe_view(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        let view_id = build_object_identifier("View name", name, namespace_path)?;
+        let req = self.client.post(&format!("/v1/view/{view_id}/describe"));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let description: RemoteViewDescription =
+            response.json().await.err_to_http(request_id.clone())?;
+        description.into_description(request_id)
+    }
+
+    async fn drop_view(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let view_id = build_object_identifier("View name", name, namespace_path)?;
+        let req = self.client.post(&format!("/v1/view/{view_id}/drop"));
+        let (request_id, response) = self.client.send(req).await?;
+        self.client.check_response(&request_id, response).await?;
+        Ok(())
+    }
+
+    async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        let namespace_id = build_namespace_identifier(namespace_path)?;
+        let path = format!("/v1/namespace/{namespace_id}/view/list");
+        let mut views = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let mut req = self.client.get(&path);
+            if let Some(token) = &page_token {
+                req = req.query(&[("page_token", token)]);
+            }
+            let (request_id, response) = self.client.send(req).await?;
+            let response = self.client.check_response(&request_id, response).await?;
+            let status = response.status();
+            let response: RemoteListViewsResponse =
+                response.json().await.err_to_http(request_id.clone())?;
+            views.extend(response.views);
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(Error::Http {
+                    source: "View listing response repeated a page_token".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(views)
     }
 
     async fn open_job(&self, job_id: &str) -> Result<Job> {
@@ -1781,6 +1938,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(job.id(), Some("j1-mv-drop"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_function_async_returns_job() {
+        let db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/function/embed/drop");
+            http::Response::builder()
+                .status(202)
+                .body(serde_json::json!({"dropped": true, "job_id": "j1-fn-drop"}).to_string())
+                .unwrap()
+        });
+        let (dropped, job) = db.drop_function_async("embed", "1").await.unwrap();
+        assert!(dropped);
+        assert_eq!(job.id(), Some("j1-fn-drop"));
+    }
+
+    /// An unbound name and an inline deletion both answer `200`: the name is gone and
+    /// nothing is left to wait for, so the job is already finished.
+    #[tokio::test]
+    async fn test_drop_function_async_completed_inline() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::json!({"dropped": false}).to_string())
+                .unwrap()
+        });
+        let (dropped, job) = db.drop_function_async("embed", "1").await.unwrap();
+        assert!(!dropped);
+        assert_eq!(job.id(), None);
+        assert_eq!(job.status().await.unwrap(), "finished");
+        job.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_function_async_rejects_incomplete_acceptance() {
+        for body in [
+            r#"{"dropped":true}"#,
+            r#"{"dropped":true,"job_id":""}"#,
+            r#"{"dropped":true,"job_id":null}"#,
+        ] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(202).body(body).unwrap()
+            });
+            let error = db.drop_function_async("embed", "1").await.err().unwrap();
+            assert!(error.to_string().contains("valid job_id"));
+        }
     }
 
     #[tokio::test]
@@ -3719,6 +3923,166 @@ mod tests {
         conn.list_secrets(&["prod".to_string(), "vision".to_string()])
             .await
             .unwrap();
+    }
+
+    /// A view description carries the schema in the namespace spec's JSON
+    /// encoding, so the body a test asserts against is the one that encoding
+    /// produces rather than a hand-written guess at it.
+    fn view_description_body(name: &str, namespace: &[&str], query: &str) -> String {
+        let schema = Schema::new(vec![Field::new("id", DataType::Int32, true)]);
+        serde_json::json!({
+            "name": name,
+            "namespace": namespace,
+            "query": query,
+            "default_database": "db",
+            "default_namespace": namespace,
+            "schema": lance_namespace::schema::arrow_schema_to_json(&schema).unwrap(),
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn test_create_view_posts_the_query_and_returns_the_resolved_schema() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/view/analytics$adults/create");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            // The name and its namespace address the view in the path, so the
+            // body says only what they cannot.
+            assert_eq!(body, serde_json::json!({"query": "SELECT id FROM people"}));
+            http::Response::builder()
+                .status(200)
+                .body(view_description_body(
+                    "adults",
+                    &["analytics"],
+                    "SELECT id FROM people",
+                ))
+                .unwrap()
+        });
+        let view = conn
+            .create_view("adults", "SELECT id FROM people", &["analytics".into()])
+            .await
+            .unwrap();
+        assert_eq!(view.name, "adults");
+        assert_eq!(view.namespace_path, vec!["analytics".to_string()]);
+        assert_eq!(view.query, "SELECT id FROM people");
+        assert_eq!(view.default_database, "db");
+        assert_eq!(view.default_namespace_path, vec!["analytics".to_string()]);
+        assert_eq!(view.schema.field(0).name(), "id");
+    }
+
+    #[tokio::test]
+    async fn test_describe_and_drop_address_the_view_in_the_path() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/view/adults/describe");
+            assert!(request.body().is_none(), "{:?}", request.body());
+            http::Response::builder()
+                .status(200)
+                .body(view_description_body(
+                    "adults",
+                    &[],
+                    "SELECT id FROM people",
+                ))
+                .unwrap()
+        });
+        let view = conn.describe_view("adults", &[]).await.unwrap();
+        assert!(view.namespace_path.is_empty());
+        assert_eq!(view.schema.fields().len(), 1);
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/view/analytics$adults/drop");
+            assert!(request.body().is_none(), "{:?}", request.body());
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_view("adults", &["analytics".into()])
+            .await
+            .unwrap();
+    }
+
+    /// A schema the client cannot decode is a broken response, not a view
+    /// with no columns: reporting it as an error keeps a caller from reading
+    /// an empty schema as the truth about the view.
+    #[tokio::test]
+    async fn test_describe_view_rejects_an_undecodable_schema() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"name":"adults","query":"SELECT 1","default_database":"db",
+                        "schema":{"fields":[{"name":"id","type":{"type":"nonesuch"},
+                        "nullable":true}]}}"#,
+                )
+                .unwrap()
+        });
+        let error = conn.describe_view("adults", &[]).await.unwrap_err();
+        assert!(error.to_string().contains("undecodable schema"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn test_list_views_walks_pages() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/namespace/analytics/view/list");
+            let page = request
+                .url()
+                .query_pairs()
+                .find(|(key, _)| key == "page_token")
+                .map(|(_, value)| value.into_owned());
+            let body = match page.as_deref() {
+                None => r#"{"views":[],"page_token":"p2"}"#,
+                Some("p2") => r#"{"views":["adults"]}"#,
+                Some(other) => panic!("unexpected page token: {other}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        assert_eq!(
+            conn.list_views(&["analytics".into()]).await.unwrap(),
+            vec!["adults".to_string()]
+        );
+    }
+
+    /// A server that keeps handing back the same token would otherwise spin
+    /// forever.
+    #[tokio::test]
+    async fn test_list_views_rejects_a_repeated_page_token() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"views":["adults"],"page_token":"same"}"#)
+                .unwrap()
+        });
+        let error = conn.list_views(&[]).await.unwrap_err();
+        assert!(
+            error.to_string().contains("repeated a page_token"),
+            "{error}"
+        );
+    }
+
+    /// A name carrying the delimiter would split back apart as a different
+    /// view, so it is refused before it reaches a route.
+    #[tokio::test]
+    async fn test_view_names_that_would_resplit_are_refused() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("an invalid identifier must not reach the service")
+        });
+        for (name, namespace) in [
+            ("analytics$adults", vec![]),
+            ("adults", vec!["ana$lytics".to_string()]),
+            ("", vec![]),
+            ("..", vec![]),
+        ] {
+            let error = match conn.describe_view(name, &namespace).await {
+                Ok(_) => panic!("accepted {name:?} in {namespace:?}"),
+                Err(error) => error.to_string(),
+            };
+            // A view is not a table, so the refusal says so.
+            assert!(
+                error.contains("view name") || error.contains("view namespace path segment"),
+                "{error}"
+            );
+        }
     }
 
     #[tokio::test]

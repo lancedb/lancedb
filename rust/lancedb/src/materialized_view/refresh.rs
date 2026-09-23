@@ -297,6 +297,22 @@ pub(crate) async fn execute_refresh(
         });
     }
 
+    // A group spans fragments: there is no per-fragment increment.
+    if definition.is_grouped() {
+        return rebuild(
+            view_native,
+            &view_ds,
+            &source_ds,
+            source_version,
+            source_ts,
+            definition,
+            &inputs,
+            None,
+            persist.is_some(),
+            expected_incarnation,
+        )
+        .await;
+    }
     let watermark = watermark.filter(|_| view_intact);
     match plan_increment(
         &source_ds,
@@ -629,8 +645,16 @@ fn same_meaning(
         || stored.limit != replanned.limit
         || stored.projections.len() != replanned.projections.len()
         || stored.filter.is_some() != replanned.filter.is_some()
+        || stored.group_by.len() != replanned.group_by.len()
     {
         return false;
+    }
+    // Lance's planner does not read aggregates; a grouped definition is
+    // compared in its canonical spelling, which planning produced.
+    if stored.is_grouped() {
+        return stored.projections == replanned.projections
+            && stored.group_by == replanned.group_by
+            && stored.filter == replanned.filter;
     }
     let schema = match unnest {
         None => source_schema.clone(),
@@ -1288,6 +1312,9 @@ async fn compute_stream(
     schema: SchemaRef,
     rows_written: Arc<AtomicU64>,
 ) -> Result<SendableRecordBatchStream> {
+    if definition.is_grouped() {
+        return super::grouped::stream(source, definition, inputs, schema, rows_written).await;
+    }
     let RowScope {
         fragments,
         created_after,
@@ -1363,29 +1390,40 @@ async fn compute_stream(
             None => batch,
             Some(expanded) => expanded.apply(&batch)?,
         };
-        let mut columns = Vec::with_capacity(out_schema.fields().len());
-        for field in out_schema.fields() {
-            if computed_column_from_field(field).is_some() {
-                columns.push(new_null_array(field.data_type(), batch.num_rows()));
-                continue;
-            }
-            let name = if field.name() == SOURCE_ROW_ID_COLUMN {
-                ROW_ID
-            } else {
-                field.name()
-            };
-            let column = batch.column_by_name(name).ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "view column '{}' is not produced by the view's definition",
-                    field.name()
-                ))
-            })?;
-            columns.push(column.clone());
-        }
+        let batch = to_view_batch(&batch, &out_schema)?;
         rows_written.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
-        Ok(RecordBatch::try_new(out_schema.clone(), columns)?)
+        Ok(batch)
     });
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, mapped)))
+}
+
+/// `batch` in the view's physical schema: the row id becomes the
+/// provenance column and computed columns are written NULL for their owner
+/// to fill.
+pub(super) fn to_view_batch(
+    batch: &RecordBatch,
+    out_schema: &SchemaRef,
+) -> datafusion::common::Result<RecordBatch> {
+    let mut columns = Vec::with_capacity(out_schema.fields().len());
+    for field in out_schema.fields() {
+        if computed_column_from_field(field).is_some() {
+            columns.push(new_null_array(field.data_type(), batch.num_rows()));
+            continue;
+        }
+        let name = if field.name() == SOURCE_ROW_ID_COLUMN {
+            ROW_ID
+        } else {
+            field.name()
+        };
+        let column = batch.column_by_name(name).ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "view column '{}' is not produced by the view's definition",
+                field.name()
+            ))
+        })?;
+        columns.push(column.clone());
+    }
+    Ok(RecordBatch::try_new(out_schema.clone(), columns)?)
 }
 
 /// The post-scan half of an unnested view's refresh: the scan reads
@@ -3641,6 +3679,7 @@ mod tests {
                 },
             ],
             filter: None,
+            group_by: Vec::new(),
             limit: None,
             lateral: None,
         };
@@ -3675,6 +3714,7 @@ mod tests {
                 expression: "x".into(),
             }],
             filter: None,
+            group_by: Vec::new(),
             limit: None,
             lateral: None,
         };
@@ -4302,6 +4342,449 @@ mod tests {
                 .await
                 .unwrap(),
             3
+        );
+    }
+
+    async fn grouped_source(conn: &Connection) -> Table {
+        conn.create_table(
+            "src",
+            record_batch!(("k", Int32, [1, 1, 2, 3]), ("x", Int32, [10, 11, 20, 30])).unwrap(),
+        )
+        .write_options(crate::materialized_view::tests::stable_row_ids())
+        .execute()
+        .await
+        .unwrap()
+    }
+
+    async fn declare(source: &Table, name: &str, sql: &str) -> Result<MaterializedView> {
+        crate::materialized_view::prepare_definition(
+            source,
+            MaterializedViewDefinition::from_sql(sql)?,
+        )
+        .await?
+        .create(name)
+        .await
+    }
+
+    /// Rows of `table` as `columns` rendered to text, sorted.
+    async fn rows(table: &Table, columns: &[&str]) -> Vec<String> {
+        let batches = table
+            .query()
+            .select(Select::columns(columns))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let formatters: Vec<_> = batch
+                .columns()
+                .iter()
+                .map(|c| {
+                    arrow_cast::display::ArrayFormatter::try_new(c.as_ref(), &Default::default())
+                        .unwrap()
+                })
+                .collect();
+            for row in 0..batch.num_rows() {
+                let cells: Vec<String> = formatters
+                    .iter()
+                    .map(|f| f.value(row).to_string())
+                    .collect();
+                rows.push(cells.join(" "));
+            }
+        }
+        rows.sort();
+        rows
+    }
+
+    #[tokio::test]
+    async fn a_grouped_view_holds_one_row_per_group() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        let view = declare(
+            &source,
+            "groups",
+            "SELECT k, array_agg(x) AS xs, sum(x) AS total FROM src WHERE x < 30 GROUP BY k",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            view.definition().to_sql(),
+            "SELECT k, array_agg(x) AS xs, sum(x) AS total FROM src WHERE x < 30 GROUP BY k"
+        );
+
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 2);
+        assert_eq!(rows(view.table(), &["k", "total"]).await, ["1 21", "2 20"]);
+        let unchanged = view.refresh().execute().await.unwrap();
+        assert_eq!(unchanged.mode, RefreshMode::NoOp);
+
+        // Any source change recomputes every group.
+        source
+            .add(record_batch!(("k", Int32, [2]), ("x", Int32, [5])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(rows(view.table(), &["k", "total"]).await, ["1 21", "2 25"]);
+
+        // A view over the groups expands them again.
+        let expanded = declare(
+            view.table(),
+            "elements",
+            "SELECT k, e AS x FROM groups, UNNEST(xs) AS e",
+        )
+        .await
+        .unwrap();
+        expanded.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(expanded.table(), &["k", "x"]).await,
+            ["1 10", "1 11", "2 20", "2 5"]
+        );
+    }
+
+    /// Provenance is one source row per group, so the view's row-id keys
+    /// stay unique.
+    #[tokio::test]
+    async fn a_grouped_view_records_one_source_row_per_group() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        let view = declare(
+            &source,
+            "groups",
+            "SELECT k, count(*) AS n FROM src GROUP BY k",
+        )
+        .await
+        .unwrap();
+        view.refresh().execute().await.unwrap();
+        let ids = rows(view.table(), &[SOURCE_ROW_ID_COLUMN]).await;
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), 3, "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn a_grouped_view_is_planned_at_declaration() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = grouped_source(&conn).await;
+        for sql in [
+            // x is neither a key nor aggregated
+            "SELECT k, x FROM src GROUP BY k",
+            "SELECT k, random() AS r FROM src GROUP BY k",
+            "SELECT k, count(*) AS n FROM src GROUP BY missing",
+            "SELECT k, count(*) AS __source_row_id FROM src GROUP BY k",
+            "SELECT k, count(*) AS k FROM src GROUP BY k",
+        ] {
+            assert!(declare(&source, "v", sql).await.is_err(), "{sql}");
+        }
+        let mut grouped = crate::materialized_view::prepare_definition(
+            &source,
+            MaterializedViewDefinition::from_sql("SELECT k, count(*) AS n FROM src GROUP BY k")
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(grouped.input_column("x").is_err());
+    }
+
+    /// Twenty nonzero vectors in two clusters far apart, ids 0-9 and 10-19.
+    /// Nonzero so every vector has a cosine direction.
+    async fn clustered_source(conn: &Connection) -> Table {
+        use arrow_array::types::Float32Type;
+        use arrow_array::{FixedSizeListArray, Int32Array};
+
+        let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..20).map(|i| {
+                let base = if i < 10 { 0.0 } else { 100.0 };
+                Some(vec![Some(base + 1.0 + i as f32 * 0.1), Some(base)])
+            }),
+            2,
+        );
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int32Array::from_iter_values(0..20)) as arrow_array::ArrayRef,
+            ),
+            ("vec", Arc::new(vectors) as arrow_array::ArrayRef),
+        ])
+        .unwrap();
+        conn.create_table("images", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn ivf_partition_groups_by_the_index_on_the_column() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        const BUCKETS: &str = "SELECT ivf_partition(vec) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(vec)";
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        let unindexed = declare(&source, "buckets", BUCKETS).await.unwrap_err();
+        assert!(
+            unindexed.to_string().contains("IVF vector index"),
+            "{unindexed}"
+        );
+
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(2)),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(&source, "buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["n", "lo", "hi"]).await,
+            ["10 0 9", "10 10 19"]
+        );
+        let buckets = rows(view.table(), &["bucket"]).await;
+        assert_eq!(buckets, ["0", "1"]);
+    }
+
+    #[tokio::test]
+    async fn ivf_partition_takes_a_column() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        for sql in [
+            "SELECT ivf_partition(id) AS b, count(*) AS n FROM images GROUP BY ivf_partition(id)",
+            "SELECT ivf_partition(vec, vec) AS b, count(*) AS n FROM images \
+             GROUP BY ivf_partition(vec, vec)",
+        ] {
+            assert!(declare(&source, "v", sql).await.is_err(), "{sql}");
+        }
+    }
+
+    /// A cosine index assigns by L2 over unit vectors, as lance's own index
+    /// path does; forwarding cosine to the assigner panics.
+    #[tokio::test]
+    async fn ivf_partition_supports_cosine_indices() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+
+        const BUCKETS: &str = "SELECT ivf_partition(vec) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(vec)";
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(2)
+                        .distance_type(crate::DistanceType::Cosine),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(&source, "cosine_buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["n", "lo", "hi"]).await,
+            ["10 0 9", "10 10 19"]
+        );
+    }
+
+    /// Segments of one index trained separately carry different centroids;
+    /// grouping by one of them would bucket the other segments' rows wrongly.
+    #[tokio::test]
+    async fn ivf_partition_refuses_segments_with_different_models() {
+        use arrow_array::types::Float32Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+        use lance::index::DatasetIndexExt;
+        use lance::index::vector::VectorIndexParams;
+        use lance_index::IndexType;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        // A second fragment far from the first, so each segment trains its own centroids.
+        let far = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..20).map(|i| Some(vec![Some(-500.0 - i as f32), Some(-500.0)])),
+            2,
+        );
+        source
+            .add(
+                RecordBatch::try_from_iter(vec![
+                    (
+                        "id",
+                        Arc::new(Int32Array::from_iter_values(20..40)) as ArrayRef,
+                    ),
+                    ("vec", Arc::new(far) as ArrayRef),
+                ])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let dataset = source.as_native().unwrap().dataset.get().await.unwrap();
+        let mut dataset = dataset.as_ref().clone();
+        let params = VectorIndexParams::ivf_flat(2, lance_linalg::distance::DistanceType::L2);
+        let mut segments = Vec::new();
+        for fragment in dataset.get_fragments() {
+            let segment = dataset
+                .create_index_builder(&["vec"], IndexType::Vector, &params)
+                .name("shared".to_string())
+                .fragments(vec![fragment.id() as u32])
+                .execute_uncommitted()
+                .await
+                .unwrap();
+            segments.push(segment);
+        }
+        dataset
+            .commit_existing_index_segments("shared", "vec", segments)
+            .await
+            .unwrap();
+        assert_eq!(dataset.load_indices().await.unwrap().len(), 2);
+
+        let source = conn.open_table("images").execute().await.unwrap();
+        let error = declare(
+            &source,
+            "buckets",
+            "SELECT ivf_partition(vec) AS b, count(*) AS n FROM images GROUP BY ivf_partition(vec)",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("trained separately"), "{error}");
+    }
+
+    /// A vector the assigner cannot place has no bucket: it is grouped under
+    /// NULL, never under partition 0.
+    #[tokio::test]
+    async fn ivf_partition_leaves_an_unassignable_vector_unbucketed() {
+        use crate::index::vector::IvfFlatIndexBuilder;
+        use arrow_array::types::Float32Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = clustered_source(&conn).await;
+        source
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(2)
+                        .distance_type(crate::DistanceType::Cosine),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        // The zero vector has no direction, so cosine cannot place it.
+        let zero = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            [Some(vec![Some(0.0), Some(0.0)])],
+            2,
+        );
+        source
+            .add(
+                RecordBatch::try_from_iter(vec![
+                    ("id", Arc::new(Int32Array::from(vec![20])) as ArrayRef),
+                    ("vec", Arc::new(zero) as ArrayRef),
+                ])
+                .unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let view = declare(
+            &source,
+            "buckets",
+            "SELECT ivf_partition(vec) AS bucket, count(*) AS n, min(id) AS lo, max(id) AS hi \
+             FROM images GROUP BY ivf_partition(vec)",
+        )
+        .await
+        .unwrap();
+        view.refresh().execute().await.unwrap();
+        // ArrayFormatter renders NULL as the empty string; partition numbers
+        // are the index's own and not asserted.
+        let groups = rows(view.table(), &["bucket", "n", "lo", "hi"]).await;
+        let (unbucketed, bucketed): (Vec<_>, Vec<_>) =
+            groups.iter().partition(|row| row.starts_with(' '));
+        assert_eq!(unbucketed, [" 1 20 20"], "{groups:?}");
+        let mut clusters: Vec<&str> = bucketed
+            .iter()
+            .map(|row| row.split_once(' ').unwrap().1)
+            .collect();
+        clusters.sort();
+        assert_eq!(clusters, ["10 0 9", "10 10 19"], "{groups:?}");
+    }
+
+    /// Byte vectors group by a Hamming index, the phash case. The centroids
+    /// are given, as lance's own tests do: two-means over a handful of
+    /// hashes can converge with one partition empty.
+    #[tokio::test]
+    async fn ivf_partition_groups_byte_vectors_by_hamming() {
+        use arrow_array::types::UInt8Type;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Int32Array};
+        use lance::index::DatasetIndexExt;
+        use lance::index::vector::VectorIndexParams;
+        use lance_index::IndexType;
+        use lance_index::vector::ivf::IvfBuildParams;
+
+        let hashes = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            (0..20u8).map(|i| {
+                let base = if i < 10 { 0x00 } else { 0xff };
+                Some(vec![
+                    Some(base ^ (i % 4)),
+                    Some(base),
+                    Some(base),
+                    Some(base),
+                ])
+            }),
+            4,
+        );
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "id",
+                Arc::new(Int32Array::from_iter_values(0..20)) as ArrayRef,
+            ),
+            ("phash", Arc::new(hashes) as ArrayRef),
+        ])
+        .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("images", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let centroids = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(
+            [Some(vec![Some(0); 4]), Some(vec![Some(0xff); 4])],
+            4,
+        );
+        let params = VectorIndexParams::with_ivf_flat_params(
+            lance_linalg::distance::DistanceType::Hamming,
+            IvfBuildParams::try_with_centroids(2, Arc::new(centroids)).unwrap(),
+        );
+        let mut dataset = source
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .as_ref()
+            .clone();
+        dataset
+            .create_index(&["phash"], IndexType::Vector, None, &params, true)
+            .await
+            .unwrap();
+        let source = conn.open_table("images").execute().await.unwrap();
+
+        const BUCKETS: &str = "SELECT ivf_partition(phash) AS bucket, count(*) AS n, \
+             min(id) AS lo, max(id) AS hi FROM images GROUP BY ivf_partition(phash)";
+        let view = declare(&source, "buckets", BUCKETS).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(
+            rows(view.table(), &["bucket", "n", "lo", "hi"]).await,
+            ["0 10 0 9", "1 10 10 19"]
         );
     }
 }

@@ -32,6 +32,7 @@ use crate::job::Job;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::secrets::SecretInfo;
 use crate::table::{BaseTable, WriteOptions};
+use crate::view::ViewDescription;
 
 pub mod listing;
 pub mod namespace;
@@ -258,6 +259,12 @@ fn secret_catalog_not_supported<T>() -> Result<T> {
     })
 }
 
+fn view_ops_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "View operations are not supported by this database".to_string(),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -393,6 +400,18 @@ pub trait Database:
     async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
         function_catalog_not_supported()
     }
+    /// Start dropping a Function and return a handle to the cleanup job.
+    ///
+    /// Backends without asynchronous cleanup complete the drop before returning an
+    /// already-finished job.
+    async fn drop_function_async(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<(bool, crate::job::Job)> {
+        let dropped = self.drop_function(name, version).await?;
+        Ok((dropped, crate::job::Job::new_done()))
+    }
     /// Create a named Secret in this database. Fails if the name is taken, so
     /// a create can never silently become a rotation.
     async fn create_secret(
@@ -430,6 +449,35 @@ pub trait Database:
     /// never its value.
     async fn describe_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<SecretInfo> {
         secret_catalog_not_supported()
+    }
+    /// Create a view from a defining query. The query is planned once, by the
+    /// database, so one that cannot be planned is refused now rather than at
+    /// the first read.
+    async fn create_view(
+        &self,
+        _name: &str,
+        _query: &str,
+        _namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        view_ops_not_supported()
+    }
+    /// What the database records about one view: its defining query and the
+    /// schema that query resolved to.
+    async fn describe_view(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        view_ops_not_supported()
+    }
+    /// Drop a view. Its sources are untouched -- a view holds no rows of its
+    /// own.
+    async fn drop_view(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        view_ops_not_supported()
+    }
+    /// The names of the views in one namespace.
+    async fn list_views(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+        view_ops_not_supported()
     }
     /// Open a job by id, returning a handle with its record already
     /// populated. Fails with [`crate::Error::JobNotFound`] when the server has
