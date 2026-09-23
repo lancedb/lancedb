@@ -760,6 +760,37 @@ impl Connection {
     /// There is no replace: a name already taken is an error, and changing a
     /// view is a drop followed by a create, each authorized against what it
     /// actually touches. Local databases return [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn view_lifecycle(
+    /// #     connection: &lancedb::Connection,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let namespace = vec!["analytics".to_string()];
+    ///
+    /// let view = connection
+    ///     .create_view(
+    ///         "recent_orders",
+    ///         "SELECT id, total FROM orders WHERE total > 100",
+    ///         &namespace,
+    ///     )
+    ///     .await?;
+    /// println!("{} has {} columns", view.name, view.schema.fields().len());
+    ///
+    /// // The query comes back as it was recorded, with the defaults its
+    /// // unqualified names resolve against.
+    /// let described = connection.describe_view("recent_orders", &namespace).await?;
+    /// println!("{} in {:?}", described.query, described.default_namespace_path);
+    ///
+    /// let names = connection.list_views(&namespace).await?;
+    /// assert!(names.iter().any(|name| name == "recent_orders"));
+    ///
+    /// // Dropping the view leaves `orders` untouched.
+    /// connection.drop_view("recent_orders", &namespace).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_view(
         &self,
         name: impl AsRef<str>,

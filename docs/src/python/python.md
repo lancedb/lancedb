@@ -198,6 +198,10 @@ listing a storage directory.
 
 ::: lancedb.materialized_view.MaterializedViewDefinition
 
+## Views
+
+::: lancedb.view.ViewDescription
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead
