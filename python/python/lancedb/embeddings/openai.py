@@ -114,8 +114,13 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             logging.error("Authentication failed: Invalid API key provided")
             raise
         except openai.BadRequestError:
+            # A BadRequestError is permanent (input too long, invalid model,
+            # content filter) — swallowing it here and returning None vectors
+            # would silently drop rows (on_bad_vectors='drop') or persist
+            # zero vectors ('fill') while add() reports success. Re-raise so
+            # the caller sees the real API error.
             logging.exception("Bad request: %s", texts)
-            return [None] * len(texts)
+            raise
         except Exception:
             logging.exception("OpenAI embeddings error")
             raise
