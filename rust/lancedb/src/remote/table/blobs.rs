@@ -384,13 +384,24 @@ impl<S: HttpSend> RemoteTable<S> {
                 message: "fetch_blobs is not supported on this LanceDB Cloud server".into(),
             });
         }
-        let read_snapshot = self.snapshot_read_state().await;
+        let mut read_snapshot = self.snapshot_read_state().await;
+        // A selection spanning requests must use one exact dataset version.
+        // Resolve latest before the first chunk; a checked-out version is exact already.
+        if row_ids.len() > MAX_FETCH_BLOBS_ROW_IDS && read_snapshot.version.is_none() {
+            read_snapshot.version = Some(self.describe_read_snapshot(read_snapshot).await?.version);
+        }
         let mut pending: Vec<&[u64]> = row_ids.chunks(MAX_FETCH_BLOBS_ROW_IDS).rev().collect();
         let mut chunks = Vec::new();
         while let Some(ids) = pending.pop() {
             match self.fetch_blobs_chunk(column, ids, read_snapshot).await {
                 Ok(blobs) => chunks.push(blobs),
                 Err(error) if is_fetch_blobs_byte_limit_error(&error) => {
+                    // A single-request call may turn into several requests after a
+                    // byte-cap error. No bytes from the failed request were used.
+                    if read_snapshot.version.is_none() {
+                        read_snapshot.version =
+                            Some(self.describe_read_snapshot(read_snapshot).await?.version);
+                    }
                     if ids.len() == 1 {
                         // The whole-byte route cannot serve this blob. The Range route
                         // has no aggregate response limit and preserves null alignment.

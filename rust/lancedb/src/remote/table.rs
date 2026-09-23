@@ -5169,15 +5169,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fetch_blobs_splits_row_id_requests_and_preserves_order() {
+    async fn test_fetch_blobs_splits_row_ids_at_one_version_and_preserves_order() {
         let request_sizes = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = request_sizes.clone();
         let table = Table::new_with_handler_version(
             "my_table",
             semver::Version::new(0, 5, 0),
             move |request| {
+                if request.url().path() == "/v1/table/my_table/describe/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(br#"{"version":7,"schema":{"fields":[]}}"#.to_vec())
+                        .unwrap();
+                }
                 assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
                 let body = request_body_json(&request);
+                assert_eq!(body["version"], 7);
                 let ids = body["row_ids"].as_array().unwrap();
                 seen.lock().unwrap().push(ids.len());
                 if ids.len() > 1024 {
@@ -5241,8 +5248,13 @@ mod tests {
                 }
                 if path == "/v1/table/my_table/fetch_blobs/" {
                     let body = request_body_json(&request);
-                    assert_eq!(body["version"], 42);
                     let ids = body["row_ids"].as_array().unwrap();
+                    if body["version"].is_null() {
+                        // Only the initial failed request may read live latest.
+                        assert_eq!(ids.len(), 5);
+                    } else {
+                        assert_eq!(body["version"], 42);
+                    }
                     seen.lock().unwrap().push(format!("POST {}", ids.len()));
                     let mut builder = LargeBinaryBuilder::new();
                     let mut total_bytes = 0;
@@ -5306,7 +5318,6 @@ mod tests {
                 }
             },
         );
-        table.checkout(42).await.unwrap();
 
         let blobs = table
             .fetch_blobs("image", &[10, 20, 30, 40, 20])
