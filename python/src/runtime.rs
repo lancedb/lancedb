@@ -197,6 +197,27 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     get_runtime().block_on(fut)
 }
 
+/// Run a detached task, including when the caller is already on a runtime worker.
+/// Keep it visible to [`shutdown`] until it finishes.
+pub fn spawn_background<F>(fut: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let guard = OutstandingGuard::new();
+    let task = async move {
+        let _guard = guard;
+        fut.await;
+    };
+    match runtime::Handle::try_current() {
+        Ok(handle) => {
+            let _ = handle.spawn(task);
+        }
+        Err(_) => {
+            let _ = get_runtime().spawn(task);
+        }
+    }
+}
+
 /// Gracefully quiesce the shared runtime, meant to run at normal process exit.
 ///
 /// Waits (bounded by `timeout`) for [`OUTSTANDING`] to reach zero -- i.e.
