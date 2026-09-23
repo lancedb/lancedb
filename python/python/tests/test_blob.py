@@ -7,10 +7,11 @@ import sys
 import textwrap
 
 import lance
+import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
-from lance.blob import BlobType as LanceBlobType
+from lance.blob import Blob, BlobType as LanceBlobType
 
 import lancedb
 from lancedb._blob import (
@@ -1368,3 +1369,129 @@ def test_add_external_uri_string_round_trips_with_flag(tmp_path):
     hits = table.search().to_arrow()
     blobs = table.fetch_blobs("image", hits)
     assert blobs[0].as_py() == payload
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_add_bytes_and_uri_in_one_batch_preserves_external_uri(tmp_path, as_pandas):
+    payload = b"external-payload"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+    rows = [
+        {"id": 1, "image": b"inline"},
+        {"id": 2, "image": blob_path.as_uri()},
+    ]
+    db = lancedb.connect(tmp_path / "db")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("mixed", schema=schema)
+
+    table.add(
+        pd.DataFrame(rows) if as_pandas else rows,
+        allow_external_blob_outside_bases=True,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[1], by_id[2]]).to_pylist() == [
+        b"inline",
+        payload,
+    ]
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_add_mixed_python_blob_values_preserves_external_uris(tmp_path, as_pandas):
+    payload = b"external-payload"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+    uri = blob_path.as_uri()
+    rows = [
+        {"id": 1, "image": b"inline"},
+        {"id": 2, "image": uri},
+        {"id": 3, "image": {"data": b"from-dict"}},
+        {"id": 4, "image": Blob.from_bytes(b"from-blob")},
+        {"id": 5, "image": Blob.from_uri(uri)},
+        {"id": 6, "image": {"uri": uri}},
+        {"id": 7, "image": None},
+    ]
+    db = lancedb.connect(tmp_path / "db")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("mixed", schema=schema)
+
+    table.add(
+        pd.DataFrame(rows) if as_pandas else rows,
+        allow_external_blob_outside_bases=True,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[i] for i in range(1, 8)]).to_pylist() == [
+        b"inline",
+        payload,
+        b"from-dict",
+        b"from-blob",
+        payload,
+        payload,
+        None,
+    ]
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_merge_insert_mixed_python_blobs_validates_external_uri(tmp_path, as_pandas):
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(b"external-payload")
+    table = _blob_table("merge_mixed_uri", [{"id": 1, "image": b"before"}])
+    rows = [
+        {"id": 1, "image": b"updated"},
+        {"id": 2, "image": blob_path.as_uri()},
+    ]
+
+    with pytest.raises(ValueError, match="allow_external_blob_outside_bases"):
+        (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(pd.DataFrame(rows) if as_pandas else rows)
+        )
+    assert table.count_rows() == 1
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_merge_insert_python_blob_dicts_and_objects(as_pandas):
+    table = _blob_table("merge_python_blobs", [{"id": 1, "image": b"before"}])
+    rows = [
+        {"id": 1, "image": b"updated"},
+        {"id": 2, "image": {"data": b"from-dict"}},
+        {"id": 3, "image": Blob.from_bytes(b"from-blob")},
+    ]
+
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(pd.DataFrame(rows) if as_pandas else rows)
+    )
+
+    assert result.num_updated_rows == 1
+    assert result.num_inserted_rows == 2
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[i] for i in range(1, 4)]).to_pylist() == [
+        b"updated",
+        b"from-dict",
+        b"from-blob",
+    ]
+
+
+def test_create_table_with_python_blob_dict_and_object():
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table(
+        "create_python_blobs",
+        data=[
+            {"id": 1, "image": {"data": b"from-dict"}},
+            {"id": 2, "image": Blob.from_bytes(b"from-blob")},
+        ],
+        schema=schema,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[1], by_id[2]]).to_pylist() == [
+        b"from-dict",
+        b"from-blob",
+    ]
