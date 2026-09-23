@@ -3,6 +3,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import * as tmp from "tmp";
 
 import * as arrow15 from "apache-arrow-15";
@@ -12,6 +13,7 @@ import * as arrow18 from "apache-arrow-18";
 
 import {
   AutoQuery,
+  type BlobInput,
   Connection,
   MatchQuery,
   PhraseQuery,
@@ -2418,7 +2420,7 @@ describe("when dealing with blob columns", () => {
       new Field("id", new Int64(), true),
       blob("image"),
     ]);
-    const row = { id: 1n, image: new Uint8Array([104]).buffer };
+    const row = { id: 1n, image: new ReadableStream() };
 
     await expect(db.createTable("invalid", [row], { schema })).rejects.toThrow(
       /field image at row 0/,
@@ -2427,6 +2429,77 @@ describe("when dealing with blob columns", () => {
     const table = await db.createEmptyTable("empty", schema);
     await expect(table.add([row])).rejects.toThrow(/field image at row 0/);
     await expect(table.countRows()).resolves.toBe(0);
+  });
+
+  it("accepts ArrayBuffer, Blob, and File in createTable and add", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const rows: { id: bigint; image: BlobInput }[] = [
+      { id: 1n, image: new TextEncoder().encode("array-buffer").buffer },
+      { id: 2n, image: new Blob(["blob"]) },
+      { id: 3n, image: { data: new File(["file"], "f.txt") } },
+    ];
+    const table = await db.createTable("widened", rows.slice(0, 2), {
+      schema,
+    });
+    await table.add(rows.slice(2));
+
+    const results = await table.query().select(["id"]).withRowId().toArray();
+    results.sort((a, b) => Number(a.id - b.id));
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual([
+      "array-buffer",
+      "blob",
+      "file",
+    ]);
+  });
+
+  it("passes URL values to Lance as their href", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([blob("image")]);
+    const table = await db.createEmptyTable("urls", schema);
+    const url = pathToFileURL(path.join(tmpDir.name, "a b.png"));
+    // Storing external URIs needs registered bases, which the Node bindings
+    // cannot configure yet. Lance's rejection shows the URI it received.
+    for (const image of [url, { uri: url }]) {
+      await expect(table.add([{ image }])).rejects.toThrow(
+        `External blob URI '${url.href}'`,
+      );
+    }
+  });
+
+  it("accepts Blob values in mergeInsert", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const table = await db.createTable(
+      "merge_blobs",
+      [{ id: 1n, image: Buffer.from("old") }],
+      { schema },
+    );
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { id: 1n, image: new Blob(["new"]) },
+        { id: 2n, image: new Uint8Array([104, 105]).buffer },
+      ]);
+    const results = await table.query().select(["id"]).withRowId().toArray();
+    results.sort((a, b) => Number(a.id - b.id));
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual(["new", "hi"]);
   });
 
   it("discovers blob columns", async () => {

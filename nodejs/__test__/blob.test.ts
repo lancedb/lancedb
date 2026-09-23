@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Field, Int64, List, Schema, Struct, Utf8 } from "apache-arrow";
-import { makeArrowTable } from "../lancedb/arrow";
+import { makeArrowTable, resolveBlobInputs } from "../lancedb/arrow";
 import { BlobFile, blob, coerceBlobValue, isBlobField } from "../lancedb/blob";
 
 describe("blob()", () => {
@@ -65,6 +65,26 @@ describe("coerceBlobValue", () => {
       { uri: "s3://bucket/key" },
       { data: null, uri: "s3://bucket/key" },
     ],
+    [
+      "ArrayBuffer",
+      new Uint8Array([120]).buffer,
+      { data: new Uint8Array([120]), uri: null },
+    ],
+    [
+      "URL",
+      new URL("https://example.com/blob"),
+      { data: null, uri: "https://example.com/blob" },
+    ],
+    [
+      "data struct with ArrayBuffer",
+      { data: new Uint8Array([121]).buffer },
+      { data: new Uint8Array([121]), uri: null },
+    ],
+    [
+      "uri struct with URL",
+      { uri: new URL("file:///tmp/a.png") },
+      { data: null, uri: "file:///tmp/a.png" },
+    ],
     ["null", null, null],
   ])("accepts %s", (_name, input, expected) => {
     expect(coerceBlobValue(input)).toEqual(expected);
@@ -76,7 +96,7 @@ describe("coerceBlobValue", () => {
     [
       "Int16Array",
       new Int16Array([1]),
-      /Blob data must be Buffer or Uint8Array/,
+      /Blob data must be Buffer, Uint8Array, ArrayBuffer, or Blob/,
     ],
     [
       "both data and uri",
@@ -88,8 +108,49 @@ describe("coerceBlobValue", () => {
       { data: null, uri: null },
       /exactly one of 'data' or 'uri'/,
     ],
+    ["Blob", new Blob(["x"]), /must be read asynchronously/],
+    ["data struct with Blob", { data: new Blob(["x"]) }, /asynchronously/],
   ])("rejects %s", (_name, input, message) => {
     expect(() => coerceBlobValue(input)).toThrow(message);
+  });
+});
+
+describe("resolveBlobInputs", () => {
+  it("reads Blob and File values in blob columns only", async () => {
+    const schema = new Schema([
+      new Field("name", new Utf8(), true),
+      blob("image"),
+      new Field("images", new List(blob("image")), true),
+    ]);
+    const shared = new Blob(["same"]);
+    const notABlobColumn = new Blob(["other"]);
+    const data = [
+      {
+        name: notABlobColumn,
+        image: new File(["file"], "a.txt"),
+        images: [shared, { data: shared }, null],
+      },
+      { name: "x", image: Buffer.from("buf"), images: null },
+    ];
+    const resolved = await resolveBlobInputs(data, schema);
+
+    expect(resolved[0].name).toBe(notABlobColumn);
+    expect(Buffer.from(resolved[0].image as Uint8Array).toString()).toBe(
+      "file",
+    );
+    const images = resolved[0].images as [Uint8Array, { data: Uint8Array }];
+    expect(Buffer.from(images[0]).toString()).toBe("same");
+    expect(Buffer.from(images[1].data).toString()).toBe("same");
+    // Rows without Blob values and the caller's records are left alone.
+    expect(resolved[1]).toBe(data[1]);
+    expect(data[0].images?.[0]).toBe(shared);
+  });
+
+  it("returns the input when there is nothing to read", async () => {
+    const data = [{ image: Buffer.from("x") }];
+    const schema = new Schema([blob("image")]);
+    await expect(resolveBlobInputs(data, schema)).resolves.toBe(data);
+    await expect(resolveBlobInputs(data)).resolves.toBe(data);
   });
 });
 
@@ -103,24 +164,82 @@ describe("BlobFile", () => {
 
 describe("makeArrowTable blob columns", () => {
   it.each([
-    ["ArrayBuffer", new Uint8Array([104]).buffer],
-    ["Blob", new Blob(["hello"])],
-    ["File", new File(["hello"], "hello.txt")],
-    ["URL", new URL("https://example.com/blob")],
     ["ReadableStream", new ReadableStream()],
-    ["data struct with ArrayBuffer", { data: new Uint8Array([104]).buffer }],
-    ["uri struct with URL", { uri: new URL("https://example.com/blob") }],
+    ["Int16Array", new Int16Array([1])],
   ])("rejects %s input rather than writing a null blob", (_name, image) => {
     const schema = new Schema([blob("image")]);
     expect(() => makeArrowTable([{ image }], { schema })).toThrow(/image/);
   });
 
-  it("rejects Blob instances with enumerable fields as one invalid value", () => {
+  it.each([
+    ["Blob", new Blob(["hello"])],
+    ["File", new File(["hello"], "hello.txt")],
+    ["data struct with Blob", { data: new Blob(["hello"]) }],
+    [
+      "Blob with enumerable fields",
+      Object.assign(new Blob(["hello"]), { position: 0 }),
+    ],
+  ])("points %s input at the async APIs", (_name, image) => {
     const schema = new Schema([blob("image")]);
-    const image = Object.assign(new Blob(["hello"]), { position: 0 });
-    expect(() => makeArrowTable([{ image }], { schema })).toThrow(
-      "Unsupported object value for field image at row 0.",
+    expect(() => makeArrowTable([{ id: 1, image }], { schema })).toThrow(
+      /blob field image at row 0: Blob and File values must be read asynchronously/,
     );
+  });
+
+  it.each([
+    ["ArrayBuffer", new Uint8Array([104, 105]).buffer, "hi", null],
+    [
+      "data struct with ArrayBuffer",
+      { data: new Uint8Array([104, 105]).buffer },
+      "hi",
+      null,
+    ],
+    ["URL", new URL("https://example.com/a"), null, "https://example.com/a"],
+    [
+      "uri struct with URL",
+      { uri: new URL("file:///tmp/a.png") },
+      null,
+      "file:///tmp/a.png",
+    ],
+  ])("accepts %s input", (_name, image, data, uri) => {
+    const schema = new Schema([blob("image")]);
+    const input = { image };
+    const table = makeArrowTable([input], { schema });
+    const column = table.getChild("image")!;
+    expect(column.nullCount).toBe(0);
+    const bytes = column.getChild("data")!.get(0);
+    expect(bytes == null ? null : Buffer.from(bytes).toString()).toBe(data);
+    expect(column.getChild("uri")!.get(0)).toBe(uri);
+    // The caller's record is left untouched.
+    expect(input.image).toBe(image);
+  });
+
+  it("accepts ArrayBuffer and URL inside lists and structs", () => {
+    const schema = new Schema([
+      new Field("images", new List(blob("image")), true),
+      new Field("info", new Struct([blob("image")]), true),
+    ]);
+    const table = makeArrowTable(
+      [
+        {
+          images: [new Uint8Array([97]).buffer, new URL("s3://b/k")],
+          info: { image: new Uint8Array([98]).buffer },
+        },
+      ],
+      { schema },
+    );
+    const images = Array.from(
+      table.getChild("images")!.get(0) as Iterable<{
+        data: Uint8Array | null;
+        uri: string | null;
+      }>,
+    );
+    expect(Buffer.from(images[0].data!).toString()).toBe("a");
+    expect(images[1].uri).toBe("s3://b/k");
+    const info = table.getChild("info")!.get(0) as {
+      image: { data: Uint8Array };
+    };
+    expect(Buffer.from(info.image.data).toString()).toBe("b");
   });
 
   it("coerces Buffer input onto a blob field", () => {
