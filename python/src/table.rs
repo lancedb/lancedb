@@ -1421,14 +1421,30 @@ impl Table {
     pub fn fetch_blob_ranges(
         self_: PyRef<'_, Self>,
         column: String,
-        requests: Vec<(u64, u64, u64)>,
+        requests: Vec<Vec<i128>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let requests = requests
+            .into_iter()
+            .map(|values| {
+                let [row_id, offset, length] = <[i128; 3]>::try_from(values).map_err(|_| {
+                    PyValueError::new_err("each blob range request must have three values")
+                })?;
+                let to_u64 = |value, name| {
+                    u64::try_from(value).map_err(|_| {
+                        PyValueError::new_err(format!(
+                            "blob range {name} must be a non-negative 64-bit integer"
+                        ))
+                    })
+                };
+                Ok(BlobRangeRequest::new(
+                    to_u64(row_id, "row id")?,
+                    to_u64(offset, "offset")?,
+                    to_u64(length, "length")?,
+                ))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         future_into_py(self_.py(), async move {
-            let requests = requests
-                .into_iter()
-                .map(|(row_id, offset, length)| BlobRangeRequest::new(row_id, offset, length))
-                .collect::<Vec<_>>();
             let blobs: LargeBinaryArray = inner
                 .fetch_blob_ranges(column, requests)
                 .await

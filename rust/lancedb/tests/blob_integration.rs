@@ -501,7 +501,10 @@ async fn collect_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
 fn assert_missing_blob_row_ids(err: &Error) {
     assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
     let message = err.to_string();
-    assert!(message.contains("row ids"), "{message}");
+    assert!(
+        message.contains("row ids but some do not exist in the table"),
+        "{message}"
+    );
     assert!(!message.contains("rowaddr"), "{message}");
     assert!(!message.contains("fragment"), "{message}");
 }
@@ -791,6 +794,18 @@ async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
 }
 
 #[tokio::test]
+async fn fetch_blob_apis_reject_row_past_fragment_end() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2, 3], &[Some(b"a"), Some(b"b"), Some(b"c")])
+            .await?;
+
+    assert_fetch_apis_reject_missing_row_ids(&table, &[3]).await?;
+    assert_fetch_apis_reject_missing_row_ids(&table, &[3, 0]).await
+}
+
+#[tokio::test]
 async fn fetch_blob_files_rejects_missing_fragment_row_addr() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
@@ -829,6 +844,23 @@ async fn fetch_blob_apis_reject_deleted_row_ids() -> Result<()> {
     table.delete("id = 2").await?;
 
     assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_addr, live_row_addr]).await
+}
+
+#[tokio::test]
+async fn fetch_blob_apis_reject_deleted_stable_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+        .execute()
+        .await?;
+    let table = create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"one"), Some(b"two")]).await?;
+    let pairs = collect_id_rowid(&table).await?;
+    let deleted_row_id = pairs.iter().find(|(id, _)| *id == 2).unwrap().1;
+    let live_row_id = pairs.iter().find(|(id, _)| *id == 1).unwrap().1;
+
+    table.delete("id = 2").await?;
+
+    assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_id, live_row_id]).await
 }
 
 #[tokio::test]

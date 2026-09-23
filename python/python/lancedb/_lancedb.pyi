@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
+from typing import Dict, List, Optional, Sequence, Tuple, Any, TypedDict, Union, Literal
 from uuid import UUID
 
 import pyarrow as pa
@@ -529,7 +529,7 @@ class Table:
     async def fetch_blob_ranges(
         self,
         column: str,
-        requests: List[Tuple[int, int, int]],
+        requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_files(
         self, column: str, row_ids: list[int]

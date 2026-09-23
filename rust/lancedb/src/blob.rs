@@ -368,17 +368,21 @@ pub(crate) fn ensure_blob_v2_column(
     }
 }
 
+fn missing_blob_row_ids_error(column: &str, requested: usize) -> Error {
+    Error::InvalidInput {
+        message: format!(
+            "blob read for column '{column}' requested {requested} row ids but some \
+             do not exist in the table; pass row ids collected from this table"
+        ),
+    }
+}
+
 fn ensure_all_row_ids_resolved(column: &str, requested: usize, resolved: usize) -> Result<()> {
     if requested == resolved {
         return Ok(());
     }
     if resolved < requested {
-        Err(Error::InvalidInput {
-            message: format!(
-                "blob read for column '{column}' requested {requested} row ids but only {resolved} \
-                 exist in the table; pass row ids collected from this table"
-            ),
-        })
+        Err(missing_blob_row_ids_error(column, requested))
     } else {
         Err(Error::Runtime {
             message: format!(
@@ -388,25 +392,17 @@ fn ensure_all_row_ids_resolved(column: &str, requested: usize, resolved: usize) 
     }
 }
 
-/// Lance take reports a missing physical row address as NotSupported or InvalidInput.
+/// Lance reports missing physical and stable row ids through several error paths
+/// without a shared typed error.
 fn map_blob_take_error(column: &str, requested: usize, err: lance::Error) -> Error {
-    let missing_row_addr = match &err {
-        lance::Error::NotSupported { source, .. } => {
-            source.to_string().contains("must not target deleted rows")
-        }
-        lance::Error::InvalidInput { source, .. } => source
-            .to_string()
-            .contains("belongs to non-existent fragment"),
-        _ => false,
-    };
+    let message = err.to_string();
+    let missing_row_id = message.contains("must not target deleted rows")
+        || message.contains("belongs to non-existent fragment")
+        || (message.contains("Invalid read params ") && message.contains("addressable rows"))
+        || message.contains("Could not resolve all requested row IDs");
 
-    if missing_row_addr {
-        Error::InvalidInput {
-            message: format!(
-                "blob read for column '{column}' requested {requested} row ids but some \
-                 do not exist in the table; pass row ids collected from this table"
-            ),
-        }
+    if missing_row_id {
+        missing_blob_row_ids_error(column, requested)
     } else {
         err.into()
     }
