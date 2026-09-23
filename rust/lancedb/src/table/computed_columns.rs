@@ -695,6 +695,7 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
             "assignment",
             "input_schema",
             "output_schema",
+            "initialization",
         ],
         "binding",
     )?;
@@ -3746,6 +3747,17 @@ mod tests {
         );
         let err = ensure_supported_function_metadata(&schema).unwrap_err();
         assert!(matches!(err, Error::NotSupported { .. }));
+    }
+
+    /// A binding's initialization row is part of the known contract, so a
+    /// table that holds one can still take further declarations.
+    #[test]
+    fn test_initialized_bindings_are_a_known_shape() {
+        let raw_binding: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_initialized_function_binding.json"
+        ))
+        .unwrap();
+        ensure_known_binding_shape(&raw_binding).unwrap();
     }
 
     #[test]
