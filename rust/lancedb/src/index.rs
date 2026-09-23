@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use chrono::{DateTime, Utc};
+use lance::index::IndexBuildProgress;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
@@ -211,6 +212,7 @@ pub struct IndexBuilder {
     pub(crate) wait_timeout: Option<Duration>,
     pub(crate) train: bool,
     pub(crate) name: Option<String>,
+    pub(crate) progress: Option<Arc<dyn IndexBuildProgress>>,
 }
 
 impl IndexBuilder {
@@ -223,6 +225,7 @@ impl IndexBuilder {
             train: true,
             wait_timeout: None,
             name: None,
+            progress: None,
         }
     }
 
@@ -318,6 +321,12 @@ impl IndexBuilder {
     /// This is not supported for `NativeTable` since indexing is synchronous.
     pub fn wait_timeout(mut self, d: Duration) -> Self {
         self.wait_timeout = Some(d);
+        self
+    }
+
+    /// Progress callback for index building and distributed index finalization.
+    pub fn progress(mut self, progress: Arc<dyn IndexBuildProgress>) -> Self {
+        self.progress = Some(progress);
         self
     }
 
