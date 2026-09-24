@@ -2470,6 +2470,10 @@ def test_remote_blob_files_are_lazy_seekable_handles():
         assert alpha.read_range(1, 3) == b"lph"
         gamma.seek(2)
         assert gamma.read() == b"mma"
+        alpha.close()
+        assert alpha.closed
+        with pytest.raises(RuntimeError, match="already closed"):
+            alpha.read_range(0, 1)
 
 
 def test_remote_blob_fetch_accepts_query_table():
