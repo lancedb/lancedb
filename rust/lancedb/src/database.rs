@@ -470,9 +470,14 @@ pub trait Database:
     ) -> Result<ViewDescription> {
         view_ops_not_supported()
     }
-    /// Drop a view. Its sources are untouched -- a view holds no rows of its
-    /// own.
+    /// Drop a view and wait for its definition to be deleted. Its sources are
+    /// untouched -- a view holds no rows of its own.
     async fn drop_view(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        view_ops_not_supported()
+    }
+    /// Drop a view and return the job deleting its definition, without waiting.
+    #[doc(hidden)]
+    async fn drop_view_async(&self, _name: &str, _namespace_path: &[String]) -> Result<Job> {
         view_ops_not_supported()
     }
     /// The names of the views in one namespace.

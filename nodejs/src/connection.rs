@@ -427,7 +427,8 @@ impl Connection {
         ViewDescription::from_inner(view)
     }
 
-    /// Drop a view. The tables it reads are untouched.
+    /// Drop a view and wait for its definition to be deleted. The tables it
+    /// reads are untouched.
     #[napi(catch_unwind)]
     pub async fn drop_view(
         &self,
@@ -439,6 +440,22 @@ impl Connection {
             .drop_view(&name, &ns)
             .await
             .default_error()
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    #[napi(catch_unwind)]
+    pub async fn drop_view_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_view_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
     }
 
     /// The names of the views in one namespace.

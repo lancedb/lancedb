@@ -820,13 +820,40 @@ impl Connection {
             .await
     }
 
-    /// Drop a view.
+    /// Drop a view and wait for its definition to be deleted.
     ///
     /// The tables it reads are untouched: a view holds no rows of its own.
-    /// Local databases return [`Error::NotSupported`].
+    /// Use [`Connection::drop_view_async`] to get the cleanup job instead of
+    /// waiting on it. Local databases return [`Error::NotSupported`].
     pub async fn drop_view(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
         validate_view_reference(name.as_ref(), namespace_path)?;
         self.internal.drop_view(name.as_ref(), namespace_path).await
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    ///
+    /// The name is free before this returns; the definition dataset may still
+    /// be being deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for
+    /// that. When nothing was bound to the name, the returned job is already
+    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::Connection;
+    /// # async fn drop(conn: &Connection) -> lancedb::Result<()> {
+    /// let job = conn.drop_view_async("recent_orders", &[]).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn drop_view_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_view_async(name.as_ref(), namespace_path)
+            .await
     }
 
     /// The names of the views in one namespace.
