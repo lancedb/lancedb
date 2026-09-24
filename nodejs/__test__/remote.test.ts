@@ -85,6 +85,69 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it("rejects the external blob opt-in without blocking regular adds", async () => {
+    let insertRequests = 0;
+    const describeRequests: string[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const requestPath = req.url ?? "";
+        if (requestPath.endsWith("/describe/")) {
+          describeRequests.push(requestPath);
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "items",
+              version: 1,
+              schema: {
+                fields: [
+                  {
+                    name: "id",
+                    type: { type: "int64" },
+                    nullable: true,
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        if (requestPath.endsWith("/insert/")) {
+          insertRequests++;
+          req.resume();
+          req.on("end", () => {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: insertRequests + 1 }));
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+
+        await expect(
+          table.add([{ id: 1n }], {
+            allowExternalBlobOutsideBases: true,
+          }),
+        ).rejects.toThrow("only supported on local tables");
+        expect(insertRequests).toBe(0);
+
+        await expect(table.add([{ id: 2n }])).resolves.toMatchObject({
+          version: 2,
+        });
+        await expect(
+          table.add([{ id: 3n }], {
+            allowExternalBlobOutsideBases: false,
+          }),
+        ).resolves.toMatchObject({ version: 3 });
+      },
+    );
+
+    expect(describeRequests.length).toBeGreaterThan(0);
+    expect(insertRequests).toBe(2);
+  });
+
   it("lists materialized views through the namespace route", async () => {
     await withMockDatabase(
       (req, res) => {

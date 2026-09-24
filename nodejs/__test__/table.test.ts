@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import * as fs from "fs";
+import { pathToFileURL } from "node:url";
 import * as path from "path";
 import * as tmp from "tmp";
 
@@ -2429,6 +2430,118 @@ describe("when dealing with blob columns", () => {
     await expect(table.countRows()).resolves.toBe(0);
   });
 
+  it("requires an explicit opt-in for blob URIs outside registered bases", async () => {
+    const { table, uri } = await openExternalBlobTable();
+
+    await expect(table.add([{ id: 1n, payload: uri }])).rejects.toThrow(
+      "allow_external_blob_outside_bases",
+    );
+    await expect(table.countRows()).resolves.toBe(0);
+
+    await expect(
+      table.add([{ id: 2n, payload: uri }], {
+        allowExternalBlobOutsideBases: false,
+      }),
+    ).rejects.toThrow("allow_external_blob_outside_bases");
+    await expect(table.countRows()).resolves.toBe(0);
+  });
+
+  it.each([
+    ["URI string", (uri: string) => uri],
+    ["URI struct", (uri: string) => ({ uri })],
+  ])(
+    "round-trips an external blob from a %s after reopening",
+    async (_label, blobValue) => {
+      const { db, table, uri, payload } = await openExternalBlobTable();
+
+      const result = await table.add([{ id: 1n, payload: blobValue(uri) }], {
+        allowExternalBlobOutsideBases: true,
+      });
+      expect(result.version).toBeGreaterThan(0);
+      await expect(table.countRows()).resolves.toBe(1);
+
+      table.close();
+      const reopened = await db.openTable("external_blobs");
+      const rows = await reopened.query().withRowId().toArray();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].payload.blob_uri).toBe(uri);
+      const bytes = await reopened.fetchBlobs("payload", [
+        rows[0]._rowid as bigint,
+      ]);
+      expect(bytes[0]).toEqual(payload);
+    },
+  );
+
+  it("applies the external blob opt-in to Arrow table input", async () => {
+    const { table, schema, uri, payload } = await openExternalBlobTable();
+    const input = makeArrowTable([{ id: 1n, payload: uri }], { schema });
+
+    const result = await table.add(input, {
+      allowExternalBlobOutsideBases: true,
+    });
+
+    expect(result.version).toBeGreaterThan(0);
+    const rows = await table.query().withRowId().toArray();
+    expect(rows[0].payload.blob_uri).toBe(uri);
+    const bytes = await table.fetchBlobs("payload", [rows[0]._rowid as bigint]);
+    expect(bytes[0]).toEqual(payload);
+  });
+
+  it("applies the external blob opt-in only to the current add", async () => {
+    const { table, uri } = await openExternalBlobTable();
+
+    await table.add([{ id: 1n, payload: uri }], {
+      allowExternalBlobOutsideBases: true,
+    });
+    await expect(table.countRows()).resolves.toBe(1);
+
+    await expect(table.add([{ id: 2n, payload: uri }])).rejects.toThrow(
+      "allow_external_blob_outside_bases",
+    );
+    await expect(table.countRows()).resolves.toBe(1);
+  });
+
+  it("supports progress and overwrite with the external blob opt-in", async () => {
+    const { table, uri, payload } = await openExternalBlobTable();
+    await table.add([{ id: 1n, payload: Buffer.from("old") }]);
+
+    let resolveFinal!: (progress: import("../lancedb").WriteProgress) => void;
+    let rejectFinal!: (error: Error) => void;
+    const finalProgress = new Promise<import("../lancedb").WriteProgress>(
+      (resolve, reject) => {
+        resolveFinal = resolve;
+        rejectFinal = reject;
+      },
+    );
+    const timeout = setTimeout(
+      () => rejectFinal(new Error("timed out waiting for final progress")),
+      5_000,
+    );
+    try {
+      const result = await table.add([{ id: 2n, payload: uri }], {
+        mode: "overwrite",
+        allowExternalBlobOutsideBases: true,
+        progress: (progress) => {
+          if (progress.done) {
+            resolveFinal(progress);
+          }
+        },
+      });
+      expect(result.version).toBeGreaterThan(0);
+      const progress = await finalProgress;
+      expect(progress.outputRows).toBe(1);
+      expect(progress.totalRows).toBe(1);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const rows = await table.query().withRowId().toArray();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(2n);
+    const bytes = await table.fetchBlobs("payload", [rows[0]._rowid as bigint]);
+    expect(bytes[0]).toEqual(payload);
+  });
+
   it("discovers blob columns", async () => {
     const { table } = await openBlobTable();
     expect(await table.blobColumns()).toEqual(["image"]);
@@ -2687,6 +2800,20 @@ describe("when dealing with blob columns", () => {
     );
     const rowIds = [1, 2, 3].map((id) => rowIdById.get(id)!);
     return { table, rowIds, alpha, beta };
+  }
+
+  async function openExternalBlobTable() {
+    const db = await connect(path.join(tmpDir.name, "db"));
+    const payload = Buffer.from("external-payload");
+    const payloadPath = path.join(tmpDir.name, "payload.bin");
+    fs.writeFileSync(payloadPath, payload);
+    const uri = pathToFileURL(payloadPath).href;
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("payload"),
+    ]);
+    const table = await db.createEmptyTable("external_blobs", schema);
+    return { db, table, schema, uri, payload };
   }
 });
 
