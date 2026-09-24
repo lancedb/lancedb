@@ -14,9 +14,33 @@ and TypeSafe SDK 0.7.1 over a mock HTTP transport (including SDK-managed retries
 Repository-wide Ruff formatting/lint, the benchmark CLI, and the MkDocs build
 also passed.
 
-Live TypeSafe credentials were not configured during implementation. **The actual
-patch's live median/p95 latency and Hit@5/Hit@10 have not been measured.** No
-speedup or quality-equivalence claim is made.
+### Live subset test
+
+A live test on the first 100 cached GooAQ queries (6,851 candidate pairs) passed
+with `jev-1.13.0`, SDK 0.7.1, and concurrency 32 in both modes. Candidate IDs,
+probabilities, resolved models, and request counts were checked for every record.
+All three 80-candidate queries made exactly two batched calls. Live vector, FTS,
+hybrid, empty-FTS, and multivector integration checks also passed in both modes.
+No implementation changes were needed.
+
+| Batch size | Subset SDK calls | Median | p95 |
+| --- | ---: | ---: | ---: |
+| 1 | 6,851 | 877 ms | 9,446 ms |
+| 40 | 199 | 351 ms | 598 ms |
+
+| Search | Unbatched Hit@5 / Hit@10 | Batched Hit@5 / Hit@10 |
+| --- | ---: | ---: |
+| Vector | 82% / 88% | 84% / 89% |
+| FTS | 72% / 77% | 73% / 78% |
+| Hybrid | 83% / 89% | 84% / 90% |
+
+These are **subset-test observations, not full benchmark results**. The full run
+was manually stopped after 494 matched queries; this summary uses the first 100
+input queries without selection by latency or scores. Counts above exclude other
+queries completed before stopping. The high unbatched p95 is retained as observed;
+it is not attributed to a specific cause. A complete 2,000-query paired benchmark
+is still needed before making a general performance or quality claim. Exact values
+and configuration are in [the subset test report](typesafe_subset_test.json).
 
 The historical GooAQ results motivated this patch: the earlier custom adapter
 reported 186 ms median / 387 ms p95; native unbatched scoring at concurrency 32
