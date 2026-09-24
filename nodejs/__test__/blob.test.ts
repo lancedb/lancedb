@@ -102,6 +102,27 @@ describe("BlobFile", () => {
 });
 
 describe("makeArrowTable blob columns", () => {
+  it.each([
+    ["ArrayBuffer", new Uint8Array([104]).buffer],
+    ["Blob", new Blob(["hello"])],
+    ["File", new File(["hello"], "hello.txt")],
+    ["URL", new URL("https://example.com/blob")],
+    ["ReadableStream", new ReadableStream()],
+    ["data struct with ArrayBuffer", { data: new Uint8Array([104]).buffer }],
+    ["uri struct with URL", { uri: new URL("https://example.com/blob") }],
+  ])("rejects %s input rather than writing a null blob", (_name, image) => {
+    const schema = new Schema([blob("image")]);
+    expect(() => makeArrowTable([{ image }], { schema })).toThrow(/image/);
+  });
+
+  it("rejects Blob instances with enumerable fields as one invalid value", () => {
+    const schema = new Schema([blob("image")]);
+    const image = Object.assign(new Blob(["hello"]), { position: 0 });
+    expect(() => makeArrowTable([{ image }], { schema })).toThrow(
+      "Unsupported object value for field image at row 0.",
+    );
+  });
+
   it("coerces Buffer input onto a blob field", () => {
     const schema = new Schema([
       new Field("id", new Int64(), true),
