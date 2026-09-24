@@ -3604,6 +3604,44 @@ pub(crate) mod tests {
         assert_eq!(read(view.table(), "twice").await, vec![2, 4]);
     }
 
+    #[tokio::test]
+    async fn test_cascade_refuses_a_checked_out_view_before_any_hop() {
+        let (conn, _) = db_with_source(vec![1]).await;
+        doubled_view(&conn).await;
+        let second = view_over_doubled(&conn).await;
+        let version = second.table().version().await.unwrap();
+        second.table().checkout(version).await.unwrap();
+
+        assert!(second.refresh().cascade(true).execute().await.is_err());
+        let doubled = conn.open_table("doubled").execute().await.unwrap();
+        assert_eq!(read(&doubled, "twice").await, Vec::<i32>::new());
+    }
+
+    /// A staged view reads its staging table, not the query's source, so
+    /// the cascade follows the staging.
+    #[tokio::test]
+    async fn test_cascade_over_a_staged_view_reads_its_staging() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let staging = conn
+            .create_table("docs__chunk", chunked_batch())
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let query =
+            "SELECT id AS doc, e.chunk AS text, e.ordinal FROM docs, chunk(meta.title, 2) AS e";
+        let definition = MaterializedViewDefinition::from_sql(query).unwrap();
+        let view = crate::materialized_view::prepare_staged_definition(&staging, definition, "c")
+            .await
+            .unwrap()
+            .create("chunks")
+            .await
+            .unwrap();
+
+        view.refresh().cascade(true).execute().await.unwrap();
+        assert_eq!(read(view.table(), "ordinal").await, [0, 0, 1]);
+    }
+
     /// The watermark speaks only for the state a refresh left behind: a
     /// direct write to the view is drift, and the next refresh rebuilds
     /// rather than preserving it as current.
