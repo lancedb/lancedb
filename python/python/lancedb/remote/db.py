@@ -932,6 +932,13 @@ class RemoteDBConnection(DBConnection):
         LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
 
     @override
+    def drop_view_async(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        job = LOOP.run(self._conn.drop_view_async(name, namespace_path=namespace_path))
+        return Job(job)
+
+    @override
     def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
         return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
 
@@ -949,6 +956,22 @@ class RemoteDBConnection(DBConnection):
         success.
         """
         return LOOP.run(self._conn.cancel_job(job_id))
+
+    @override
+    def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
+
+        Returns "pausing", "already_paused", or "committing".
+        """
+        return LOOP.run(self._conn.pause_job(job_id))
+
+    @override
+    def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Returns "resumed", "still_pausing", or "not_paused".
+        """
+        return LOOP.run(self._conn.resume_job(job_id))
 
     @override
     def execute_query_async(

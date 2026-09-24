@@ -208,13 +208,12 @@ where
         let _guard = guard;
         fut.await;
     };
+    // Detaching is the point: dropping the `JoinHandle` leaves the task running, and the
+    // `OutstandingGuard` it carries is what keeps it visible to `shutdown`. Written as `drop`
+    // rather than `let _ =`, which reads as discarding an unpolled future.
     match runtime::Handle::try_current() {
-        Ok(handle) => {
-            let _ = handle.spawn(task);
-        }
-        Err(_) => {
-            let _ = get_runtime().spawn(task);
-        }
+        Ok(handle) => drop(handle.spawn(task)),
+        Err(_) => drop(get_runtime().spawn(task)),
     }
 }
 

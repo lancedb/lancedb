@@ -379,6 +379,29 @@ still work. Queries return descriptors. Call
 
 ## Reranking
 
+`TypeSafeReranker` supports opt-in request batching:
+
+```python
+from lancedb.rerankers import TypeSafeReranker
+
+reranker = TypeSafeReranker(batch_size=40, max_concurrency=8)
+```
+
+The default `batch_size=1` keeps the query and document in request state and
+sends one request per non-null candidate. With `batch_size=40`, 80 non-null
+candidates require two requests. `max_concurrency` still limits simultaneous
+requests, and the SDK handles retries.
+
+In batched mode, state contains only `{"query": query}`. Each independent
+question contains `{"question": instructions, "document": document}` in its
+structured instructions, so it sees only its own document and the shared query.
+Custom instructions and criteria are kept verbatim: adapt prompts that explicitly
+reference request-state fields such as `state.document` before enabling batching.
+Null documents retain a zero score without an API call; empty strings are scored.
+API failures, mismatched answer IDs, and invalid probabilities raise errors.
+Batching changes the payload and can affect model scores; compare quality and
+latency on your workload before opting in.
+
 ::: lancedb.rerankers
     options:
       show_root_heading: false

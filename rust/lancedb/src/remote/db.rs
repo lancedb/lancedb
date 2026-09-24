@@ -30,7 +30,7 @@ use crate::function::{
 };
 use crate::job::Job;
 use crate::materialized_view::CreateMaterializedViewRequest;
-use crate::remote::job::{RemoteJob, job_state_to_client};
+use crate::remote::job::{PauseJobResponse, RemoteJob, ResumeJobResponse, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
@@ -1210,11 +1210,39 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_view(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        self.drop_view_async(name, namespace_path)
+            .await?
+            .wait()
+            .await
+    }
+
+    async fn drop_view_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
         let view_id = build_object_identifier("View name", name, namespace_path)?;
         let req = self.client.post(&format!("/v1/view/{view_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
-        self.client.check_response(&request_id, response).await?;
-        Ok(())
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        match status {
+            // Nothing was bound to the name, so nothing is being deleted.
+            StatusCode::OK => Ok(Job::new_done()),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "view drop response did not contain a valid job_id".into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Ok(Job::new(Box::new(RemoteJob::new(
+                    self.client.clone(),
+                    job_id,
+                ))))
+            }
+            _ => Err(Error::Http {
+                source: "view drop must return 200 OK or 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            }),
+        }
     }
 
     async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
@@ -1321,6 +1349,40 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }) => Ok(false),
             Err(err) => Err(err),
         }
+    }
+
+    async fn pause_job(&self, job_id: &str) -> Result<crate::database::PauseJobStatus> {
+        let req = self
+            .client
+            .post("/v1/jobs/pause")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: PauseJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(if body.paused {
+            crate::database::PauseJobStatus::Pausing
+        } else if body.committing {
+            crate::database::PauseJobStatus::Committing
+        } else {
+            crate::database::PauseJobStatus::AlreadyPaused
+        })
+    }
+
+    async fn resume_job(&self, job_id: &str) -> Result<crate::database::ResumeJobStatus> {
+        let req = self
+            .client
+            .post("/v1/jobs/resume")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: ResumeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(if body.resumed {
+            crate::database::ResumeJobStatus::Resumed
+        } else if body.still_pausing {
+            crate::database::ResumeJobStatus::StillPausing
+        } else {
+            crate::database::ResumeJobStatus::NotPaused
+        })
     }
 
     async fn execute_query_async(
@@ -3526,6 +3588,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_pause_and_resume_job() {
+        use crate::database::{PauseJobStatus, ResumeJobStatus};
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/pause");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "paused": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.pause_job("job-1").await.unwrap(),
+            PauseJobStatus::Pausing
+        );
+
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "paused": false, "committing": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.pause_job("job-1").await.unwrap(),
+            PauseJobStatus::Committing
+        );
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/resume");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "resumed": false, "still_pausing": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.resume_job("job-1").await.unwrap(),
+            ResumeJobStatus::StillPausing
+        );
+    }
+
+    #[tokio::test]
     async fn test_job_events_scope_to_that_job() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "state",
@@ -4044,6 +4145,55 @@ mod tests {
         conn.drop_view("adults", &["analytics".into()])
             .await
             .unwrap();
+    }
+
+    /// An accepted drop hands back the job so a caller can wait on the delete,
+    /// and the waiting `drop_view` does that for them.
+    #[tokio::test]
+    async fn test_drop_view_async_reports_the_cleanup_job() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j1-do-abc"}"#)
+                .unwrap()
+        });
+        let job = db.drop_view_async("adults", &[]).await.unwrap();
+        assert_eq!(job.id(), Some("j1-do-abc"));
+    }
+
+    /// Nothing was bound, so nothing is being deleted and the job is already done.
+    #[tokio::test]
+    async fn test_drop_view_async_reports_a_finished_job_when_nothing_was_bound() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        let job = db.drop_view_async("adults", &[]).await.unwrap();
+        assert_eq!(job.id(), None);
+        assert_eq!(job.status().await.unwrap(), "finished");
+        job.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_view_rejects_incomplete_acceptance() {
+        for body in ["{}", r#"{"job_id":""}"#, r#"{"job_id":null}"#] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(202).body(body).unwrap()
+            });
+            let error = db.drop_view_async("adults", &[]).await.err().unwrap();
+            assert!(error.to_string().contains("valid job_id"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_view_rejects_unexpected_success_status() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(204).body("").unwrap()
+        });
+        let error = db.drop_view_async("adults", &[]).await.err().unwrap();
+        assert!(
+            error.to_string().contains("200 OK or 202 Accepted"),
+            "{error}"
+        );
     }
 
     /// A schema the client cannot decode is a broken response, not a view
