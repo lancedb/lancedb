@@ -162,7 +162,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
         // execution must consume scoped readers sequentially.
         let runtime = Arc::new(
             datafusion_execution::runtime_env::RuntimeEnvBuilder::new()
-                .with_memory_limit(32 * 1024 * 1024, 1.0)
+                .with_memory_limit(128 * 1024 * 1024, 1.0)
                 .build()?,
         );
         let ctx =

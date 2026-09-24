@@ -35,12 +35,17 @@ use crate::table::NativeTableExt;
 // Admission estimates for Lance 13's bounded pairwise kernel. Keep these with
 // the minimum dependency when the kernel's buffering contract changes.
 /// Version of the native task descriptor and its execution semantics.
-pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 1;
+pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 2;
 
 const CODE_STAGING_BYTES: usize = 16 * 1024 * 1024;
 const INDEX_READ_ROWS: usize = 8192;
-const VECTOR_BATCH_ROWS: usize = 1024;
+const VECTOR_BATCH_ROWS: usize = 8192;
+const VECTOR_BATCH_BYTES: usize = 16 * 1024 * 1024;
+const MIN_VECTOR_BATCH_ROWS: usize = 32;
+const ANCHOR_BLOCK_ROWS: usize = 32;
+const SCORING_CONCURRENCY: usize = 4;
 const MAX_COORDINATE_BYTES: usize = 8;
+const STAGED_ROW_OVERHEAD_BYTES: usize = 64;
 const PAIR_ROW_BYTES: usize = 20;
 
 /// Configuration belongs to one immutable source snapshot. Threshold uses
@@ -431,9 +436,9 @@ impl ExecutionPlan for DuplicatePairsExec {
         let output_rows = MetricBuilder::new(&self.metrics).counter("output_rows", partition);
         let completed =
             MetricBuilder::new(&self.metrics).counter("completed_partitions", partition);
-        // Admission estimate for the released Lance kernel: compact-code staging,
-        // one 8192-row read and two decoded 1024-row batches. This reservation
-        // limits concurrent kernels; Lance still owns its bounded buffers/spill.
+        // Beta.14 stages native codes and scores bounded tiles concurrently.
+        // Keep the host staging budget explicit rather than inheriting Lance's
+        // larger default or multiplying CPU-pool concurrency across PE tasks.
         let dimension = match dataset
             .schema()
             .field(&config.column)
@@ -442,9 +447,16 @@ impl ExecutionPlan for DuplicatePairsExec {
             Some(DataType::FixedSizeList(_, dimension)) if dimension > 0 => dimension as usize,
             _ => return plan_err!("duplicate pairs requires a fixed-size vector column"),
         };
-        let budget = CODE_STAGING_BYTES
-            + (INDEX_READ_ROWS + 2 * VECTOR_BATCH_ROWS) * dimension * MAX_COORDINATE_BYTES
-            + VECTOR_BATCH_ROWS * PAIR_ROW_BYTES;
+        let batch_bytes = VECTOR_BATCH_BYTES.max(
+            MIN_VECTOR_BATCH_ROWS * (dimension * MAX_COORDINATE_BYTES + STAGED_ROW_OVERHEAD_BYTES),
+        );
+        // Allow staging/preparation overlap, at least three live spill batches,
+        // source input, and in-flight output plus the batch being encoded.
+        // Quantizer models and caches remain outside this admission estimate.
+        let budget = 2 * CODE_STAGING_BYTES
+            + 3 * batch_bytes
+            + INDEX_READ_ROWS * (dimension * MAX_COORDINATE_BYTES + STAGED_ROW_OVERHEAD_BYTES)
+            + (SCORING_CONCURRENCY + 1) * ANCHOR_BLOCK_ROWS * VECTOR_BATCH_ROWS * PAIR_ROW_BYTES;
         let reservation =
             datafusion_execution::memory_pool::MemoryConsumer::new("DuplicatePairsExec")
                 .register(context.memory_pool());
@@ -461,12 +473,15 @@ impl ExecutionPlan for DuplicatePairsExec {
                 let output_rows = output_rows.clone();
                 let completed = completed.clone();
                 async move {
-                    let reader = lance::index::vector::dedup::find_duplicate_pairs_in_partition(
+                    let reader = lance::index::vector::dedup::find_duplicate_pairs_in_partition_with_options(
                         dataset,
                         &config.column,
                         task.segment_id,
                         task.partition_id,
                         config.distance_threshold,
+                        lance::index::vector::dedup::DuplicatePairsOptions::default()
+                            .with_memory_limit(CODE_STAGING_BYTES)
+                            .with_max_concurrency(SCORING_CONCURRENCY),
                     )
                     .await?;
                     let measured = stream::try_unfold(
