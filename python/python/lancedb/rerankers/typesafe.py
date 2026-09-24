@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
-import math
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from itertools import chain
+from typing import Any, Dict, List, Mapping, Optional
 
 import pyarrow as pa
 
@@ -133,14 +133,13 @@ class TypeSafeReranker(Reranker):
             question["criteria"] = self.criteria
         return question
 
-    def _score_batch(self, query: str, documents: List[Tuple[int, str]]) -> List[float]:
+    def _score_batch(self, query: str, documents: List[str]) -> List[float]:
         if self.batch_size == 1:
-            state = {"query": query, "document": documents[0][1]}
+            state = {"query": query, "document": documents[0]}
             questions = {_QUESTION_ID: self._question}
         else:
             state = {"query": query}
-            # IDs encode positions, not document text: duplicate documents are
-            # independent candidates, and answer order need not match input order.
+            # IDs only need to be unique within this request, even for duplicates.
             questions = {
                 str(index): {
                     **self._question,
@@ -149,18 +148,20 @@ class TypeSafeReranker(Reranker):
                         "document": document,
                     },
                 }
-                for index, document in documents
+                for index, document in enumerate(documents)
             }
         response = self._client.system_one(
             state=state,
             questions=questions,
             model=self.model_name,
         )
-        if set(response.answers) != set(questions):
+        expected = set(questions)
+        actual = set(response.answers)
+        if actual != expected:
             raise ValueError(
                 "TypeSafe returned mismatched answer IDs: "
-                f"missing {sorted(set(questions) - set(response.answers))}, "
-                f"unexpected {sorted(set(response.answers) - set(questions))}"
+                f"missing {sorted(expected - actual)}, "
+                f"unexpected {sorted(actual - expected)}"
             )
         scores = []
         for question_id in questions:
@@ -169,7 +170,6 @@ class TypeSafeReranker(Reranker):
                 isinstance(score, bool)
                 or not isinstance(score, (int, float))
                 or not 0 <= score <= 1
-                or not math.isfinite(score)
             ):
                 raise ValueError(
                     "TypeSafe returned an invalid relevance probability "
@@ -183,24 +183,20 @@ class TypeSafeReranker(Reranker):
         if len(result_set) == 0:
             return result_set
         docs = result_set[self.column].to_pylist()
-        documents = [(index, doc) for index, doc in enumerate(docs) if doc is not None]
+        documents = [doc for doc in docs if doc is not None]
         batches = [
             documents[start : start + self.batch_size]
             for start in range(0, len(documents), self.batch_size)
         ]
-        scores = [0.0] * len(docs)
         # Rerankers are also called synchronously from inside the async query
         # APIs, so the requests run on threads rather than on an event loop.
-        if batches:
-            with ThreadPoolExecutor(
-                max_workers=min(self.max_concurrency, len(batches))
-            ) as pool:
-                batch_scores = pool.map(
-                    lambda batch: self._score_batch(query, batch), batches
-                )
-                for batch, values in zip(batches, batch_scores):
-                    for (index, _), value in zip(batch, values):
-                        scores[index] = value
+        with ThreadPoolExecutor(max_workers=self.max_concurrency) as pool:
+            batch_scores = pool.map(
+                lambda batch: self._score_batch(query, batch), batches
+            )
+            # Both map and _score_batch preserve input order.
+            scored_documents = chain.from_iterable(batch_scores)
+            scores = [0.0 if doc is None else next(scored_documents) for doc in docs]
         result_set = result_set.append_column(
             "_relevance_score", pa.array(scores, type=pa.float32())
         )

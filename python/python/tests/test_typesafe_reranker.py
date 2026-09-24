@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -83,9 +83,9 @@ def test_payload_isolation_and_custom_prompts(batch_size, criteria):
             expected_instructions = instructions
         else:
             assert state == {"query": "shared query"}
-        for key, question in questions.items():
+        for question in questions.values():
             if batch_size > 1:
-                doc = docs[int(key)]
+                doc = question["instructions"]["document"]
                 expected_instructions = {"question": instructions, "document": doc}
             expected = {"type": "noul", "instructions": expected_instructions}
             if criteria:
@@ -115,15 +115,29 @@ def test_default_payload():
 
 
 def test_response_mapping_with_duplicates_and_nulls():
-    reranker = fake_reranker(batch_size=2, return_score="all")
+    reranker = fake_reranker(batch_size=2, max_concurrency=2, return_score="all")
+    second_batch_scored = Event()
 
     def score(**kw):
-        return SimpleNamespace(
+        questions = kw["questions"]
+        documents = [
+            question["instructions"]["document"] for question in questions.values()
+        ]
+        if documents == ["same", "same"]:
+            # Prepare the later batch first; result order must still match input.
+            assert second_batch_scored.wait(timeout=10)
+            scores = [0.0, 0.5]
+        else:
+            assert documents == ["different", "same"]
+            scores = [0.75, 1.0]
+        result = SimpleNamespace(
             answers={
-                key: SimpleNamespace(noul=int(key) / 4)
-                for key in reversed(kw["questions"])
+                key: SimpleNamespace(noul=value)
+                for key, value in reversed(list(zip(questions, scores)))
             }
         )
+        second_batch_scored.set()
+        return result
 
     reranker._client.system_one.side_effect = score
     result = reranker.rerank_vector(

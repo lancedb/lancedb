@@ -21,7 +21,13 @@ with `jev-1.13.0`, SDK 0.7.1, and concurrency 32 in both modes. Candidate IDs,
 probabilities, resolved models, and request counts were checked for every record.
 All three 80-candidate queries made exactly two batched calls. Live vector, FTS,
 hybrid, empty-FTS, and multivector integration checks also passed in both modes.
-No implementation changes were needed.
+No correctness fixes were needed.
+
+The subsequent batch-ordering simplification passed all 124 automated tests and
+a fresh four-query live check (original query indices 0, 1, 2, and 8; 292 candidate
+pairs). Unbatched/batched calls were 292/8, including exactly two calls for the
+80-candidate case. The 100-query measurements below are from the initial
+implementation, identified by commit and source hash in the linked report.
 
 | Batch size | Subset SDK calls | Median | p95 |
 | --- | ---: | ---: | ---: |
