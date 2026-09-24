@@ -11,6 +11,7 @@ import json
 import subprocess
 import sys
 import textwrap
+import warnings
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -299,9 +300,11 @@ def test_code_rejects_submodules_duplicates_and_non_modules(helper_package):
                 return value
 
 
-def test_local_module_outside_code_is_rejected_at_registration(
-    tmp_path, helper_package
-):
+def test_local_module_outside_code_warns_at_registration(tmp_path, helper_package):
+    """The worker most likely cannot import a local module that is neither
+    shipped nor declared, but registration still succeeds: a declared
+    distribution may install it under another name, and callers may rewrite
+    the packaged source before registering it."""
     helper_package(
         "fx_local", {"__init__.py": "def normalize(value):\n    return value\n"}
     )
@@ -322,11 +325,14 @@ def test_local_module_outside_code_is_rejected_at_registration(
         )
         return getattr(importlib.import_module(name), name)
 
-    with pytest.raises(ValueError, match=r"local module.*code=\[fx_local\]"):
-        define("fx_uses_local", "")
+    with pytest.warns(UserWarning, match=r"local module.*code=\[fx_local\]"):
+        local = define("fx_uses_local", "")
+    assert "from fx_local import normalize" in artifact(local).decode()
 
     # A declared package that provides the module is trusted to install it.
-    installed = define("fx_uses_installed", "pip=['fx-local==1.0']")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        installed = define("fx_uses_installed", "pip=['fx-local==1.0']")
     assert "from fx_local import normalize" in artifact(installed).decode()
 
 
