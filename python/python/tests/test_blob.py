@@ -74,15 +74,19 @@ def _assert_missing_blob_row_ids(exc_info):
 
 
 def _assert_fetch_apis_reject_missing_row_ids(table, row_ids):
+    expected = f"first missing row ids: [{row_ids[0]}]"
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blobs("image", row_ids)
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_files("image", row_ids)
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_ranges("image", [(row_id, 0, 1) for row_id in row_ids])
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
 
 
 def test_blob_factory_declares_v2_field():

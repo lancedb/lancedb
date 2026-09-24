@@ -1937,6 +1937,8 @@ class Table(ABC):
         ``row_ids`` may be a list, an integer Arrow array or chunked array,
         or a query table with row ids. ``_rowid`` values stay valid after
         compaction when the table has stable row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        results are returned.
 
         Convenience for small payloads. For large values use
         :meth:`fetch_blob_files`.
@@ -1958,6 +1960,8 @@ class Table(ABC):
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``. This
         API is currently supported only by local tables.
@@ -1979,6 +1983,8 @@ class Table(ABC):
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        handles are returned.
         """
 
     @abstractmethod

@@ -510,11 +510,14 @@ fn assert_missing_blob_row_ids(err: &Error) {
 }
 
 async fn assert_fetch_apis_reject_missing_row_ids(table: &Table, row_ids: &[u64]) -> Result<()> {
+    let expected = format!("first missing row ids: [{}]", row_ids[0]);
     let err = table.fetch_blobs("image", row_ids).await.unwrap_err();
     assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
 
     let err = table.fetch_blob_files("image", row_ids).await.unwrap_err();
     assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
 
     let err = table
         .fetch_blob_ranges(
@@ -527,6 +530,7 @@ async fn assert_fetch_apis_reject_missing_row_ids(table: &Table, row_ids: &[u64]
         .await
         .unwrap_err();
     assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
     Ok(())
 }
 
@@ -803,6 +807,18 @@ async fn fetch_blob_apis_reject_row_past_fragment_end() -> Result<()> {
 
     assert_fetch_apis_reject_missing_row_ids(&table, &[3]).await?;
     assert_fetch_apis_reject_missing_row_ids(&table, &[3, 0]).await
+}
+
+#[tokio::test]
+async fn fetch_blobs_identifies_multiple_missing_ids_without_partial_results() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"a"), Some(b"b")]).await?;
+
+    let err = table.fetch_blobs("image", &[0, 2, 3]).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains("first missing row ids: [2, 3]"));
+    Ok(())
 }
 
 #[tokio::test]
