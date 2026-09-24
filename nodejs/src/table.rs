@@ -74,13 +74,14 @@ impl Table {
 
     #[napi(
         catch_unwind,
-        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void"
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
     )]
     pub async fn add(
         &self,
         buf: Buffer,
         mode: String,
         progress_callback: Option<ProgressFn>,
+        allow_external_blob_outside_bases: Option<bool>,
     ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -104,6 +105,9 @@ impl Table {
         } else {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
+
+        op = op
+            .allow_external_blob_outside_bases(allow_external_blob_outside_bases.unwrap_or(false));
 
         if let Some(tsfn) = progress_callback {
             op = op.progress(move |p| {
