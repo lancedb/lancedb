@@ -823,6 +823,28 @@ abstract openTable(
 
 ***
 
+### pauseJob()
+
+```ts
+abstract pauseJob(jobId): Promise<string>
+```
+
+Pause a server-side job by id.
+
+The job's workers drain and it stays parked until resumed. Resolves to
+"pausing", "already_paused", or "committing" -- a job finalizing its
+results cannot be parked; retry shortly.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+***
+
 ### renameTable()
 
 ```ts
@@ -853,6 +875,28 @@ a "not supported" error.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### resumeJob()
+
+```ts
+abstract resumeJob(jobId): Promise<string>
+```
+
+Resume a paused server-side job by id.
+
+Its workers pick their work back up from checkpoints. Resolves to
+"resumed", "still_pausing" -- the pause's worker drain is not confirmed
+yet; retry shortly -- or "not_paused".
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
 
 ***
 
