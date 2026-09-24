@@ -110,23 +110,32 @@ pub(super) fn refresh_lock(uri: &str) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
-/// Internal implementation of the refresh logic.
-pub(crate) async fn execute_refresh(
-    view: &Table,
-    full: bool,
-    pinned: Option<u64>,
-    expected_incarnation: Option<&str>,
-) -> Result<RefreshMaterializedViewResult> {
-    let view_native = view.as_native().ok_or_else(|| Error::NotSupported {
+/// A view that passed [`check_view`]: its latest state, definition and staging.
+struct CheckedView {
+    view_ds: Dataset,
+    definition: MaterializedViewDefinition,
+    staging: Option<super::StagingBinding>,
+}
+
+/// `view`'s native table, refused if the handle is read-only.
+fn writable_native(view: &Table) -> Result<&NativeTable> {
+    let native = view.as_native().ok_or_else(|| Error::NotSupported {
         message: "materialized views are supported only on local tables".into(),
     })?;
-    view_native.dataset.ensure_mutable()?;
-    let lock = refresh_lock(view_native.dataset.get().await?.uri());
-    let _guard = lock.lock().await;
-    // Force-load the latest view state under the lock: each handle caches
-    // lazily, and a second handle would otherwise plan from a snapshot taken
-    // before another handle's commit -- appending the same rows again or
-    // reporting NoOp over a mutated view.
+    native.dataset.ensure_mutable()?;
+    Ok(native)
+}
+
+/// Every check on the view itself that refresh makes before writing.
+async fn check_view(
+    view: &Table,
+    view_native: &NativeTable,
+    expected_incarnation: Option<&str>,
+) -> Result<CheckedView> {
+    // Force-load the latest view state: each handle caches lazily, and a
+    // second handle would otherwise plan from a snapshot taken before another
+    // handle's commit -- appending the same rows again or reporting NoOp over
+    // a mutated view.
     view_native.dataset.reload().await?;
     let view_ds = view_native.dataset.get().await?.as_ref().clone();
 
@@ -151,9 +160,31 @@ pub(crate) async fn execute_refresh(
             });
         }
     };
-    let definition = &definition;
     let staging = super::read_staging(&view_ds.schema().metadata)?;
     ensure_no_mem_wal(&view_ds, "materialized view", view.name()).await?;
+    Ok(CheckedView {
+        view_ds,
+        definition,
+        staging,
+    })
+}
+
+/// Internal implementation of the refresh logic.
+pub(crate) async fn execute_refresh(
+    view: &Table,
+    full: bool,
+    pinned: Option<u64>,
+    expected_incarnation: Option<&str>,
+) -> Result<RefreshMaterializedViewResult> {
+    let view_native = writable_native(view)?;
+    let lock = refresh_lock(view_native.dataset.get().await?.uri());
+    let _guard = lock.lock().await;
+    let CheckedView {
+        view_ds,
+        definition,
+        staging,
+    } = check_view(view, view_native, expected_incarnation).await?;
+    let definition = &definition;
 
     let source_ds = open_source(view, definition, staging.as_ref()).await?;
     let source_ds = match pinned {
@@ -704,18 +735,8 @@ pub(crate) async fn execute_cascade(
     pinned: Option<u64>,
     expected_incarnation: Option<&str>,
 ) -> Result<RefreshMaterializedViewResult> {
+    check_view(view, writable_native(view)?, expected_incarnation).await?;
     let (incarnation, hops) = upstream_views(view).await?;
-    if let Some(expected) = expected_incarnation
-        && incarnation.as_deref() != Some(expected)
-    {
-        return Err(Error::Runtime {
-            message: format!(
-                "materialized view '{}' is not the incarnation this refresh was \
-                 requested for: it was dropped and recreated",
-                view.name()
-            ),
-        });
-    }
     let mut settled = None;
     for (hop, incarnation) in &hops {
         settled = Some(
@@ -724,11 +745,12 @@ pub(crate) async fn execute_cascade(
                 .version,
         );
     }
-    execute_refresh(view, full, pinned.or(settled), incarnation.as_deref()).await
+    let expected = expected_incarnation.or(incarnation.as_deref());
+    execute_refresh(view, full, pinned.or(settled), expected).await
 }
 
-/// `view`'s incarnation and its upstream views, furthest first, each with the
-/// incarnation read in the same metadata read that yielded its lineage.
+/// `view`'s incarnation and the upstream views refresh reads through,
+/// furthest first, each with the incarnation read alongside its lineage.
 async fn upstream_views(view: &Table) -> Result<(Option<String>, Vec<(Table, Option<String>)>)> {
     let database = view.database_opt().ok_or_else(|| Error::InvalidInput {
         message: "the view was not opened through a database connection".into(),
@@ -780,7 +802,11 @@ async fn upstream_views(view: &Table) -> Result<(Option<String>, Vec<(Table, Opt
         } else {
             hops.push((table, incarnation));
         }
-        key = (definition.source_namespace, definition.source_table);
+        // The next hop is the table refresh scans; see `open_source`.
+        key = match super::read_staging(&metadata)? {
+            Some(staging) => (staging.namespace, staging.table),
+            None => (definition.source_namespace, definition.source_table),
+        };
     }
     hops.reverse();
     Ok((named_incarnation, hops))
