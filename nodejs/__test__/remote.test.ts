@@ -161,6 +161,37 @@ describe("remote connection", () => {
     );
   });
 
+  it("reports the cleanup job when a view drop is accepted", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res
+          .writeHead(202, { "content-type": "application/json" })
+          .end('{"job_id": "j1-do-abc"}');
+      },
+      async (db) => {
+        const job = await db.dropViewAsync("adults");
+        expect(job.id).toBe("j1-do-abc");
+      },
+    );
+  });
+
+  it("reports a finished job when a view drop had nothing to delete", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+      },
+      async (db) => {
+        // A 200 means the name was not bound, so there is no cleanup to wait on.
+        const job = await db.dropViewAsync("adults");
+        expect(job.id).toBeNull();
+        await job.wait();
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",

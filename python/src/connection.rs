@@ -936,6 +936,23 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_view_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_view_async(name, &namespace_path)
+                .await
+                .infer_error()
+                .map(crate::job::Job::new)
+        })
+    }
+
     #[pyo3(signature = (namespace_path=None))]
     pub fn list_views(
         self_: PyRef<'_, Self>,

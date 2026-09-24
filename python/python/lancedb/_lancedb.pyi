@@ -180,6 +180,9 @@ class Connection(object):
     async def drop_view(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
+    async def drop_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job: ...
     async def list_views(
         self, namespace_path: Optional[List[str]] = None
     ) -> List[str]: ...

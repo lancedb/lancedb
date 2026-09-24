@@ -404,11 +404,21 @@ export abstract class Connection {
   ): Promise<ViewDescription>;
 
   /**
-   * Drop the view named `name`.
+   * Drop the view named `name` and wait for its definition to be deleted.
    *
-   * The tables it reads are untouched: a view holds no rows of its own.
+   * The tables it reads are untouched: a view holds no rows of its own. Use
+   * {@link dropViewAsync} to retain the cleanup job instead of waiting on it.
    */
   abstract dropView(name: string, namespacePath?: string[]): Promise<void>;
+
+  /**
+   * Start dropping the view named `name` and return the job deleting its
+   * definition, without waiting for completion.
+   *
+   * The name is free before this resolves. When nothing was bound to it, the
+   * returned job is already finished and has no id.
+   */
+  abstract dropViewAsync(name: string, namespacePath?: string[]): Promise<Job>;
 
   /**
    * The names of the views in one namespace.
@@ -757,6 +767,10 @@ export class LocalConnection extends Connection {
 
   async dropView(name: string, namespacePath?: string[]): Promise<void> {
     return this.inner.dropView(name, namespacePath ?? []);
+  }
+
+  async dropViewAsync(name: string, namespacePath?: string[]): Promise<Job> {
+    return new Job(await this.inner.dropViewAsync(name, namespacePath ?? []));
   }
 
   async listViews(namespacePath?: string[]): Promise<string[]> {
