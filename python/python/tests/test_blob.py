@@ -922,6 +922,70 @@ def test_fetch_blob_files_lazy_read():
     handles = table.fetch_blob_files("image", [by_id[1]])
     assert len(handles) == 1
     assert handles[0].read() == payload
+    handles[0].close()
+    assert handles[0].closed
+    with pytest.raises(RuntimeError, match="already closed"):
+        handles[0].read()
+
+
+def test_blob_file_finalizer_and_close_on_runtime_worker():
+    # A tokio panic in IOBase.__del__ is printed but does not fail the add call.
+    # Run in a child process so the assertion catches that panic on stderr.
+    script = textwrap.dedent(
+        """\
+        import gc
+        import threading
+
+        import lancedb
+        import pyarrow as pa
+
+        db = lancedb.connect("memory:///")
+        schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+        table = db.create_table("finalize", schema=schema)
+        table.add([{"id": 1, "image": b"first"}])
+        hits = table.search().with_row_id(True).limit(1).to_arrow()
+        row_id = hits["_rowid"][0].as_py()
+        gc_handle, explicit_handle = table.fetch_blob_files("image", [row_id, row_id])
+
+        gc.disable()
+        cycle = [gc_handle]
+        cycle.append(cycle)
+        del gc_handle, cycle
+
+        observed = []
+        def on_progress(_):
+            if not observed:
+                observed.append((
+                    threading.current_thread() is not threading.main_thread(),
+                    explicit_handle.closed,
+                    gc.collect(),
+                ))
+                explicit_handle.close()
+
+        table.add([{"id": 2, "image": b"second"}], progress=on_progress)
+        gc.enable()
+
+        assert len(observed) == 1, observed
+        assert observed[0][0] is True, observed
+        assert observed[0][1] is False, observed
+        assert observed[0][2] > 0, observed
+        assert explicit_handle.closed
+        explicit_handle.close()  # Close remains idempotent after the worker call.
+        try:
+            explicit_handle.read()
+        except RuntimeError as error:
+            assert "already closed" in str(error)
+        else:
+            raise AssertionError("a closed blob file was readable")
+        print("worker close completed")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Cannot start a runtime from within a runtime" not in result.stderr
+    assert "worker close completed" in result.stdout
 
 
 def test_fetch_blob_files_null_alignment():
