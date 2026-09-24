@@ -869,11 +869,11 @@ pub struct IndexConfig {
     pub created_at: Option<DateTime<Utc>>,
     /// The number of rows indexed, across all segments.
     ///
-    /// `undefined` for remote tables.
+    /// May be `undefined` for remote tables if the server does not report it.
     pub num_indexed_rows: Option<i64>,
     /// The number of rows not yet covered by this index.
     ///
-    /// `undefined` for remote tables.
+    /// May be `undefined` for remote tables if the server does not report it.
     pub num_unindexed_rows: Option<i64>,
     /// The total size in bytes of all index files across all segments.
     ///
