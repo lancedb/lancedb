@@ -1940,6 +1940,7 @@ impl MaterializedView {
             full: false,
             source_version: None,
             expected_incarnation: None,
+            cascade: false,
         }
     }
 }
@@ -1950,6 +1951,7 @@ pub struct RefreshMaterializedViewBuilder {
     full: bool,
     source_version: Option<u64>,
     expected_incarnation: Option<String>,
+    cascade: bool,
 }
 
 impl RefreshMaterializedViewBuilder {
@@ -1979,6 +1981,13 @@ impl RefreshMaterializedViewBuilder {
         self
     }
 
+    /// Refresh every upstream view first, furthest first, each reading the
+    /// version the one before it left. [`Self::full`] applies to this view only.
+    pub fn cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+
     /// Submit the refresh and return a job that settles with its result.
     pub async fn execute_async(self) -> Result<Job<RefreshMaterializedViewResult>> {
         if self.view.table.as_native().is_none() {
@@ -1990,32 +1999,31 @@ impl RefreshMaterializedViewBuilder {
                     self.full,
                     self.source_version,
                     self.expected_incarnation.as_deref(),
+                    self.cascade,
                 )
                 .await;
         }
         Ok(Job::spawned(tokio::spawn(async move {
-            refresh::execute_refresh(
-                &self.view.table,
-                self.full,
-                self.source_version,
-                self.expected_incarnation.as_deref(),
-            )
-            .await
+            self.execute_local().await
         })))
     }
 
     /// Refresh the view, waiting for the job to finish.
     pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
         if self.view.table.as_native().is_some() {
-            return refresh::execute_refresh(
-                &self.view.table,
-                self.full,
-                self.source_version,
-                self.expected_incarnation.as_deref(),
-            )
-            .await;
+            return self.execute_local().await;
         }
         self.execute_async().await?.wait().await
+    }
+
+    async fn execute_local(&self) -> Result<RefreshMaterializedViewResult> {
+        let (table, full, pinned) = (&self.view.table, self.full, self.source_version);
+        let expected = self.expected_incarnation.as_deref();
+        if self.cascade {
+            refresh::execute_cascade(table, full, pinned, expected).await
+        } else {
+            refresh::execute_refresh(table, full, pinned, expected).await
+        }
     }
 }
 

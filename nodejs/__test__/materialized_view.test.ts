@@ -112,6 +112,23 @@ describe("materialized views", () => {
     expect((await view.refresh()).mode).toBe("no_op");
   });
 
+  it("cascades a refresh through upstream views", async () => {
+    await db.createMaterializedView("adults", "people", {
+      where: "age >= 18",
+      withNoData: true,
+    });
+    const seniors = await db.createMaterializedView("seniors", "adults", {
+      where: "age >= 65",
+      withNoData: true,
+    });
+    expect(Number((await seniors.refresh()).rowsWritten)).toBe(0);
+
+    expect(Number((await seniors.refresh({ cascade: true })).rowsWritten)).toBe(
+      1,
+    );
+    expect(await (await db.openTable("adults")).countRows()).toBe(2);
+  });
+
   it("lists views and rejects non-views", async () => {
     await db.createMaterializedView("adults", "people", {
       where: "age >= 18",

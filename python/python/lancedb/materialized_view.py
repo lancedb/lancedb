@@ -175,7 +175,11 @@ class AsyncMaterializedView:
         return _definition_from_json(raw)
 
     async def refresh(
-        self, *, full: bool = False, source_version: Optional[int] = None
+        self,
+        *,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        cascade: bool = False,
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
@@ -185,16 +189,24 @@ class AsyncMaterializedView:
         ``source_version`` refreshes to that source version instead of the
         latest.
 
+        ``cascade=True`` first refreshes every upstream view, furthest first,
+        each reading the version the one before it left; ``full`` applies to
+        this view only.
+
         Concurrent refreshes of one view do not duplicate its rows. Two that
         plan the same source rows conflict on commit, and the loser raises
         rather than writing them a second time.
         """
         return await self._table._inner.refresh_materialized_view(
-            full=full, source_version=source_version
+            full=full, source_version=source_version, cascade=cascade
         )
 
     async def refresh_async(
-        self, *, full: bool = False, source_version: Optional[int] = None
+        self,
+        *,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        cascade: bool = False,
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
@@ -206,7 +218,7 @@ class AsyncMaterializedView:
 
         return _typed_job(
             await self._table._inner.refresh_materialized_view_async(
-                full=full, source_version=source_version
+                full=full, source_version=source_version, cascade=cascade
             ),
             RefreshMaterializedViewResult.from_json,
         )
@@ -238,14 +250,26 @@ class MaterializedView:
         return LOOP.run(self._async.definition())
 
     def refresh(
-        self, *, full: bool = False, source_version: Optional[int] = None
+        self,
+        *,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        cascade: bool = False,
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source. See
         [AsyncMaterializedView.refresh][lancedb.materialized_view.AsyncMaterializedView.refresh]."""
-        return LOOP.run(self._async.refresh(full=full, source_version=source_version))
+        return LOOP.run(
+            self._async.refresh(
+                full=full, source_version=source_version, cascade=cascade
+            )
+        )
 
     def refresh_async(
-        self, *, full: bool = False, source_version: Optional[int] = None
+        self,
+        *,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        cascade: bool = False,
     ) -> "Job[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
@@ -254,6 +278,8 @@ class MaterializedView:
         """
         return Job(
             LOOP.run(
-                self._async.refresh_async(full=full, source_version=source_version)
+                self._async.refresh_async(
+                    full=full, source_version=source_version, cascade=cascade
+                )
             )
         )

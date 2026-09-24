@@ -1802,18 +1802,19 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (full=false, source_version=None, cascade=false))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
         full: bool,
         source_version: Option<u64>,
+        cascade: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh().full(full).cascade(cascade);
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -1822,18 +1823,19 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (full=false, source_version=None, cascade=false))]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
         full: bool,
         source_version: Option<u64>,
+        cascade: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh().full(full).cascade(cascade);
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }

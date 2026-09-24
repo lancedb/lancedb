@@ -696,6 +696,96 @@ pub(crate) async fn ensure_no_mem_wal(dataset: &Dataset, role: &str, name: &str)
     Ok(())
 }
 
+/// Refresh every upstream view of `view` furthest first, each reading the
+/// version the previous one left, then `view` itself. `full` is `view`'s only.
+pub(crate) async fn execute_cascade(
+    view: &Table,
+    full: bool,
+    pinned: Option<u64>,
+    expected_incarnation: Option<&str>,
+) -> Result<RefreshMaterializedViewResult> {
+    let (incarnation, hops) = upstream_views(view).await?;
+    if let Some(expected) = expected_incarnation
+        && incarnation.as_deref() != Some(expected)
+    {
+        return Err(Error::Runtime {
+            message: format!(
+                "materialized view '{}' is not the incarnation this refresh was \
+                 requested for: it was dropped and recreated",
+                view.name()
+            ),
+        });
+    }
+    let mut settled = None;
+    for (hop, incarnation) in &hops {
+        settled = Some(
+            execute_refresh(hop, false, settled, incarnation.as_deref())
+                .await?
+                .version,
+        );
+    }
+    execute_refresh(view, full, pinned.or(settled), incarnation.as_deref()).await
+}
+
+/// `view`'s incarnation and its upstream views, furthest first, each with the
+/// incarnation read in the same metadata read that yielded its lineage.
+async fn upstream_views(view: &Table) -> Result<(Option<String>, Vec<(Table, Option<String>)>)> {
+    let database = view.database_opt().ok_or_else(|| Error::InvalidInput {
+        message: "the view was not opened through a database connection".into(),
+    })?;
+    let open = |namespace_path: Vec<String>, name: String| {
+        database.open_table(OpenTableRequest {
+            name,
+            namespace_path,
+            index_cache_size: None,
+            lance_read_params: None,
+            location: None,
+            namespace_client: None,
+            managed_versioning: None,
+        })
+    };
+    let mut key = (view.namespace().to_vec(), view.name().to_string());
+    let mut visited = HashSet::new();
+    let mut named_incarnation = None;
+    let mut hops = Vec::new();
+    loop {
+        if !visited.insert(key.clone()) {
+            return Err(Error::InvalidInput {
+                message: format!("materialized view lineage of '{}' is cyclic", view.name()),
+            });
+        }
+        let table = Table::new(open(key.0.clone(), key.1.clone()).await?, database.clone());
+        let metadata = table.schema().await?.metadata().clone();
+        let definition = match super::read_definition(&metadata)? {
+            Some(super::StoredDefinition::Query(definition)) => definition,
+            Some(super::StoredDefinition::Newer { format }) => {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "materialized view '{}' is stored in format {format}, which this \
+                         version of lancedb cannot refresh",
+                        table.name()
+                    ),
+                });
+            }
+            None if visited.len() == 1 => {
+                return Err(Error::NotAMaterializedView {
+                    name: view.name().to_string(),
+                });
+            }
+            None => break,
+        };
+        let incarnation = metadata.get(INCARNATION_META_KEY).cloned();
+        if visited.len() == 1 {
+            named_incarnation = incarnation;
+        } else {
+            hops.push((table, incarnation));
+        }
+        key = (definition.source_namespace, definition.source_table);
+    }
+    hops.reverse();
+    Ok((named_incarnation, hops))
+}
+
 /// The table refresh scans: the staging table when the query calls a
 /// Function in FROM position, otherwise the query's source.
 pub(super) async fn open_source(
@@ -3441,6 +3531,77 @@ pub(crate) mod tests {
         let result = second.refresh().execute().await.unwrap();
         assert_eq!(result.mode, RefreshMode::Incremental);
         assert_eq!(read(second.table(), "twice").await, vec![60, 100]);
+    }
+
+    async fn view_over_doubled(conn: &Connection) -> MaterializedView {
+        conn.create_materialized_view("second", "doubled")
+            .with_no_data(true)
+            .only_if("twice > 10")
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_cascade_refreshes_upstream_views_first() {
+        let (conn, source) = db_with_source(vec![1, 30]).await;
+        let first = doubled_view(&conn).await;
+        let second = view_over_doubled(&conn).await;
+
+        second.refresh().execute().await.unwrap();
+        assert_eq!(read(second.table(), "twice").await, Vec::<i32>::new());
+
+        let result = second
+            .refresh()
+            .cascade(true)
+            .full(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        let doubled = conn.open_table("doubled").execute().await.unwrap();
+        assert_eq!(read(&doubled, "twice").await, vec![2, 60]);
+        assert_eq!(read(second.table(), "twice").await, vec![60]);
+
+        append(&source, vec![50]).await;
+        let job = second
+            .refresh()
+            .cascade(true)
+            .execute_async()
+            .await
+            .unwrap();
+        assert_eq!(job.wait().await.unwrap().mode, RefreshMode::Incremental);
+        assert_eq!(read(second.table(), "twice").await, vec![60, 100]);
+        assert_eq!(
+            first.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cascade_checks_the_incarnation_before_any_hop() {
+        let (conn, _) = db_with_source(vec![1, 30]).await;
+        doubled_view(&conn).await;
+        let second = view_over_doubled(&conn).await;
+
+        let err = second
+            .refresh()
+            .cascade(true)
+            .expect_incarnation("stale")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("dropped and recreated"), "{err}");
+        let doubled = conn.open_table("doubled").execute().await.unwrap();
+        assert_eq!(read(&doubled, "twice").await, Vec::<i32>::new());
+    }
+
+    #[tokio::test]
+    async fn test_cascade_over_a_plain_table_is_a_refresh() {
+        let (conn, _) = db_with_source(vec![1, 2]).await;
+        let view = doubled_view(&conn).await;
+        view.refresh().cascade(true).execute().await.unwrap();
+        assert_eq!(read(view.table(), "twice").await, vec![2, 4]);
     }
 
     /// The watermark speaks only for the state a refresh left behind: a

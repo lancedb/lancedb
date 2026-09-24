@@ -190,7 +190,9 @@ export class MaterializedView {
    * The refresh is incremental when the source's changes can be reconciled
    * into the view -- rows added, changed or removed since the last one --
    * and otherwise rebuilds. `full` forces a rebuild; `sourceVersion`
-   * refreshes to that source version instead of the latest.
+   * refreshes to that source version instead of the latest. `cascade` first
+   * refreshes every upstream view, furthest first, each reading the version
+   * the one before it left; `full` applies to this view only.
    *
    * Concurrent refreshes of one view do not duplicate its rows. Two that
    * plan the same source rows conflict on commit, and the loser throws
@@ -199,11 +201,13 @@ export class MaterializedView {
   async refresh(options?: {
     full?: boolean;
     sourceVersion?: number;
+    cascade?: boolean;
   }): Promise<RefreshMaterializedViewResult> {
     validateNonNegativeInteger(options?.sourceVersion, "sourceVersion");
     return await this.inner.refreshMaterializedView(
       options?.full,
       options?.sourceVersion,
+      options?.cascade,
     );
   }
 }

@@ -670,6 +670,7 @@ export abstract class Table {
   abstract refreshMaterializedView(
     full?: boolean,
     sourceVersion?: number,
+    cascade?: boolean,
   ): Promise<RefreshMaterializedViewResult>;
 
   /** @ignore */
@@ -1397,8 +1398,13 @@ export class LocalTable extends Table {
   async refreshMaterializedView(
     full?: boolean,
     sourceVersion?: number,
+    cascade?: boolean,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(full, sourceVersion);
+    return await this.inner.refreshMaterializedView(
+      full,
+      sourceVersion,
+      cascade,
+    );
   }
 
   async materializedViewDefinition(): Promise<string> {

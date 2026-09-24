@@ -211,6 +211,25 @@ def test_create_and_refresh_jobs(tmp_path):
     assert "adults" not in db.list_materialized_views()
 
 
+def test_cascade_refreshes_upstream_views(tmp_path):
+    db = make_db(tmp_path)
+    adults = db.create_materialized_view(
+        "adults", "people", where="age >= 18", with_no_data=True
+    )
+    seniors = db.create_materialized_view(
+        "seniors", "adults", where="age >= 65", with_no_data=True
+    )
+    assert seniors.refresh().rows_written == 0
+
+    assert seniors.refresh(cascade=True).rows_written == 1
+    assert db.open_table("adults").count_rows() == 2
+
+    db.open_table("people").add([{"name": "alan", "age": 90}])
+    assert seniors.refresh_async(cascade=True).wait().mode == "incremental"
+    assert seniors.table.count_rows() == 2
+    assert adults.refresh().mode == "no_op"
+
+
 def test_definition_round_trips(tmp_path):
     db = make_db(tmp_path)
     db.create_materialized_view("adults", "people", where="age >= 18")

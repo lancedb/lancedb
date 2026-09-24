@@ -458,11 +458,15 @@ impl Table {
         &self,
         full: Option<bool>,
         source_version: Option<i64>,
+        cascade: Option<bool>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
             .default_error()?;
-        let mut builder = view.refresh().full(full.unwrap_or(false));
+        let mut builder = view
+            .refresh()
+            .full(full.unwrap_or(false))
+            .cascade(cascade.unwrap_or(false));
         if let Some(version) = source_version {
             let version = u64::try_from(version).map_err(|_| {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")

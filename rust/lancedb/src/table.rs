@@ -582,6 +582,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _full: bool,
         _source_version: Option<u64>,
         _expected_incarnation: Option<&str>,
+        _cascade: bool,
     ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
         Err(Error::NotSupported {
             message: "remote materialized-view refresh is not supported on this table type".into(),
