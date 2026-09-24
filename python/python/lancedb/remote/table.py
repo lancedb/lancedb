@@ -1036,6 +1036,7 @@ class RemoteTable(Table):
         """Read the installed LsmWriteSpec, or ``None``."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
+    # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
         # `self._table` is the async table, which owns the Rust handle.
         return self._table._hybrid_pk_fusion_learned()

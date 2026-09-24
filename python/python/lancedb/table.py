@@ -2646,6 +2646,7 @@ class Table(ABC):
         to check if the table is already using the new path style.
         """
 
+    # WAL-PK-FUSION: delete both hooks, here and on AsyncTable and RemoteTable.
     def _hybrid_pk_fusion_learned(self) -> bool:
         """Whether a hybrid query here has already been refused ``_rowid``.
 
@@ -5304,6 +5305,7 @@ class AsyncTable:
         """
         return await self._inner.get_lsm_write_spec()
 
+    # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
         """See [`Table._hybrid_pk_fusion_learned`][lancedb.table.Table]."""
         return self._inner.hybrid_pk_fusion_learned()

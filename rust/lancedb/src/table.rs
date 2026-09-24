@@ -80,7 +80,7 @@ pub mod freshness;
 pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
-pub(crate) mod primary_key;
+mod primary_key;
 pub mod query;
 pub mod refresh;
 pub mod schema_evolution;
@@ -708,6 +708,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
     /// Whether a hybrid query on this table has already been told it cannot
     /// join its legs on `_rowid`.
+    ///
+    /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
     ///
     /// Learned, never probed: hybrid optimistically asks for `_rowid` and only
     /// a MemWAL table refuses, so paying a round trip up front would tax every

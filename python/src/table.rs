@@ -1605,6 +1605,8 @@ impl Table {
 
     /// Whether a hybrid query on this table has already been refused `_rowid`.
     /// Learned from a previous refusal, never probed, so this is free.
+    ///
+    /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
     pub fn hybrid_pk_fusion_learned(self_: PyRef<'_, Self>) -> PyResult<bool> {
         Ok(self_.inner_ref()?.base_table().hybrid_pk_fusion_learned())
     }

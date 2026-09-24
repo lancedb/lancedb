@@ -41,6 +41,7 @@ from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .schema import is_blob_like_field, schema_has_blob_field
 from .util import flatten_columns
+from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
     FetchBlobsAsync,
@@ -2175,126 +2176,6 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("Reranking is not yet supported.")
 
 
-# Lance records the unenforced primary key as field metadata, which survives the
-# `describe` round trip — so a remote table can resolve the key without opening
-# the dataset. Keys are bytes on a pyarrow field.
-_PK_MARKER = b"lance-schema:unenforced-primary-key"
-_PK_POSITION_MARKER = b"lance-schema:unenforced-primary-key:position"
-_TRUTHY = {"1", "true", "on", "yes", "y"}
-
-
-def _pk_columns(schema: pa.Schema) -> List[str]:
-    """The unenforced primary key columns of `schema`, in key order.
-
-    Mirrors Lance's ordering: fields with an explicit 1-based position first, in
-    position order, then fields carrying only the legacy boolean marker, in
-    declaration order.
-    """
-    keyed = []
-    for index, field in enumerate(schema):
-        metadata = field.metadata or {}
-        position = metadata.get(_PK_POSITION_MARKER)
-        if position is not None:
-            try:
-                position = int(position)
-            except ValueError:
-                position = None
-        if position is None:
-            legacy = metadata.get(_PK_MARKER)
-            if legacy is None or legacy.decode().lower() not in _TRUTHY:
-                continue
-            position = 0
-        keyed.append((position == 0, position, index, field.name))
-    return [name for *_, name in sorted(keyed)]
-
-
-# Both layers raise this same sentence verbatim -- sophon's
-# `LSM_WITH_ROW_ID_UNSUPPORTED` says so explicitly, and the OSS LSM scanner
-# builds it from the same words -- so this substring survives either path and
-# the wrapping each adds. It is a coupling to a message rather than a code,
-# because the refusal arrives as a generic 400; if the server ever rewords it
-# the fallback stops firing and hybrid on a MemWAL table errors visibly again,
-# which is loud rather than silently wrong.
-_WAL_ROW_ID_REFUSAL = "does not support with_row_id"
-
-_WAL_ROW_ID_UNSUPPORTED = (
-    "hybrid search on a MemWAL table cannot return _rowid: the fresh tier has "
-    "no stable row id, and the ids the fusion joins on are synthesized from "
-    "the primary key. Set use_lsm(False) to read the base table only (results "
-    "will exclude un-compacted MemWAL data)"
-)
-
-
-def _is_wal_row_id_refusal(error: BaseException) -> bool:
-    """Whether `error` is the server declining `_rowid` because the table is
-    MemWAL-backed, as opposed to any other failure the query might hit."""
-    return _WAL_ROW_ID_REFUSAL in str(error)
-
-
-def _with_pk_columns(columns, pk_columns: List[str]):
-    """Add the key columns a projection is missing.
-
-    Returns the projection to use and the columns added, which the caller drops
-    from the output again so an injected key never reaches a caller who did not
-    select it.
-    """
-    if not columns:
-        # Every non-system column, the key among them.
-        return columns, []
-    # `PyQueryRequest.select` reports a dynamic projection as (name, sql) pairs.
-    if isinstance(columns, (list, tuple)) and isinstance(columns[0], (list, tuple)):
-        columns = dict(columns)
-    missing = [c for c in pk_columns if c not in columns]
-    if isinstance(columns, dict):
-        return {**columns, **{c: c for c in missing}}, missing
-    return list(columns) + missing, missing
-
-
-def _stamp_surrogate_row_ids(
-    tables: List[pa.Table], pk_columns: List[str]
-) -> List[pa.Table]:
-    """Give each table a `_rowid` column derived from its primary key.
-
-    The fusion only ever compares that column for equality — to deduplicate, to
-    group by in a reranker, and to restore the original scores — so on a MemWAL
-    table, where the server has no stable row id to hand out, any injective
-    mapping of the primary key does the same job. Ids are assigned in first-seen
-    order across `tables`, so passing them in fusion order (vector, then FTS)
-    preserves "first occurrence wins" and its tie break.
-
-    Writing it under the `_rowid` name is what lets every reranker, third-party
-    implementations included, run unmodified. The column never reaches the
-    caller.
-    """
-    if not pk_columns:
-        raise ValueError(
-            "hybrid search on a MemWAL table needs an unenforced primary key to "
-            "deduplicate on, and this table declares none"
-        )
-
-    ids = {}
-    stamped = []
-    for table in tables:
-        if table.num_rows == 0:
-            # Both legs empty: the combined schema carries no key column, and no
-            # row that would need one.
-            row_ids = pa.array([], type=pa.uint64())
-        else:
-            missing = [c for c in pk_columns if c not in table.column_names]
-            if missing:
-                raise ValueError(
-                    "hybrid search could not deduplicate: primary key "
-                    f"column(s) {missing} missing from a result set with "
-                    f"{table.num_rows} rows"
-                )
-            keys = zip(*(table.column(c).to_pylist() for c in pk_columns))
-            row_ids = pa.array(
-                [ids.setdefault(key, len(ids)) for key in keys], type=pa.uint64()
-            )
-        stamped.append(table.append_column("_rowid", row_ids))
-    return stamped
-
-
 class LanceHybridQueryBuilder(LanceQueryBuilder):
     """
     A query builder that performs hybrid vector and full text search.
@@ -2327,11 +2208,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._phrase_query = None
         self._lower_bound = None
         self._upper_bound = None
-        # Set by `_create_query_builders`: the key the legs are fused on when
-        # `_rowid` is unavailable, and the key columns added to the projection
-        # to make that possible.
-        self._fusion_pk = None
-        self._injected_pk = []
+        # WAL-PK-FUSION: delete both, and the `with_row_id` override below.
+        # Set by `_create_query_builders` when the legs are fused on the key.
+        self._pk_fusion: Optional[_wal_hybrid.PkFusion] = None
         # `_with_row_id` is also turned on by `rerank(return_score="all")` for
         # the reranker's own use, so it cannot answer "did the caller ask?".
         self._caller_requested_row_id = False
@@ -2356,7 +2235,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         return vector_query, text_query
 
-    def with_row_id(self, with_row_id: bool) -> Self:
+    def with_row_id(self, with_row_id: bool) -> Self:  # WAL-PK-FUSION: delete.
         """Set whether to return row ids.
 
         Recorded separately from `_with_row_id`, which `rerank(return_score=
@@ -2386,31 +2265,19 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
-        """Ask for `_rowid` first, falling back to the primary key only when the
-        server refuses, rather than paying a round trip up front to find out.
-
-        Only a MemWAL table refuses, and the refusal has to be handled anyway
-        -- a write spec installed elsewhere can arrive between any two queries.
-        It costs nothing server-side: it is raised before the query is planned.
-        """
-        try:
-            return self._run_hybrid(timeout=timeout)
-        except Exception as e:
-            if self._fusion_pk is not None or not _is_wal_row_id_refusal(e):
-                raise
-            # `return_score="all"` turns row ids on for the reranker, not the
-            # caller, so it still falls back; only a caller who asked for them
-            # is refused, and with the reason rather than a bare 400.
-            if self._caller_requested_row_id:
-                raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED) from e
-            # Learned, so later queries on this table skip straight to it.
-            self._table._note_hybrid_pk_fusion()
-            return self._run_hybrid(timeout=timeout)
+        # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
+        return _wal_hybrid.with_pk_fallback(
+            lambda: self._run_hybrid(timeout=timeout),
+            self._table,
+            fused=lambda: self._pk_fusion is not None,
+            caller_requested_row_id=self._caller_requested_row_id,
+        )
 
     def _run_hybrid(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         self._create_query_builders()
         fts_query, vector_query = self._fts_query, self._vector_query
-        if self._fusion_pk is None:
+        # WAL-PK-FUSION: without the fallback, both legs always ask for row ids.
+        if self._pk_fusion is None:
             fts_query = fts_query.with_row_id(True)
             vector_query = vector_query.with_row_id(True)
         with ThreadPoolExecutor() as executor:
@@ -2418,6 +2285,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             vector_future = executor.submit(vector_query.to_arrow, timeout=timeout)
             fts_results = fts_future.result()
             vector_results = vector_future.result()
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            vector_results, fts_results = self._pk_fusion.stamp(
+                vector_results, fts_results
+            )
 
         results = self._combine_hybrid_results(
             fts_results=fts_results,
@@ -2428,50 +2299,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             with_row_ids=True,
             offset=self._offset,
-            pk_columns=self._fusion_pk,
         )
         return self._finish_hybrid_results(results)
 
-    def _resolve_fusion_pk(self) -> Optional[List[str]]:
-        """The key columns the two legs must be fused on, or None for `_rowid`.
-
-        `_rowid` until a MemWAL table refuses it, after which the legs are
-        joined on a surrogate built from the primary key. The refusal is what
-        teaches us, rather than a round trip up front that every table would
-        pay to learn something almost none of them need.
-        """
-        # Only an unambiguous True forks to the key: a table type that answers
-        # the question loosely keeps the `_rowid` path.
-        if (
-            self._use_lsm is False
-            or self._table._hybrid_pk_fusion_learned() is not True
-        ):
-            return None
-        if self._caller_requested_row_id:
-            raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED)
-        # Not `_blob_auto_row_id_enabled`: that reports whether a row id would
-        # be added *automatically*, so it goes quiet once anything else has
-        # turned `_with_row_id` on — including `return_score="all"`. A projected
-        # blob needs a real row id to fetch through either way.
-        if blob_v2_projection_sources(self._table.schema, self._columns):
-            raise NotImplementedError(
-                "hybrid search cannot project a blob column on a MemWAL table: "
-                "fetching blobs needs a real _rowid, and the fresh tier has no "
-                "stable one. Set use_lsm(False) to read the base table only "
-                "(results will exclude un-compacted MemWAL data)"
-            )
-        return _pk_columns(self._table.schema)
-
     def _finish_hybrid_results(self, results: pa.Table) -> pa.Table:
-        if self._fusion_pk is not None:
-            # The surrogate is an internal join key, never an answer, and a
-            # caller who asked for `_rowid` was refused in `_resolve_fusion_pk`.
-            if "_rowid" in results.column_names:
-                results = results.drop(["_rowid"])
-            injected = [c for c in self._injected_pk if c in results.column_names]
-            if injected:
-                results = results.drop(injected)
-            return results
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            return self._pk_fusion.strip(results)
         if self._user_requested_row_id():
             return results
         if self._blob_auto_row_id_enabled():
@@ -2490,14 +2323,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         limit: int,
         with_row_ids: bool,
         offset: Optional[int] = None,
-        pk_columns: Optional[List[str]] = None,
     ) -> pa.Table:
-        if pk_columns is not None:
-            # Vector first: `merge_results` concatenates in that order and keeps
-            # the first occurrence, so first-seen ids preserve its tie break.
-            vector_results, fts_results = _stamp_surrogate_row_ids(
-                [vector_results, fts_results], pk_columns
-            )
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
             fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
@@ -2652,10 +2478,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._norm = normalize
         self._reranker = reranker
         if reranker.score == "all":
-            # The reranker needs the join column to carry the per-leg scores
-            # across; the caller did not ask for row ids and must not be
-            # refused on a MemWAL table because of it.
-            # Deliberately not through `with_row_id`, which records caller intent.
+            # WAL-PK-FUSION: without the fallback, `self.with_row_id(True)`.
+            # Not through `with_row_id`, which records caller intent: the
+            # reranker's need for row ids must not refuse a MemWAL table.
             self._with_row_id = True
 
         return self
@@ -2930,17 +2755,24 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             sub_query_limit = self._limit + (self._offset or 0)
             self._vector_query.limit(sub_query_limit)
             self._fts_query.limit(sub_query_limit)
-        self._fusion_pk = self._resolve_fusion_pk()
+        # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
+        self._pk_fusion = None
         columns = self._columns
-        if self._fusion_pk is not None:
-            columns, self._injected_pk = _with_pk_columns(columns, self._fusion_pk)
+        if _wal_hybrid.pk_fusion_learned(self._table, self._use_lsm):
+            self._pk_fusion = _wal_hybrid.PkFusion.for_query(
+                self._table.schema,
+                self._columns,
+                caller_requested_row_id=self._caller_requested_row_id,
+            )
+            columns = self._pk_fusion.inject(columns)
         if columns:
             self._vector_query.select(columns)
             self._fts_query.select(columns)
         if self._where:
             self._vector_query.where(self._where, not self._postfilter)
             self._fts_query.where(self._where, not self._postfilter)
-        if self._with_row_id and self._fusion_pk is None:
+        # WAL-PK-FUSION: without the fallback, `if self._with_row_id:`.
+        if self._with_row_id and self._pk_fusion is None:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
         if self._use_lsm is not None:
@@ -4081,11 +3913,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._inner = inner
         self._norm = "score"
         self._reranker = RRFReranker()
-        # Set by `_create_child_queries`: the key the legs are fused on when
-        # `_rowid` is unavailable, and the key columns added to the projection
-        # to make that possible.
-        self._fusion_pk = None
-        self._injected_pk = []
+        # WAL-PK-FUSION: delete.
+        # Set by `_create_child_queries` when the legs are fused on the key.
+        self._pk_fusion: Optional[_wal_hybrid.PkFusion] = None
 
     def rerank(
         self, reranker: Reranker = RRFReranker(), normalize: str = "score"
@@ -4117,37 +3947,6 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         return self
 
-    async def _resolve_fusion_pk(self) -> Optional[List[str]]:
-        """The key columns the two legs must be fused on, or None for `_rowid`.
-
-        `_rowid` until a MemWAL table refuses it, after which the legs are
-        joined on a surrogate built from the primary key. The refusal is what
-        teaches us, rather than a round trip up front that every table would
-        pay to learn something almost none of them need.
-        """
-        if self._table is None:
-            return None
-        if self._inner.to_query_request().use_lsm is False:
-            return None
-        # Only an unambiguous True forks to the key; see the sync resolver.
-        if self._table._hybrid_pk_fusion_learned() is not True:
-            return None
-        if self._user_requested_row_id():
-            raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED)
-        schema = await self._table.schema()
-        if blob_auto_row_id_for_scan(
-            schema,
-            _query_request_projection(self._inner.to_query_request()),
-            with_row_id=self._with_row_id,
-        ):
-            raise NotImplementedError(
-                "hybrid search cannot project a blob column on a MemWAL table: "
-                "fetching blobs needs a real _rowid, and the fresh tier has no "
-                "stable one. Set use_lsm(False) to read the base table only "
-                "(results will exclude un-compacted MemWAL data)"
-            )
-        return _pk_columns(schema)
-
     async def _create_child_queries(
         self,
     ) -> Tuple["AsyncFTSQuery", "AsyncVectorQuery", int, int]:
@@ -4157,8 +3956,8 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         the plans that are reported are the plans that actually run.
 
         Returns the two sub-queries along with the effective limit and offset of
-        the hybrid query itself. The key the legs are fused on is left on
-        `self` — see `_resolve_fusion_pk`.
+        the hybrid query itself. The key the legs are fused on, if any, is left
+        on `self._pk_fusion`.
         """
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
@@ -4176,8 +3975,16 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             limit = DEFAULT_HYBRID_LIMIT
         offset = fts_req.offset or vec_req.offset or 0
 
-        self._fusion_pk = await self._resolve_fusion_pk()
-        if self._fusion_pk is None:
+        # WAL-PK-FUSION: without the fallback, keep only the two `with_row_id`
+        # calls.
+        self._pk_fusion = None
+        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_lsm):
+            self._pk_fusion = _wal_hybrid.PkFusion.for_query(
+                await self._table.schema(),
+                _query_request_projection(fts_req),
+                caller_requested_row_id=self._user_requested_row_id(),
+            )
+        if self._pk_fusion is None:
             fts_query.with_row_id()
             vec_query.with_row_id()
         else:
@@ -4185,10 +3992,8 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             # `select` carries the whole projection; `select_source_columns`
             # keeps only plain column references, so rebuilding from it would
             # drop computed ones.
-            columns, self._injected_pk = _with_pk_columns(
-                fts_req.select, self._fusion_pk
-            )
-            if self._injected_pk:
+            columns = self._pk_fusion.inject(fts_req.select)
+            if self._pk_fusion.injected:
                 fts_query.select(columns)
                 vec_query.select(columns)
 
@@ -4209,21 +4014,15 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
-        """See `LanceHybridQueryBuilder.to_arrow` for why the key is learned
-        from a refusal rather than probed for."""
-        try:
-            return await self._run_hybrid(
+        # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
+        return await _wal_hybrid.with_pk_fallback_async(
+            lambda: self._run_hybrid(
                 max_batch_length=max_batch_length, timeout=timeout
-            )
-        except Exception as e:
-            if self._fusion_pk is not None or not _is_wal_row_id_refusal(e):
-                raise
-            if self._user_requested_row_id():
-                raise NotImplementedError(_WAL_ROW_ID_UNSUPPORTED) from e
-            self._table._note_hybrid_pk_fusion()
-            return await self._run_hybrid(
-                max_batch_length=max_batch_length, timeout=timeout
-            )
+            ),
+            self._table,
+            fused=lambda: self._pk_fusion is not None,
+            caller_requested_row_id=self._user_requested_row_id(),
+        )
 
     async def _run_hybrid(
         self,
@@ -4255,6 +4054,10 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             fts_query.to_arrow(timeout=timeout),
             vec_query.to_arrow(timeout=timeout),
         )
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            vector_results, fts_results = self._pk_fusion.stamp(
+                vector_results, fts_results
+            )
 
         result = LanceHybridQueryBuilder._combine_hybrid_results(
             fts_results=fts_results,
@@ -4265,16 +4068,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             limit=limit,
             with_row_ids=True,
             offset=offset,
-            pk_columns=self._fusion_pk,
         )
-        if self._fusion_pk is not None:
-            # The surrogate is an internal join key, never an answer, and a
-            # caller who asked for `_rowid` was refused in `_resolve_fusion_pk`.
-            if "_rowid" in result.column_names:
-                result = result.drop(["_rowid"])
-            injected = [c for c in self._injected_pk if c in result.column_names]
-            if injected:
-                result = result.drop(injected)
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete this branch.
+            result = self._pk_fusion.strip(result)
         elif (
             not self._user_requested_row_id()
             and not blob_auto_row_id

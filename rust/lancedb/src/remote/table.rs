@@ -20,6 +20,7 @@ use crate::job::Job;
 use crate::materialized_view::{
     MaterializedViewDefinition, MaterializedViewInfo, RefreshMaterializedViewResult, ViewProjection,
 };
+use crate::query::wal_fusion::PkFusionMemory; // WAL-PK-FUSION: delete.
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::remote::job::RemoteJob;
 use crate::table::AddColumnsResult;
@@ -79,7 +80,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
@@ -91,13 +92,6 @@ const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
-/// How long a hybrid query remembers that this table refused `_rowid`.
-///
-/// Nothing fetches this — the refusal seeds it — so the bound exists only to
-/// stop the memory outliving a write spec someone removed through another
-/// handle. Being late to notice keeps the query on the primary key, which on a
-/// base table is still a valid read; the window is what stops that lasting.
-const WAL_FUSION_MEMORY_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_SELECTOR_CHANGED: &str = "table selector changed while fetching schema";
 
 fn fts_query_requires_document_granularity_support(query: &FtsQuery) -> bool {
@@ -504,7 +498,8 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     version: Arc<RwLock<Option<u64>>>,
     location: RwLock<Option<String>>,
     schema_cache: BackgroundCache<SchemaRef, Error>,
-    wal_pk_fusion: Mutex<Option<Instant>>,
+    // WAL-PK-FUSION: delete, with its initializers below.
+    wal_pk_fusion: PkFusionMemory,
     freshness: Arc<Mutex<FreshnessState>>,
     /// The branch this handle is scoped to, or `None` for the main branch.
     /// Stamped onto every branch-accepting request so reads and writes resolve
@@ -673,7 +668,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-            wal_pk_fusion: Mutex::new(None),
+            wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
         }
@@ -707,7 +702,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-            wal_pk_fusion: Mutex::new(None),
+            wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
         }
@@ -1442,10 +1437,6 @@ impl<S: HttpSend> RemoteTable<S> {
         self.schema_cache.invalidate();
     }
 
-    fn invalidate_wal_pk_fusion(&self) {
-        *self.wal_pk_fusion.lock().unwrap() = None;
-    }
-
     fn handle_error_invalidation(&self, error: &Error) {
         let status_code = match error {
             Error::Http { status_code, .. } => *status_code,
@@ -1629,7 +1620,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                wal_pk_fusion: Mutex::new(None),
+                wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -1654,7 +1645,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                wal_pk_fusion: Mutex::new(None),
+                wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -1688,7 +1679,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                wal_pk_fusion: Mutex::new(None),
+                wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -3250,7 +3241,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         ));
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
-        self.invalidate_wal_pk_fusion();
+        self.wal_pk_fusion.forget(); // WAL-PK-FUSION: delete.
         Ok(())
     }
 
@@ -3317,15 +3308,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(Some(spec))
     }
 
+    // WAL-PK-FUSION: delete both.
     fn hybrid_pk_fusion_learned(&self) -> bool {
-        self.wal_pk_fusion
-            .lock()
-            .unwrap()
-            .is_some_and(|learned| learned.elapsed() < WAL_FUSION_MEMORY_TTL)
+        self.wal_pk_fusion.learned()
     }
 
     fn note_hybrid_pk_fusion(&self) {
-        *self.wal_pk_fusion.lock().unwrap() = Some(Instant::now());
+        self.wal_pk_fusion.note();
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -13614,6 +13603,8 @@ mod tests {
             .unwrap();
         branch.stats().await.unwrap();
     }
+
+    // WAL-PK-FUSION: delete everything from here to the end of `mod tests`.
 
     /// Verbatim from sophon's `LSM_WITH_ROW_ID_UNSUPPORTED`; the fallback keys
     /// off this sentence, so a test that paraphrased it would prove nothing.

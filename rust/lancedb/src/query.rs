@@ -48,6 +48,7 @@ use crate::{
 };
 
 mod hybrid;
+pub(crate) mod wal_fusion; // WAL-PK-FUSION: delete with the module.
 
 pub(crate) const DEFAULT_TOP_K: usize = 10;
 
@@ -1176,88 +1177,6 @@ pub struct VectorQuery {
     request: VectorQueryRequest,
 }
 
-/// The part of the MemWAL `with_row_id` refusal that identifies it.
-///
-/// Both layers raise this same sentence verbatim — sophon's
-/// `LSM_WITH_ROW_ID_UNSUPPORTED` says so in as many words, and the OSS LSM
-/// scanner builds it from the same words — so this substring survives either
-/// path and the wrapping each adds. It is a coupling to a message rather than
-/// a code, because the refusal arrives as a generic 400; if the server ever
-/// rewords it the fallback stops firing and hybrid on a MemWAL table goes back
-/// to erroring visibly, which is loud rather than silently wrong.
-const WAL_ROW_ID_REFUSAL: &str = "does not support with_row_id";
-
-/// Whether `error` is the server declining `_rowid` because the table is
-/// MemWAL-backed, as opposed to any other failure the query might hit.
-fn is_wal_row_id_refusal(error: &Error) -> bool {
-    error.to_string().contains(WAL_ROW_ID_REFUSAL)
-}
-
-/// Why a hybrid query on a MemWAL table cannot hand back `_rowid`, raised
-/// whether the refusal was anticipated or came back from the server.
-fn wal_row_id_unsupported() -> Error {
-    Error::NotSupported {
-        message: "hybrid search on a MemWAL table cannot return _rowid: the fresh tier has no \
-                  stable row id, and the ids the fusion joins on are synthesized from the \
-                  primary key. Set use_lsm(false) to read the base table only (results will \
-                  exclude un-compacted MemWAL data)"
-            .to_string(),
-    }
-}
-
-/// How the hybrid fusion identifies the same row across its two legs.
-enum FusionKey {
-    /// Lance's `_rowid`, requested from the server. Every table that can supply
-    /// one uses this.
-    RowId,
-    /// A surrogate derived client-side from the primary key. MemWAL tables take
-    /// this path: the fresh tier has no stable row id, so the server rejects
-    /// `with_row_id` outright.
-    PrimaryKey {
-        columns: Vec<String>,
-        /// Key columns the caller did not ask for, added to the projection so
-        /// the surrogate can be built and dropped again before returning.
-        injected: Vec<String>,
-    },
-}
-
-/// The key columns `select` does not already produce, and so would have to be
-/// added to it for the surrogate to be buildable.
-fn pk_columns_to_inject(select: &Select, pk_columns: &[String]) -> Vec<String> {
-    let produced: Vec<&String> = match select {
-        // Already every non-system column, the key among them.
-        Select::All => return Vec::new(),
-        Select::Columns(columns) => columns.iter().collect(),
-        Select::Dynamic(pairs) => pairs.iter().map(|(name, _)| name).collect(),
-        Select::Expr(pairs) => pairs.iter().map(|(name, _)| name).collect(),
-    };
-    pk_columns
-        .iter()
-        .filter(|pk| !produced.contains(pk))
-        .cloned()
-        .collect()
-}
-
-/// Add the key columns `select` is missing, as identity projections where the
-/// selection is expression-shaped.
-fn inject_pk_columns(select: &mut Select, pk_columns: &[String]) {
-    let missing = pk_columns_to_inject(select, pk_columns);
-    if missing.is_empty() {
-        return;
-    }
-    match select {
-        Select::All => {}
-        Select::Columns(columns) => columns.extend(missing),
-        Select::Dynamic(pairs) => pairs.extend(missing.into_iter().map(|pk| (pk.clone(), pk))),
-        Select::Expr(pairs) => {
-            pairs.extend(missing.into_iter().map(|pk| {
-                let expr = crate::expr::col(&pk);
-                (pk, expr)
-            }));
-        }
-    }
-}
-
 impl VectorQuery {
     fn new(base: Query) -> Self {
         Self {
@@ -1490,58 +1409,38 @@ impl VectorQuery {
         self
     }
 
-    /// Ask for `_rowid` first and fall back to the primary key only when the
-    /// server refuses, rather than paying a round trip up front to find out.
-    ///
-    /// Only a MemWAL table refuses, so probing would tax every table to learn
-    /// something almost none of them need — and the refusal has to be handled
-    /// regardless, since a write spec installed elsewhere can arrive between
-    /// any two queries. The refusal costs nothing server-side: it is raised
-    /// before the query is planned.
     pub async fn execute_hybrid(
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
-        let key = self.fusion_key().await?;
-        let optimistic = matches!(key, FusionKey::RowId);
-        match self.run_hybrid(key, options.clone()).await {
-            // A caller who asked for `_rowid` gets the reason, not a bare 400 —
-            // the same message the learned path would have raised up front.
-            Err(e) if optimistic && self.request.base.with_row_id && is_wal_row_id_refusal(&e) => {
-                Err(wal_row_id_unsupported())
-            }
-            Err(e) if optimistic && is_wal_row_id_refusal(&e) => {
-                // Learned, so later queries on this table skip straight to it.
-                self.parent.note_hybrid_pk_fusion();
-                let key = self.pk_fusion_key().await?;
-                self.run_hybrid(key, options).await
-            }
-            other => other,
-        }
+        // WAL-PK-FUSION: without the fallback, this body is `run_hybrid`'s,
+        // with its `pk_fusion` branches taken as `None`.
+        wal_fusion::with_pk_fallback(self, |pk_fusion| {
+            self.run_hybrid(pk_fusion, options.clone())
+        })
+        .await
     }
 
     async fn run_hybrid(
         &self,
-        key: FusionKey,
+        pk_fusion: Option<wal_fusion::PkFusion>,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
         let max_batch_length = options.max_batch_length as usize;
         let internal_options = options.without_output_batch_length_limit();
-
+        // clone query and specify we want to include row IDs, which can be needed for reranking
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
         let mut vector_query = self.clone();
-        match &key {
-            // The legs need the join column, which the reranking needs in turn.
-            FusionKey::RowId => {
+        // WAL-PK-FUSION: without the fallback, keep only the `None` arm.
+        match &pk_fusion {
+            None => {
                 fts_query = fts_query.with_row_id();
                 vector_query = vector_query.with_row_id();
             }
-            // Ask for the key columns instead, and never for `_rowid`: the
-            // server rejects it on a MemWAL table before it plans.
-            FusionKey::PrimaryKey { columns, .. } => {
-                inject_pk_columns(&mut fts_query.request.select, columns);
-                inject_pk_columns(&mut vector_query.request.base.select, columns);
+            Some(pk_fusion) => {
+                pk_fusion.prepare_leg(&mut fts_query.request.select);
+                pk_fusion.prepare_leg(&mut vector_query.request.base.select);
             }
         }
 
@@ -1564,14 +1463,9 @@ impl VectorQuery {
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
         let mut vec_results = concat_batches(&vec_schema, vec_results.iter())?;
 
-        // Vector first: `merge_results` concatenates in that order and keeps the
-        // first occurrence, so first-seen ids preserve its tie break.
-        if let FusionKey::PrimaryKey { columns, .. } = &key {
-            let mut legs = [vec_results, fts_results];
-            hybrid::stamp_surrogate_row_ids(&mut legs, columns)?;
-            let [vec, fts] = legs;
-            vec_results = vec;
-            fts_results = fts;
+        // WAL-PK-FUSION: delete.
+        if let Some(pk_fusion) = &pk_fusion {
+            (vec_results, fts_results) = pk_fusion.stamp(vec_results, fts_results)?;
         }
 
         if matches!(self.request.base.norm, Some(NormalizeMethod::Rank)) {
@@ -1609,51 +1503,17 @@ impl VectorQuery {
             results = results.slice(0, limit);
         }
 
-        match &key {
-            FusionKey::RowId => {
+        // WAL-PK-FUSION: without the fallback, keep only the `None` arm.
+        match &pk_fusion {
+            None => {
                 if !self.request.base.with_row_id {
                     results = results.drop_column(ROW_ID)?;
                 }
             }
-            // The surrogate is an internal join key, never an answer: it goes
-            // whether or not the caller asked for `_rowid`, and `fusion_key`
-            // has already refused the query if they did.
-            FusionKey::PrimaryKey { injected, .. } => {
-                results = results.drop_column(ROW_ID)?;
-                for column in injected {
-                    // A reranker is free to reshape its output, so only drop
-                    // what actually came back.
-                    if results.schema().column_with_name(column).is_some() {
-                        results = results.drop_column(column)?;
-                    }
-                }
-            }
+            Some(pk_fusion) => results = pk_fusion.strip(results)?,
         }
 
         Ok(single_batch_stream(results, max_batch_length))
-    }
-
-    /// Whether this hybrid query can join its legs on `_rowid`, or has to build
-    /// a surrogate from the primary key because the table is MemWAL-backed.
-    /// The key to try first: `_rowid` unless a previous query on this table has
-    /// already been refused it.
-    async fn fusion_key(&self) -> Result<FusionKey> {
-        if self.request.base.use_lsm == Some(false) || !self.parent.hybrid_pk_fusion_learned() {
-            return Ok(FusionKey::RowId);
-        }
-        self.pk_fusion_key().await
-    }
-
-    /// Resolve the primary key the legs will be fused on. Needs the schema,
-    /// which the table has already fetched and cached for its own reasons.
-    async fn pk_fusion_key(&self) -> Result<FusionKey> {
-        if self.request.base.with_row_id {
-            return Err(wal_row_id_unsupported());
-        }
-        let schema = self.parent.schema().await?;
-        let columns = crate::table::primary_key::pk_columns(&schema);
-        let injected = pk_columns_to_inject(&self.request.base.select, &columns);
-        Ok(FusionKey::PrimaryKey { columns, injected })
     }
 
     async fn inner_execute_with_options(
