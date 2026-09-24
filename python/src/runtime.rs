@@ -210,10 +210,10 @@ where
     };
     match runtime::Handle::try_current() {
         Ok(handle) => {
-            let _ = handle.spawn(task);
+            drop(handle.spawn(task));
         }
         Err(_) => {
-            let _ = get_runtime().spawn(task);
+            drop(get_runtime().spawn(task));
         }
     }
 }
