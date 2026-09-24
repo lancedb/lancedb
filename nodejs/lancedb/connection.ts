@@ -418,10 +418,7 @@ export abstract class Connection {
    * The name is free before this resolves. When nothing was bound to it, the
    * returned job is already finished and has no id.
    */
-  abstract dropViewAsync(
-    name: string,
-    namespacePath?: string[],
-  ): Promise<Job>;
+  abstract dropViewAsync(name: string, namespacePath?: string[]): Promise<Job>;
 
   /**
    * The names of the views in one namespace.
