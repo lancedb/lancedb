@@ -100,18 +100,20 @@ struct RemoteBlobState {
     sequential_response: Option<SequentialResponse>,
 }
 
-/// Seekable Cloud blob handle over HTTP Range, pinned to the version opened by its size probe.
+/// Seekable Cloud blob handle over HTTP Range.
+///
+/// Nonempty handles read the table version returned by their size probe.
 #[derive(Debug)]
 pub struct RemoteBlobFile {
     requester: Arc<dyn BlobRangeRequester>,
     state: Mutex<RemoteBlobState>,
     closed: AtomicBool,
     size: u64,
-    version: u64,
+    version: Option<u64>,
 }
 
 impl RemoteBlobFile {
-    fn new(requester: Arc<dyn BlobRangeRequester>, size: u64, version: u64) -> Self {
+    fn new(requester: Arc<dyn BlobRangeRequester>, size: u64, version: Option<u64>) -> Self {
         Self {
             requester,
             state: Mutex::new(RemoteBlobState::default()),
@@ -166,11 +168,7 @@ impl RemoteBlobFile {
         let range_header = format!("bytes={}-{}", range.start, range.end - 1);
         let (request_id, response) = self
             .requester
-            .request_range(
-                &range_header,
-                RangeRequestMode::DataRead,
-                Some(self.version),
-            )
+            .request_range(&range_header, RangeRequestMode::DataRead, self.version)
             .await
             .map_err(remote_blob_error)?;
         self.ensure_open()?;
@@ -246,11 +244,7 @@ impl RemoteBlobFile {
                 let range_header = format!("bytes={cursor}-");
                 let (request_id, response) = self
                     .requester
-                    .request_range(
-                        &range_header,
-                        RangeRequestMode::DataRead,
-                        Some(self.version),
-                    )
+                    .request_range(&range_header, RangeRequestMode::DataRead, self.version)
                     .await
                     .map_err(remote_blob_error)?;
                 self.ensure_open()?;
@@ -564,8 +558,8 @@ async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Optio
                     });
                 }
             }
-            let version = probe_blob_version(&response, &request_id)?;
-            Ok(Some(RemoteBlobFile::new(requester, 0, version).into()))
+            // An empty handle never makes a data range request, so no version is needed.
+            Ok(Some(RemoteBlobFile::new(requester, 0, None).into()))
         }
         StatusCode::PARTIAL_CONTENT => {
             let size = response
@@ -594,7 +588,9 @@ async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Optio
                     status_code: Some(StatusCode::PARTIAL_CONTENT),
                 });
             }
-            Ok(Some(RemoteBlobFile::new(requester, size, version).into()))
+            Ok(Some(
+                RemoteBlobFile::new(requester, size, Some(version)).into(),
+            ))
         }
         status => Err(Error::Http {
             source: format!("blob size probe expected HTTP 206 Partial Content, got {status}")
@@ -629,7 +625,6 @@ mod tests {
         http::Response::builder()
             .status(StatusCode::RANGE_NOT_SATISFIABLE)
             .header(header::CONTENT_RANGE, "bytes */0")
-            .header(VERSION_HEADER, "5")
             .body(Vec::new())
             .unwrap()
     }
@@ -855,7 +850,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_blob_files_return_a_handle_for_an_empty_blob() {
+    async fn remote_blob_files_allow_an_empty_blob_without_a_version_header() {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
@@ -868,8 +863,10 @@ mod tests {
         assert!(files[1].is_none());
         let empty = files[2].take().unwrap();
         assert_eq!(empty.size(), 0);
+        let probe_requests = requests.lock().unwrap().len();
         assert!(empty.read_range(0..0).await.unwrap().is_empty());
         assert!(empty.read().await.unwrap().is_empty());
+        assert_eq!(requests.lock().unwrap().len(), probe_requests);
         let nonempty = files[0].take().unwrap();
         assert_eq!(nonempty.size(), PAYLOAD.len() as u64);
     }
@@ -1356,7 +1353,7 @@ mod tests {
             in_flight,
             max_in_flight: max_in_flight.clone(),
         });
-        let file = RemoteBlobFile::new(requester, PAYLOAD.len() as u64, 5);
+        let file = RemoteBlobFile::new(requester, PAYLOAD.len() as u64, Some(5));
 
         let ranges: Vec<_> = (0..16u64).map(|start| start..start + 2).collect();
         let output = file.read_ranges(&ranges).await.unwrap();
@@ -1470,7 +1467,11 @@ mod tests {
             release: release.clone(),
             started: started.clone(),
         });
-        let file = Arc::new(RemoteBlobFile::new(requester, PAYLOAD.len() as u64, 5));
+        let file = Arc::new(RemoteBlobFile::new(
+            requester,
+            PAYLOAD.len() as u64,
+            Some(5),
+        ));
 
         let reader = {
             let file = file.clone();
