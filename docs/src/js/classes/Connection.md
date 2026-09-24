@@ -557,9 +557,10 @@ on the returned job to know when cleanup has finished.
 abstract dropView(name, namespacePath?): Promise<void>
 ```
 
-Drop the view named `name`.
+Drop the view named `name` and wait for its definition to be deleted.
 
-The tables it reads are untouched: a view holds no rows of its own.
+The tables it reads are untouched: a view holds no rows of its own. Use
+[dropViewAsync](Connection.md#dropviewasync) to retain the cleanup job instead of waiting on it.
 
 #### Parameters
 
@@ -570,6 +571,30 @@ The tables it reads are untouched: a view holds no rows of its own.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### dropViewAsync()
+
+```ts
+abstract dropViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping the view named `name` and return the job deleting its
+definition, without waiting for completion.
+
+The name is free before this resolves. When nothing was bound to it, the
+returned job is already finished and has no id.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 
