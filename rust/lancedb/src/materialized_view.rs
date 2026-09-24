@@ -2020,7 +2020,8 @@ impl RefreshMaterializedViewBuilder {
         let (table, full, pinned) = (&self.view.table, self.full, self.source_version);
         let expected = self.expected_incarnation.as_deref();
         if self.cascade {
-            refresh::execute_cascade(table, full, pinned, expected).await
+            // Boxed: its nested refresh futures overflow callers' query depth.
+            Box::pin(refresh::execute_cascade(table, full, pinned, expected)).await
         } else {
             refresh::execute_refresh(table, full, pinned, expected).await
         }
