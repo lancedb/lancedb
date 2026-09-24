@@ -5372,7 +5372,6 @@ dependencies = [
 [[package]]
 name = "lance-encoding"
 version = "13.0.0-beta.12"
-source = "git+https://github.com/lance-format/lance.git?tag=v13.0.0-beta.12#5d2946fa452c61cb018144f3200892b6dd4a8b4f"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5891,6 +5890,7 @@ dependencies = [
  "env_logger",
  "futures",
  "lance-core",
+ "lance-encoding",
  "lance-io",
  "lance-namespace",
  "lance-namespace-impls",

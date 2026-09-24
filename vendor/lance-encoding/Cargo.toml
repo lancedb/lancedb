@@ -1,0 +1,55 @@
+[package]
+name = "lance-encoding"
+version = "13.0.0-beta.12"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/lance-format/lance"
+description = "Encoders and decoders for the Lance file format"
+rust-version = "1.91.0"
+
+# A temporary local copy of the Lance encoding crate, pinned to the same tag as
+# the rest of the Lance workspace dependencies. This makes the selector fix
+# available until it is released upstream.
+[workspace]
+
+[dependencies]
+lance-arrow = { version = "=13.0.0-beta.12", git = "https://github.com/lance-format/lance.git", tag = "v13.0.0-beta.12" }
+lance-core = { version = "=13.0.0-beta.12", git = "https://github.com/lance-format/lance.git", tag = "v13.0.0-beta.12" }
+lance-bitpacking = { version = "=13.0.0-beta.12", git = "https://github.com/lance-format/lance.git", tag = "v13.0.0-beta.12", optional = true }
+fsst = { version = "=13.0.0-beta.12", git = "https://github.com/lance-format/lance.git", tag = "v13.0.0-beta.12" }
+arrow-arith = "58.0.0"
+arrow-array = "58.0.0"
+arrow-buffer = "58.0.0"
+arrow-cast = "58.0.0"
+arrow-data = "58.0.0"
+arrow-schema = "58.0.0"
+arrow-select = "58.0.0"
+bytes = "1.11.1"
+futures = "0.3"
+hex = "0.4.3"
+itertools = "0.14"
+log = "0.4"
+num-traits = "0.2"
+prost = "0.14.1"
+hyperloglogplus = { version = "0.4.1", features = ["const-loop"] }
+tokio = { version = "1.23", features = ["rt-multi-thread", "macros", "fs", "sync"] }
+tracing = "0.1"
+xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }
+byteorder = "1.5"
+lz4 = { version = "1", optional = true }
+zstd = { version = "0.13", optional = true }
+
+[build-dependencies]
+prost-build = "0.14.1"
+protobuf-src = { version = "2.1", optional = true }
+
+[features]
+default = ["lz4", "zstd", "bitpacking"]
+protoc = ["dep:protobuf-src"]
+bitpacking = ["dep:lance-bitpacking"]
+lz4 = ["dep:lz4"]
+zstd = ["dep:zstd"]
+
+[package.metadata.docs.rs]
+features = ["protoc"]
