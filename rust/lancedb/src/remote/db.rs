@@ -216,7 +216,8 @@ impl RemoteDatabaseOptionsBuilder {
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
-    table_cache: Cache<String, Arc<RemoteTable<S>>>,
+    // Cache existence and server capabilities, not mutable per-handle table state.
+    table_cache: Cache<String, ServerVersion>,
     uri: String,
     /// Headers to pass to the namespace client for authentication
     namespace_headers: HashMap<String, String>,
@@ -1371,16 +1372,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         };
 
         for table in &tables {
-            let table_identifier = build_table_identifier(table, &request.namespace_path)?;
+            build_table_identifier(table, &request.namespace_path)?;
             let cache_key = build_cache_key(table, &request.namespace_path);
-            let remote_table = Arc::new(RemoteTable::new(
-                self.client.clone(),
-                table.clone(),
-                request.namespace_path.clone(),
-                table_identifier.clone(),
-                version.clone(),
-            ));
-            self.table_cache.insert(cache_key, remote_table).await;
+            self.table_cache.insert(cache_key, version.clone()).await;
         }
         Ok(tables)
     }
@@ -1407,16 +1401,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // Cache the tables for future use
         let namespace_vec = namespace_parts.to_vec();
         for table in &response.tables {
-            let table_identifier = build_table_identifier(table, &namespace_vec)?;
+            build_table_identifier(table, &namespace_vec)?;
             let cache_key = build_cache_key(table, &namespace_vec);
-            let remote_table = Arc::new(RemoteTable::new(
-                self.client.clone(),
-                table.clone(),
-                namespace_vec.clone(),
-                table_identifier.clone(),
-                version.clone(),
-            ));
-            self.table_cache.insert(cache_key, remote_table).await;
+            self.table_cache.insert(cache_key, version.clone()).await;
         }
 
         Ok(response)
@@ -1484,9 +1471,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             request.name.clone(),
             request.namespace_path.clone(),
             table_identifier,
-            version,
+            version.clone(),
         ));
-        self.table_cache.insert(cache_key, table.clone()).await;
+        self.table_cache.insert(cache_key, version).await;
 
         Ok(table)
     }
@@ -1526,9 +1513,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             request.target_table_name.clone(),
             request.target_namespace_path.clone(),
             table_identifier,
-            version,
+            version.clone(),
         ));
-        self.table_cache.insert(cache_key, table.clone()).await;
+        self.table_cache.insert(cache_key, version).await;
 
         Ok(table)
     }
@@ -1537,10 +1524,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
-        // We describe the table to confirm it exists before moving on.
-        if let Some(table) = self.table_cache.get(&cache_key).await {
-            Ok(table.clone())
+        // Every open gets its own checkout, schema cache, and freshness state.
+        if let Some(version) = self.table_cache.get(&cache_key).await {
+            Ok(Arc::new(RemoteTable::new(
+                self.client.clone(),
+                request.name,
+                request.namespace_path,
+                identifier,
+                version,
+            )))
         } else {
+            // Describe the table to confirm it exists before moving on.
             let req = self
                 .client
                 .post(&format!("/v1/table/{}/describe/", identifier));
@@ -1550,13 +1544,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
             let describe_body = rsp.text().await.ok();
-            let table_identifier = build_table_identifier(&request.name, &request.namespace_path)?;
             let table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 request.name.clone(),
                 request.namespace_path.clone(),
-                table_identifier,
-                version,
+                identifier,
+                version.clone(),
             ));
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
@@ -1564,8 +1557,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             if let Some(body) = &describe_body {
                 table.seed_schema(body);
             }
-            let cache_key = build_cache_key(&request.name, &request.namespace_path);
-            self.table_cache.insert(cache_key, table.clone()).await;
+            self.table_cache.insert(cache_key, version).await;
             Ok(table)
         }
     }
@@ -2269,6 +2261,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_open_table_checkout_is_independent_per_handle() {
+        let latest = Arc::new(AtomicUsize::new(2));
+        let current = latest.clone();
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
+            let body = match request.url().path() {
+                "/v1/table/table1/describe/" => {
+                    let requested_version = request
+                        .body()
+                        .and_then(|body| body.as_bytes())
+                        .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+                        .and_then(|body| body["version"].as_u64());
+                    let version =
+                        requested_version.unwrap_or_else(|| current.load(Ordering::SeqCst) as u64);
+                    serde_json::json!({
+                        "version": version,
+                        "schema": {"fields": [
+                            {"name": "id", "type": {"type": "int32"}, "nullable": false}
+                        ]}
+                    })
+                    .to_string()
+                }
+                "/v1/table/table1/insert/" => {
+                    let version = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    serde_json::json!({"version": version}).to_string()
+                }
+                path => panic!("unexpected request path: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+
+        let writer = conn.open_table("table1").execute().await.unwrap();
+        let reader = conn.open_table("table1").execute().await.unwrap();
+        reader.checkout(1).await.unwrap();
+
+        assert_eq!(reader.version().await.unwrap(), 1);
+        assert_eq!(writer.version().await.unwrap(), 2);
+
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![3]))],
+        )
+        .unwrap();
+        assert_eq!(writer.add(data).execute().await.unwrap().version, 3);
+        assert_eq!(writer.version().await.unwrap(), 3);
+        assert_eq!(reader.version().await.unwrap(), 1);
     }
 
     #[tokio::test]
