@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 //! An accumulation queue accumulates arrays until we have enough data to flush.

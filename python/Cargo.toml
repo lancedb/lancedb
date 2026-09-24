@@ -20,9 +20,9 @@ arrow = { workspace = true, features = ["pyarrow"] }
 async-trait.workspace = true
 bytes.workspace = true
 lancedb.workspace = true
-# Maturin includes direct path dependencies in source distributions. The
-# workspace patch also applies to transitive Lance writer dependencies.
-lance-encoding = { path = "../vendor/lance-encoding", version = "=13.0.0-beta.12" }
+# Maturin includes this inherited local path dependency in source distributions.
+# The workspace patch also applies to transitive Lance writer dependencies.
+lance-encoding.workspace = true
 datafusion-common.workspace = true
 lance-core.workspace = true
 lance-namespace.workspace = true

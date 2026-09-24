@@ -26,7 +26,7 @@ lance-namespace-impls = { "version" = "=13.0.0-beta.12", default-features = fals
 lance-table = { "version" = "=13.0.0-beta.12", "tag" = "v13.0.0-beta.12", "git" = "https://github.com/lance-format/lance.git" }
 lance-testing = { "version" = "=13.0.0-beta.12", "tag" = "v13.0.0-beta.12", "git" = "https://github.com/lance-format/lance.git" }
 lance-datafusion = { "version" = "=13.0.0-beta.12", "tag" = "v13.0.0-beta.12", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=13.0.0-beta.12", "tag" = "v13.0.0-beta.12", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { path = "vendor/lance-encoding", version = "=13.0.0-beta.12" }
 lance-arrow = { "version" = "=13.0.0-beta.12", "tag" = "v13.0.0-beta.12", "git" = "https://github.com/lance-format/lance.git" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 //! Compact per-page chunk index for the mini-block structural encoding.

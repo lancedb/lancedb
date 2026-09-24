@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 //! Data layouts to represent encoded data in a sub-Arrow format
