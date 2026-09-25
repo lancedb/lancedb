@@ -91,6 +91,38 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(3);
     });
 
+    it("creates and adds Arrow tables with large string and binary columns", async () => {
+      const data = new arrow.Table({
+        text: arrow.vectorFromArray(["alpha", "beta"], new arrow.LargeUtf8()),
+        bytes: arrow.vectorFromArray(
+          [Buffer.from("one"), Buffer.from("two")],
+          new arrow.LargeBinary(),
+        ),
+      });
+      const conn = await connect(tmpDir.name);
+      const largeTable = await conn.createTable("large_columns", data);
+      await largeTable.add(data);
+
+      const rows = await largeTable.query().toArray();
+      expect(rows.map((row) => row.text)).toEqual([
+        "alpha",
+        "beta",
+        "alpha",
+        "beta",
+      ]);
+      expect(rows.map((row) => Buffer.from(row.bytes).toString())).toEqual([
+        "one",
+        "two",
+        "one",
+        "two",
+      ]);
+      const fields = (await largeTable.schema()).fields;
+      expect(fields.map((field) => field.type.typeId)).toEqual([
+        arrow.Type.LargeUtf8,
+        arrow.Type.LargeBinary,
+      ]);
+    });
+
     it("should support a foreign Float64 vector schema end to end", async () => {
       const conn = await connect(tmpDir.name);
       const schema = new arrow.Schema([
@@ -2466,6 +2498,27 @@ describe("when dealing with blob columns", () => {
     expect(files[0]!.size()).toBe(BigInt(alpha.length));
     expect(Buffer.from(await files[0]!.read()).toString()).toBe("alpha");
     expect(Buffer.from(await files[1]!.read()).toString()).toBe("beta");
+  });
+
+  it("adds a LargeBinary Arrow column to a blob table", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([new Field("id", new Int64()), blob("image")]);
+    const table = await db.createTable(
+      "blobs",
+      [{ id: 1n, image: Buffer.from("alpha") }],
+      { schema },
+    );
+    const payload = Buffer.from("beta");
+    const data = new arrow18.Table({
+      id: arrow18.vectorFromArray([2n], new arrow18.Int64()),
+      image: arrow18.vectorFromArray([payload], new arrow18.LargeBinary()),
+    });
+    await table.add(data);
+
+    const rows = await table.query().withRowId().toArray();
+    const rowId = rows.find((row) => row.id === 2n)!._rowid as bigint;
+    const [actual] = await table.fetchBlobs("image", [rowId]);
+    expect(actual).toEqual(payload);
   });
 
   it("reads a half-open range", async () => {
