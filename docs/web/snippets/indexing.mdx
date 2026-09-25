@@ -12,6 +12,8 @@ export const PyGpuIndexCuda = "table.create_index(\n    num_partitions=256,\n   
 
 export const PyGpuIndexMps = "table.create_index(\n    num_partitions=256,\n    num_sub_vectors=96,\n    accelerator=\"mps\",\n)\n";
 
+export const PyQuantizationCustomParams = "table.create_index(\n    index_type=\"IVF_RQ\",\n    num_bits=2,\n    max_iterations=100,\n    sample_rate=512,\n)\n";
+
 export const PyReindexingIncremental = "table = db.open_table(\"reindexing_incremental\")\ntable.add([{\"vector\": [3.1, 4.1], \"text\": \"Frodo was a happy puppy\"}])\ntable.optimize()\n";
 
 export const PyScalarIndexBuild = "tbl = db.open_table(\"scalar_index_build\")\ntbl.create_scalar_index(\"book_id\")\ntbl.create_scalar_index(\"publisher\", index_type=\"BITMAP\")\n";
@@ -38,23 +40,13 @@ export const PyScalarIndexWait = "index_name = \"label_idx\"\ntable.wait_for_ind
 
 export const PyVectorIndexAsyncConfig = "import lancedb\nimport numpy as np\nfrom lancedb.index import IvfPq\n\nasync def main():\n    data = [\n        {\"id\": i, \"vector\": np.random.random(8).astype(np.float32).tolist()}\n        for i in range(512)\n    ]\n\n    db = await lancedb.connect_async(\"ex_lancedb\")\n    table = await db.create_table(\n        \"vector_index_async\", data=data, mode=\"overwrite\"\n    )\n\n    await table.create_index(\n        \"vector\",\n        config=IvfPq(\n            distance_type=\"cosine\",\n            num_partitions=16,\n            num_sub_vectors=4,\n        ),\n    )\n    return await table.list_indices()\n";
 
-export const PyVectorIndexBinaryAddData = "table.add(data)\n";
-
-export const PyVectorIndexBinaryBuildIndex = "table.create_index(\n    metric=\"hamming\",\n    vector_column_name=\"vector\",\n    index_type=\"IVF_FLAT\",\n)\n";
-
-export const PyVectorIndexBinarySchema = "table = tmp_db.create_table(table_name, schema=schema, mode=\"overwrite\")\n";
-
-export const PyVectorIndexBinarySearch = "query = np.random.randint(0, 2, size=ndim)\nquery = np.packbits(query)\ndf = table.search(query).metric(\"hamming\").limit(10).to_pandas()\ndf.vector = df.vector.apply(np.unpackbits)\n";
-
 export const PyVectorIndexBuildHnsw = "table.create_index(index_type=\"IVF_HNSW_SQ\")\n";
 
-export const PyVectorIndexBuildIvf = "table_name = \"vector-index-build-ivf\"\ntable = db.open_table(table_name)\ntable.create_index(\n    metric=\"cosine\",\n    vector_column_name=\"keywords_embeddings\",\n)\n";
+export const PyVectorIndexBuildIvf = "table_name = \"vector-index-build-ivf\"\ntable = db.open_table(table_name)\ntable.create_index(\n    metric=\"cosine\",\n    vector_column_name=\"keywords_embeddings\",\n    index_type=\"IVF_PQ\",\n)\n";
 
 export const PyVectorIndexBypassRecall = "query = np.random.random(128)\nk = 10\n\n# Ground truth: flat (exhaustive) scan, ignoring the ANN index.\ntruth = set(table.search(query).bypass_vector_index().limit(k).to_pandas()[\"id\"])\n\n# ANN results with the current nprobes setting.\nann = set(table.search(query).nprobes(20).limit(k).to_pandas()[\"id\"])\n\nrecall_at_k = len(truth & ann) / k\n";
 
 export const PyVectorIndexCheckStatus = "index_name = \"keywords_embeddings_idx\"\ntable.wait_for_index([index_name])\nprint(table.index_stats(index_name))\n";
-
-export const PyVectorIndexConfigureIvf = "table.create_index(metric=\"l2\", num_partitions=16, num_sub_vectors=4)\n";
 
 export const PyVectorIndexCustomName = "# Override the default `{column}_idx` convention by passing `name=...`.\ntable.create_index(\n    metric=\"cosine\",\n    vector_column_name=\"keywords_embeddings\",\n    name=\"my_custom_index\",\n)\ntable.wait_for_index([\"my_custom_index\"])\nprint(table.index_stats(\"my_custom_index\"))\n";
 
@@ -67,6 +59,4 @@ export const PyVectorIndexNprobes = "# Always scan 10 partitions; scan up to 50 
 export const PyVectorIndexQueryHnsw = "tbl = table\ntbl.search(np.random.random((16))).limit(2).to_pandas()\n";
 
 export const PyVectorIndexQueryIvf = "tbl = table\ntbl.search(np.random.random((1536))).limit(2).nprobes(20).refine_factor(\n    10\n).to_pandas()\n";
-
-export const PyVectorIndexSetup = "table_name = \"vector-index-tbl\"\ntable = db.open_table(table_name)\n";
 

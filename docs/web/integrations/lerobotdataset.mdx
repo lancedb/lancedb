@@ -1,94 +1,159 @@
 ---
 title: "LeRobotDataset"
 sidebarTitle: "LeRobotDataset"
-description: "Use Lance-backed LeRobotDataset loaders and LanceDB to inspect, filter, and train on robotics datasets from the Hugging Face Hub."
+description: "Train LeRobot policies straight from object storage, and curate, search and visualize robotics datasets as Lance tables."
+keywords: ["lerobot", "robotics", "droid", "training", "dataloader"]
 ---
 
 import {
   PyFrameworksLerobotFilterFrames,
-  PyFrameworksLerobotLancedbImageDataset,
-  PyFrameworksLerobotLancedbVideoDataset,
+  PyFrameworksLerobotLoad,
   PyFrameworksLerobotOpenLanceTables,
+  PyFrameworksLerobotTrainReady,
 } from '/snippets/integrations.mdx';
 
-[LeRobot](https://huggingface.co/docs/lerobot/index) is Hugging Face's open-source robotics stack for collecting data, training policies, running simulations, and sharing robotics datasets and models on the Hub.
+[LeRobot](https://huggingface.co/docs/lerobot/index) is Hugging Face's open-source robotics stack. Since [lerobot#4363](https://github.com/huggingface/lerobot/pull/4363) it reads Lance datasets natively: same `LeRobotDataset` class, same items, same training pipeline. The dataset's `"storage_format": "lance"` picks the reader. No subclasses, no wrapper library.
 
-[LeRobotDataset v3.0](https://huggingface.co/docs/lerobot/lerobot-dataset-v3) standardizes robot learning data across sensorimotor time series, actions, multi-camera video, and task metadata. Its v3 layout stores high-frequency tabular signals in Parquet, visual streams as MP4 shards, and metadata that reconstructs episode-level views from larger files.
+What you get:
 
-Lance pairs well with LeRobot when you need high-performance random access, lazy multimodal blob reads, and a single table interface for curation, search, and training data preparation. The `lerobot-lancedb` package ships Lance-backed `LeRobotDataset` subclasses, and LanceDB can open Lance-formatted LeRobot datasets on the Hub directly through `hf://` URIs.
+- **Train from object storage while keeping your GPUs fed.** Lance reads random frames straight from S3, GCS, the HF Hub or HF Storage Buckets, fetching only the bytes each batch needs, so every batch is a global shuffle: any frame, from anywhere in the dataset. In the table below (samples/s, 8 workers, batch 64), Lance and upstream local both draw every batch from the whole dataset. Upstream streaming does a reservoir shuffle, reading the dataset in order and drawing each batch from a pool of recently seen frames, so those two columns are not the same job:
 
-## Install {#install}
+| dataset | frames | cameras | Lance, S3 (global shuffle) | upstream, local (global shuffle) | same job | upstream, streaming (reservoir shuffle) | vs streaming |
+|---|---|---|---|---|---|---|---|
+| DROID | 27,630,375 | 3 | 2,258.5 | 346.7 | 6.5x | 898.6 | 1.7x |
+| berkeley_rpt | 392,578 | 1 | 1,740.6 | 1,209.9 | 1.4x | 274.5 | 6.3x |
+| toto | 325,699 | 1 | 1,097.0 | 936.3 | 1.2x | 121.3 | 9.0x |
+| roboturk | 187,507 | 1 | 1,276.8 | 1,082.3 | 1.2x | 128.2 | 10.0x |
+| aloha_mobile_cabinet | 127,500 | 3 | 815.7 | 294.2 | 2.8x | 77.7 | 10.5x |
+| koch_pick_place | 37,972 | 2 | 854.7 | 274.9 | 3.1x | 58.1 | 14.7x |
+
+The gap grows with how much video each sample carries: about 1.2x with one camera, 2.8x with three, 6.5x on DROID.
+
+- **Faster iteration, end to end.** 10,000 steps of SmolVLA on DROID, 8xH100, lerobot's default `num_workers=4`, same seed:
+
+| | Lance, S3, nothing downloaded | upstream, local NVMe after a 384 GB download |
+|---|---|---|
+| wall clock | **1 h 27 m** | 2 h 00 m |
+| steady rate | 495 samples/s | 361 samples/s |
+| of each step spent waiting on data | 1.7% | 37.4% |
+| final loss | 0.2380 | 0.2380 |
+
+Same model, same loss, 33 minutes sooner, and no 384 GB download first. The difference is time the GPUs spend waiting on data, so it grows with the run: at 100k steps it is over five hours, and every re-run and sweep point pays it again.
+
+- **The training table is also the index.** Parquet has no secondary indexes, so finding frames instead of scanning them usually means another system per question: a vector database for embeddings, a search service for instructions, a feature store for scores. With Lance those are columns and indexes on the same table the DataLoader reads. One query spans all of them, at a version the trainer can reopen.
+
+## Install
 
 ```bash
-pip install lancedb lance lerobot-lancedb
+pip install "lerobot[lancedb]"   # the reader, inside lerobot itself
+pip install lerobot-lancedb      # the converter
 ```
 
-## Use Lance-backed LeRobotDataset loaders {#use-lance-backed-lerobotdataset-loaders}
+## Convert a dataset
 
-`LeRobotLanceDataset` is useful when your Lance-backed dataset stores decoded image observations. It's a drop-in replacement for `LeRobotDataset`, so existing policy training code keeps working with the usual PyTorch dataset and dataloader patterns.
+Any LeRobot v3.0 dataset, from the Hub or a local directory:
+
+```bash
+lerobot-lance-convert --repo-id lerobot/pusht --out ./pusht-lance
+```
+
+**Migration costs about as much as a file copy.** Videos are stored as blobs without re-encoding, so items are bit-identical to the source: 392,578 frames convert in 10 seconds, DROID's 27.6M in 34 minutes. Nothing about your recording or training code changes. The output keeps `meta/` as is and adds three Lance tables (`frames`, `videos`, `meta`). `lerobot-lance-doctor` audits the result and often finds problems in the source: DROID carries 44% orphaned rows, and three of eight public datasets we converted have frame-count defects that only random access exposes.
+
+Host the result anywhere: an HF dataset repo (`hf upload`, tag it `v3.0`), an HF Storage Bucket (`hf buckets sync`), or any object store (`aws s3 sync`).
+
+## Load and train
 
 <CodeBlock filename="Python" language="Python" icon="python">
-  {PyFrameworksLerobotLancedbImageDataset}
+  {PyFrameworksLerobotLoad}
 </CodeBlock>
 
-For datasets that store camera observations as MP4 video segments, use `LeRobotLanceVideoDataset` instead.
+An explicit `root` works for any object store: `LeRobotDataset("lerobot/pusht", root="s3://my-bucket/pusht-lance")`. Remote roots download only `meta/`. Data is fetched per batch. Temporal windows, `DataLoader` and the rest of the training stack work unchanged:
 
 <CodeBlock filename="Python" language="Python" icon="python">
-  {PyFrameworksLerobotLancedbVideoDataset}
+  {PyFrameworksLerobotTrainReady}
 </CodeBlock>
 
-<Info>
-Use the image loader for Lance-backed repos that store image frames. Use the video loader for MP4-backed LeRobot datasets such as `lance-format/lerobot-pusht-lance`.
-</Info>
+Or from the CLI. Held-out evaluation on a remote dataset needs random access, so it only works on the Lance path:
 
-## Open LeRobot Lance tables with LanceDB {#open-lerobot-lance-tables-with-lancedb}
+```bash
+lerobot-train \
+  --dataset.repo_id=my-org/my-bucket/pusht-lance \
+  --dataset.repo_type=bucket \
+  --dataset.eval_split=0.02 \
+  --policy.type=act
+```
 
-Lance-formatted LeRobot datasets published by `lance-format` expose each `.lance` file under `data/` as a LanceDB table. The PushT dataset, for example, has `frames`, `episodes`, and `videos` tables.
+## Visualize TB-scale datasets in Foxglove
+
+LeRobot's dataset viewer can serve an episode to [Foxglove](https://foxglove.dev) over its WebSocket protocol ([lerobot#4542](https://github.com/huggingface/lerobot/pull/4542)), and with a Lance dataset it works wherever the data lives:
+
+```bash
+lerobot-dataset-viz --repo-id lance-format/pusht-lance --episode-index 3 --display-mode foxglove
+```
+
+Open the Foxglove app, connect to `ws://localhost:8765`, and scrub. Cameras, joint state and actions show up as topics you can lay out however you like:
+
+![Foxglove showing episode 7 of DROID served from S3: three camera panels and the joint state, scrubbed to 19.4 s](/static/assets/images/integrations/lerobot-foxglove-droid.png)
+
+Frames are fetched as you scrub, so looking at one episode of the 373 GB DROID from S3 moves a few MB, not the dataset. No MCAP export, no download, and nothing new to install on the dataset side: this is the same reader the trainer uses.
+
+## Query, curate, enrich
+
+The frames table is a LanceDB table like any other:
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFrameworksLerobotOpenLanceTables}
 </CodeBlock>
 
-Opening the tables directly is handy for inspecting schemas, counting rows, sampling metadata, or building curation workflows before any data reaches the training loop.
-
-## Filter a frame window {#filter-a-frame-window}
-
-Most robotics workflows want a deterministic slice by `episode_index`, `frame_index`, or task metadata long before training begins. LanceDB filters those rows without touching the video blobs.
+Filter with SQL over any feature, using the indexes built at conversion:
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyFrameworksLerobotFilterFrames}
 </CodeBlock>
 
-With the filtered set in hand, you can materialize a smaller local LanceDB database, add derived columns, attach embeddings, or build vector and scalar indexes for faster repeated access.
+From here it is standard LanceDB. The examples below are from our DROID walkthrough, all on the table the trainer reads.
 
-## Example Lance-formatted LeRobot datasets {#example-lance-formatted-lerobot-datasets}
+**Feature engineering costs nothing until you use it.** A new column is a [declaration](/feature-engineering/add-computed-column): `add_columns` registers the expression or [function](/management/function) and computes nothing, and a [refresh](/feature-engineering/refresh-column) materializes it in parallel when you want it. No copy of the dataset, and the videos are never touched:
 
-<CardGroup cols={2}>
-  <Card title="LeRobot PushT" href="/datasets/lerobot-pusht">
-    A Lance-formatted version of `lerobot/pusht` with frame, episode, and video tables.
-  </Card>
-  <Card title="LeRobot X-VLA Soft-Fold" href="/datasets/lerobot-xvla-soft-fold">
-    A multi-camera robotics dataset packaged as Lance tables for frame-level and episode-level access.
-  </Card>
-</CardGroup>
+```python
+@udf(data_type=pa.float32(), input_columns=["action_joint_velocity"])
+def jerk_score(v):                      # per-frame motion roughness
+    ...
 
-## More resources {#more-resources}
+tbl.add_columns({"jerk_score": jerk_score})   # nothing computed yet
+tbl.backfill("jerk_score", concurrency=8)     # 610,403 rows in 16.7 s
+```
 
-<CardGroup cols={2}>
-  <Card title="LeRobotDataset v3.0" href="https://huggingface.co/docs/lerobot/lerobot-dataset-v3">
-    Hugging Face's guide to the v3 dataset layout, streaming, transforms, and migration.
-  </Card>
-  <Card title="lerobot-lancedb" href="https://lancedb.github.io/lerobot-lancedb/">
-    API documentation for the Lance-backed LeRobotDataset implementations.
-  </Card>
-</CardGroup>
+Embeddings work the same way, reading frames straight from the video blobs in the same table:
 
-## When to use each interface {#when-to-use-each-interface}
+```python
+@udf(data_type=pa.list_(pa.float32(), 768), num_gpus=1,
+     input_columns=["episode_index", "frame_index"])
+class EmbedFromBlob:                    # SigLIP2 loads once per worker
+    def __call__(self, episode_index, frame_index):
+        blob = self.videos.take_blobs("video_bytes", indices=[vrow])[0]
+        frame = VideoDecoder(blob).get_frames_at([pos]).data[0]
+        ...
+```
 
-| Interface | Best for |
-|:---|:---|
-| `LeRobotDataset` | Standard LeRobot training loops and policy code |
-| `LeRobotLanceDataset` | Drop-in training on Lance-backed image datasets |
-| `LeRobotLanceVideoDataset` | Drop-in training on Lance-backed video datasets |
-| LanceDB | Interactive inspection, filtering, curation, search, indexing, and materializing subsets |
-| `lance.dataset(...)` | Lower-level schema, fragment, index, and blob access |
+**Search** is an index on those columns: a vector index over the embeddings built in 29.7 s across 27.6M rows, a full-text index over the instructions in 7.0 s, queries in 10 to 54 ms.
+
+**Curation** is one query across all of it. Semantic search with a predicate on the derived score, no join, no second system:
+
+```python
+tbl.search(vec("a gripper closing on an object"), vector_column_name="emb_siglip2") \
+   .where("jerk_score > 1.2875")        # the roughest 1% of frames
+   .limit(4)
+```
+
+**Mining** is the same query pointed at the rare cases. `tbl.search().where("jerk_score > 1.2875 AND success = false")` pulls the rough, failed frames out of 27.6M rows in milliseconds, ready to become a fine-tuning set or a labeling queue.
+
+**EDA** is a scan of the tabular columns: a pass over all 27.6M rows reads 2.52 GB in 190 s and decodes no video.
+
+Then drop what you found from training with `episodes=[...]` instead of rewriting files. The reader ignores columns it does not know, and the table is versioned, so curation and training share one copy of the data at a version you can reopen.
+
+<Info>
+Lance datasets are read-only in LeRobot: record and edit in the default format, then convert.
+</Info>
+
+Public examples to try everything above: [`lance-format/pusht-lance`](https://huggingface.co/datasets/lance-format/pusht-lance) and friends under the [`lance-format`](https://huggingface.co/lance-format) org.

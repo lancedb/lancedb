@@ -134,6 +134,10 @@
     {
       "source": "/reranking/:slug*",
       "destination": "/reranking"
+    },
+    {
+      "source": "/training",
+      "destination": "/training/data-loading"
     }
   ],
   "navigation": {
@@ -209,7 +213,7 @@
             "group": "Training",
             "pages": [
               "training/why-lancedb",
-              "training/index",
+              "training/data-loading",
               "training/torch"
             ]
           },
@@ -222,6 +226,7 @@
               "management/table",
               "tables/branching",
               "management/materialized-view",
+              "management/view",
               "management/function"
             ]
           },
@@ -250,11 +255,36 @@
             ]
           },
           {
+            "group": "Security",
+            "pages": [
+              "enterprise/authentication",
+              "governance/authorization",
+              "enterprise/security"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "enterprise/index",
+              "enterprise/architecture",
+              {
+                "group": "Cloud Providers",
+                "pages": [
+                  "enterprise/deployment/index",
+                  "enterprise/deployment/azure"
+                ]
+              },
+              "enterprise/benchmarks"
+            ]
+          },
+          {
             "group": "SQL Reference",
             "pages": [
               "sql/index",
+              "search/sql/index",
               "sql/data-types",
               "sql/select",
+              "search/sql/fts-sql",
               "sql/subqueries",
               "sql/join",
               "sql/aggregation",
@@ -279,7 +309,8 @@
                 "group": "FAQ",
                 "pages": [
                   "faq/index",
-                  "faq/faq-oss"
+                  "faq/faq-oss",
+                  "faq/faq-enterprise"
                 ]
               }
             ]

@@ -4,6 +4,7 @@ sidebarTitle: "Scalar Index"
 description: "Learn how to use scalar indexes in LanceDB for efficient metadata filtering and query optimization."
 icon: "tree"
 ---
+
 import {
     PyScalarIndexBuild as ScalarIndexBuild,
     PyScalarIndexWait as ScalarIndexWait,
@@ -27,7 +28,16 @@ LanceDB supports four types of scalar indexes:
 - `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_contains_all` and `array_contains_any` queries.
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
 
-## Choosing the Right Index Type {#choosing-the-right-index-type}
+<Tip title="Working with scalar indices">
+Scalar indices serve as a foundational optimization layer, accelerating filtering across diverse search workloads. They can be combined with:
+
+- Vector search (prefilter results using metadata)
+- Full-text search (combining keyword matching with structured filters) 
+- SQL scans (optimizing WHERE clauses on scalar columns)
+- Key-value lookups (enabling rapid primary key-based retrievals)
+</Tip>
+
+## Choosing the Right Index Type
 
 | Data Type                                                       | Filter                                    | Index Type   |
 |:----------------------------------------------------------------|:------------------------------------------|:-------------|
@@ -36,9 +46,9 @@ LanceDB supports four types of scalar indexes:
 | List of low cardinality of numbers or strings                   | `array_has_any`, `array_has_all`          | `LABEL_LIST` |
 | String or binary (`Utf8`, `LargeUtf8`, `Binary`, `LargeBinary`) | `contains(col, 'needle')`                 | `FM`         |
 
-## Scalar Index Operations {#scalar-index-operations}
+## Scalar Index Operations
 
-### 1\. Build the Index {#1-build-the-index}
+### 1. Build the Index
 
 You can create multiple scalar indexes within a table. By default, the index will be `BTREE`, but you can always configure another type like `BITMAP`
 
@@ -52,7 +62,7 @@ You can create multiple scalar indexes within a table. By default, the index wil
 If you are using LanceDB Enterprise, the `create_scalar_index` API returns immediately, but the building of the scalar index is asynchronous. To wait until all data is fully indexed, you can specify the `wait_timeout` parameter on `create_scalar_index()` or call `wait_for_index()` on the table.
 </Note>
 
-### 2\. Check Index Status {#2-check-index-status}
+### 2. Check Index Status
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -62,7 +72,7 @@ If you are using LanceDB Enterprise, the `create_scalar_index` API returns immed
 
 `wait_for_index(...)` waits until the named scalar indexes exist and `index_stats(...)` reports `num_unindexed_rows == 0`. If a table is receiving steady writes, that fully indexed state may not stabilize before the timeout.
 
-### 3\. Update the Index {#3-update-the-index}
+### 3. Update the Index
 
 Updating the table data (adding, deleting, or modifying records) requires that you also update the scalar index. This can be done by calling `optimize`, which will trigger an update to the existing scalar index.
 
@@ -76,7 +86,7 @@ Updating the table data (adding, deleting, or modifying records) requires that y
 New data added after creating the scalar index will still appear in search results if optimize is not used, but with increased latency due to a flat search on the unindexed portion. LanceDB Enterprise automates the optimize process, minimizing the impact on search speed.
 </Note>
 
-### 4\. Run Indexed Searches {#4-run-indexed-searches}
+### 4. Run Indexed Searches
 
 The following scan will be faster if the column `book_id` has a scalar index:
 
@@ -94,7 +104,7 @@ Scalar indexes can also speed up scans containing a vector search or full text s
     </CodeBlock>
 </CodeGroup>
 
-## Indexing nested fields {#indexing-nested-fields}
+## Indexing nested fields
 
 Scalar indexes can target a scalar field inside a struct by passing its full dotted path. The path is preserved end to end: it's the value you pass to `create_scalar_index`, it's what `list_indices()` reports under `columns`, and it's the column reference you use in filter predicates.
 
@@ -110,7 +120,7 @@ table.search().where("metadata.user_id = 42").limit(1).to_list()
 Nested paths follow Lance field-path semantics: dot-separate each struct field from root to leaf (for example, `metadata.author.name`). The same convention applies to FTS and vector indexes.
 </Note>
 
-## FM-Index for substring search {#fm-index-for-substring-search}
+## FM-Index for substring search
 
 The `FM` index is a scalar index built over string or binary columns that
 accelerates substring lookups expressed as `contains(col, 'needle')`. Unlike the
@@ -129,7 +139,7 @@ Use the FM-Index when:
 Pick `FTS` instead when you need word-level relevance ranking, phrase queries,
 or language-aware tokenization.
 
-### Create an FM-Index {#create-an-fm-index}
+### Create an FM-Index
 
 Build an FM-Index with the async `create_index` API by passing the `Fm` config in
 Python or `Index.fm()` in TypeScript. In Rust, use `Index::Fm(FmIndexBuilder::default())`.
@@ -166,7 +176,7 @@ table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 
 `list_indices()` reports the index type as `"Fm"`.
 
-## Index UUID Columns {#index-uuid-columns}
+## Index UUID Columns
 
 LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`), enabling efficient lookups and filtering on UUID-based primary keys.
 
@@ -177,7 +187,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
 - TypeScript SDK version `0.19.0` or later
 </Note>
 
-### 1\. Define UUID Type {#1-define-uuid-type}
+### 1. Define UUID Type
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -185,7 +195,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-### 2\. Generate UUID Data {#2-generate-uuid-data}
+### 2. Generate UUID Data
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -193,7 +203,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-### 3\. Create Table with UUID Column {#3-create-table-with-uuid-column}
+### 3. Create Table with UUID Column
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -201,7 +211,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-### 4\. Create and Wait for the Index {#4-create-and-wait-for-the-index}
+### 4. Create and Wait for the Index
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -209,7 +219,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-### 5\. Perform Operations with the UUID Index {#5-perform-operations-with-the-uuid-index}
+### 5. Perform Operations with the UUID Index
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -217,7 +227,7 @@ LanceDB supports scalar indexes on UUID columns (stored as `FixedSizeBinary(16)`
     </CodeBlock>
 </CodeGroup>
 
-## Index nested fields {#index-nested-fields}
+## Index nested fields
 
 You can build a scalar index on a field inside a struct column by passing the
 canonical dot-separated path to `create_index`. This is useful when filters

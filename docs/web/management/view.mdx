@@ -1,0 +1,32 @@
+---
+title: "Views"
+sidebarTitle: "View"
+description: "A saved query, evaluated when read. The non-materialized counterpart to a materialized view."
+icon: eye
+keywords: ["view", "create view", "sql", "catalog"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. The embedded form
+of LanceDB has no server to provide it -- see
+[Architecture](/architecture) for what differs between the two.
+
+A view stores a **query**, not rows. Reading it runs the query against current
+data, so a view is never stale -- and never faster than the query it wraps.
+
+It is the counterpart to a
+[materialized view](/management/materialized-view), which stores rows and is
+brought up to date by a refresh. Both are [catalog objects](/basics/catalog)
+defined by a query; the difference is entirely when that query runs.
+
+| | View | Materialized view |
+| --- | --- | --- |
+| Stores | the query | the rows |
+| Freshness | always current | as of the last refresh |
+| Read cost | the full query, every read | a table scan |
+| Write cost | none | a refresh |
+
+Views are created in SQL, over the [Flight SQL endpoint](/search/sql) -- there
+is no SDK method, because the thing a view stores *is* a SQL statement. See
+[DDL](/sql/ddl#views).

@@ -1,0 +1,29 @@
+---
+title: "Connecting a SQL client"
+sidebarTitle: "Client Connection"
+description: "Reaching the Arrow Flight SQL endpoint from Python or TypeScript."
+icon: plug
+keywords: ["flight sql", "client", "connect", "arrow"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. The embedded form
+of LanceDB has no server to provide it -- see
+[Architecture](/architecture) for what differs between the two.
+
+SQL is served over an
+[Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint, so any Flight SQL client reaches it and results arrive as Arrow
+record batches.
+
+From Python, the connection runs SQL directly without a separate client:
+
+```python
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
+table = reader.read_all()
+```
+
+The TypeScript SDK has no SQL method; use a Flight SQL client. See
+[SDKs and SQL](/basics/apis) for the full comparison, and the
+[SQL reference](/sql) for the dialect.

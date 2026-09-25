@@ -7,7 +7,7 @@ icon: car
 
 This example walks through fine-tuning an autonomous vehicle (AV) perception model on targeted failure-mode slices of [BDD100K](https://www.bdd100k.com/) — riders, nighttime pedestrians, and distant pedestrians — using LanceDB as a single multimodal table from raw JPEG bytes through to the PyTorch training loop.
 
-The full pipeline lives in the [lancedb/training](https://github.com/lancedb/training/tree/main/object-detection) repository. This page focuses on the parts most relevant to training: defining curated splits as materialized views, loading them through the [`Permutation`](/training/) API, and pinning checkpoints to an exact data version.
+The full pipeline lives in the [lancedb/training](https://github.com/lancedb/training/tree/main/object-detection) repository. This page focuses on the parts most relevant to training: defining curated splits as materialized views, loading them through the [`Permutation`](/training/data-loading) API, and pinning checkpoints to an exact data version.
 
 ## What you get {#what-you-get}
 
@@ -155,7 +155,7 @@ with gconn.local_ray_context():
 
 ## 4\. PyTorch DataLoader via the Permutation API {#4-pytorch-dataloader-via-the-permutation-api}
 
-The training script doesn't know about the filter — it opens a view by name and reads through the [`Permutation`](/training/) API. Each DataLoader worker reopens its own connection lazily, reads Arrow batches directly from Lance (zero-copy, no intermediate file format), and the collate function decodes the whole batch in one pass. `Permutation` provides random-access indexing over the table, so shuffling is a cheap pointer rewrite rather than a full-dataset shuffle on disk.
+The training script doesn't know about the filter — it opens a view by name and reads through the [`Permutation`](/training/data-loading) API. Each DataLoader worker reopens its own connection lazily, reads Arrow batches directly from Lance (zero-copy, no intermediate file format), and the collate function decodes the whole batch in one pass. `Permutation` provides random-access indexing over the table, so shuffling is a cheap pointer rewrite rather than a full-dataset shuffle on disk.
 
 ```py Python icon=Python
 import lancedb

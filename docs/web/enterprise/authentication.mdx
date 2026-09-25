@@ -1,0 +1,26 @@
+---
+title: "Authentication"
+sidebarTitle: "Authentication"
+description: "Establishing who is calling: API keys and identity provider integration."
+icon: key
+keywords: ["authentication", "api key", "oidc", "identity"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. The embedded form
+of LanceDB has no server to provide it -- see
+[Architecture](/architecture) for what differs between the two.
+
+A deployment authenticates every request before
+[authorization](/governance/authorization) decides what it may do.
+
+```python
+db = lancedb.connect("db://my-database", api_key="...", region="us-east-1")
+```
+
+An API key belongs in the environment rather than in source. See
+[Database](/management/database#deployment) for the connection options.
+
+Embedded LanceDB has nothing to authenticate to -- your process opens the files
+directly, and the object store's own credentials are the only gate.

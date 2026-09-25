@@ -1,0 +1,32 @@
+---
+title: "Full-text search with SQL"
+sidebarTitle: "Full-Text Search"
+description: "Running full-text search from SQL, with fuzzy, phrase, boolean and boost queries."
+icon: magnifying-glass
+keywords: ["fts", "sql", "full text search", "fuzzy", "phrase"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. The embedded form
+of LanceDB has no server to provide it -- see
+[Architecture](/architecture) for what differs between the two.
+
+Full-text search is available in SQL as the [`fts()`](/sql/functions#fts) table
+function, which returns matching rows plus a `_score` column:
+
+```sql
+SELECT id, text, _score
+FROM fts('my_docs', 'puppy')
+ORDER BY _score DESC
+LIMIT 5
+```
+
+The second argument is a bare query string, or a JSON query object for the
+fuzzy, phrase, boolean, boost and multi-match forms.
+
+For a keyword test that needs no score,
+[`contains_tokens`](/sql/scalar-functions#contains-tokens) is a predicate usable
+directly in `WHERE`, and is accelerated by the full-text index.
+
+The query-builder equivalent is [Full-Text Search](/search/full-text-search).

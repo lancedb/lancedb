@@ -74,11 +74,11 @@ export const PyFrameworksLangchainVectorStoreConfig = "db_url = \"db://lang_test
 
 export const PyFrameworksLerobotFilterFrames = "frame_rows = (\n    frames.search()\n    .where(\"episode_index = 0 AND frame_index < 10\", prefilter=True)\n    .select([\"episode_index\", \"frame_index\", \"timestamp\", \"action\"])\n    .limit(10)\n    .to_list()\n)\n\nfor row in frame_rows:\n    print(row[\"episode_index\"], row[\"frame_index\"], row[\"timestamp\"])\n";
 
-export const PyFrameworksLerobotLancedbImageDataset = "from lerobot_lancedb import LeRobotLanceDataset\n\ndataset = LeRobotLanceDataset(\n    repo_id=\"your-org/your-lerobot-lance-images\",\n    delta_timestamps={\n        \"observation.images.front\": [-0.2, -0.1, 0.0],\n    },\n    return_uint8=True,\n)\n\nsample = dataset[0]\nprint(sample[\"observation.state\"].shape)\nprint(sample[\"action\"].shape)\n";
+export const PyFrameworksLerobotLoad = "from lerobot.datasets import LeRobotDataset\n\n# Hub dataset repo: storage_format in meta/info.json routes to the Lance reader\ndataset = LeRobotDataset(\"lance-format/pusht-lance\")\n\n# HF Storage Bucket, read in place, nothing downloaded\ndataset = LeRobotDataset(\"lance-format/lerobot-tests/pusht-lance\", repo_type=\"bucket\")\n\nsample = dataset[100]\nprint(sample[\"observation.state\"].shape)\nprint(sample[\"observation.image\"].shape)\n";
 
-export const PyFrameworksLerobotLancedbVideoDataset = "from lerobot_lancedb import LeRobotLanceVideoDataset\n\nvideo_dataset = LeRobotLanceVideoDataset(\n    repo_id=\"lance-format/lerobot-pusht-lance\",\n    delta_timestamps={\n        \"observation.images.image\": [-0.2, -0.1, 0.0],\n    },\n    return_uint8=True,\n)\n\nvideo_sample = video_dataset[0]\nprint(video_sample[\"observation.images.image\"].shape)\n";
+export const PyFrameworksLerobotOpenLanceTables = "import lancedb\n\ndb = lancedb.connect(\"hf://datasets/lance-format/pusht-lance\")\nframes = db.open_table(\"frames\")\nvideos = db.open_table(\"videos\")\n\nprint(frames.count_rows(), videos.count_rows())\nprint(frames.schema)\n";
 
-export const PyFrameworksLerobotOpenLanceTables = "import lancedb\n\ndb = lancedb.connect(\"hf://datasets/lance-format/lerobot-pusht-lance/data\")\nframes = db.open_table(\"frames\")\nepisodes = db.open_table(\"episodes\")\nvideos = db.open_table(\"videos\")\n\nprint(len(frames), len(episodes), len(videos))\nprint(frames.schema)\n";
+export const PyFrameworksLerobotTrainReady = "import torch\n\ndataset = LeRobotDataset(\n    \"lance-format/pusht-lance\",\n    delta_timestamps={\"observation.image\": [-0.2, -0.1, 0.0]},\n    return_uint8=True,\n)\nloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)\nbatch = next(iter(loader))\nprint(batch[\"observation.image\"].shape)  # [32, 3, C, H, W]\n";
 
 export const PyFrameworksLlamaindexAddReranker = "from lancedb.rerankers import ColbertReranker\n\nreranker = ColbertReranker()\nvector_store._add_reranker(reranker)\n";
 

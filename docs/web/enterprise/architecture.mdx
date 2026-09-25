@@ -1,0 +1,20 @@
+---
+title: "Enterprise architecture"
+sidebarTitle: "Architecture"
+description: "The tiers a deployment runs, and how they scale independently."
+icon: cubes
+keywords: ["architecture", "control plane", "data plane", "indexer"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. The embedded form
+of LanceDB has no server to provide it -- see
+[Architecture](/architecture) for what differs between the two.
+
+A deployment separates compute from storage so each scales on its own: table
+data and indexes live in object storage, while query serving and background work
+run on machines that can be replaced without any of them owning the data.
+
+[Architecture](/architecture) covers this alongside the embedded form, which is
+the comparison most readers want first.

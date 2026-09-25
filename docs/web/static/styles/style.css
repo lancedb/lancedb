@@ -3,6 +3,20 @@
   --banner-right: #e55a2b;
 }
 
+/* Mintlify's KaTeX stylesheet currently serves the AMS font from a broken URL. */
+@font-face {
+  font-family: "LanceDB KaTeX AMS";
+  src: url("https://cdn.jsdelivr.net/npm/katex@0.16.0/dist/fonts/KaTeX_AMS-Regular.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.katex .mathbb,
+.katex .textbb {
+  font-family: "LanceDB KaTeX AMS", "KaTeX_AMS", serif !important;
+}
+
 /* Mintlify banner gradient */
 #banner,
 :where(.banner, [data-banner], [class*="Banner_banner"]) {

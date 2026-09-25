@@ -1,0 +1,26 @@
+---
+title: "Authorization"
+sidebarTitle: "Authorization"
+description: "Who may do what: privileges granted on catalog objects to principals, groups, roles, and API keys."
+icon: shield-halved
+keywords: ["authorization", "authz", "privileges", "rbac", "access control"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. The embedded form
+of LanceDB has no server to provide it -- see
+[Architecture](/architecture) for what differs between the two.
+
+[Authentication](/enterprise/authentication) establishes who is calling.
+Authorization decides what they may do.
+
+An access control entry grants **one privilege** on **one object** to **one
+subject**. Objects are addressed by kind and path -- `system`, `database:db`,
+`namespace:db/ns`, `table:db/ns/table` -- and the hierarchy is not decorative:
+reaching a table requires `USAGE` on the namespace containing it and on the
+database containing that.
+
+Embedded LanceDB has no such layer. Access is whatever the object store
+enforces on the bucket or directory, which is coarser and has no concept of a
+table.
