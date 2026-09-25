@@ -1,0 +1,151 @@
+---
+title: "SQL data types"
+sidebarTitle: "Data Types"
+description: "How Lance columns appear to SQL, including the types SQL has no name for."
+icon: shapes
+keywords: ["sql types", "arrow", "cast", "pseudo-columns", "vector", "blob", "json"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+There is no SQL type layer over Lance storage. The table provider hands
+DataFusion the dataset's Arrow schema directly, so a column is the same object
+to the query engine as it is to the format.
+
+The consequence is that SQL type names here are **spellings of Arrow types**,
+not a system that maps onto them. [Data types](/sql/data-types) documents the
+storage side; this page covers what changes when you reach a column from SQL.
+
+## The Arrow types a column can be {#supported}
+
+| Category | Types |
+| --- | --- |
+| Null | `null` |
+| Boolean | `bool` |
+| Integer | `int8`, `int16`, `int32`, `int64` and their `uint` counterparts |
+| Floating point | `float16`, `float32`, `float64` |
+| String | `utf8`, `large_utf8` |
+| Binary | `binary`, `large_binary`, `fixed_size_binary(n)` |
+| Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp` (with or without timezone), `duration` |
+| Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
+| Dictionary | `dictionary(key, value)` |
+
+Two limits are worth stating because they surface as schema errors rather than
+as documentation:
+
+- A `map` with `keys_sorted = true` is rejected. Sorted-key maps do not survive
+  the round trip through the Python bindings, so they are refused rather than
+  silently unsorted.
+- Not every type is legal as a `fixed_size_list` child. The vector case is,
+  which is what matters in practice.
+
+## SQL names for Arrow types {#names}
+
+| SQL | Arrow |
+| --- | --- |
+| `BOOLEAN` | `Boolean` |
+| `TINYINT` `SMALLINT` `INT` `BIGINT` | `Int8` `Int16` `Int32` `Int64` |
+| `UTINYINT` … `UBIGINT` | the unsigned counterparts |
+| `REAL` / `FLOAT` | `Float32` |
+| `DOUBLE` | `Float64` |
+| `VARCHAR` / `TEXT` / `STRING` | `Utf8` |
+| `BYTEA` / `BINARY` | `Binary` |
+| `DATE` | `Date32` |
+| `TIME` | `Time64` |
+| `TIMESTAMP` | `Timestamp`, with or without a timezone |
+| `INTERVAL` | `Interval` |
+| `STRUCT` / `LIST` / `MAP` | the nested equivalents |
+
+DataFusion's [type reference](https://datafusion.apache.org/user-guide/sql/data_types.html)
+describes the full mapping.
+
+## Types SQL has no name for {#no-name}
+
+Three column kinds you will meet that no SQL type name covers.
+
+### Vectors {#vectors}
+
+A vector column is `FixedSizeList<Float32, dim>`. It is selectable, testable for
+nullness, and joinable like any other column:
+
+```sql
+SELECT id FROM documents WHERE vector IS NOT NULL
+```
+
+<Warning>
+Arithmetic over it is **list** arithmetic. There is no SQL similarity operator
+and no SQL form for vector search — run the search in an SDK and use SQL over
+its result. See [SDKs and SQL](/basics/apis#no-vector-sql).
+</Warning>
+
+### JSON {#json}
+
+Stored as JSONB in `large_binary` with the `lance.json` extension name. It reads
+through accessor functions rather than a `->` operator:
+
+```sql
+SELECT json_get_string(data, 'name') FROM events
+WHERE json_get_int(data, 'status') = 200
+```
+
+`json_get`, its typed variants, and `json_extract` are **index-accelerated** by a
+JSON scalar index. See [Functions](/sql/scalar-functions#json).
+
+### Blobs {#blobs}
+
+A blob column is read either as its binary contents or as a **description** — a
+pointer plus metadata, without fetching the bytes. That choice changes the
+column's Arrow type, and therefore the schema your query sees.
+
+<Warning>
+The default reads blob columns as descriptions and other binary columns as
+binary. A query selecting a blob column and expecting bytes gets a struct.
+</Warning>
+
+### bfloat16 {#bfloat16}
+
+Sixteen-bit floats in the bfloat16 layout, stored as `fixed_size_binary(2)`.
+Useful as a vector element type when halving the memory matters more than the
+precision does.
+
+## Geospatial {#geospatial}
+
+<Warning>
+Lance defines geospatial types and `st_*` functions on
+[GeoArrow](https://geoarrow.org), but they sit behind an optional build feature
+that **LanceDB does not ship**. Calling `st_intersects` and friends returns an
+error naming the missing feature rather than an unknown-function error, and the
+spatial index is gated the same way.
+</Warning>
+
+Geometry can still be stored -- it is binary, and binary columns work -- but
+nothing interprets it. Filter on a bounding box held in ordinary numeric
+columns if you need spatial predicates today.
+
+## Pseudo-columns {#pseudo-columns}
+
+Row metadata, available only when named — so it stays out of `SELECT *`:
+
+| Column | Type | |
+| --- | --- | --- |
+| `_rowid` | `UInt64` | stable row identifier |
+| `_rowaddr` | `UInt64` | physical row address |
+| `_rowoffset` | `UInt64` | offset within the fragment |
+| `_score` | `Float32` | relevance, from [`fts()`](/sql/functions#fts) |
+
+`_rowid` and `_rowaddr` are declared nullable, but not because a row lacks one —
+their validity bitmap is reused internally as a selection vector. Do not read a
+null there as meaningful.
+
+`_rowid` is what [materialized views](/management/materialized-view) depend on,
+which is why a source table needs stable row ids enabled at creation.
+
+## Casting {#casting}
+
+```sql
+SELECT CAST(identifier AS VARCHAR) FROM documents
+SELECT TRY_CAST(maybe_number AS BIGINT) FROM raw
+```
+
+`TRY_CAST` yields null rather than failing the query on a value that will not
+convert. See [Operators](/sql/operators#casting).

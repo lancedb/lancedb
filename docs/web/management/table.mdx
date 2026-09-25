@@ -1,0 +1,1137 @@
+---
+title: "Tables"
+sidebarTitle: "Table"
+description: "The object most operations act on: creating, opening, renaming, cloning and dropping one."
+icon: table
+keywords: ["table", "create_table", "open_table", "clone", "rename", "drop"]
+---
+
+import {
+    PySchemaAddSetup as SchemaAddSetup,
+    TsSchemaAddSetup as TsSchemaAddSetup,
+    RsSchemaAddSetup as RsSchemaAddSetup,
+    PyAddColumnsDefaultValues as AddColumnsDefaultValues,
+    TsAddColumnsDefaultValues as TsAddColumnsDefaultValues,
+    RsAddColumnsDefaultValues as RsAddColumnsDefaultValues,
+    PyAddColumnsNullable as AddColumnsNullable,
+    TsAddColumnsNullable as TsAddColumnsNullable,
+    RsAddColumnsNullable as RsAddColumnsNullable,
+    PySchemaAlterSetup as SchemaAlterSetup,
+    TsSchemaAlterSetup as TsSchemaAlterSetup,
+    RsSchemaAlterSetup as RsSchemaAlterSetup,
+    PyAlterColumnsRename as AlterColumnsRename,
+    TsAlterColumnsRename as TsAlterColumnsRename,
+    RsAlterColumnsRename as RsAlterColumnsRename,
+    PyAlterColumnsDataType as AlterColumnsDataType,
+    TsAlterColumnsDataType as TsAlterColumnsDataType,
+    RsAlterColumnsDataType as RsAlterColumnsDataType,
+    PyAlterColumnsNullable as AlterColumnsNullable,
+    TsAlterColumnsNullable as TsAlterColumnsNullable,
+    RsAlterColumnsNullable as RsAlterColumnsNullable,
+    PyAlterColumnsMultiple as AlterColumnsMultiple,
+    TsAlterColumnsMultiple as TsAlterColumnsMultiple,
+    PyAlterColumnsWithExpression as AlterColumnsWithExpression,
+    TsAlterColumnsWithExpression as TsAlterColumnsWithExpression,
+    RsAlterColumnsMultiple as RsAlterColumnsMultiple,
+    RsAlterColumnsWithExpression as RsAlterColumnsWithExpression,
+    PySchemaDropSetup as SchemaDropSetup,
+    TsSchemaDropSetup as TsSchemaDropSetup,
+    RsSchemaDropSetup as RsSchemaDropSetup,
+    PyDropColumnsSingle as DropColumnsSingle,
+    TsDropColumnsSingle as TsDropColumnsSingle,
+    RsDropColumnsSingle as RsDropColumnsSingle,
+    PyDropColumnsMultiple as DropColumnsMultiple,
+    TsDropColumnsMultiple as TsDropColumnsMultiple,
+    RsDropColumnsMultiple as RsDropColumnsMultiple,
+    PyAlterVectorColumn as AlterVectorColumn,
+    TsAlterVectorColumn as TsAlterVectorColumn,
+    RsAlterVectorColumn as RsAlterVectorColumn,
+    PySchemaFieldMetadataMerge as SchemaFieldMetadataMerge,
+    TsSchemaFieldMetadataMerge as TsSchemaFieldMetadataMerge,
+    RsSchemaFieldMetadataMerge as RsSchemaFieldMetadataMerge,
+    PySchemaFieldMetadataReplace as SchemaFieldMetadataReplace,
+    TsSchemaFieldMetadataReplace as TsSchemaFieldMetadataReplace,
+    RsSchemaFieldMetadataReplace as RsSchemaFieldMetadataReplace,
+    PyVersioningBasicSetup as VersioningBasicSetup,
+    TsVersioningBasicSetup as TsVersioningBasicSetup,
+    RsVersioningBasicSetup as RsVersioningBasicSetup,
+    PyVersioningCheckInitialVersion as VersioningCheckInitialVersion,
+    TsVersioningCheckInitialVersion as TsVersioningCheckInitialVersion,
+    RsVersioningCheckInitialVersion as RsVersioningCheckInitialVersion,
+    PyVersioningUpdateData as VersioningUpdateData,
+    TsVersioningUpdateData as TsVersioningUpdateData,
+    RsVersioningUpdateData as RsVersioningUpdateData,
+    PyVersioningAddData as VersioningAddData,
+    TsVersioningAddData as TsVersioningAddData,
+    RsVersioningAddData as RsVersioningAddData,
+    PyVersioningCheckVersionsAfterMod as VersioningCheckVersionsAfterMod,
+    TsVersioningCheckVersionsAfterMod as TsVersioningCheckVersionsAfterMod,
+    RsVersioningCheckVersionsAfterMod as RsVersioningCheckVersionsAfterMod,
+    PyVersioningListAllVersions as VersioningListAllVersions,
+    TsVersioningListAllVersions as TsVersioningListAllVersions,
+    RsVersioningListAllVersions as RsVersioningListAllVersions,
+    PyVersioningRollback as VersioningRollback,
+    TsVersioningRollback as TsVersioningRollback,
+    RsVersioningRollback as RsVersioningRollback,
+    PyVersioningCheckoutLatest as VersioningCheckoutLatest,
+    TsVersioningCheckoutLatest as TsVersioningCheckoutLatest,
+    RsVersioningCheckoutLatest as RsVersioningCheckoutLatest,
+    PyVersioningDeleteData as VersioningDeleteData,
+    TsVersioningDeleteData as TsVersioningDeleteData,
+    RsVersioningDeleteData as RsVersioningDeleteData,
+    PyVersioningTags as VersioningTags,
+    TsVersioningTags as TsVersioningTags,
+    RsVersioningTags as RsVersioningTags,
+    RsVersioningMakeQuotesReader as RsVersioningMakeQuotesReader,
+} from '/snippets/tables.mdx';
+import {
+    PyMultimodalImports as MultimodalImports,
+    TsMultimodalImports as TsMultimodalImports,
+    RsMultimodalImports as RsMultimodalImports,
+    PyCreateDummyData as CreateDummyData,
+    TsCreateDummyData as TsCreateDummyData,
+    RsCreateDummyData as RsCreateDummyData,
+    PyDefineSchema as DefineSchema,
+    TsDefineSchema as TsDefineSchema,
+    RsDefineSchema as RsDefineSchema,
+    PyIngestData as IngestData,
+    TsIngestData as TsIngestData,
+    RsIngestData as RsIngestData,
+    PySearchData as SearchData,
+    TsSearchData as TsSearchData,
+    RsSearchData as RsSearchData,
+    PyProcessResults as ProcessResults,
+    TsProcessResults as TsProcessResults,
+    RsProcessResults as RsProcessResults,
+    PyBlobApiSchema as BlobApiSchema,
+    TsBlobApiSchema as TsBlobApiSchema,
+    RsBlobApiSchema as RsBlobApiSchema,
+    PyBlobApiIngest as BlobApiIngest,
+    TsBlobApiIngest as TsBlobApiIngest,
+    RsBlobApiIngest as RsBlobApiIngest,
+    PyBlobApiToPandas as BlobApiToPandas,
+    PyQueryToPandasKwargs as QueryToPandasKwargs,
+} from '/snippets/multimodal.mdx';
+
+A table is rows and columns, versioned. It is what searches read, what writes
+commit to, and what indexes and branches belong to.
+
+This page covers the table as a catalog object. Getting data into one is
+[Ingest](/ingestion); changing its shape is
+[Schema evolution](/management/table#schema).
+
+<Note>
+Tables are created and dropped in SQL with [`CREATE TABLE` and `DROP TABLE`](/sql/ddl#tables).
+</Note>
+
+## What a table carries {#carries}
+
+| | |
+| --- | --- |
+| **Columns** | including vectors, blobs, and [computed](/feature-engineering/add-computed-column) columns |
+| **Versions** | every write commits one, so reads can [travel back](/management/table#versioning) |
+| **Indexes** | vector, full-text and scalar, built over its columns |
+| **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
+
+## Creating {#create}
+
+<CodeGroup>
+```python Python icon="python"
+tbl = db.create_table("documents", data)
+tbl = db.create_table("documents", schema=schema)     # empty, typed
+```
+
+```typescript TypeScript icon="square-js"
+const tbl = await db.createTable("documents", data);
+const tbl = await db.createEmptyTable("documents", schema);
+```
+
+```sql SQL
+CREATE TABLE documents (id BIGINT, title VARCHAR)
+```
+</CodeGroup>
+
+`data` can be a list of objects, an Arrow table or reader, a pandas or polars
+frame, or Pydantic models. [Ingesting data](/ingestion) covers each, plus
+`exist_ok` and `mode="overwrite"` for re-runnable scripts.
+
+<Warning>
+An explicit schema is where nullability is decided, and where you opt into
+**stable row ids** -- which cannot be enabled later and are required for a
+[materialized view](/management/materialized-view) source. See
+[Limits](/basics/limits#schema).
+</Warning>
+
+## Opening and listing {#open}
+
+<CodeGroup>
+```python Python icon="python"
+tbl = db.open_table("documents")
+db.table_names()
+db.table_exists("documents")
+```
+
+```typescript TypeScript icon="square-js"
+const tbl = await db.openTable("documents");
+await db.tableNames();
+```
+
+</CodeGroup>
+
+Each accepts `namespace_path` to act inside a [namespace](/management/namespace)
+rather than at the database root. TypeScript has no `tableExists`.
+
+## Renaming and cloning {#rename-clone}
+
+```python
+db.rename_table("documents", "docs")
+
+db.clone_table(
+    "docs_snapshot",
+    source_uri="s3://bucket/db/documents.lance",
+    source_version=42,       # or source_tag="release-1"
+    is_shallow=True,
+)
+```
+
+A **shallow** clone -- the default -- references the source's data files rather
+than copying them, so it is fast and cheap regardless of table size. It is the
+practical way to branch an experiment off a known version, or to pin a training
+set to the exact version a model saw.
+
+<Warning>
+A shallow clone depends on the source's files continuing to exist. If the source
+is [compacted](/maintenance/compaction) past the retention window, the version
+the clone points at can be pruned. Use a deep clone (`is_shallow=False`) when
+the copy has to outlive the source's history.
+</Warning>
+
+## Dropping {#drop}
+
+<CodeGroup>
+```python Python icon="python"
+db.drop_table("documents")
+job = db.drop_table_async("documents")
+db.drop_all_tables()
+```
+
+```typescript TypeScript icon="square-js"
+await db.dropTable("documents");
+const job = await db.dropTableAsync("documents");
+await db.dropAllTables();
+```
+
+```sql SQL
+DROP TABLE documents
+```
+</CodeGroup>
+
+<Warning>
+Dropping removes the table and **every version of it**.
+[Versioning](/management/table#versioning) does not survive a drop, and neither
+`drop_all_tables` nor `drop_database` asks for confirmation.
+</Warning>
+
+On a large table the drop can take a while, so `drop_table_async` returns a
+[job](/basics/jobs) rather than blocking.
+
+## The full surface {#surface}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_table` | `createTable` | `CREATE TABLE` |
+| create empty | `create_table(schema=)` | `createEmptyTable` | `CREATE TABLE` |
+| open | `open_table` | `openTable` | -- |
+| list | `table_names`, `list_tables` | `tableNames`, `listTables` | -- |
+| exists | `table_exists` | -- | -- |
+| rename | `rename_table` | `renameTable` | -- |
+| clone | `clone_table` | `cloneTable` | -- |
+| drop | `drop_table`, `drop_table_async` | `dropTable`, `dropTableAsync` | `DROP TABLE` |
+| drop all | `drop_all_tables` | `dropAllTables` | -- |
+
+## Data types {#data-types}
+
+A table's schema is an **Arrow schema** -- there is no separate LanceDB type
+system mapped onto storage, so a column is the same object to the query engine
+as it is to the format.
+
+| Category | Types |
+| --- | --- |
+| Numeric | `int8`-`int64` and unsigned, `float16`, `float32`, `float64` |
+| String and binary | `utf8`, `large_utf8`, `binary`, `large_binary`, `fixed_size_binary(n)` |
+| Date and time | `date32`, `date64`, `time32`, `time64`, `timestamp`, `duration` |
+| Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
+| Lance extensions | vectors, [JSON](/sql/data-types#json), [blobs](#multimodal), bfloat16 |
+
+A vector column is a `fixed_size_list<float32, dim>` -- an ordinary Arrow type,
+which is why it is selectable and joinable but why arithmetic over it is list
+arithmetic rather than scalar.
+
+See [SQL data types](/sql/data-types) for the full reference, including the
+extension types and pseudo-columns.
+
+## Multimodal data {#multimodal}
+
+Binary data -- images, audio, video, model artifacts -- lives in the table
+beside the structured columns and embeddings that describe it, and is governed
+by the same versioning and search.
+
+Small values go in an ordinary `binary` column. Large ones go in a **blob**
+column, stored out of line so a scan over the other columns stays fast. See
+[Data types](/sql/data-types#blobs) for how the two differ to a reader.
+
+### Store binary data {#multimodal-store-binary-data}
+
+To store binary data, define a binary Arrow field in your schema (`pa.binary()` in Python, `Binary` in TypeScript, and `DataType::Binary` in Rust).
+
+#### 1\. Setup and imports {#multimodal-1-setup-and-imports}
+
+First, import the necessary libraries for LanceDB and Arrow in your SDK.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MultimodalImports}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMultimodalImports}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMultimodalImports}
+    </CodeBlock>
+</CodeGroup>
+
+#### 2\. Prepare data {#multimodal-2-prepare-data}
+
+For this example, we'll create some dummy in-memory images. In a real application, you would read these from files or an API. The key is to convert your data (image, audio, etc.) into a raw `bytes` object.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateDummyData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateDummyData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateDummyData}
+    </CodeBlock>
+</CodeGroup>
+
+#### 3\. Define the schema {#multimodal-3-define-the-schema}
+
+When creating the table, it is **highly recommended** to define the schema explicitly. This ensures that your binary data is correctly interpreted as a `binary` type by Arrow/LanceDB and not as a generic string or list.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DefineSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDefineSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDefineSchema}
+    </CodeBlock>
+</CodeGroup>
+
+#### 4\. Ingest data {#multimodal-4-ingest-data}
+
+Now, create the table using the data and the defined schema.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {IngestData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsIngestData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsIngestData}
+    </CodeBlock>
+</CodeGroup>
+
+### Retrieve and use blobs {#multimodal-retrieve-and-use-blobs}
+
+When you search your LanceDB table, you can retrieve the binary column just like any other metadata.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SearchData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSearchData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSearchData}
+    </CodeBlock>
+</CodeGroup>
+
+#### Convert bytes back to objects {#multimodal-convert-bytes-back-to-objects}
+
+Once you have the bytes back from the search result, you can decode them into the original format (for example, an image object or audio buffer).
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ProcessResults}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsProcessResults}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsProcessResults}
+    </CodeBlock>
+</CodeGroup>
+
+### Large Blobs (Blob API) {#multimodal-large-blobs-blob-api}
+
+For larger files like high-resolution images or videos, Lance provides a specialized **Blob API**. By using a large-binary Arrow type (`pa.large_binary()` in Python, `LargeBinary` in TypeScript, and `DataType::LargeBinary` in Rust) and specific metadata, you enable **lazy loading** and optimized encoding. This allows you to work with massive datasets without loading all binary data into memory upfront.
+
+#### 1\. Define a blob schema {#multimodal-1-define-a-blob-schema}
+
+To use the Blob API, you must mark the column with `{"lance-encoding:blob": "true"}` metadata.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiSchema}
+    </CodeBlock>
+</CodeGroup>
+
+#### 2\. Ingest large blobs {#multimodal-2-ingest-large-blobs}
+
+You can then ingest data normally, and Lance will handle the optimized storage.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiIngest}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiIngest}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiIngest}
+    </CodeBlock>
+</CodeGroup>
+
+<Card>
+For more advanced usage, including random access and file-like reading of blobs, see the
+Lance format's [blob API documentation](https://lance.org/guide/blob/).
+</Card>
+
+#### 3\. Convert blob tables to pandas {#multimodal-3-convert-blob-tables-to-pandas}
+
+When you call `to_pandas()` on a local LanceDB table that contains Blob API columns, the `blob_mode` argument controls how those columns materialize. This is available in the Python SDK on local tables; remote tables raise `NotImplementedError`.
+
+`blob_mode` accepts:
+
+- `"lazy"` (default): returns blob columns as lazy `BlobFile` objects without eagerly materializing their payloads. Use this when you want to stream blob bytes on demand or only inspect a subset of rows. Namespace-backed local tables also use the Lance native blob-aware pandas conversion for lazy blobs; in-memory datasets fall back to the standard PyArrow `to_pandas()` path.
+- `"bytes"`: eagerly materializes each blob as `bytes`. Use this when you need the raw payload in the DataFrame, for example to decode an image or audio clip in-process.
+- `"descriptions"`: returns blob descriptors (offsets, sizes, and positions) instead of the data itself. Use this when you want to plan I/O without paying the cost of loading every blob.
+
+`"bytes"` and `"descriptions"` require a filesystem-backed Lance dataset and are not supported on in-memory tables.
+
+Extra keyword arguments are forwarded to the underlying PyArrow / Lance pandas conversion, so you can also pass options like `split_blocks` or `self_destruct`:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiToPandas}
+    </CodeBlock>
+</CodeGroup>
+
+Query builders also accept `blob_mode` on their `to_pandas()` method:
+
+- Plain scans support `"lazy"`, `"bytes"`, and `"descriptions"` with filters, projections, aliases, `limit`, and `offset`.
+- Vector, FTS, hybrid, and ordered queries can't materialize blob columns through `to_pandas()`; omit blob columns from the projection for those query shapes.
+- This works on both sync and async query builders. Extra PyArrow kwargs like `split_blocks` and `self_destruct` are still forwarded.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {QueryToPandasKwargs}
+    </CodeBlock>
+</CodeGroup>
+
+### Other modalities {#multimodal-other-modalities}
+
+The `pa.binary()` and `pa.large_binary()` types are universal. You can use this same pattern for other types of multimodal data:
+
+- **Audio:** Read `.wav` or `.mp3` files as bytes.
+- **Video:** Store video transitions or full clips using the Blob API.
+- **PDFs/Documents:** Store the raw file content for document search.
+
+### bfloat16 {#multimodal-bfloat16}
+
+Sixteen-bit floats in the bfloat16 layout, stored as `fixed_size_binary(2)`.
+Useful as a vector element type when halving the memory matters more than the
+precision does.
+
+## Schema evolution {#schema}
+
+Schema evolution enables non-breaking modifications to a database table's structure — such as adding columns, altering data types, or dropping fields — to adapt to evolving data requirements without service interruptions. 
+LanceDB supports ACID-compliant schema evolution through granular operations (add/alter/drop columns), allowing you to:
+
+* Iterate Safely: Modify schemas in production with versioned datasets and backward compatibility
+* Scale Seamlessly: Handle ML model iterations, regulatory changes, or feature additions
+* Optimize Continuously: Remove unused fields or enforce new constraints without downtime
+
+<Note>
+In SQL, schema changes are [`ALTER TABLE`](/sql/ddl#columns).
+</Note>
+
+### Schema evolution operations {#schema-schema-evolution-operations}
+
+LanceDB supports four primary schema evolution operations:
+
+1. **Adding new columns**: Extend your table with additional attributes
+2. **Altering existing columns**: Change column names, data types, or nullability
+3. **Updating field metadata**: Attach or change per-column Arrow metadata
+4. **Dropping columns**: Remove unnecessary columns from your schema
+
+
+<Tip title="Schema Evolution Performance">
+Schema evolution operations are applied immediately but do not typically require rewriting all data. However, data type changes may involve more substantial operations.
+</Tip>
+
+Each schema evolution operation commits a new table version and returns status metadata such as
+the committed `version`. Run these operations from a mutable table handle; if you checked out an
+older version for reads, call `checkout_latest` / `checkoutLatest` before modifying the schema.
+
+### Add new columns {#schema-add-new-columns}
+
+You can add new columns to a table with the [`add_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.add_columns) 
+method in Python, [`addColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#addcolumns) in TypeScript/JavaScript, or `add_columns` in Rust. 
+New columns are populated based on SQL expressions you provide.
+
+
+#### Set up the example table {#schema-set-up-the-example-table}
+
+First, let's create a sample table with product data to demonstrate schema evolution:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaAddSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaAddSetup}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+Columns derived from existing data -- SQL expressions over other columns -- are
+covered in [Data evolution](/feature-engineering/data-evolution), because
+deriving values is a feature-engineering job rather than a schema one.
+</Note>
+
+#### Add columns with default values {#schema-add-columns-with-default-values}
+
+Add boolean columns with default values for status tracking:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddColumnsDefaultValues}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsDefaultValues}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsDefaultValues}
+    </CodeBlock>
+</CodeGroup>
+
+#### Add nullable columns {#schema-add-nullable-columns}
+
+Add timestamp columns that can contain NULL values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAddColumnsNullable}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning title="NULL Values in New Columns">
+When adding columns that should contain NULL values, be sure to cast the NULL to the appropriate type, e.g., `cast(NULL as timestamp)`.
+</Warning>
+
+### Alter existing columns {#schema-alter-existing-columns}
+
+You can alter columns using the [`alter_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.alter_columns)
+method in Python, [`alterColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#altercolumns) in TypeScript/JavaScript, or `alter_columns` in Rust. This allows you to:
+
+- Rename a column
+- Change a column's data type
+- Modify nullability (whether a column can contain NULL values)
+
+
+#### Set up the example table {#schema-set-up-the-example-table-2}
+
+Create a table with a custom schema to demonstrate column alterations:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaAlterSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaAlterSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaAlterSetup}
+    </CodeBlock>
+</CodeGroup>
+
+#### Rename columns {#schema-rename-columns}
+
+Change column names to better reflect their purpose:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsRename}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsRename}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsRename}
+    </CodeBlock>
+</CodeGroup>
+
+#### Change data types {#schema-change-data-types}
+
+Convert column data types for better performance or compatibility:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsDataType}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsDataType}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsDataType}
+    </CodeBlock>
+</CodeGroup>
+
+#### Make columns nullable {#schema-make-columns-nullable}
+
+You can alter columns to contain NULL values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsNullable}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsNullable}
+    </CodeBlock>
+</CodeGroup>
+
+Changing a column to nullable affects future writes and merges too: missing values are accepted
+only when the target column is nullable.
+
+#### Multiple changes at once {#schema-multiple-changes-at-once}
+
+Apply several alterations in a single operation:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsMultiple}
+    </CodeBlock>
+</CodeGroup>
+
+#### Expression-based type changes {#schema-expression-based-type-changes}
+
+For transformations that are not simple casts (for example, converting `"$100"` to an integer), use a SQL-expression column add, then drop and rename:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterColumnsWithExpression}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterColumnsWithExpression}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterColumnsWithExpression}
+    </CodeBlock>
+</CodeGroup>
+
+#### Alter embedding types and dimensions {#schema-alter-embedding-types-and-dimensions}
+
+It's quite common to need to change an embedding column's schema, in case a new model becomes available with a different embedding dimension.
+- In Python, the example shows an in-place type update when the cast is compatible.
+- In TypeScript and Rust, the example shows a dimension change (`384 -> 1024`), which cannot be cast in-place.
+
+For dimension changes, use this 3-step pattern: add a new column with the target type, drop the old column, then rename the new column to the original name.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AlterVectorColumn}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAlterVectorColumn}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsAlterVectorColumn}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning>
+**`FixedSizeList` Dimension Changes in TypeScript and Rust**
+
+`alterColumns` / `alter_columns` can cast between compatible types, but changing `FixedSizeList` dimensions (for example `384 -> 1024`) is not a compatible cast.
+For such cases, use `addColumns` / `add_columns` (with `arrow_cast`), then `dropColumns` / `drop_columns`, then rename the replacement column.
+</Warning>
+
+<Warning title="Data Type Changes">
+Changing data types requires rewriting the column data and may be resource-intensive for large tables. Renaming columns or changing nullability is more efficient as it only updates metadata.
+</Warning>
+
+### Update field metadata {#schema-update-field-metadata}
+
+Each column in a LanceDB table can carry a small key/value map of Arrow field metadata — useful
+for annotating columns with units, provenance, PII flags, embedding model versions, or any other
+schema-level context your application needs.
+
+Use [`update_field_metadata`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.update_field_metadata)
+in Python, [`updateFieldMetadata`](https://lancedb.github.io/lancedb/js/classes/Table/#updatefieldmetadata)
+in TypeScript/JavaScript, or `update_field_metadata` in Rust to add, change, or remove these
+key/value pairs without rewriting the column data. Each call commits a new table version and returns
+the new `version`.
+
+Each update targets one field by **dot-path**: top-level columns are addressed by name (for
+example `"embedding"`), and nested fields by their full path (for example `"address.zip"`). By
+default, the keys you pass are **merged** into the field's existing metadata — keys you do not
+mention are preserved, and passing `None` (Python) or `null` (TypeScript) deletes a key. Set
+`replace: true` to swap the field's entire metadata map instead of merging.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaFieldMetadataMerge}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaFieldMetadataMerge}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaFieldMetadataMerge}
+    </CodeBlock>
+</CodeGroup>
+
+To overwrite a field's metadata entirely instead of merging, set `replace` to `true`:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaFieldMetadataReplace}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaFieldMetadataReplace}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaFieldMetadataReplace}
+    </CodeBlock>
+</CodeGroup>
+
+<Tip>
+You can pass multiple updates in a single call to change metadata on several fields at once —
+each call commits a single new table version.
+</Tip>
+
+#### Canonical metadata keys {#schema-canonical-metadata-keys}
+
+You can use any string as a metadata key. By convention, LanceDB treats keys prefixed with
+`lancedb:` as canonical. LanceDB Enterprise displays these keys in the UI, and agents can rely
+on finding this information in a consistent place. Use them when they fit your use case:
+
+| Key | Purpose | Example |
+| --- | --- | --- |
+| `lancedb:description` | Human-readable description of the field. | `"CLIP embedding of the product image"` |
+| `lancedb:tag:<name>` | User-defined key/value tag, where the suffix names the tag category. | `"lancedb:tag:model": "clip"` |
+| `lancedb:logical-column` | Groups related columns into one logical column. For example, `feature_v1` and `feature_v2` might belong to the same logical column. | `"lancedb:logical-column": "feature"` |
+| `lancedb:status` | Life cycle state of the column: `production`, `candidate`, `deprecated`, or `archived`. | `"lancedb:status": "production"` |
+
+<Note>
+These keys are conventions, not enforced constraints. LanceDB does not validate their values,
+but following the conventions keeps your tables consistent with Enterprise tooling.
+</Note>
+
+### Drop columns {#schema-drop-columns}
+
+You can remove columns using the [`drop_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.drop_columns)
+ method in Python, [`dropColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#dropcolumns) in TypeScript/JavaScript, or `drop_columns` in Rust.
+
+
+#### Set Up the example table {#schema-set-up-the-example-table-3}
+
+Create a table with temporary columns that we'll remove:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SchemaDropSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSchemaDropSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSchemaDropSetup}
+    </CodeBlock>
+</CodeGroup>
+
+#### Drop single columns {#schema-drop-single-columns}
+
+Remove individual columns that are no longer needed:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DropColumnsSingle}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDropColumnsSingle}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDropColumnsSingle}
+    </CodeBlock>
+</CodeGroup>
+
+#### Drop multiple columns {#schema-drop-multiple-columns}
+
+Remove several columns at once for efficiency:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DropColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDropColumnsMultiple}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDropColumnsMultiple}
+    </CodeBlock>
+</CodeGroup>
+
+<Warning title="Irreversible Column Deletion">
+Dropping columns cannot be undone. Make sure you have backups or are certain before removing columns.
+</Warning>
+
+## Versioning {#versioning}
+
+This page shows the core table-versioning APIs used in the code snippets for Python, TypeScript, and Rust.
+Each operation below maps directly to methods shown in the examples.
+
+### Basic Versioning Example {#versioning-basic-versioning-example}
+
+Let's create a table with sample data to demonstrate LanceDB's versioning capabilities:
+
+#### Set Up the Table {#versioning-set-up-the-table}
+
+First, let's create a table with some sample data:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningBasicSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningBasicSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningBasicSetup}
+    </CodeBlock>
+</CodeGroup>
+
+<Expandable title="Rust helper used in this page">
+<CodeGroup>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningMakeQuotesReader}
+    </CodeBlock>
+</CodeGroup>
+</Expandable>
+
+#### Check Initial Version {#versioning-check-initial-version}
+
+After creating the table, let's check the initial version information:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningCheckInitialVersion}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningCheckInitialVersion}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningCheckInitialVersion}
+    </CodeBlock>
+</CodeGroup>
+
+### Modify Data {#versioning-modify-data}
+
+When you modify data through operations like update or delete, LanceDB automatically creates new versions.
+
+#### Update Existing Data {#versioning-update-existing-data}
+
+Let's update some existing records to see versioning in action:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningUpdateData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningUpdateData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningUpdateData}
+    </CodeBlock>
+</CodeGroup>
+
+#### Add New Data {#versioning-add-new-data}
+
+Now let's add more records to the table:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningAddData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningAddData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningAddData}
+    </CodeBlock>
+</CodeGroup>
+
+#### Check Version Changes {#versioning-check-version-changes}
+
+Let's see how the versions have changed after our modifications:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningCheckVersionsAfterMod}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningCheckVersionsAfterMod}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningCheckVersionsAfterMod}
+    </CodeBlock>
+</CodeGroup>
+
+### Rollback to Previous Versions {#versioning-rollback-to-previous-versions}
+
+LanceDB supports fast rollbacks to any previous version without data duplication.
+
+#### View All Versions {#versioning-view-all-versions}
+
+First, let's see all the versions we've created:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningListAllVersions}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningListAllVersions}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningListAllVersions}
+    </CodeBlock>
+</CodeGroup>
+
+#### Restore a Version Snapshot {#versioning-restore-a-version-snapshot}
+
+Now let's restore a captured version snapshot:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningRollback}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningRollback}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningRollback}
+    </CodeBlock>
+</CodeGroup>
+
+### Tag-Based Versioning {#versioning-tag-based-versioning}
+
+Numeric table versions like `v3` or `v17` are precise but hard to remember. Tags
+let you attach human-readable labels (e.g., `"prod"`, `"baseline"`,
+`"q3-evaluation"`) to specific versions and check those out by name. They are
+conceptually similar to git tags, and unlike numeric versions, **tagged versions
+are preserved when old versions are pruned** (see the cleanup note at the bottom
+of this page).
+
+The tags API supports the standard CRUD operations — create, list, update, delete —
+plus checking out by tag name.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningTags}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningTags}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningTags}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+Deleting a tag only removes the label, not the version it points to. After
+deletion, the underlying table version becomes eligible for cleanup again.
+</Note>
+
+### Branches {#versioning-branches}
+
+Beyond linear history, LanceDB also supports **branches** — isolated, writable
+lines of history forked from `main` (or a specific version). Whereas tags and
+`checkout` give you read-only views of existing versions, a branch has its own
+writable history, making it ideal for experiments, backfills, and migrations
+that you want to keep separate from production reads on `main`.
+
+Branches are covered in their own guide: see [Branches](/tables/branching).
+
+### Delete Data From the Table {#versioning-delete-data-from-the-table}
+
+Let's demonstrate how deletions also create new versions:
+
+#### Go Back to Latest Version {#versioning-go-back-to-latest-version}
+
+First, let's return to the latest version:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningCheckoutLatest}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningCheckoutLatest}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningCheckoutLatest}
+    </CodeBlock>
+</CodeGroup>
+
+#### Delete Data {#versioning-delete-data}
+
+Now let's delete some data to see how it affects versioning:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {VersioningDeleteData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsVersioningDeleteData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsVersioningDeleteData}
+    </CodeBlock>
+</CodeGroup>
+
+#### Version History and Operations {#versioning-version-history-and-operations}
+
+On a fresh table, the snippets in this guide produce this version sequence:
+
+1. `v1`: create table (`create_table` / `createTable` / `create_table`)
+2. `v2`: update rows (`update`)
+3. `v3`: add rows (`add`)
+4. `v4`: restore snapshot (`restore`) from `version_after_mod`/`versionAfterMod`
+5. `v5`: delete rows (`delete`)
+
+Read-only and checkout operations shown here (`list_versions`/`listVersions`, `version`, `checkout`, `checkout_latest`/`checkoutLatest`) do not create new versions.
+
+The version metadata fields can differ by backend. Direct table-backed version listing exposes a
+timestamp, while namespace-backed listing may expose fields such as `manifest_path`,
+`manifest_size`, `e_tag`, and `timestamp_millis`. In deployments that use managed versioning,
+prefer the table version APIs exposed by LanceDB Enterprise or the namespace service instead of
+mixing in lower-level Lance file operations.
+
+<Note>
+**System Operations**
+
+System operations like `optimize()`, index updates, and table compaction also increment table version numbers.
+In LanceDB OSS and Enterprise, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
+which is when old-version files are removed and disk space is reclaimed.
+
+**Tagged versions are exempt from cleanup.** A version with a tag pointing at it is
+retained regardless of age, and its files are not removed by `optimize()`. To make
+a tagged version eligible for pruning, [delete the tag](#tag-based-versioning) first.
+</Note>

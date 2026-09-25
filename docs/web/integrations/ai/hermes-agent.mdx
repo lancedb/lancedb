@@ -1,0 +1,327 @@
+---
+title: "Hermes Agent"
+sidebarTitle: "Hermes Agent"
+description: "Use LanceDB as a persistent, semantic memory backend for Hermes Agent. Get durable recall across sessions with vector and hybrid search."
+---
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) is a self-hosted, open-source
+personal agent from [Nous Research](https://nousresearch.com). You can talk to it from a
+terminal UI or reach the same agent from Telegram, Discord, and Slack, and it exposes a
+dedicated slot for external *memory providers* that run alongside its built-in notes.
+
+The [LanceDB memory plugin](https://github.com/lancedb/hermes-agent-memory) fills that slot.
+It gives Hermes durable, semantic recall across sessions: state a preference or a project
+convention once, and the agent can retrieve it weeks later in a brand-new session — even when
+you ask for it in completely different words. Everything runs inside Hermes' own Python
+process, storing a single LanceDB table on local disk. There's no memory server to operate.
+
+<Info>
+**The mental model is clean**
+
+- Hermes owns the agent loop
+- LanceDB manages the durable long-term memory and offers semantic recall.
+</Info>
+
+## Why LanceDB fits agent memory {#why-lancedb-fits-agent-memory}
+
+Out of the box, Hermes remembers with a small curated notes file frozen into the system
+prompt, plus lexical (keyword) search over past sessions. Both are useful, but keyword search
+misses paraphrases of what you originally typed — the exact thing you need when recalling a
+fact you phrased differently months ago.
+
+LanceDB is an embedded retrieval library, which makes it a natural fit here:
+
+- **No server to stand up** — it reads and writes a table on local disk, so the plugin ships
+  as a dependency rather than a service to operate.
+- **One table holds everything** — content, metadata, and embeddings live together. A memory
+  becomes a structured row with a category, tags, timestamps, and provenance, not just a text
+  blob.
+- **Query it any way you need** — vector similarity for meaning, BM25 full-text for exact
+  names and jargon, a hybrid of the two, or plain metadata filters to keep recall scoped to
+  the right workspace.
+- **It scales up** — the same table abstraction carries over to larger LanceDB deployments
+  later, so the local setup is never a dead end.
+
+## Install and activate {#install-and-activate}
+
+<Tip>
+Want to try this without touching your existing Hermes setup? Run everything in an isolated
+profile: `hermes profile create demo`, then add `-p demo` to the commands below. When you're
+done, `rm -rf ~/.hermes/profiles/demo` removes all trace.
+</Tip>
+
+<Steps>
+<Step title="Install Hermes Agent">
+Skip this if you already have Hermes installed.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+</Step>
+
+<Step title="Install the plugin">
+This shallow-clones the plugin into `~/.hermes/plugins/lancedb/`.
+
+```bash
+hermes plugins install lancedb/hermes-agent-memory
+```
+</Step>
+
+<Step title="Install runtime dependencies into Hermes' environment">
+Hermes loads plugins inside its own Python interpreter, so the dependencies go *there* — not
+into a separate virtualenv. (This interpreter is shared across profiles, so you only install
+once.)
+
+```bash
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb openai pyyaml
+```
+</Step>
+
+<Step title="Set your embeddings API key">
+The plugin turns conversations into embeddings, so it needs an embeddings key. By default that
+is OpenAI, so set `OPENAI_API_KEY` in your environment or in `~/.hermes/.env`.
+
+<Info>
+Prefer a local or non-OpenAI model? The plugin uses an OpenAI-compatible client, so you can
+point it at any compatible endpoint (OpenRouter, Ollama, vLLM, …) in your config — no code
+change needed. See [Configuration](#configuration) below.
+</Info>
+</Step>
+
+<Step title="Activate and verify">
+Switch memory on and pick this plugin:
+
+```bash
+hermes memory setup     # choose "lancedb"
+```
+
+Then confirm it's actually active before you start chatting — this is the one step worth not
+skipping, because Hermes quietly falls back to its built-in notes if the provider isn't set:
+
+```bash
+hermes memory status
+```
+
+```text
+Memory status
+────────────────────────────────────────
+  Built-in:  always active
+  Provider:  lancedb
+
+  Plugin:    installed ✓
+  Status:    available ✓
+```
+
+You want to see `Provider: lancedb` with both `installed ✓` and `available ✓`.
+</Step>
+</Steps>
+
+## The memory tools {#the-memory-tools}
+
+Once activated, the agent has four tools for working with long-term memory:
+
+| Tool | What it does |
+|:--|:--|
+| `lancedb_recall` | Semantic (vector, the default) or hybrid search over your workspace memory. Returns matching facts with scores and provenance. |
+| `lancedb_remember` | Stores a durable fact when you explicitly ask. Deduplicated by content hash, so remembering the same thing twice doesn't pile up rows. |
+| `lancedb_read` | Fetches a single memory by ID, optionally with the original conversation messages it was distilled from. |
+| `lancedb_forget` | Deletes safely: previews candidates first, then deletes by exact ID, so nothing disappears by accident. |
+
+Beyond these tools, the plugin also captures durable facts from your conversations
+automatically — an auxiliary model distills them before context is compressed and again when a
+session ends, so insights survive even when the raw messages are summarized away.
+
+## Walkthrough {#walkthrough}
+
+"_Teach it your project preferences_"
+
+Let's make this concrete with the pain we opened on: re-explaining your setup to the agent every session.
+We'll save a convention once and then prove a brand-new session can recall it. This example will touch all four
+tools along the way.
+
+### Remember {#remember}
+
+Ask Hermes to commit a convention to long-term memory. Saying "remember in long-term memory"
+makes sure it lands in the LanceDB store, which shows up as the `⚡ lancedb_r` (`lancedb_remember`)
+line below:
+
+```text
+● Remember in long-term memory: for this project I only use uv, never pip, and I always add type hints to Python functions.
+
+  ┊ 🧠 memory    +memory: "For this project, the user only uses uv for Python package management, never pip, and always adds type hints to Python functions."
+  ┊ ⚡ lancedb_r   0.0s
+ ─  ⚕ Hermes  ────────────────────────────────────────────────────────────────
+
+     Remembered. I've stored that project convention: use uv only, never pip, and always add type hints to Python functions.
+```
+
+### Recall {#recall}
+
+First, take Hermes' built-in notes out of the picture so recall can *only* come from LanceDB —
+the two layers run side by side otherwise, and either could answer:
+
+```bash
+hermes config set memory.memory_enabled false
+```
+
+Now start a fresh session (`/new`) and ask for the convention back, worded completely
+differently from how you saved it:
+
+```text
+● /new
+● Look through your long-term memory for my Python project preferences.
+
+ ─  ⚕ Hermes  ────────────────────────────────────────────────────────────────
+
+     I found one durable memory about Python project preferences:
+
+     - Project Python tooling preference is uv; pip is not used; type hints are required.
+```
+
+This is the whole point in one exchange. You asked about your *preferences* using none of the
+words you stored the fact with — no *uv*, no *pip*, no *type hints* — yet a fresh session, with
+none of the earlier conversation in context, pulls it straight back. Semantic search matches on
+meaning rather than exact wording, which is precisely where keyword search falls short.
+
+<Tip>
+Turn the built-in layer back on for everyday use with `hermes config set memory.memory_enabled true`
+— the two memory layers happily coexist. We only disabled it here to prove the recall came from
+LanceDB.
+</Tip>
+
+### Read {#read}
+
+You can also ask where a fact came from. Hermes attributes the answer to its stored memory
+rather than guessing from a file in the repo (under the hood, `lancedb_read` can also return
+the exact source messages a fact was distilled from):
+
+```text
+● Where did that uv preference come from?
+
+ ─  ⚕ Hermes  ────────────────────────────────────────────────────────────────
+
+     It came from the project's persistent memory, not from a codebase file I inspected.
+
+     Specifically, the recalled memory says:
+     - "For this project, the user only uses uv for Python package management, never pip, and always adds type hints to Python functions."
+```
+
+### Forget {#forget}
+
+When a preference changes, ask Hermes to drop the old fact. The tool calls tell the whole
+story: the two `⚡ lancedb_f` (`lancedb_forget`) lines are it previewing matches and then
+deleting, and the trailing `⚡ lancedb_r` is it saving the replacement in the same breath:
+
+```text
+● I've switched from uv to pixi. Forget the uv preference.
+
+  ┊ ⚡ lancedb_f uv preference python package management never pip type hints  0.3s
+  ┊ ⚡ lancedb_f   0.0s
+  ┊ ⚡ lancedb_r   0.2s
+ ─  ⚕ Hermes  ────────────────────────────────────────────────────────────────
+
+     Done — I removed the uv preference from memory and replaced it with:
+
+     - This project uses pixi for Python package management
+     - Type hints on Python functions are still preferred
+```
+
+Remember, recall, read, forget: four small operations that between them cover the entire
+lifecycle of a durable memory.
+
+## Retrieval modes {#retrieval-modes}
+
+Recall ships in `vector` mode by default — pure semantic search, which is what survives the
+paraphrasing you saw above. If you also need exact name or jargon matching, switch to `hybrid`
+(vector + BM25) and choose how the two legs are fused: RRF, a vector-biased linear blend, or a
+cross-encoder reranker. Mode is set per call; fusion is a config setting.
+
+```yaml
+# ~/.hermes/config.yaml
+plugins:
+  lancedb:
+    retrieval:
+      mode: hybrid          # vector (default) | hybrid
+      reranker:
+        type: rrf           # how the vector + BM25 legs are fused
+        # Swap RRF for a reranking pass (pulls in sentence-transformers + torch):
+        # type: cross-encoder
+        # model: cross-encoder/ettin-reranker-17m-v1
+        # rerank_top_n: 50
+```
+
+The cross-encoder is the one path that pulls in a local ML stack, so it stays opt-in. It
+defaults to the compact 17M-parameter [ettin reranker](https://huggingface.co/cross-encoder/ettin-reranker-17m-v1).
+
+## Inspect the store {#inspect-the-store}
+
+Everything lives in one table named `memories` at `~/.hermes/lancedb/memories.lance`. Because
+it's a plain LanceDB table, you can open it directly and see exactly what the agent has stored
+— a `kind` column separates extracted `fact` rows from the raw `turn` rows they were drawn
+from:
+
+```python
+import lancedb
+
+db = lancedb.connect("~/.hermes/lancedb")
+tbl = db.open_table("memories")
+print(tbl.to_pandas()[["kind", "category", "content"]].head())
+```
+
+## Configuration {#configuration}
+
+The plugin runs on sensible defaults once activated — you don't have to configure anything.
+`~/.hermes/config.yaml` is purely for overrides. Two common ones:
+
+Use a cheaper model for the auxiliary fact-extraction calls:
+
+```yaml
+# ~/.hermes/config.yaml
+auxiliary:
+  lancedb_extraction:
+    provider: openrouter
+    model: google/gemini-3-flash
+```
+
+Point embeddings at a fully local endpoint (for example, Ollama) so nothing leaves your
+machine:
+
+```yaml
+# ~/.hermes/config.yaml
+plugins:
+  lancedb:
+    embedding:
+      model: nomic-embed-text
+      base_url: http://localhost:11434/v1
+      api_key_env: OLLAMA_API_KEY      # any value works for local Ollama
+```
+
+<Info>
+Changing the embedding model (or its dimension) against an existing store requires recreating
+the table — the plugin fails loudly on a dimension mismatch rather than silently returning
+nothing. Every option is documented in the plugin's [`default_config.yaml`](https://github.com/lancedb/hermes-agent-memory/blob/main/src/default_config.yaml).
+</Info>
+
+## Benchmark {#benchmark}
+
+On [LongMemEval-S](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned), a
+long-conversation QA benchmark, LanceDB's semantic recall clearly beat Hermes' built-in lexical
+search (0.66 vs. 0.53 answer accuracy) by finding the right messages even when the question was
+worded differently from the original conversation. For the full methodology, the
+per-question-type breakdown, and a reproducible harness, see the
+[blog post](https://www.lancedb.com/blog/semantic-memory-for-hermes-agent-with-lancedb) and the
+[benchmark harness](https://github.com/lancedb/hermes-agent-memory/tree/main/benchmarks).
+
+## Why this works well {#why-this-works-well}
+
+- **It's local-first and embedded.** The LanceDB memory table lives on your disk with no server to run;
+  the plugin installs as a dependency of Hermes' own environment.
+- **Recall survives paraphrasing.** Semantic search matches meaning, not spelling, which is the
+  failure mode that sinks keyword-only session search.
+- **Memories are structured and traceable.** Each fact is a row with metadata and a link back
+  to the messages it came from, and `forget` always previews before it deletes.
+- **Nothing about it is a dead end.** As your needs grow, the same table abstraction carries
+  over to LanceDB [Enterprise](/enterprise) for automatic compaction, reindexing, and scale.
+
+To try it, install the plugin, enable it with `hermes memory setup`, and run the kind of
+workflow we walked through above.

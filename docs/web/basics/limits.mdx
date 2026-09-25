@@ -1,0 +1,103 @@
+---
+title: "Limits"
+sidebarTitle: "Limits"
+description: "The bounds you can actually hit, in one place."
+icon: ruler
+keywords: ["limits", "maximum", "quota", "constraints", "bounds"]
+---
+
+Limits worth designing around, collected so you do not have to find them by
+hitting them. Each one is enforced -- where a value is refused rather than
+clamped, that is stated, because the two fail very differently.
+
+This page covers bounds that are the same for everyone. Deployment-specific
+quotas -- storage, throughput, concurrency -- come from your deployment.
+
+## Names {#names}
+
+| Object | Maximum | |
+| --- | --- | --- |
+| Database | 64 characters | |
+| Namespace | 64 characters | |
+| Table | 128 characters | |
+| Branch | 64 characters | |
+
+A name must not be empty, and must not contain `$` or `:` -- both are reserved
+as path delimiters, so a name holding one could not be addressed unambiguously.
+Length is counted in characters, not bytes.
+
+## Jobs {#jobs}
+
+| | |
+| --- | --- |
+| `job.events()` default | 1,000 rows |
+| `job.events()` maximum | 10,000 rows |
+| `SHOW ERRORS ... LIMIT` | between 1 and 100,000 |
+| Failed jobs scanned by one `SHOW ERRORS` | 32 |
+
+<Warning>
+`job.events()` **truncates silently**. A job that emits an event per fragment
+will lose its tail unless you pass `limit` explicitly. This is the limit on this
+page most likely to mislead you, because nothing in the result says it was cut.
+</Warning>
+
+`SHOW ERRORS` without `FOR JOB` scans the most recent failed jobs and stops at
+32 of them. Narrow with `FOR JOB` when you need a specific one rather than a
+survey.
+
+See [Query and job](/basics/jobs).
+
+## Schema and types {#schema}
+
+| | |
+| --- | --- |
+| `map` with `keys_sorted = true` | rejected |
+| `IVF_RQ` vector dimensions | must be divisible by 8 |
+| FTS `max_token_length` | 40 by default; longer tokens are dropped |
+
+Stable row ids **cannot be enabled after a table exists**. A table created
+without them cannot become a
+[materialized view](/management/materialized-view) source without being
+recreated -- the one schema decision here that is genuinely irreversible.
+
+See [Data types](/sql/data-types).
+
+## SQL {#sql}
+
+<Badge color="red">Enterprise</Badge>
+
+| | |
+| --- | --- |
+| `TABLESAMPLE` percentage | 0 to 100, **refused** outside -- not clamped |
+| `TABLESAMPLE (n ROWS)` | whole numbers only |
+| `TABLESAMPLE BUCKET` | not supported |
+| `TABLESAMPLE` on a WAL-backed table | not supported |
+| `CREATE INDEX` | one column, server-chosen name |
+| `REFRESH MATERIALIZED VIEW ... CASCADE` | parsed, not yet implemented |
+
+A sampling percentage over 100 is an error rather than a full scan, because a
+query asking for 150 percent has a mistake in it and reading it as 100 would
+hide the mistake. See [Sampling](/sql/sampling).
+
+## What is unavailable where {#availability}
+
+Not quotas, but the same class of surprise -- things that exist in one place and
+not another.
+
+| | |
+| --- | --- |
+| SQL on a local database | unavailable; `execute_query` raises |
+| SQL methods in the TypeScript SDK | none; use a Flight SQL client |
+| Function methods in the TypeScript SDK | none; use Python or SQL |
+| Vector search in SQL | no SQL form; use a query builder |
+| Geospatial `st_*` functions | behind a build feature LanceDB does not ship |
+| `tableExists` / `namespaceExists` in TypeScript | not present |
+| Server-side jobs on a local database | run in-process; `events()` raises |
+
+See [SDKs and SQL](/basics/apis) for why the first two hold.
+
+## Nothing here is a quota {#not-quotas}
+
+None of the above is a billing or capacity limit. Rows per table, table count,
+storage, and request rate are bounded by your deployment rather than by the
+format -- ask your deployment, not this page.

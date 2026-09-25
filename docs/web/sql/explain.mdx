@@ -1,0 +1,51 @@
+---
+title: "EXPLAIN"
+sidebarTitle: "EXPLAIN"
+description: "Reading the plan for a statement, and measuring it."
+icon: map
+keywords: ["explain", "explain analyze", "query plan", "describe"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+```sql
+EXPLAIN SELECT * FROM documents WHERE identifier < 1000
+EXPLAIN ANALYZE SELECT * FROM documents WHERE identifier < 1000
+```
+
+`EXPLAIN` resolves the plan without running the query. `EXPLAIN ANALYZE`
+executes it and annotates every operator with runtime metrics — elapsed time,
+rows produced, bytes read, index comparisons.
+
+The operators are the same ones the SDK methods produce, so the reasoning about
+index coverage and filter pushdown carries across unchanged. The two pages that
+explain how to read them:
+
+<CardGroup cols={2}>
+  <Card title="Explain" icon="map" href="/search/explain">
+    Reading a plan: operators, pushdown, index usage.
+  </Card>
+  <Card title="Explain Analyze" icon="gauge" href="/search/explain">
+    Reading the metrics, and a worked before/after.
+  </Card>
+</CardGroup>
+
+## What to look for {#what-to-look-for}
+
+| Sign | Means |
+| --- | --- |
+| `ScalarIndexQuery` | the predicate used a scalar index |
+| `LanceScan` with high `bytes_read` | no index, or too many columns selected |
+| `FilterExec` above a search | the filter ran after search rather than pushing into it |
+| `ANNSubIndex` / `ANNIvfPartition` | the vector index was used |
+
+A `LanceScan` feeding a join is the common one worth acting on — see
+[Joins](/sql/join#performance).
+
+## DESCRIBE {#describe}
+
+```sql
+DESCRIBE documents
+```
+
+The table's columns and types, without a plan.

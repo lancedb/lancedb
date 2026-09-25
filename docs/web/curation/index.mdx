@@ -1,0 +1,54 @@
+---
+title: "Data curation"
+sidebarTitle: "Overview"
+description: "Shaping a dataset before you train on it: profiling, sampling, joining, and ranking."
+icon: filter
+keywords: ["curation", "dataset", "training set", "sampling", "deduplication", "class balance"]
+---
+
+Curation is the work between having data and having a *dataset*: finding out
+what you actually have, drawing a subset you can afford to train on, attaching
+labels that live elsewhere, and picking one row per thing when you have several.
+
+These pages are task-oriented. Each shows the operation in the context you would
+reach for it, and links to the [SQL reference](/sql) for the complete syntax.
+
+<Note>
+Most curation is analytical -- grouping, joining, ranking -- which the query
+builders do not do. It is therefore SQL, and SQL needs a deployment. See
+[SDKs and SQL](/basics/apis).
+</Note>
+
+## The four questions {#questions}
+
+| | |
+| --- | --- |
+| [What do I have?](/curation/aggregate) | counts, class balance, null coverage, distinct values |
+| [What can I afford?](/curation/sampling) | a random subset, reproducible when you need it fixed |
+| [What else do I know?](/curation/join) | labels, metadata and scores that live in another table |
+| [Which one do I keep?](/curation/windowing) | one row per key, ranking within a group, splits |
+
+## A worked shape {#shape}
+
+The four compose into the same pipeline most curation ends up being:
+
+```sql
+WITH ranked AS (
+    SELECT d.*, c.label,
+           row_number() OVER (PARTITION BY d.doc_id ORDER BY d.version DESC) AS rn
+    FROM documents AS d
+    JOIN labels AS c ON c.doc_id = d.doc_id
+)
+SELECT * FROM ranked WHERE rn = 1
+```
+
+Join to bring in what you know, window to pick one row per document, filter to
+keep it. Add [`TABLESAMPLE`](/curation/sampling) when the result is still larger
+than you want, and [aggregate](/curation/aggregate) to check the balance of what
+you ended up with.
+
+## Then what {#next}
+
+A curated result you want to keep is a
+[materialized view](/management/materialized-view) -- stored, refreshed, and
+readable by a [data loader](/training) like any other table.

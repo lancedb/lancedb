@@ -1,0 +1,94 @@
+---
+title: "LeRobotDataset"
+sidebarTitle: "LeRobotDataset"
+description: "Use Lance-backed LeRobotDataset loaders and LanceDB to inspect, filter, and train on robotics datasets from the Hugging Face Hub."
+---
+
+import {
+  PyFrameworksLerobotFilterFrames,
+  PyFrameworksLerobotLancedbImageDataset,
+  PyFrameworksLerobotLancedbVideoDataset,
+  PyFrameworksLerobotOpenLanceTables,
+} from '/snippets/integrations.mdx';
+
+[LeRobot](https://huggingface.co/docs/lerobot/index) is Hugging Face's open-source robotics stack for collecting data, training policies, running simulations, and sharing robotics datasets and models on the Hub.
+
+[LeRobotDataset v3.0](https://huggingface.co/docs/lerobot/lerobot-dataset-v3) standardizes robot learning data across sensorimotor time series, actions, multi-camera video, and task metadata. Its v3 layout stores high-frequency tabular signals in Parquet, visual streams as MP4 shards, and metadata that reconstructs episode-level views from larger files.
+
+Lance pairs well with LeRobot when you need high-performance random access, lazy multimodal blob reads, and a single table interface for curation, search, and training data preparation. The `lerobot-lancedb` package ships Lance-backed `LeRobotDataset` subclasses, and LanceDB can open Lance-formatted LeRobot datasets on the Hub directly through `hf://` URIs.
+
+## Install {#install}
+
+```bash
+pip install lancedb lance lerobot-lancedb
+```
+
+## Use Lance-backed LeRobotDataset loaders {#use-lance-backed-lerobotdataset-loaders}
+
+`LeRobotLanceDataset` is useful when your Lance-backed dataset stores decoded image observations. It's a drop-in replacement for `LeRobotDataset`, so existing policy training code keeps working with the usual PyTorch dataset and dataloader patterns.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksLerobotLancedbImageDataset}
+</CodeBlock>
+
+For datasets that store camera observations as MP4 video segments, use `LeRobotLanceVideoDataset` instead.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksLerobotLancedbVideoDataset}
+</CodeBlock>
+
+<Info>
+Use the image loader for Lance-backed repos that store image frames. Use the video loader for MP4-backed LeRobot datasets such as `lance-format/lerobot-pusht-lance`.
+</Info>
+
+## Open LeRobot Lance tables with LanceDB {#open-lerobot-lance-tables-with-lancedb}
+
+Lance-formatted LeRobot datasets published by `lance-format` expose each `.lance` file under `data/` as a LanceDB table. The PushT dataset, for example, has `frames`, `episodes`, and `videos` tables.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksLerobotOpenLanceTables}
+</CodeBlock>
+
+Opening the tables directly is handy for inspecting schemas, counting rows, sampling metadata, or building curation workflows before any data reaches the training loop.
+
+## Filter a frame window {#filter-a-frame-window}
+
+Most robotics workflows want a deterministic slice by `episode_index`, `frame_index`, or task metadata long before training begins. LanceDB filters those rows without touching the video blobs.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksLerobotFilterFrames}
+</CodeBlock>
+
+With the filtered set in hand, you can materialize a smaller local LanceDB database, add derived columns, attach embeddings, or build vector and scalar indexes for faster repeated access.
+
+## Example Lance-formatted LeRobot datasets {#example-lance-formatted-lerobot-datasets}
+
+<CardGroup cols={2}>
+  <Card title="LeRobot PushT" href="/datasets/lerobot-pusht">
+    A Lance-formatted version of `lerobot/pusht` with frame, episode, and video tables.
+  </Card>
+  <Card title="LeRobot X-VLA Soft-Fold" href="/datasets/lerobot-xvla-soft-fold">
+    A multi-camera robotics dataset packaged as Lance tables for frame-level and episode-level access.
+  </Card>
+</CardGroup>
+
+## More resources {#more-resources}
+
+<CardGroup cols={2}>
+  <Card title="LeRobotDataset v3.0" href="https://huggingface.co/docs/lerobot/lerobot-dataset-v3">
+    Hugging Face's guide to the v3 dataset layout, streaming, transforms, and migration.
+  </Card>
+  <Card title="lerobot-lancedb" href="https://lancedb.github.io/lerobot-lancedb/">
+    API documentation for the Lance-backed LeRobotDataset implementations.
+  </Card>
+</CardGroup>
+
+## When to use each interface {#when-to-use-each-interface}
+
+| Interface | Best for |
+|:---|:---|
+| `LeRobotDataset` | Standard LeRobot training loops and policy code |
+| `LeRobotLanceDataset` | Drop-in training on Lance-backed image datasets |
+| `LeRobotLanceVideoDataset` | Drop-in training on Lance-backed video datasets |
+| LanceDB | Interactive inspection, filtering, curation, search, indexing, and materializing subsets |
+| `lance.dataset(...)` | Lower-level schema, fragment, index, and blob access |

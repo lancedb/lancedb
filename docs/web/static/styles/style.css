@@ -1,0 +1,25 @@
+:root {
+  --banner-left: #e4d8f8;
+  --banner-right: #e55a2b;
+}
+
+/* Mintlify banner gradient */
+#banner,
+:where(.banner, [data-banner], [class*="Banner_banner"]) {
+  background: linear-gradient(90deg, var(--banner-left) 0%, var(--banner-right) 100%) !important;
+  color: #1b0f09 !important;
+  border: none !important;
+}
+
+#banner a,
+:where(.banner, [data-banner], [class*="Banner_banner"]) a {
+  color: #1b0f09 !important;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-decoration-color: rgba(27, 15, 9, 0.35);
+}
+
+#banner button,
+:where(.banner, [data-banner], [class*="Banner_banner"]) button {
+  color: #1b0f09 !important;
+}

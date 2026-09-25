@@ -1,0 +1,24 @@
+---
+title: "Contextual RAG"
+sidebarTitle: "Contextual RAG"
+description: "Prepend LLM-generated context to each chunk before embedding it."
+---
+
+Addresses the "lost in the middle" problem in retrieval. An LLM generates a
+succinct piece of context for each document chunk, which is prepended to the
+chunk before embedding -- so a chunk carries enough surrounding meaning to be
+retrieved for the right queries.
+
+<Note>
+This example is a runnable notebook in the
+[vectordb-recipes](https://github.com/lancedb/vectordb-recipes) repository rather than a page here.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Open in Colab" icon="google" href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Contextual-RAG/Anthropic_Contextual_RAG.ipynb">
+    Run it end to end in the browser.
+  </Card>
+  <Card title="View on GitHub" icon="github" href="https://github.com/lancedb/vectordb-recipes/tree/main/examples/Contextual-RAG">
+    Read the source.
+  </Card>
+</CardGroup>

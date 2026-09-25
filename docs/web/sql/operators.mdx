@@ -1,0 +1,81 @@
+---
+title: "Operators and literals"
+sidebarTitle: "Operators"
+description: "Comparison, logical and arithmetic operators, literals, and precedence."
+icon: plus-minus
+keywords: ["operators", "literals", "precedence", "null", "cast", "interval"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+The operator set is DataFusion's. This page covers what is worth knowing when
+the operands are Lance columns.
+
+## Comparison {#comparison}
+
+| | |
+| --- | --- |
+| `=` `!=` `<>` `<` `<=` `>` `>=` | ordinary comparison |
+| `IS NULL` / `IS NOT NULL` | null test — `= NULL` is never true |
+| `IS DISTINCT FROM` | comparison that treats null as a value |
+| `BETWEEN a AND b` | inclusive range |
+| `IN (...)` | set membership |
+| `LIKE` / `ILIKE` | pattern match, `%` and `_` |
+| `~` `~*` `!~` | regular expression match |
+
+<Note>
+For keyword matching on a text column, [`contains_tokens`](/sql/scalar-functions#contains-tokens)
+is index-accelerated where `LIKE` is not. Reach for `LIKE` only when you need
+its wildcard semantics.
+</Note>
+
+## Logical {#logical}
+
+`AND`, `OR`, `NOT`. Three-valued: a comparison against null is **unknown**, and
+`NOT unknown` is still unknown. A `WHERE` clause keeps only rows where the
+predicate is true, so unknown behaves like false there — but not inside `NOT
+IN`, which is the usual place this bites. See
+[Subqueries](/sql/subqueries#in-exists).
+
+## Arithmetic {#arithmetic}
+
+`+` `-` `*` `/` `%`, with the usual precedence. String concatenation is `||`.
+
+<Warning>
+Arithmetic over a vector column is **list** arithmetic, not scalar arithmetic —
+a vector is a `FixedSizeList<Float32>`. When the operation you want is a
+similarity comparison, use [vector search](/search/vector-search); there is no
+SQL form for it.
+</Warning>
+
+## Literals {#literals}
+
+| | |
+| --- | --- |
+| String | `'text'` — doubled quote to escape: `'it''s'` |
+| Number | `42`, `3.14` |
+| Boolean | `TRUE`, `FALSE` |
+| Null | `NULL` |
+| Date / timestamp | `DATE '2026-01-01'`, `TIMESTAMP '2026-01-01 12:00:00'` |
+| Interval | `INTERVAL '7 days'` |
+| Array | `[1, 2, 3]` |
+
+Identifiers are quoted with double quotes when they need to be — a reserved word
+or a name with mixed case: `SELECT "order" FROM "MyTable"`.
+
+## Casting {#casting}
+
+```sql
+SELECT CAST(identifier AS VARCHAR), identifier::VARCHAR FROM documents
+```
+
+Both forms work. `TRY_CAST` returns null instead of erroring on a value that
+will not convert, which is the one to use over a column you do not control.
+
+## Precedence {#precedence}
+
+Highest to lowest: `::` → unary `-` → `* / %` → `+ -` → `||` → comparison →
+`IS` → `NOT` → `AND` → `OR`.
+
+Parenthesize anything mixing `AND` and `OR`. `a OR b AND c` is `a OR (b AND c)`,
+which is rarely what was meant.

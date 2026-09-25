@@ -1,0 +1,53 @@
+---
+title: ColPali
+sidebarTitle: ColPali
+---
+
+import {
+  PyEmbeddingColpaliSetup,
+  PyEmbeddingColpaliTextSearch,
+} from '/snippets/integrations.mdx';
+
+We support [ColPali](https://github.com/illuin-tech/colpali) model embeddings for multimodal multi-vector retrieval. ColPali produces multiple embedding vectors per input (multi-vector), enabling more nuanced similarity matching between text queries and image documents.
+
+Using ColPali requires the colpali-engine package, which can be installed using `pip install colpali-engine`.
+
+<Info>
+ColPali produces **multi-vector** embeddings, meaning each input generates multiple embedding vectors rather than a single vector. Use `MultiVector(func.ndims())` instead of `Vector(func.ndims())` when defining your schema.
+</Info>
+
+Supported models are:
+
+- Metric-AI/ColQwen2.5-3b-multilingual-v1.0 (default)
+- vidore/colpali-v1.3
+- vidore/colqwen2-v1.0
+- vidore/colSmol-256M
+
+Supported parameters (to be passed in `create` method) are:
+
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| `model_name` | `str` | `"Metric-AI/ColQwen2.5-3b-multilingual-v1.0"` | The name of the model to use. |
+| `device` | `str` | `"auto"` | The device for inference. Can be `"auto"`, `"cpu"`, `"cuda"`, or `"mps"`. |
+| `dtype` | `str` | `"bfloat16"` | Data type for model weights (bfloat16, float16, float32, float64). |
+| `pooling_strategy` | `str` | `"hierarchical"` | Token pooling strategy: `"hierarchical"`, `"lambda"`, or `None`. |
+| `pool_factor` | `int` | `2` | Factor to reduce sequence length when pooling is enabled. |
+| `batch_size` | `int` | `2` | Batch size for processing inputs. |
+| `quantization_config` | `Optional[BitsAndBytesConfig]` | `None` | Quantization configuration for the model (requires bitsandbytes). |
+
+This embedding function supports ingesting images as both bytes and URLs. You can query them using text.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingColpaliSetup}
+  </CodeBlock>
+</CodeGroup>
+
+Now we can search using text queries:
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingColpaliTextSearch}
+  </CodeBlock>
+</CodeGroup>
+

@@ -1,0 +1,101 @@
+---
+title: "Random sampling"
+sidebarTitle: "Sampling"
+description: "TABLESAMPLE: draw a random subset of a table, by rows or by fragments."
+icon: dice
+keywords: ["tablesample", "sampling", "bernoulli", "system", "repeatable", "random"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+`TABLESAMPLE` draws a random subset of a table. On a lakehouse table that is
+often the difference between a question you can afford to ask and one you
+cannot -- an aggregate over 1% of forty billion rows answers in a fraction of
+the time, and for most estimates that is enough.
+
+```sql
+SELECT * FROM documents TABLESAMPLE (10)        -- 10 percent
+SELECT * FROM documents TABLESAMPLE (500 ROWS)  -- 500 rows
+```
+
+A bare number is a **percentage**. Add `ROWS` for a count instead.
+
+## Rows or fragments {#methods}
+
+The standard calls these two methods of one clause. They are different
+operations, and the difference matters on Lance:
+
+```sql
+SELECT * FROM documents TABLESAMPLE BERNOULLI (10)
+SELECT * FROM documents TABLESAMPLE SYSTEM (10)
+```
+
+| Method | Aliases | What it picks |
+| --- | --- | --- |
+| `BERNOULLI` | `ROW` | rows, each considered independently |
+| `SYSTEM` | `BLOCK` | **Lance fragments**, and takes whatever rows they hold |
+
+`BERNOULLI` gives a genuinely uniform sample and reads across the whole table to
+get it. `SYSTEM` reads far less -- it skips entire fragments -- but the sample is
+only as uniform as the data's layout. If rows were written in an order that
+correlates with what you are measuring, a fragment sample inherits that
+correlation.
+
+Reach for `SYSTEM` when you want a cheap look at the data and `BERNOULLI` when
+the number you compute has to be defensible. Omitting the method gives
+`BERNOULLI`.
+
+## Repeatability {#repeatable}
+
+Without a seed, every execution resamples -- running the same query twice gives
+different rows. `REPEATABLE` fixes the draw:
+
+```sql
+SELECT * FROM documents TABLESAMPLE (10) REPEATABLE (42)
+```
+
+This is what makes a sample usable as a **fixed evaluation set**: the same seed
+against the same data gives the same rows, so a metric computed today is
+comparable with one computed last week.
+
+## Where the clause can go {#placement}
+
+It attaches to a table in `FROM`, including inside a subquery, a CTE, or either
+side of a join:
+
+```sql
+SELECT * FROM (SELECT * FROM documents) d TABLESAMPLE (10)
+
+SELECT * FROM a TABLESAMPLE (5 ROWS) JOIN b ON a.id = b.id
+
+SELECT * FROM t a TABLESAMPLE (10) JOIN t b TABLESAMPLE (10) ON a.id = b.id
+```
+
+Each side of a join samples independently. Sampling both sides of a join
+shrinks the *result* far more than either fraction suggests, because a row only
+survives if both its sides were drawn.
+
+## What is refused {#refused}
+
+Sampling is semantics, not a hint. A clause that were read and then not applied
+would be a wrong answer rather than a missing feature, so anything that cannot
+be honoured exactly is an error:
+
+| | |
+| --- | --- |
+| `TABLESAMPLE (101)` | a percentage outside `0..=100` is refused, not clamped |
+| `TABLESAMPLE (1.5 ROWS)` | a row count must be whole |
+| `TABLESAMPLE (BUCKET 1 OUT OF 4)` | bucket sampling is not supported |
+| the `SAMPLE` spelling | use `TABLESAMPLE` |
+| the `OFFSET` modifier | not supported |
+
+<Note>
+`TABLESAMPLE` is also refused on a WAL-backed table, where the rows a sample
+would draw from are not all in the fragments yet.
+</Note>
+
+## Sampling outside SQL {#sdk}
+
+For a training loop rather than a query, the SDKs read a table in a shuffled
+order without going through SQL at all -- see [Training](/training), where a
+permutation drives the data loader.
