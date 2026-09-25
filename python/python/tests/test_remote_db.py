@@ -2495,6 +2495,77 @@ def test_remote_blob_query_stashes_row_ids_for_fetch():
     assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
 
 
+@pytest.mark.parametrize("blob_mode", ["default", "lazy", "bytes", "descriptions"])
+def test_remote_blob_query_to_pandas(blob_mode):
+    with blob_remote_table() as table:
+        query = table.search().select(["id", "image"]).limit(3)
+        df = (
+            query.to_pandas()
+            if blob_mode == "default"
+            else query.to_pandas(blob_mode=blob_mode)
+        )
+
+    assert df["id"].tolist() == [1, 2, 3]
+    assert "_rowid" not in df.columns
+    if blob_mode == "bytes":
+        assert df["image"].tolist() == [b"alpha", None, b"gamma"]
+    else:
+        assert df["image"].iloc[1] is None
+        assert "_lance_row_id" not in df["image"].iloc[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+async def test_async_remote_blob_query_to_pandas(blob_mode):
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.send_header("phalanx-version", "0.5.0")
+            request.end_headers()
+            request.wfile.write(json.dumps(BLOB_DESCRIBE_RESPONSE).encode())
+        elif request.path == "/v1/table/test/query/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            body = json.loads(request.rfile.read(content_len))
+            assert body["with_row_id"] is True
+            response_table = blob_query_response_table()
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table)
+        elif request.path == "/v1/table/test/fetch_blobs/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            body = json.loads(request.rfile.read(content_len))
+            assert body["row_ids"] == [10, 20, 30]
+            response_table = pa.table(
+                {"image": pa.array([b"alpha", None, b"gamma"], pa.large_binary())}
+            )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.end_headers()
+            with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        df = (
+            await table.query()
+            .select(["id", "image"])
+            .limit(3)
+            .to_pandas(blob_mode=blob_mode)
+        )
+
+    assert df["id"].tolist() == [1, 2, 3]
+    if blob_mode == "bytes":
+        assert df["image"].tolist() == [b"alpha", None, b"gamma"]
+    else:
+        assert "_lance_row_id" not in df["image"].iloc[0]
+
+
 def test_remote_blob_query_survives_a_server_that_ignores_the_row_id_request():
     def handler(request):
         if request.path == "/v1/table/test/describe/":
@@ -2524,6 +2595,8 @@ def test_remote_blob_query_survives_a_server_that_ignores_the_row_id_request():
         assert "_lance_row_id" not in hits.schema.field("image").type.names
         with pytest.raises(ValueError, match="pass a list of row ids"):
             table.fetch_blobs("image", hits)
+        with pytest.raises(ValueError, match="pass a list of row ids"):
+            table.search().select(["id", "image"]).to_pandas(blob_mode="bytes")
 
 
 def test_remote_blob_byte_apis_not_supported_on_old_server():
