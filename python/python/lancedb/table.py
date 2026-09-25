@@ -233,6 +233,101 @@ IndexConfigType = Union[
 KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}
 
 
+def _blob_value_to_storage(value: Any) -> Optional[dict]:
+    """Keep a Python blob's inline data or external URI before Arrow infers it."""
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {"data": bytes(value)}
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("Blob uri cannot be empty")
+        return {"uri": value}
+    if isinstance(value, dict):
+        unknown = value.keys() - {"data", "uri", "position", "size"}
+        if unknown:
+            raise ValueError(f"Unknown blob fields: {sorted(unknown)}")
+        return value
+
+    try:
+        from lance.blob import Blob
+    except ModuleNotFoundError as err:
+        if err.name not in ("lance", "lance.blob"):
+            raise
+    else:
+        if isinstance(value, Blob):
+            return {
+                "data": value.data,
+                "uri": value.uri,
+                "position": value.position,
+                "size": value.size,
+            }
+    raise TypeError(f"Unsupported blob value: {type(value).__name__}")
+
+
+def _blob_input_to_arrow(data: Any, schema: Optional[pa.Schema]) -> Optional[pa.Table]:
+    """Convert Python rows with blob fields before Arrow loses their value types."""
+    if schema is None:
+        return None
+
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        names = {
+            field.name
+            for field in schema
+            if is_blob_v2_field(field)
+            and any(isinstance(row, dict) and field.name in row for row in data)
+        }
+        if not names:
+            return None
+        values = {name: [row.get(name) for row in data] for name in names}
+        rows = [{**row, **{name: None for name in names}} for row in data]
+        table = pa.Table.from_pylist(rows)
+    elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
+        names = {
+            field.name
+            for field in schema
+            if is_blob_v2_field(field) and field.name in data.columns
+        }
+        if not names:
+            return None
+        values = {
+            name: [
+                None
+                if value is pd.NA or isinstance(value, float) and np.isnan(value)
+                else value
+                for value in data[name]
+            ]
+            for name in names
+        }
+        table = pa.Table.from_pandas(
+            data.assign(**{name: None for name in names}), preserve_index=False
+        ).replace_schema_metadata(None)
+    else:
+        return None
+
+    for field in schema:
+        if field.name not in names:
+            continue
+        storage_type = (
+            field.type.storage_type
+            if isinstance(field.type, pa.ExtensionType)
+            else field.type
+        )
+        storage = pa.array(
+            [_blob_value_to_storage(value) for value in values[field.name]],
+            type=storage_type,
+        )
+        column = (
+            pa.ExtensionArray.from_storage(field.type, storage)
+            if isinstance(field.type, pa.ExtensionType)
+            else storage
+        )
+        table = table.set_column(
+            table.schema.get_field_index(field.name), field, column
+        )
+    return table
+
+
 def _into_pyarrow_reader(
     data, schema: Optional[pa.Schema] = None
 ) -> pa.RecordBatchReader:
@@ -275,9 +370,14 @@ def _into_pyarrow_reader(
             return pa.Table.from_batches(data).to_reader()
         else:
             data = _serialize_json_values(data, schema)
-            return pa.Table.from_pylist(data).to_reader()
+            table = _blob_input_to_arrow(data, schema)
+            return (
+                table if table is not None else pa.Table.from_pylist(data)
+            ).to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
-        table = pa.Table.from_pandas(data, preserve_index=False)
+        table = _blob_input_to_arrow(data, schema)
+        if table is None:
+            table = pa.Table.from_pandas(data, preserve_index=False)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -5848,6 +5948,9 @@ class AsyncTable:
         """
         schema = await self.schema()
         data = _serialize_json_values(data, schema)
+        blob_table = _blob_input_to_arrow(data, schema)
+        if blob_table is not None:
+            data = blob_table
         if on_bad_vectors is None:
             on_bad_vectors = "error"
         if fill_value is None:
