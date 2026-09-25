@@ -106,6 +106,8 @@ listing a storage directory.
 
 ::: lancedb.table.Table
 
+::: lancedb.table.CompactionOptions
+
 ::: lancedb.table.FragmentStatistics
 
 ::: lancedb.table.FragmentSummaryStats
