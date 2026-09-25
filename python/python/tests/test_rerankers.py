@@ -536,28 +536,43 @@ class _FakeTypeSafeClient:
     def system_one(self, state, questions, model):
         self.requests.append((state, questions, model))
         query_words = set(state["query"].lower().split())
-        doc_words = set(state["document"].lower().split())
-        noul = len(query_words & doc_words) / len(query_words)
-        answers = {key: type("NoulAnswer", (), {"noul": noul})() for key in questions}
+        answers = {}
+        for key, question in questions.items():
+            document = (
+                state["document"]
+                if "document" in state
+                else question["instructions"]["document"]
+            )
+            doc_words = set(document.lower().split())
+            noul = len(query_words & doc_words) / len(query_words)
+            answers[key] = type("NoulAnswer", (), {"noul": noul})()
         return type("SystemOneResponse", (), {"answers": answers})()
 
 
-def test_typesafe_reranker_with_fake_client(tmp_path):
-    reranker = TypeSafeReranker(max_concurrency=4)
+@pytest.mark.parametrize("batch_size", [1, 40])
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_typesafe_reranker_with_fake_client(tmp_path, batch_size, return_score):
+    reranker = TypeSafeReranker(
+        max_concurrency=4, batch_size=batch_size, return_score=return_score
+    )
     reranker._client = _FakeTypeSafeClient()
     table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
     state, questions, model = reranker._client.requests[0]
     assert model == "jev-latest"
-    assert set(state) == {"query", "document"}
-    assert questions == {
-        "relevance": {
-            "type": "noul",
-            "instructions": reranker.instructions,
-            "criteria": reranker.criteria,
+    if batch_size == 1:
+        assert set(state) == {"query", "document"}
+        assert questions == {
+            "relevance": {
+                "type": "noul",
+                "instructions": reranker.instructions,
+                "criteria": reranker.criteria,
+            }
         }
-    }
+    else:
+        assert set(state) == {"query"}
+        assert 1 <= len(questions) <= batch_size
 
 
 def test_typesafe_reranker_scores_each_row():

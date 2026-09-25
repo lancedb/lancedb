@@ -2536,6 +2536,10 @@ def test_remote_blob_files_are_lazy_seekable_handles():
         assert alpha.read_range(1, 3) == b"lph"
         gamma.seek(2)
         assert gamma.read() == b"mma"
+        alpha.close()
+        assert alpha.closed
+        with pytest.raises(RuntimeError, match="already closed"):
+            alpha.read_range(0, 1)
 
 
 def test_remote_blob_fetch_accepts_query_table():
@@ -2690,6 +2694,26 @@ def test_remote_connection_jobs_surface():
             request.send_header("Content-Type", "application/json")
             request.end_headers()
             request.wfile.write(b'{"job_id": "job-1"}')
+        elif request.path == "/v1/jobs/pause":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-1", "paused": true}')
+        elif request.path == "/v1/jobs/resume":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                b'{"job_id": "job-1", "resumed": false, "still_pausing": true}'
+            )
         elif request.path == "/v1/jobs/query_events":
             query_events_payloads.append(payload)
             request.send_response(200)
@@ -2709,6 +2733,9 @@ def test_remote_connection_jobs_surface():
 
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
+
+        assert db.pause_job("job-1") == "pausing"
+        assert db.resume_job("job-1") == "still_pausing"
 
         # Opening a job hands back a populated handle; a missing one fails.
         with pytest.raises(JobNotFoundError, match="missing"):
@@ -2813,3 +2840,57 @@ def test_remote_job_handle_reports_its_own_detail():
             "limit": 500,
             "filter": "state = 'claim_complete'",
         }
+
+
+def test_view_crud_addresses_its_own_routes():
+    # The view verbs are their own routes, and the schema comes back in the
+    # namespace spec's JSON encoding, decoded into a pyarrow schema.
+    paths = []
+
+    def handler(request):
+        paths.append((request.command, request.path))
+        if request.path.endswith("/view/list"):
+            body = {"views": ["adults"]}
+        elif request.path.endswith("/drop"):
+            body = {}
+        else:
+            body = {
+                "name": "adults",
+                "namespace": ["analytics"],
+                "query": "SELECT name FROM people",
+                "default_database": "dev",
+                "default_namespace": ["analytics"],
+                "schema": {
+                    "fields": [
+                        {"name": "name", "nullable": True, "type": {"type": "utf8"}}
+                    ]
+                },
+            }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(body).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        view = db.create_view(
+            "adults", "SELECT name FROM people", namespace_path=["analytics"]
+        )
+        assert view.name == "adults"
+        assert view.namespace_path == ["analytics"]
+        assert view.query == "SELECT name FROM people"
+        assert view.default_database == "dev"
+        assert view.default_namespace_path == ["analytics"]
+        assert view.schema == pa.schema([pa.field("name", pa.utf8(), nullable=True)])
+
+        described = db.describe_view("adults", namespace_path=["analytics"])
+        assert described.schema == view.schema
+
+        assert db.list_views(namespace_path=["analytics"]) == ["adults"]
+        db.drop_view("adults", namespace_path=["analytics"])
+
+    assert paths == [
+        ("POST", "/v1/view/analytics$adults/create"),
+        ("POST", "/v1/view/analytics$adults/describe"),
+        ("GET", "/v1/namespace/analytics/view/list"),
+        ("POST", "/v1/view/analytics$adults/drop"),
+    ]

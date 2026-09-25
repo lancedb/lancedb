@@ -418,23 +418,18 @@ pub(crate) fn ensure_not_function_bound<S: AsRef<str>>(
     touched: impl IntoIterator<Item = S>,
 ) -> Result<()> {
     ensure_supported_function_metadata(schema)?;
-    let mut protected = BTreeSet::new();
-    for binding in function_bindings(schema)? {
-        for input in binding.inputs() {
-            protected.insert(field_root(&input.field_path)?);
-        }
-        protected.extend(
-            binding
-                .outputs()
-                .iter()
-                .map(|output| output.output_name.clone()),
-        );
-        protected.extend(
-            binding
-                .assignment()
-                .map(|assignment| assignment.output_name.clone()),
-        );
-    }
+    ensure_not_bound_by(&function_bindings(schema)?, operation, touched)
+}
+
+/// [`ensure_not_function_bound`] against an explicit set of bindings, for a
+/// caller that is retiring some of the schema's own in the same operation and
+/// must be checked against what survives it.
+pub(crate) fn ensure_not_bound_by<S: AsRef<str>>(
+    bindings: &[FunctionBinding],
+    operation: &str,
+    touched: impl IntoIterator<Item = S>,
+) -> Result<()> {
+    let protected = protected_roots(bindings)?;
     if protected.is_empty() {
         return Ok(());
     }
@@ -450,6 +445,129 @@ pub(crate) fn ensure_not_function_bound<S: AsRef<str>>(
         }
     }
     Ok(())
+}
+
+/// Every column `bindings` depend on, inputs taken at their root.
+fn protected_roots(bindings: &[FunctionBinding]) -> Result<BTreeSet<String>> {
+    let mut protected = BTreeSet::new();
+    for binding in bindings {
+        for input in binding.inputs() {
+            protected.insert(field_root(&input.field_path)?);
+        }
+        protected.extend(
+            binding
+                .outputs()
+                .iter()
+                .map(|output| output.output_name.clone()),
+        );
+        protected.extend(
+            binding
+                .assignment()
+                .map(|assignment| assignment.output_name.clone()),
+        );
+    }
+    Ok(protected)
+}
+
+/// What a drop must do besides removing columns, so that the Function
+/// bindings it covers are retired rather than stranded.
+#[derive(Debug, Default)]
+pub struct FunctionUnbinding {
+    /// The bindings the drop leaves in place. Later columns in the same
+    /// operation are checked against these, not against the schema's.
+    pub retained: Vec<FunctionBinding>,
+    /// Assignment columns of the retired bindings that the caller did not
+    /// name. Internal bookkeeping columns, so the drop adds them itself.
+    pub assignment_columns: Vec<String>,
+    /// Columns whose `computed_column.*` declaration metadata the unbind
+    /// commit clears.
+    pub cleared_columns: Vec<String>,
+    /// The new value of [`FUNCTION_BINDINGS_META_KEY`]; `None` deletes it.
+    pub bindings_metadata: Option<String>,
+}
+
+impl FunctionUnbinding {
+    /// True when the drop retires nothing and is an ordinary column drop.
+    pub fn is_noop(&self) -> bool {
+        self.cleared_columns.is_empty()
+    }
+
+    /// Refuse `operation` on a path that a binding surviving this drop still
+    /// reads or writes. The retired ones no longer protect anything.
+    pub fn ensure_retained_unaffected<S: AsRef<str>>(
+        &self,
+        operation: &str,
+        touched: impl IntoIterator<Item = S>,
+    ) -> Result<()> {
+        ensure_not_bound_by(&self.retained, operation, touched)
+    }
+}
+
+/// Plan the retirement of every Function binding whose outputs `columns`
+/// covers.
+///
+/// Naming one output of a binding means naming all of them: the outputs of
+/// one Function are written by one refresh in one commit, so a binding that
+/// kept some of them would have no coherent shape to write. A partial drop is
+/// refused and names the siblings that are missing.
+pub fn plan_function_unbinding(
+    schema: &ArrowSchema,
+    columns: &[&str],
+) -> Result<FunctionUnbinding> {
+    ensure_supported_function_metadata(schema)?;
+    let named = columns
+        .iter()
+        .map(|column| whole_column(column))
+        .collect::<Result<Vec<Option<String>>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<String>>();
+
+    let mut plan = FunctionUnbinding::default();
+    for binding in function_bindings(schema)? {
+        let outputs = binding
+            .outputs()
+            .iter()
+            .map(|output| output.output_name.clone())
+            .collect::<Vec<_>>();
+        let Some(dropped) = outputs.iter().find(|name| named.contains(name.as_str())) else {
+            plan.retained.push(binding);
+            continue;
+        };
+        let missing = outputs
+            .iter()
+            .filter(|name| !named.contains(name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "dropping Function output '{dropped}' must drop every output of its \
+                     binding; the same request must also name {}",
+                    missing.join(", ")
+                ),
+            });
+        }
+        plan.cleared_columns.extend(outputs);
+        if let Some(assignment) = binding.assignment() {
+            plan.cleared_columns.push(assignment.output_name.clone());
+            if !named.contains(assignment.output_name.as_str()) {
+                plan.assignment_columns.push(assignment.output_name.clone());
+            }
+        }
+    }
+
+    // Re-encoding an untouched set would rewrite bytes a stricter reader
+    // compares against its own encoding, so leave the key alone when the drop
+    // retires nothing.
+    if !plan.is_noop() {
+        plan.bindings_metadata = if plan.retained.is_empty() {
+            None
+        } else {
+            Some(function_bindings_metadata(&plan.retained)?)
+        };
+    }
+    Ok(plan)
 }
 
 /// Read a field's computed-column declaration, if it carries one.
@@ -577,6 +695,7 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
             "assignment",
             "input_schema",
             "output_schema",
+            "initialization",
         ],
         "binding",
     )?;
@@ -1320,7 +1439,30 @@ pub(crate) fn plan_function_application(
 /// Paths are compared at their root: a declaration reading `metadata` is
 /// invalidated by a change to `metadata.age` just as surely.
 pub(crate) fn ensure_not_an_input(schema: &SchemaRef, paths: &[&str]) -> Result<()> {
+    ensure_not_an_input_of(schema, paths, &[])
+}
+
+/// [`ensure_not_an_input`] where `removed` names columns whose own
+/// declarations the same operation deletes. A reader that is going away
+/// cannot be stranded by dropping what it reads, so a group drops together.
+pub(crate) fn ensure_not_an_input_of(
+    schema: &SchemaRef,
+    paths: &[&str],
+    removed: &[&str],
+) -> Result<()> {
+    // By identity, not spelling: a quoted path names the same column, while
+    // a path *into* one removes no declaration at all.
+    let removed = removed
+        .iter()
+        .map(|path| whole_column(path))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<String>>();
     for declaration in computed_columns(schema) {
+        if removed.contains(&declaration.name) {
+            continue;
+        }
         // The expression, not stored inputs, is the source of truth; an
         // expression that no longer parses proves nothing, so refuse.
         let inputs = match &declaration.kind {
@@ -1581,6 +1723,21 @@ pub(crate) fn field_root(path: &str) -> Result<String> {
         .ok_or_else(|| Error::InvalidInput {
             message: format!("column path '{path}' is empty"),
         })
+}
+
+/// The column a path names when it names the whole column, and `None` when it
+/// addresses a field inside one. Retiring a binding takes the whole output;
+/// a path into one is left to the ordinary guard to refuse.
+fn whole_column(path: &str) -> Result<Option<String>> {
+    let mut segments = parse_field_path(path)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid column path '{path}': {e}"),
+        })?
+        .into_iter();
+    let column = segments.next().ok_or_else(|| Error::InvalidInput {
+        message: format!("column path '{path}' is empty"),
+    })?;
+    Ok(segments.next().is_none().then_some(column))
 }
 
 /// [`field_root`], falling back to the text before the first dot for a
@@ -3590,6 +3747,17 @@ mod tests {
         );
         let err = ensure_supported_function_metadata(&schema).unwrap_err();
         assert!(matches!(err, Error::NotSupported { .. }));
+    }
+
+    /// A binding's initialization row is part of the known contract, so a
+    /// table that holds one can still take further declarations.
+    #[test]
+    fn test_initialized_bindings_are_a_known_shape() {
+        let raw_binding: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_initialized_function_binding.json"
+        ))
+        .unwrap();
+        ensure_known_binding_shape(&raw_binding).unwrap();
     }
 
     #[test]

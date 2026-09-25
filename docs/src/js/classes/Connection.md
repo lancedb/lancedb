@@ -319,6 +319,38 @@ Creates a new Table and initialize it with new data.
 
 ***
 
+### createView()
+
+```ts
+abstract createView(
+   name,
+   query,
+   namespacePath?): Promise<ViewDescription>
+```
+
+Create a view: a named query the database plans on every read.
+
+The query is planned once, at creation, so one that cannot be planned is
+rejected now rather than at the first read. A view holds no rows, and its
+readers see its sources as they are at read time.
+
+There is no replace: a name already taken is an error, and changing a
+view is a drop followed by a create.
+
+#### Parameters
+
+* **name**: `string`
+
+* **query**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
+
+***
+
 ### describeNamespace()
 
 ```ts
@@ -339,6 +371,27 @@ Describe a namespace, returning its properties.
 
 The namespace's properties
   (may be undefined if the namespace has none).
+
+***
+
+### describeView()
+
+```ts
+abstract describeView(name, namespacePath?): Promise<ViewDescription>
+```
+
+What this database records about the view named `name`: its defining
+query and the schema that query resolved to.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
 
 ***
 
@@ -498,6 +551,53 @@ on the returned job to know when cleanup has finished.
 
 ***
 
+### dropView()
+
+```ts
+abstract dropView(name, namespacePath?): Promise<void>
+```
+
+Drop the view named `name` and wait for its definition to be deleted.
+
+The tables it reads are untouched: a view holds no rows of its own. Use
+[dropViewAsync](Connection.md#dropviewasync) to retain the cleanup job instead of waiting on it.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### dropViewAsync()
+
+```ts
+abstract dropViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping the view named `name` and return the job deleting its
+definition, without waiting for completion.
+
+The name is free before this resolves. When nothing was bound to it, the
+returned job is already finished and has no id.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### isOpen()
 
 ```ts
@@ -636,6 +736,26 @@ A page of table names and an
 
 ***
 
+### listViews()
+
+```ts
+abstract listViews(namespacePath?): Promise<string[]>
+```
+
+The names of the views in one namespace.
+
+Names only; a definition comes from [describeView](Connection.md#describeview).
+
+#### Parameters
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
+
+***
+
 ### openJob()
 
 ```ts
@@ -703,6 +823,28 @@ abstract openTable(
 
 ***
 
+### pauseJob()
+
+```ts
+abstract pauseJob(jobId): Promise<string>
+```
+
+Pause a server-side job by id.
+
+The job's workers drain and it stays parked until resumed. Resolves to
+"pausing", "already_paused", or "committing" -- a job finalizing its
+results cannot be parked; retry shortly.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+***
+
 ### renameTable()
 
 ```ts
@@ -733,6 +875,28 @@ a "not supported" error.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### resumeJob()
+
+```ts
+abstract resumeJob(jobId): Promise<string>
+```
+
+Resume a paused server-side job by id.
+
+Its workers pick their work back up from checkpoints. Resolves to
+"resumed", "still_pausing" -- the pause's worker drain is not confirmed
+yet; retry shortly -- or "not_paused".
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
 
 ***
 

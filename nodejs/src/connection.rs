@@ -55,6 +55,32 @@ pub struct DropNamespaceResponse {
     pub transaction_id: Option<Vec<String>>,
 }
 
+/// What a database records about one view.
+#[napi(object)]
+pub struct ViewDescription {
+    pub name: String,
+    pub namespace_path: Vec<String>,
+    pub query: String,
+    pub default_database: String,
+    pub default_namespace_path: Vec<String>,
+    /// The view's schema as an empty Arrow IPC file, the way a table reports
+    /// its own.
+    pub schema: Buffer,
+}
+
+impl ViewDescription {
+    fn from_inner(view: lancedb::view::ViewDescription) -> napi::Result<Self> {
+        Ok(Self {
+            name: view.name,
+            namespace_path: view.namespace_path,
+            query: view.query,
+            default_database: view.default_database,
+            default_namespace_path: view.default_namespace_path,
+            schema: crate::util::schema_to_buffer(&view.schema)?,
+        })
+    }
+}
+
 impl Connection {
     pub(crate) fn inner_new(inner: LanceDBConnection) -> Self {
         Self { inner: Some(inner) }
@@ -368,6 +394,80 @@ impl Connection {
             .default_error()
     }
 
+    /// Create a view: a named query planned on every read.
+    #[napi(catch_unwind)]
+    pub async fn create_view(
+        &self,
+        name: String,
+        query: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<ViewDescription> {
+        let ns = namespace_path.unwrap_or_default();
+        let view = self
+            .get_inner()?
+            .create_view(&name, &query, &ns)
+            .await
+            .default_error()?;
+        ViewDescription::from_inner(view)
+    }
+
+    /// What the database records about one view.
+    #[napi(catch_unwind)]
+    pub async fn describe_view(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<ViewDescription> {
+        let ns = namespace_path.unwrap_or_default();
+        let view = self
+            .get_inner()?
+            .describe_view(&name, &ns)
+            .await
+            .default_error()?;
+        ViewDescription::from_inner(view)
+    }
+
+    /// Drop a view and wait for its definition to be deleted. The tables it
+    /// reads are untouched.
+    #[napi(catch_unwind)]
+    pub async fn drop_view(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?
+            .drop_view(&name, &ns)
+            .await
+            .default_error()
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    #[napi(catch_unwind)]
+    pub async fn drop_view_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_view_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    /// The names of the views in one namespace.
+    #[napi(catch_unwind)]
+    pub async fn list_views(
+        &self,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<Vec<String>> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?.list_views(&ns).await.default_error()
+    }
+
     /// Start dropping a materialized view and return its cleanup job.
     #[napi(catch_unwind)]
     pub async fn drop_materialized_view_async(
@@ -498,6 +598,34 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn cancel_job(&self, job_id: String) -> napi::Result<bool> {
         self.get_inner()?.cancel_job(&job_id).await.default_error()
+    }
+
+    /// Pause a server-side job by id: its workers drain and it stays parked
+    /// until resumed. Returns "pausing", "already_paused", or "committing".
+    #[napi(catch_unwind)]
+    pub async fn pause_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self.get_inner()?.pause_job(&job_id).await.default_error()?;
+        Ok(match status {
+            lancedb::database::PauseJobStatus::Pausing => "pausing".to_string(),
+            lancedb::database::PauseJobStatus::AlreadyPaused => "already_paused".to_string(),
+            lancedb::database::PauseJobStatus::Committing => "committing".to_string(),
+        })
+    }
+
+    /// Resume a paused server-side job by id. Returns "resumed",
+    /// "still_pausing", or "not_paused".
+    #[napi(catch_unwind)]
+    pub async fn resume_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self
+            .get_inner()?
+            .resume_job(&job_id)
+            .await
+            .default_error()?;
+        Ok(match status {
+            lancedb::database::ResumeJobStatus::Resumed => "resumed".to_string(),
+            lancedb::database::ResumeJobStatus::StillPausing => "still_pausing".to_string(),
+            lancedb::database::ResumeJobStatus::NotPaused => "not_paused".to_string(),
+        })
     }
 
     #[napi(catch_unwind)]

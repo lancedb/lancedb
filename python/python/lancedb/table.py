@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import deprecation
 import warnings
 from abc import ABC, abstractmethod
@@ -266,12 +267,14 @@ def _into_pyarrow_reader(
 
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
-            schema = data[0].__class__.to_arrow_schema()
+            model_schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
-            return pa.Table.from_pylist(data, schema=schema).to_reader()
+            data = _serialize_json_values(data, schema or model_schema)
+            return pa.Table.from_pylist(data, schema=model_schema).to_reader()
         elif isinstance(data[0], pa.RecordBatch):
             return pa.Table.from_batches(data).to_reader()
         else:
+            data = _serialize_json_values(data, schema)
             return pa.Table.from_pylist(data).to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         table = pa.Table.from_pandas(data, preserve_index=False)
@@ -619,6 +622,108 @@ def _field_extension_name(field: pa.Field) -> Optional[str]:
     return extension_name
 
 
+def _is_json_field(field: pa.Field) -> bool:
+    return _field_extension_name(field) in ("arrow.json", "lance.json")
+
+
+@dataclass(frozen=True)
+class _JsonSerializationPlan:
+    arrow_field: pa.Field
+    children: Optional[Dict[str, "_JsonSerializationPlan"]] = None
+    item: Optional["_JsonSerializationPlan"] = None
+
+
+def _json_serialization_plan(field: pa.Field) -> Optional[_JsonSerializationPlan]:
+    if _is_json_field(field):
+        return _JsonSerializationPlan(field)
+
+    if pa.types.is_struct(field.type):
+        children: Dict[str, _JsonSerializationPlan] = {}
+        for child_field in field.type:
+            child_plan = _json_serialization_plan(child_field)
+            if child_plan is not None:
+                children[child_field.name] = child_plan
+        if children:
+            return _JsonSerializationPlan(field, children=children)
+
+    if _is_list_like(field.type):
+        item_plan = _json_serialization_plan(field.type.value_field)
+        if item_plan is not None:
+            return _JsonSerializationPlan(field, item=item_plan)
+
+    return None
+
+
+def _json_serialization_plans(
+    schema: pa.Schema,
+) -> Dict[str, _JsonSerializationPlan]:
+    plans: Dict[str, _JsonSerializationPlan] = {}
+    for field in schema:
+        plan = _json_serialization_plan(field)
+        if plan is not None:
+            plans[field.name] = plan
+    return plans
+
+
+def _serialize_json_value(value: Any, plan: _JsonSerializationPlan) -> Any:
+    if value is None or isinstance(value, str):
+        return value
+    if _is_json_field(plan.arrow_field):
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+
+    if plan.children is not None and isinstance(value, dict):
+        serialized = None
+        for child_name, child_plan in plan.children.items():
+            if child_name not in value:
+                continue
+            child_value = _serialize_json_value(value[child_name], child_plan)
+            if child_value is not value[child_name]:
+                if serialized is None:
+                    serialized = dict(value)
+                serialized[child_name] = child_value
+        return serialized if serialized is not None else value
+
+    if plan.item is not None and isinstance(value, list):
+        serialized = None
+        for index, item in enumerate(value):
+            serialized_item = _serialize_json_value(item, plan.item)
+            if serialized_item is not item:
+                if serialized is None:
+                    serialized = list(value)
+                serialized[index] = serialized_item
+        return serialized if serialized is not None else value
+
+    return value
+
+
+def _serialize_json_values(data: Any, target_schema: Optional[pa.Schema]) -> Any:
+    if target_schema is None or not isinstance(data, list):
+        return data
+
+    plans = _json_serialization_plans(target_schema)
+    if not plans:
+        return data
+
+    serialized_rows = []
+    for row in data:
+        if not isinstance(row, dict):
+            serialized_rows.append(row)
+            continue
+        serialized_row = None
+        for field_name, plan in plans.items():
+            if field_name not in row:
+                continue
+            value = _serialize_json_value(row[field_name], plan)
+            if value is not row[field_name]:
+                if serialized_row is None:
+                    serialized_row = dict(row)
+                serialized_row[field_name] = value
+        serialized_rows.append(serialized_row if serialized_row is not None else row)
+    return serialized_rows
+
+
 def _align_field_types(
     fields: List[pa.Field],
     target_fields: List[pa.Field],
@@ -666,12 +771,13 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
         if json_storage is not None:
             # Labelled through metadata rather than pa.json_(), which only exists on
             # newer PyArrow; Lance reads the extension name off the field either way.
-            return pa.field(
-                field.name,
-                json_storage,
-                field.nullable,
-                {"ARROW:extension:name": "arrow.json"},
-            )
+            # The other metadata keys mirror the table field's: Lance swaps the name
+            # back to lance.json on write and then requires the field to match the
+            # stored one exactly, including the empty ``ARROW:extension:metadata``
+            # that pyarrow records for a ``pa.json_()`` column.
+            metadata = dict(target_field.metadata or {})
+            metadata[b"ARROW:extension:name"] = b"arrow.json"
+            return pa.field(field.name, json_storage, field.nullable, metadata)
     if pa.types.is_struct(target_field.type):
         if pa.types.is_struct(field.type):
             new_type = pa.struct(
@@ -2540,6 +2646,18 @@ class Table(ABC):
         [Table.uses_v2_manifest_paths][lancedb.table.Table.uses_v2_manifest_paths]
         to check if the table is already using the new path style.
         """
+
+    # WAL-PK-FUSION: delete both hooks, here and on AsyncTable and RemoteTable.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        """Whether a hybrid query here has already been refused ``_rowid``.
+
+        Learned from a refusal, never probed, so asking is free. ``False`` for
+        table types that never refuse.
+        """
+        return False
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        """Remember a ``_rowid`` refusal, so later hybrid queries skip it."""
 
 
 class LanceTable(Table):
@@ -5188,6 +5306,15 @@ class AsyncTable:
         """
         return await self._inner.get_lsm_write_spec()
 
+    # WAL-PK-FUSION: delete both hooks.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        """See [`Table._hybrid_pk_fusion_learned`][lancedb.table.Table]."""
+        return self._inner.hybrid_pk_fusion_learned()
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        """See [`Table._note_hybrid_pk_fusion`][lancedb.table.Table]."""
+        self._inner.note_hybrid_pk_fusion()
+
     async def checkpoint_lsm(self) -> None:
         """Converge this table's LSM write path into its base table.
 
@@ -5720,6 +5847,7 @@ class AsyncTable:
 
         """
         schema = await self.schema()
+        data = _serialize_json_values(data, schema)
         if on_bad_vectors is None:
             on_bad_vectors = "error"
         if fill_value is None:

@@ -7,20 +7,21 @@ import { Table } from "./table";
 /** Schema metadata key holding a materialized view's definition. */
 export const DEFINITION_META_KEY = "mv.definition";
 
-/** The query that defines a materialized view. */
+/**
+ * The newest stored layout this version reads: `{"format": N, "query": "<SQL>"}`,
+ * format 2 being a query with `GROUP BY`.
+ */
+export const DEFINITION_FORMAT = 2;
+
+/**
+ * The query that defines a materialized view, as stored:
+ * `SELECT columns FROM [ns.]table [, function(args) AS alias | , UNNEST(column) AS alias]
+ * [WHERE predicate] [GROUP BY expr, ...] [LIMIT n]`. A Function in `FROM`
+ * position yields one row per element it returns.
+ */
 export interface MaterializedViewDefinition {
-  /** Name of the source table, in the same database as the view. */
-  sourceTable: string;
-  /** `[output column, SQL expression]` pairs, in view schema order. */
-  projections: [string, string][];
-  /** SQL predicate selecting the source rows the view holds. */
-  filter?: string;
-  /** Cap on the number of rows the view holds. */
-  limit?: number;
-  /** Source columns the projections and filter read. */
-  inputs: string[];
-  /** Namespace holding the source table; empty is the root namespace. */
-  sourceNamespace: string[];
+  /** The defining query, in the canonical spelling the server stores. */
+  query: string;
 }
 
 /**
@@ -88,15 +89,21 @@ export function definitionFromJson(
 ): MaterializedViewDefinition {
   // biome-ignore lint/suspicious/noExplicitAny: raw JSON
   const value: any = JSON.parse(raw);
-  // "namespaced_select" keeps older readers from resolving the source at root.
-  if (
-    value.kind !== undefined &&
-    value.kind !== "select" &&
-    value.kind !== "namespaced_select"
-  ) {
+  if (value.format !== undefined) {
+    // A newer writer's layout is reported, never guessed at.
+    if (!Number.isInteger(value.format) || value.format > DEFINITION_FORMAT) {
+      throw new Error(
+        `materialized view '${name}' is stored in format ${value.format}, ` +
+          "which this version of lancedb cannot refresh",
+      );
+    }
+    return { query: value.query };
+  }
+  // The structured layout written before the format number.
+  if (value.kind !== "select" && value.kind !== "namespaced_select") {
     throw new Error(
-      `materialized view '${name}' is defined by '${value.kind}', which this ` +
-        "version of lancedb cannot refresh",
+      `materialized view '${name}' is stored in format kind '${value.kind}', ` +
+        "which this version of lancedb cannot refresh",
     );
   }
   const limit = value.limit ?? undefined;
@@ -108,18 +115,41 @@ export function definitionFromJson(
       `materialized view '${name}' has a stored limit too large to represent exactly`,
     );
   }
-  return {
-    sourceTable: value.source_table,
-    // biome-ignore lint/suspicious/noExplicitAny: raw JSON
-    projections: (value.projections ?? []).map((p: any) => [
-      p.output,
-      p.expression,
-    ]),
-    filter: value.filter ?? undefined,
-    limit,
-    inputs: value.inputs ?? [],
-    sourceNamespace: value.source_namespace ?? [],
-  };
+  return { query: legacyQuery(value, limit) };
+}
+
+function legacyIdent(name: string): string {
+  return /^[a-z_][a-z0-9_]*$/.test(name)
+    ? name
+    : `\`${name.replace(/`/g, "``")}\``;
+}
+
+/** Render the pre-format structured layout as the query it described. */
+// biome-ignore lint/suspicious/noExplicitAny: raw JSON
+function legacyQuery(value: any, limit: number | undefined): string {
+  // biome-ignore lint/suspicious/noExplicitAny: raw JSON
+  const projections: any[] = value.projections ?? [];
+  const columns =
+    projections.length === 0
+      ? "*"
+      : projections
+          .map((p) =>
+            p.expression === p.output || p.expression === `\`${p.output}\``
+              ? p.expression
+              : `${p.expression} AS ${legacyIdent(p.output)}`,
+          )
+          .join(", ");
+  const table = [...(value.source_namespace ?? []), value.source_table]
+    .map(legacyIdent)
+    .join(".");
+  let query = `SELECT ${columns} FROM ${table}`;
+  if (value.filter !== undefined && value.filter !== null) {
+    query += ` WHERE ${value.filter}`;
+  }
+  if (limit !== undefined) {
+    query += ` LIMIT ${limit}`;
+  }
+  return query;
 }
 
 /**

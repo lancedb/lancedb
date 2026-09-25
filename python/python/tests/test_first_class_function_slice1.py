@@ -84,6 +84,18 @@ def test_public_function_values_are_in_api_reference():
             False,
         ),
         (
+            "remote_initialized_function_application.json",
+            "remote_initialized_function_application.canonical.json",
+            FunctionApplication,
+            False,
+        ),
+        (
+            "remote_initialized_function_binding.json",
+            "remote_initialized_function_binding.canonical.json",
+            FunctionBinding,
+            False,
+        ),
+        (
             "remote_refresh_job.json",
             "remote_refresh_result.canonical.json",
             RefreshColumnResult,
@@ -157,7 +169,7 @@ def test_function_version_binding_validates_names_and_direct_columns():
 
     with pytest.raises(TypeError, match=r"missing inputs: \['text'\]"):
         version()
-    with pytest.raises(TypeError, match=r"unknown inputs: \['body'\]"):
+    with pytest.raises(TypeError, match=r"unknown arguments: \['body'\]"):
         version(text=col("text"), body=col("body"))
     with pytest.raises(TypeError, match="direct col"):
         version(text=col("text").lower())
@@ -267,6 +279,35 @@ def test_binding_and_refresh_result_keep_stable_remote_fields():
     )
     assert result.published_version is None
     assert RefreshColumnResult.from_json(result.to_canonical_json()) == result
+
+
+def test_initialization_travels_on_the_application_and_binding():
+    application = FunctionApplication.from_json(
+        fixture("remote_initialized_function_application.json")
+    )
+    assert application.initialization["temperature"] == 0.25
+    assert application.initialization["retry"]["backoff"] == (1, 2, 4)
+    application._ensure_declarable()
+
+    binding = FunctionBinding.from_json(
+        fixture("remote_initialized_function_binding.json")
+    )
+    assert binding.initialization_row() == {
+        "model": "text-embedding-3-small",
+        "dimensions": 512,
+    }
+    assert (
+        FunctionBinding.from_json(
+            fixture("remote_function_binding.json")
+        ).initialization_row()
+        is None
+    )
+
+    signature = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    ).signature
+    assert signature.initialization == ()
+    assert "initialization" not in json.loads(signature.to_canonical_json())
 
 
 def test_function_literal_numeric_domain_matches_rust():

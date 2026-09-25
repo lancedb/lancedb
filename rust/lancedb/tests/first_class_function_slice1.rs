@@ -115,6 +115,29 @@ fn application_and_binding_match_shared_remote_goldens() {
     );
 }
 
+/// Initialization values travel as JSON on the application, including
+/// floats, and as the validated Arrow row on the binding.
+#[test]
+fn initialized_application_and_binding_match_shared_remote_goldens() {
+    let application =
+        FunctionApplication::from_json(&fixture("remote_initialized_function_application.json"))
+            .expect("application fixture");
+    assert!(!application.has_unknown_fields());
+    assert_eq!(application.initialization()["temperature"], 0.25);
+    assert_eq!(
+        application.to_canonical_json().expect("canonical JSON"),
+        fixture("remote_initialized_function_application.canonical.json").trim()
+    );
+
+    let binding = FunctionBinding::from_json(&fixture("remote_initialized_function_binding.json"))
+        .expect("binding fixture");
+    assert!(binding.initialization().is_some());
+    assert_eq!(
+        binding.to_canonical_json().expect("canonical JSON"),
+        fixture("remote_initialized_function_binding.canonical.json").trim()
+    );
+}
+
 #[test]
 fn refresh_job_result_matches_shared_canonical_golden() {
     let result = job_result("remote_refresh_job.json");

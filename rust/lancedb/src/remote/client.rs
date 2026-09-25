@@ -448,7 +448,7 @@ enum BodyLogging {
 /// always splits back into the parts that made it. The configuration field
 /// exists because the identifier grammar comes from the Lance REST catalog
 /// standard, which carries a delimiter setting for other catalogs to adopt.
-pub(crate) const ID_DELIMITER: &str = "$";
+pub const ID_DELIMITER: &str = "$";
 
 fn validate_id_delimiter(delimiter: &str) -> Result<()> {
     if delimiter != ID_DELIMITER {

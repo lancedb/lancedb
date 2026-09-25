@@ -982,6 +982,9 @@ class RemoteTable(Table):
         self,
         transforms: Dict[str, str | FunctionApplication]
         | FunctionApplication
+        | pa.Field
+        | List[pa.Field]
+        | pa.Schema
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
@@ -1032,6 +1035,14 @@ class RemoteTable(Table):
     def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
         """Read the installed LsmWriteSpec, or ``None``."""
         return LOOP.run(self._table.get_lsm_write_spec())
+
+    # WAL-PK-FUSION: delete both hooks.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        # `self._table` is the async table, which owns the Rust handle.
+        return self._table._hybrid_pk_fusion_learned()
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        self._table._note_hybrid_pk_fusion()
 
     def checkpoint_lsm(self) -> None:
         """Synchronous version of

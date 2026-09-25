@@ -28,6 +28,39 @@ describe("materialized views", () => {
   });
   afterEach(() => tmpDir.removeCallback());
 
+  it("reads stored queries and legacy layouts", () => {
+    const read = (stored: string) =>
+      definitionFromMetadata(new Map([[DEFINITION_META_KEY, stored]]), "v");
+    const query =
+      "SELECT id, c.chunk FROM ns.docs, UNNEST(chunks) AS c WHERE id > 1";
+    expect(read(`{"format":1,"query":${JSON.stringify(query)}}`).query).toBe(
+      query,
+    );
+
+    // The structured layout written before the format number reads as the
+    // query it described, under either of its kind tags.
+    expect(
+      read(
+        '{"kind":"namespaced_select","source_table":"people","source_namespace":["ns"],' +
+          '"projections":[{"output":"name","expression":"`name`"},' +
+          '{"output":"Shout","expression":"upper(name)"}],"filter":"age >= 18","limit":42}',
+      ).query,
+    ).toBe(
+      "SELECT `name`, upper(name) AS `Shout` FROM ns.people WHERE age >= 18 LIMIT 42",
+    );
+    expect(read('{"kind":"select","source_table":"people"}').query).toBe(
+      "SELECT * FROM people",
+    );
+
+    // A newer writer's layout is reported, never guessed at.
+    for (const newer of [
+      `{"format":3,"query":${JSON.stringify(query)}}`,
+      '{"kind":"select_v3","source_table":"people"}',
+    ]) {
+      expect(() => read(newer)).toThrow(/cannot refresh/);
+    }
+  });
+
   it("rejects a stored limit a number cannot carry", () => {
     const big = new Map([
       [
@@ -37,36 +70,6 @@ describe("materialized views", () => {
     ]);
     expect(() => definitionFromMetadata(big, "v")).toThrow(
       /too large to represent exactly/,
-    );
-
-    const safe = new Map([
-      [
-        DEFINITION_META_KEY,
-        '{"kind":"select","source_table":"people","limit":42}',
-      ],
-    ]);
-    expect(definitionFromMetadata(safe, "v").limit).toBe(42);
-  });
-
-  it("reads the namespaced select kind and refuses unknown kinds", () => {
-    // "namespaced_select" is the namespaced form of "select": same shape, a
-    // separate kind so readers that predate it refuse instead of resolving
-    // the source at the root.
-    const namespaced = new Map([
-      [
-        DEFINITION_META_KEY,
-        '{"kind":"namespaced_select","source_table":"people","source_namespace":["ns"]}',
-      ],
-    ]);
-    const definition = definitionFromMetadata(namespaced, "v");
-    expect(definition.sourceTable).toBe("people");
-    expect(definition.sourceNamespace).toEqual(["ns"]);
-
-    const unknown = new Map([
-      [DEFINITION_META_KEY, '{"kind":"select_v3","source_table":"people"}'],
-    ]);
-    expect(() => definitionFromMetadata(unknown, "v")).toThrow(
-      /cannot refresh/,
     );
   });
 
@@ -88,13 +91,9 @@ describe("materialized views", () => {
     });
     const view = await db.openMaterializedView("adults");
     const definition = await view.definition();
-    expect(definition.sourceTable).toBe("people");
-    expect(definition.filter).toBe("age >= 18");
-    expect(definition.projections).toEqual([
-      ["name", "`name`"],
-      ["age", "`age`"],
-    ]);
-    expect(definition.inputs).toEqual(["age", "name"]);
+    expect(definition.query).toBe(
+      "SELECT name, age FROM people WHERE age >= 18",
+    );
   });
 
   it("refreshes incrementally after an append", async () => {

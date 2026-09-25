@@ -23,8 +23,8 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, ReadConsistency,
-    TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, PauseJobStatus,
+    ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -37,7 +37,11 @@ use crate::remote::{
     },
 };
 use crate::secrets::SecretInfo;
-use crate::utils::{validate_secret_component, validate_secret_reference};
+use crate::utils::{
+    validate_namespace, validate_secret_component, validate_secret_reference,
+    validate_view_reference,
+};
+use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
 #[cfg(feature = "remote")]
@@ -649,6 +653,22 @@ impl Connection {
             .await
     }
 
+    /// Start dropping a Function and return its cleanup job.
+    ///
+    /// The name is unbound before this returns; the object's content may still be being
+    /// deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for that to finish. When
+    /// the server deletes inline, or when nothing was bound, the returned job is already
+    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    pub async fn drop_function_async(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<(bool, crate::job::Job)> {
+        self.internal
+            .drop_function_async(name.as_ref(), version.as_ref())
+            .await
+    }
+
     /// Create a named Secret in this database.
     ///
     /// Fails if the name is taken, so a create can never silently become a
@@ -731,6 +751,121 @@ impl Connection {
             .await
     }
 
+    /// Create a view: a named query the database plans on every read.
+    ///
+    /// The query is planned once, here, so one that cannot be planned is
+    /// refused now rather than at the first read. A view holds no rows, and
+    /// its readers see its sources as they are at read time.
+    ///
+    /// There is no replace: a name already taken is an error, and changing a
+    /// view is a drop followed by a create, each authorized against what it
+    /// actually touches. Local databases return [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn view_lifecycle(
+    /// #     connection: &lancedb::Connection,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let namespace = vec!["analytics".to_string()];
+    ///
+    /// let view = connection
+    ///     .create_view(
+    ///         "recent_orders",
+    ///         "SELECT id, total FROM orders WHERE total > 100",
+    ///         &namespace,
+    ///     )
+    ///     .await?;
+    /// println!("{} has {} columns", view.name, view.schema.fields().len());
+    ///
+    /// // The query comes back as it was recorded, with the defaults its
+    /// // unqualified names resolve against.
+    /// let described = connection.describe_view("recent_orders", &namespace).await?;
+    /// println!("{} in {:?}", described.query, described.default_namespace_path);
+    ///
+    /// let names = connection.list_views(&namespace).await?;
+    /// assert!(names.iter().any(|name| name == "recent_orders"));
+    ///
+    /// // Dropping the view leaves `orders` untouched.
+    /// connection.drop_view("recent_orders", &namespace).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_view(
+        &self,
+        name: impl AsRef<str>,
+        query: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_view(name.as_ref(), query.as_ref(), namespace_path)
+            .await
+    }
+
+    /// What this database records about one view: its defining query and the
+    /// schema that query resolved to.
+    ///
+    /// The schema is the one recorded at creation. A source altered since then
+    /// shows up when the view is read, not here. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn describe_view(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_view(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a view and wait for its definition to be deleted.
+    ///
+    /// The tables it reads are untouched: a view holds no rows of its own.
+    /// Use [`Connection::drop_view_async`] to get the cleanup job instead of
+    /// waiting on it. Local databases return [`Error::NotSupported`].
+    pub async fn drop_view(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal.drop_view(name.as_ref(), namespace_path).await
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    ///
+    /// The name is free before this returns; the definition dataset may still
+    /// be being deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for
+    /// that. When nothing was bound to the name, the returned job is already
+    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::Connection;
+    /// # async fn drop(conn: &Connection) -> lancedb::Result<()> {
+    /// let job = conn.drop_view_async("recent_orders", &[]).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn drop_view_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_view_async(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of the views in one namespace.
+    ///
+    /// Names only; a definition is query metadata and comes from
+    /// [`Self::describe_view`]. The client walks all server pages before
+    /// returning. Local databases return [`Error::NotSupported`].
+    pub async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        validate_namespace(namespace_path)?;
+        self.internal.list_views(namespace_path).await
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.
@@ -795,6 +930,18 @@ impl Connection {
     /// server accepted the cancellation, false if no such job exists.
     pub async fn cancel_job(&self, job_id: impl AsRef<str>) -> Result<bool> {
         self.internal.cancel_job(job_id.as_ref()).await
+    }
+
+    /// Pause a server-side job by id. Its workers drain and it stays parked
+    /// until resumed; see [`PauseJobStatus`] for the outcomes.
+    pub async fn pause_job(&self, job_id: impl AsRef<str>) -> Result<PauseJobStatus> {
+        self.internal.pause_job(job_id.as_ref()).await
+    }
+
+    /// Resume a paused server-side job by id. Its workers pick their work
+    /// back up from checkpoints; see [`ResumeJobStatus`] for the outcomes.
+    pub async fn resume_job(&self, job_id: impl AsRef<str>) -> Result<ResumeJobStatus> {
+        self.internal.resume_job(job_id.as_ref()).await
     }
 
     /// Drop a table in the database.
