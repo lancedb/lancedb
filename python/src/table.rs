@@ -1637,6 +1637,21 @@ impl Table {
         })
     }
 
+    /// Whether a hybrid query on this table has already been refused `_rowid`.
+    /// Learned from a previous refusal, never probed, so this is free.
+    ///
+    /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
+    pub fn hybrid_pk_fusion_learned(self_: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(self_.inner_ref()?.base_table().hybrid_pk_fusion_learned())
+    }
+
+    /// Remember that this table refused `_rowid`, so later hybrid queries skip
+    /// straight to the primary-key fusion.
+    pub fn note_hybrid_pk_fusion(self_: PyRef<'_, Self>) -> PyResult<()> {
+        self_.inner_ref()?.base_table().note_hybrid_pk_fusion();
+        Ok(())
+    }
+
     /// Converge the table's LSM write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last

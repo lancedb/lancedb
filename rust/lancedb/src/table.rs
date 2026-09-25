@@ -706,6 +706,31 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "get_lsm_write_spec is not supported on this table type".into(),
         })
     }
+    /// Whether a hybrid query on this table has already been told it cannot
+    /// join its legs on `_rowid`.
+    ///
+    /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
+    ///
+    /// Learned, never probed: hybrid optimistically asks for `_rowid` and only
+    /// a MemWAL table refuses, so paying a round trip up front would tax every
+    /// table to discover something almost none of them need. Synchronous and
+    /// free by construction — an implementation may only answer from what a
+    /// previous query already learned.
+    ///
+    /// The default is `false`, which keeps a table type that never refuses on
+    /// the `_rowid` path forever.
+    fn hybrid_pk_fusion_learned(&self) -> bool {
+        false
+    }
+
+    /// Record that this table refused `_rowid`, so later hybrid queries skip
+    /// straight to the primary-key fusion instead of paying the refusal again.
+    ///
+    /// Implementations should expire this the way they expire other table
+    /// metadata: a spec can be removed, after which `_rowid` works again and
+    /// the only cost of being late to notice is a base-only read that is still
+    /// correct.
+    fn note_hybrid_pk_fusion(&self) {}
     /// Seal every bucket's active memtable into L0.
     ///
     /// The default implementation returns `NotSupported`.
