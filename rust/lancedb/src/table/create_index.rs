@@ -160,6 +160,12 @@ impl NativeTable {
             builder = builder.name(name);
         }
         builder.await?;
+        // A writer already open was built before this index existed, so it has
+        // to pick it up here or a read needing it is refused until it reopens.
+        self.dataset
+            .shard_writer()
+            .refresh_maintained_indexes(&dataset)
+            .await;
         self.dataset.update(dataset);
         Ok(())
     }

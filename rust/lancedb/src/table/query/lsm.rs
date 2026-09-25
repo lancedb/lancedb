@@ -33,7 +33,7 @@ use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance::Dataset;
-use lance::dataset::mem_wal::scanner::InMemoryMemTables;
+use lance::dataset::mem_wal::scanner::{InMemoryMemTableRef, InMemoryMemTables};
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, LsmScanner, ShardManifestStore, ShardSnapshot, ShardWriterConfig,
 };
@@ -471,17 +471,14 @@ async fn fts_plan(
     // Without a maintained in-memory FTS index for this column, the active memtable
     // arm produces an empty plan (`active_source_can_execute_fts` returns false), so
     // the search silently omits un-compacted documents. Reject rather than mislead.
-    if !index_maintained(
-        dataset,
-        column,
-        &details.maintained_indexes,
-        "InvertedIndexDetails",
-    )
-    .await?
+    if !index_maintained(dataset, column, details, "InvertedIndexDetails").await?
+        || !resident_memtables_carry(&in_memory, |memtable| {
+            memtable.index_store.get_fts_by_column(column).is_some()
+        })
     {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner full-text search requires the FTS index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes); otherwise un-compacted documents are omitted. set use_lsm(false) to read the base table only"
+                "the MemWAL LSM scanner full-text search requires the FTS index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise un-compacted documents are omitted. set use_lsm(false) to read the base table only"
             ),
         });
     }
@@ -493,6 +490,27 @@ async fn fts_plan(
     Ok(scanner.create_plan().await?)
 }
 
+/// Whether the spec maintains the index named `name`.
+///
+/// An unnamed set names nothing and covers everything, so the stored list alone
+/// cannot answer this.
+fn spec_maintains(details: &MemWalIndexDetails, name: &str) -> bool {
+    details.maintain_all_indexes || details.maintained_indexes.iter().any(|n| n == name)
+}
+
+/// Whether every resident MemTable carries the index an arm needs.
+///
+/// The spec is intent; a MemTable built before the index joined the set
+/// contributes nothing to an indexed read, so its rows would go missing.
+fn resident_memtables_carry(
+    in_memory: &HashMap<Uuid, InMemoryMemTables>,
+    carries: impl Fn(&InMemoryMemTableRef) -> bool,
+) -> bool {
+    in_memory
+        .values()
+        .all(|tables| carries(&tables.active) && tables.frozen.iter().all(&carries))
+}
+
 /// Whether an index of `type_url_suffix` covering `column` is in the MemWAL spec's
 /// maintained set. Only a maintained index has its catch-up tracked (so exclusion is
 /// gated correctly) and its in-memory arm kept current; an unmaintained base index
@@ -502,7 +520,7 @@ async fn fts_plan(
 async fn index_maintained(
     dataset: &Dataset,
     column: &str,
-    maintained: &[String],
+    details: &MemWalIndexDetails,
     type_url_suffix: &str,
 ) -> Result<bool> {
     use lance::index::DatasetIndexExt;
@@ -512,7 +530,7 @@ async fn index_maintained(
     let indices = dataset.load_indices().await?;
     Ok(indices.iter().any(|idx| {
         idx.fields.contains(&field.id)
-            && maintained.iter().any(|m| m == &idx.name)
+            && spec_maintains(details, &idx.name)
             && idx
                 .index_details
                 .as_ref()
@@ -583,9 +601,7 @@ async fn arm_maintained_index_names(
             })
             .map(|idx| idx.name.clone())
             .collect();
-        if let Some(name) =
-            resolve_single_index(segment_names, &details.maintained_indexes, arm, &column)?
-        {
+        if let Some(name) = resolve_single_index(segment_names, details, arm, &column)? {
             names.push(name);
         }
     }
@@ -604,7 +620,7 @@ async fn arm_maintained_index_names(
 /// compaction watermark).
 fn resolve_single_index(
     mut names: Vec<String>,
-    maintained: &[String],
+    details: &MemWalIndexDetails,
     arm: &str,
     column: &str,
 ) -> Result<Option<String>> {
@@ -620,7 +636,7 @@ fn resolve_single_index(
     Ok(names
         .into_iter()
         .next()
-        .filter(|name| maintained.contains(name)))
+        .filter(|name| spec_maintains(details, name)))
 }
 
 /// Drop the primary-key columns Lance appends internally for dedup when the user's
@@ -692,17 +708,14 @@ async fn vector_plan(
     // maintained, its catch-up is untracked and exclusion falls back to the
     // compaction watermark — dropping compacted SSTables the (lagging) base index has
     // not re-indexed. Reject rather than silently omit rows, mirroring the FTS arm.
-    if !index_maintained(
-        dataset,
-        &column,
-        &details.maintained_indexes,
-        "VectorIndexDetails",
-    )
-    .await?
+    if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
+        || !resident_memtables_carry(&in_memory, |memtable| {
+            memtable.index_store.get_hnsw_by_column(&column).is_some()
+        })
     {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes); otherwise compacted rows not yet re-indexed are omitted. set use_lsm(false) to read the base table only"
+                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise compacted rows not yet re-indexed are omitted. set use_lsm(false) to read the base table only"
             ),
         });
     }
@@ -888,7 +901,10 @@ mod tests {
 
     #[test]
     fn resolve_single_index_dedupes_segments() {
-        let maintained = vec!["fts_idx".to_string()];
+        let maintained = MemWalIndexDetails {
+            maintained_indexes: vec!["fts_idx".to_string()],
+            ..Default::default()
+        };
         // Two physical segments of ONE logical index must not count as "multiple".
         assert_eq!(
             resolve_single_index(
@@ -915,6 +931,35 @@ mod tests {
             resolve_single_index(vec!["other".to_string()], &maintained, "full-text", "text")
                 .unwrap(),
             None
+        );
+    }
+
+    /// A spec that maintains every index names none of them, so the stored list
+    /// is empty while every index on the table is in fact maintained. Reading
+    /// the list alone would refuse the read path on the default spec.
+    #[test]
+    fn an_unnamed_set_maintains_every_index() {
+        let all = MemWalIndexDetails {
+            maintained_indexes: Vec::new(),
+            maintain_all_indexes: true,
+            ..Default::default()
+        };
+        assert!(spec_maintains(&all, "fts_idx"));
+        assert_eq!(
+            resolve_single_index(vec!["fts_idx".to_string()], &all, "full-text", "text").unwrap(),
+            Some("fts_idx".to_string()),
+        );
+
+        // The same empty list without the flag maintains nothing.
+        let none = MemWalIndexDetails {
+            maintained_indexes: Vec::new(),
+            maintain_all_indexes: false,
+            ..Default::default()
+        };
+        assert!(!spec_maintains(&none, "fts_idx"));
+        assert_eq!(
+            resolve_single_index(vec!["fts_idx".to_string()], &none, "full-text", "text").unwrap(),
+            None,
         );
     }
 }

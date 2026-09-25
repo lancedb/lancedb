@@ -1505,6 +1505,30 @@ mod lsm_tests {
         );
     }
 
+    /// A table with `id`/`text` and a primary key, ready for an LSM write spec.
+    async fn lsm_text_table(dir: &tempfile::TempDir) -> crate::Table {
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_text_reader(vec![(1, "alpha")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+    }
+
+    /// Upsert `rows` through the LSM write path.
+    async fn upsert_text(table: &crate::Table, rows: Vec<(i64, &str)>) {
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder.execute(id_text_reader(rows)).await.unwrap();
+    }
+
     /// A reader of `[id: Int64, text: Utf8]` rows.
     fn id_text_reader(rows: Vec<(i64, &str)>) -> Box<dyn RecordBatchReader + Send> {
         let schema = Arc::new(Schema::new(vec![
@@ -1522,6 +1546,148 @@ mod lsm_tests {
         )
         .unwrap();
         Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    /// Under the default set, an index created while a writer is open reaches
+    /// that writer.
+    ///
+    /// The default maintains every index the table has, so creating one changes
+    /// what the table maintains without anyone touching the spec. A writer left
+    /// on its old configs would keep building MemTables the new index does not
+    /// cover.
+    #[tokio::test]
+    async fn lsm_default_set_picks_up_an_index_created_while_writing() {
+        use crate::index::Index;
+        use lance_index::scalar::FullTextSearchQuery;
+
+        let dir = tempdir().unwrap();
+        let table = lsm_text_table(&dir).await;
+        // The default set, on a table with no FTS index yet.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        // Opens the writer, whose MemTable carries no FTS index.
+        upsert_text(&table, vec![(99, "zebra")]).await;
+
+        // Created with the writer still open and never reopened.
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        upsert_text(&table, vec![(100, "zebra stripes")]).await;
+
+        let query = FullTextSearchQuery::new("stripes".to_string())
+            .with_column("text".to_string())
+            .unwrap();
+        let batches = table
+            .query()
+            .full_text_search(query)
+            .execute()
+            .await
+            .expect("the created index reached the open writer")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let found: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(found, 1, "the row written after create_index must be found");
+    }
+
+    /// Changing the set on a live table reaches the writer already open on it.
+    ///
+    /// Without that, the commit would land and the writer would keep building
+    /// MemTables from the old set, so a query needing the newly maintained
+    /// index would stay refused until something reopened the writer.
+    #[tokio::test]
+    async fn lsm_set_change_reaches_an_already_open_writer() {
+        use crate::index::Index;
+        use lance_index::scalar::FullTextSearchQuery;
+
+        let dir = tempdir().unwrap();
+        let table = lsm_text_table(&dir).await;
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        let fts_index = table.list_indices().await.unwrap()[0].name.clone();
+
+        // Installed maintaining nothing, then written to: the writer opens with
+        // no FTS index.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
+            .await
+            .unwrap();
+        upsert_text(&table, vec![(99, "zebra")]).await;
+
+        // Change the set in place on the live table.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
+            .await
+            .unwrap();
+
+        // A row written after the change is answered by the index the writer
+        // picked up.
+        upsert_text(&table, vec![(100, "zebra stripes")]).await;
+
+        let query = FullTextSearchQuery::new("stripes".to_string())
+            .with_column("text".to_string())
+            .unwrap();
+        let batches = table
+            .query()
+            .full_text_search(query)
+            .execute()
+            .await
+            .expect("the set change reached the open writer")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let found: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(found, 1, "the row written after the change must be found");
+    }
+
+    /// A writer opened before the index existed keeps a MemTable without it, so
+    /// an indexed read is refused rather than served without those rows.
+    ///
+    /// The default set maintains every index the table has, which the spec
+    /// records as intent. That intent alone would let the read through while
+    /// the live MemTable still cannot answer it.
+    #[tokio::test]
+    async fn lsm_read_refuses_when_a_resident_memtable_predates_the_index() {
+        use crate::index::Index;
+        use lance_index::scalar::FullTextSearchQuery;
+
+        let dir = tempdir().unwrap();
+        let table = lsm_text_table(&dir).await;
+        // No index yet, and the default set: maintain whatever the table has.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        // Opens the writer, whose MemTable therefore carries no FTS index.
+        upsert_text(&table, vec![(99, "zebra")]).await;
+
+        // Built afterwards: the spec now resolves to it, the MemTable does not.
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let query = FullTextSearchQuery::new("zebra".to_string())
+            .with_column("text".to_string())
+            .unwrap();
+        let Err(error) = table.query().full_text_search(query).execute().await else {
+            panic!("an indexed read the resident MemTable cannot answer must be refused");
+        };
+        assert!(
+            error.to_string().contains("resident MemTable"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
