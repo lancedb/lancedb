@@ -160,6 +160,10 @@ impl NativeTable {
             builder = builder.name(name);
         }
         builder.await?;
+        self.dataset
+            .shard_writer()
+            .refresh_maintained_indexes(&dataset)
+            .await;
         self.dataset.update(dataset);
         Ok(())
     }

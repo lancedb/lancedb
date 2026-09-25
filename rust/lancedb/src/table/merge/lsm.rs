@@ -73,26 +73,61 @@ const SHARD_NAMESPACE: Uuid = Uuid::from_u128(0x4c53_4d57_5249_5445_5f53_4841_52
 pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) -> Result<()> {
     table.dataset.ensure_mutable()?;
 
+    // A named set is checked against the table here, where the caller can still
+    // be told which names exist. An unnamed set is not resolved at all: it is an
+    // intent lance re-reads whenever it builds a MemTable, so an index created
+    // later is maintained without another call.
+    let maintained_indexes = match spec.maintained_indexes() {
+        Some(requested) => {
+            let indices = table.list_indices().await?;
+            for name in requested {
+                if !indices.iter().any(|index| &index.name == name) {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "maintained index '{}' does not exist on this table; it has {}",
+                            name,
+                            index_name_list(&indices),
+                        ),
+                    });
+                }
+            }
+            // Before the builder borrows the dataset clone.
+            let dataset = table.dataset.get().await?;
+            validate_maintained_indexes(&dataset, requested).await?;
+            Some(requested.to_vec())
+        }
+        None => None,
+    };
+
+    // A table that already has a spec accepts one kind of repeat: the same
+    // sharding with a different maintained set. The rest of a spec describes
+    // how the generations already written were homed, so it cannot move.
     {
         let dataset = table.dataset.get().await?;
-        if dataset.mem_wal_index_details().await?.is_some() {
-            return Err(Error::InvalidInput {
-                message: "set_lsm_write_spec: an LSM write spec is already set on this table; mutation is not supported".into(),
-            });
+        if let Some(details) = dataset.mem_wal_index_details().await? {
+            let installed = lsm_write_spec_from_details(&details, dataset.schema())?;
+            if !same_except_maintained_indexes(&installed, &spec) {
+                return Err(Error::InvalidInput {
+                    message: "set_lsm_write_spec: an LSM write spec is already set on this \
+                              table; only its maintained index set can be changed"
+                        .into(),
+                });
+            }
+            drop(dataset);
+            table.checkout_latest().await?;
+            let mut dataset = (*table.dataset.get().await?).clone();
+            dataset
+                .update_mem_wal_maintained_indexes(maintained_indexes)
+                .await?;
+            table
+                .dataset
+                .shard_writer()
+                .refresh_maintained_indexes(&dataset)
+                .await;
+            table.dataset.update(dataset);
+            return Ok(());
         }
     }
-
-    // Before the builder borrows the dataset clone. `list_indices` merges an
-    // index's segments into one entry, so the result needs no dedup.
-    let maintained_indexes = {
-        let dataset = table.dataset.get().await?;
-        resolve_maintained_indexes(
-            &dataset,
-            &table.list_indices().await?,
-            spec.maintained_indexes(),
-        )
-        .await?
-    };
 
     table.checkout_latest().await?;
     let mut dataset = (*table.dataset.get().await?).clone();
@@ -138,55 +173,15 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
             writer_config_defaults
         }
     };
-    builder = builder.maintained_indexes(maintained_indexes);
+    if let Some(maintained_indexes) = maintained_indexes {
+        builder = builder.maintained_indexes(maintained_indexes);
+    }
     for (key, value) in writer_config_defaults {
         builder = builder.add_writer_config_default(key, value);
     }
     builder.execute().await?;
     table.dataset.update(dataset);
     Ok(())
-}
-
-/// Resolve a spec's maintained-index selection against `indices`, as reported
-/// by [`Table::list_indices`](crate::Table::list_indices).
-///
-/// `None` means every index on the table, snapshotted now. Lance validates
-/// either selection against its shard-writer rules, so a spec that installs is
-/// one the MemWAL can open.
-///
-/// An unmaintainable index fails an inferred set rather than being dropped from
-/// it — dropping would leave the caller believing it is maintained.
-async fn resolve_maintained_indexes(
-    dataset: &Dataset,
-    indices: &[IndexConfig],
-    requested: Option<&[String]>,
-) -> Result<Vec<String>> {
-    let Some(requested) = requested else {
-        let all: Vec<String> = indices.iter().map(|index| index.name.clone()).collect();
-        validate_maintained_indexes(dataset, &all)
-            .await
-            .map_err(|source| Error::InvalidInput {
-                message: format!(
-                    "cannot maintain every index on this table: {source}. Set \
-                     maintained_indexes explicitly to choose from {}",
-                    index_name_list(indices),
-                ),
-            })?;
-        return Ok(all);
-    };
-    for name in requested {
-        if !indices.iter().any(|index| &index.name == name) {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "maintained index '{}' does not exist on this table; it has {}",
-                    name,
-                    index_name_list(indices),
-                ),
-            });
-        }
-    }
-    validate_maintained_indexes(dataset, requested).await?;
-    Ok(requested.to_vec())
 }
 
 /// Index names for an error message.
@@ -298,8 +293,15 @@ fn lsm_write_spec_from_details(
     };
 
     Ok(base
-        .with_maintained_indexes(details.maintained_indexes.clone())
+        .with_maintained_indexes(
+            (!details.maintain_all_indexes).then(|| details.maintained_indexes.clone()),
+        )
         .with_writer_config_defaults(details.writer_config_defaults.clone()))
+}
+
+/// Whether two specs agree on everything an installed spec cannot change.
+fn same_except_maintained_indexes(a: &LsmWriteSpec, b: &LsmWriteSpec) -> bool {
+    a.clone().with_maintained_indexes(None) == b.clone().with_maintained_indexes(None)
 }
 
 /// Resolve the single routing column name from a sharding field's source id.
@@ -458,6 +460,37 @@ impl ShardWriterCache {
         let entry = Arc::new(ShardWriterEntry::new(writer));
         *guard = Some((shard_id, entry.clone()));
         Ok(entry)
+    }
+
+    /// Install `dataset`'s maintained index set on the cached writer, if one is
+    /// open, so a change reaches a table that is already being written to.
+    ///
+    /// Reported rather than propagated: both callers have already committed the
+    /// change durably, and the writer this process happens to hold may be
+    /// fenced or poisoned -- which is not a reason to fail creating an index.
+    /// Any writer opened afterwards reads the committed set.
+    ///
+    /// Holds the entry's read lock across the refresh, so a concurrent close
+    /// waits rather than retiring the writer mid-seal. Writes take the same
+    /// lock first, so the order matches theirs.
+    pub(crate) async fn refresh_maintained_indexes(&self, dataset: &Dataset) {
+        let entry = {
+            let guard = self.slot.read().await;
+            guard.as_ref().map(|(_, entry)| entry.clone())
+        };
+        let Some(entry) = entry else {
+            return;
+        };
+        let guard = entry.inner.read().await;
+        let Some(writer) = guard.as_ref() else {
+            return;
+        };
+        if let Err(error) = dataset.refresh_mem_wal_index_configs(writer).await {
+            log::warn!(
+                "the maintained index set changed but the open shard writer could \
+                 not be refreshed, so it keeps the set it opened with: {error}"
+            );
+        }
     }
 
     /// Snapshot the cached writer's shard for the LSM read path: its shard id,
