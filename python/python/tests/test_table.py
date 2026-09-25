@@ -6,6 +6,7 @@ import ctypes
 import gc
 import json
 import os
+import random
 import sys
 import threading
 import warnings
@@ -410,6 +411,21 @@ def test_create_table_rejects_single_dictionary(mem_db: DBConnection):
         str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
         "Use a list of dictionaries instead."
     )
+
+
+def test_create_table_with_negative_int64_dictionary_tail(tmp_db: DBConnection):
+    # A dictionary of negative values can have a full 64-bit width and a
+    # partial 1024-value chunk. The writer must not choose out-of-line
+    # bitpacking, which requires at least one bit of savings.
+    rng = random.Random(42)
+    values = list(range(-800, 800))
+    rows = [{"f0": values[rng.randrange(len(values))]} for _ in range(9216)]
+    schema = pa.schema([pa.field("f0", pa.int64(), nullable=True)])
+
+    table = tmp_db.create_table("negative_int64_tail", data=rows, schema=schema)
+
+    assert table.count_rows() == len(rows)
+    assert table.to_arrow().column("f0").to_pylist() == [row["f0"] for row in rows]
 
 
 def test_empty_table(mem_db: DBConnection):
