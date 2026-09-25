@@ -4,7 +4,7 @@
 
 # ruff: noqa: F401
 from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
-from .bedrock import BedRockText
+from .bedrock import BedRockText,BedrockCohereEmbeddings,BedrockTitanEmbeddings
 from .cohere import CohereEmbeddingFunction
 from .gemini_text import GeminiText
 from .instructor import InstructorEmbeddingFunction
