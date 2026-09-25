@@ -1859,6 +1859,11 @@ def test_create_client():
     assert isinstance(db.client_config, ClientConfig)
     assert db.client_config.retry_config.retries == 42
 
+    db = lancedb.connect(
+        **mandatory_args, client_config={"blob_request_concurrency": 3}
+    )
+    assert db.client_config.blob_request_concurrency == 3
+
     with pytest.warns(DeprecationWarning):
         db = lancedb.connect(**mandatory_args, connection_timeout=42)
         assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=42)
