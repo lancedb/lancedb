@@ -6543,19 +6543,24 @@ mod tests {
         ];
 
         for (index_type, expected_body, index) in cases {
+            let data_type = match &index {
+                Index::FTS(params) if params.get_document_granularity().is_list_element() => {
+                    DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
+                }
+                Index::FTS(_) => DataType::Utf8,
+                _ => DataType::Int32,
+            };
+            let schema = Schema::new(vec![Field::new("a", data_type, false)]);
             let table = Table::new_with_handler_version(
                 "my_table",
                 semver::Version::new(0, 6, 0),
                 move |request| {
                     assert_eq!(request.method(), "POST");
                     match request.url().path() {
-                        "/v1/table/my_table/describe/" => {
-                            let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
-                            http::Response::builder()
-                                .status(200)
-                                .body(describe_response(&schema))
-                                .unwrap()
-                        }
+                        "/v1/table/my_table/describe/" => http::Response::builder()
+                            .status(200)
+                            .body(describe_response(&schema))
+                            .unwrap(),
                         "/v1/table/my_table/create_index/" => {
                             assert_eq!(
                                 request.headers().get("Content-Type").unwrap(),
