@@ -15,6 +15,14 @@ export function toSQL(value: IntoSql): string {
   if (typeof value === "string") {
     return `'${value.replace(/'/g, "''")}'`;
   } else if (typeof value === "number") {
+    // toString() gives "NaN" / "Infinity", which SQL reads as column names.
+    if (Number.isNaN(value)) {
+      return "CAST('NaN' AS DOUBLE)";
+    } else if (!Number.isFinite(value)) {
+      return value > 0
+        ? "CAST('Infinity' AS DOUBLE)"
+        : "CAST('-Infinity' AS DOUBLE)";
+    }
     return value.toString();
   } else if (typeof value === "boolean") {
     return value ? "TRUE" : "FALSE";
