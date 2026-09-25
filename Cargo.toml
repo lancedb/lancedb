@@ -26,7 +26,7 @@ lance-table = { "version" = "=13.0.0-beta.14", "tag" = "v13.0.0-beta.14", "git" 
 lance-testing = { "version" = "=13.0.0-beta.14", "tag" = "v13.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
 lance-datafusion = { "version" = "=13.0.0-beta.14", "tag" = "v13.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
 lance-encoding = { "version" = "=13.0.0-beta.14", "tag" = "v13.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=13.0.0-beta.14", "tag" = "v13.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { version = "=13.0.0-beta.14", path = "python/vendor/lance-arrow" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
@@ -78,6 +78,10 @@ tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
 tonic = { version = "0.14", features = ["tls-native-roots", "tls-ring"] }
 uuid = { version = "1.7.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[patch."https://github.com/lance-format/lance.git"]
+# Carry the offset-safe validity fix until it is available in a Lance release.
+lance-arrow = { path = "python/vendor/lance-arrow" }
 
 [profile.ci]
 debug = "line-tables-only"
