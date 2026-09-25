@@ -1,0 +1,94 @@
+---
+title: "Queries"
+sidebarTitle: "Query"
+description: "Running a query, and reading its results before it finishes."
+icon: magnifying-glass
+keywords: ["query", "async", "streaming", "arrow", "reader", "execute_query"]
+---
+
+A query returns rows. How you get them depends on two choices that are easy to
+conflate: whether **your thread** blocks, and whether you take the results all
+at once or stream them as they arrive.
+
+## Blocking or not is a language concern {#async-client}
+
+A concern of your language, not of LanceDB. The work is identical either way.
+
+<CodeGroup>
+```python Python icon="python"
+db = lancedb.connect("db://my-db", api_key="...")         # blocking
+tbl = db.open_table("documents")
+
+db = await lancedb.connect_async("db://my-db", api_key="...")   # coroutines
+tbl = await db.open_table("documents")
+```
+
+```typescript TypeScript icon="square-js"
+// TypeScript is async throughout; there is no blocking form.
+const db = await lancedb.connect("db://my-db", { apiKey: "..." });
+const tbl = await db.openTable("documents");
+```
+</CodeGroup>
+
+Python offers both. `AsyncConnection` exposes the same surface as coroutines, so
+choosing between them is about the program you are writing -- a service wants
+the async form, a script does not care.
+
+## Reading before the query finishes {#queries}
+
+A query is not a job, but it has the same shape of choice: wait for everything,
+or take a handle and start reading.
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 1000")
+table = reader.read_all()
+
+query = db.execute_query_async("SELECT id, text FROM my_docs")
+```
+
+```sql SQL
+SELECT id, text FROM my_docs LIMIT 1000
+```
+</CodeGroup>
+
+`execute_query` returns a blocking Arrow reader **once results start arriving**
+-- it does not wait for the whole query to finish. Results stream as record
+batches, so a large result set does not have to fit in memory before you see its
+first row.
+
+`execute_query_async` returns the query handle instead:
+
+```python
+query = db.execute_query_async("SELECT id, text FROM my_docs")
+
+query.id            # identifies it on the server
+query.describe()    # what it is doing, without consuming results
+reader = query.reader()   # stream the rows when you want them
+query.cancel()      # stop it
+```
+
+`describe_query(id)` reports on one from elsewhere, the way `open_job(id)` does
+for a job.
+
+<Note>
+SQL requires a deployment. See [SDKs and SQL](/basics/apis).
+</Note>
+
+Query-builder searches -- vector, full-text, hybrid -- are ordinary calls that
+return results. They are fast enough not to need a handle. See
+[Query](/search).
+
+## Searches are ordinary calls {#searches}
+
+Query-builder searches -- [vector](/search/vector-search),
+[full-text](/search/full-text-search), [hybrid](/search/hybrid-search) -- return
+results directly. They are fast enough not to need a handle, and they have no
+SQL form. See [Semantic Search](/search).
+
+## When the work outlives the call {#jobs}
+
+Some operations take longer than a query should: building an index, refreshing a
+computed column, registering a function. Those return a **job** rather than
+rows, and a job is a different handle with a different shape. See
+[Jobs](/basics/jobs).

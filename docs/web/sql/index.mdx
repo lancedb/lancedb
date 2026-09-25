@@ -30,7 +30,7 @@ Queries execute on the server and results come back as Arrow record batches --
 nothing is converted to pandas or Python objects unless you ask. `execute_query`
 hands back a reader as soon as the first batch is ready rather than when the
 query finishes, so a large result set does not have to fit in memory before you
-start reading it. See [Query and job](/basics/jobs#queries).
+start reading it. See [Queries](/basics/query).
 
 Served over an [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
 endpoint, so any Flight SQL client reaches it.

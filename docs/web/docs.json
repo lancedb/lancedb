@@ -138,6 +138,10 @@
     {
       "source": "/training",
       "destination": "/training/data-loading"
+    },
+    {
+      "source": "/build-with-ai-agents",
+      "destination": "/basics/agentic-skills"
     }
   ],
   "navigation": {
@@ -150,7 +154,8 @@
             "pages": [
               "index",
               "quickstart",
-              "architecture"
+              "architecture",
+              "basics/agentic-skills"
             ]
           },
           {
@@ -158,12 +163,12 @@
             "pages": [
               "basics/lance",
               "basics/catalog",
+              "basics/query",
               "basics/jobs",
               "tables/consistency",
               "basics/guarantees",
               "basics/limits",
-              "basics/apis",
-              "basics/agentic-skills"
+              "basics/apis"
             ]
           },
           {
@@ -393,12 +398,6 @@
         "tab": "Use Cases",
         "pages": [
           "tutorials/index",
-          {
-            "group": "General",
-            "pages": [
-              "build-with-ai-agents"
-            ]
-          },
           {
             "group": "Search",
             "pages": [
