@@ -2403,9 +2403,14 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
         elif request.path.startswith("/v1/table/test/blob/image/"):
             path = request.path.partition("?")[0]
             row_id = int(path.split("/")[-2])
-            payload = {10: b"alpha", 20: None, 30: b"gamma"}[row_id]
+            payload = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}[row_id]
             if payload is None:
                 request.send_response(204)
+                request.end_headers()
+                return
+            if not payload:
+                request.send_response(416)
+                request.send_header("Content-Range", "bytes */0")
                 request.end_headers()
                 return
             byte_range = request.headers["Range"].removeprefix("bytes=")
@@ -2416,6 +2421,9 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
             request.send_response(206)
             request.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
             request.send_header("Content-Length", str(len(chunk)))
+            request.send_header(
+                "x-lancedb-version", str(BLOB_DESCRIBE_RESPONSE["version"])
+            )
             request.end_headers()
             request.wfile.write(chunk)
         elif request.path == "/v1/table/test/query/":
@@ -2459,17 +2467,21 @@ def test_remote_blob_columns_and_fetch():
 
 def test_remote_blob_files_are_lazy_seekable_handles():
     with blob_remote_table() as table:
-        files = table.fetch_blob_files("image", [10, 20, 30])
+        files = table.fetch_blob_files("image", [10, 20, 30, 40])
 
-        assert len(files) == 3
-        alpha, null_row, gamma = files
+        assert len(files) == 4
+        alpha, null_row, gamma, empty = files
         assert null_row is None
         assert alpha is not None
         assert gamma is not None
+        assert empty is not None
         assert alpha.size() == 5
         assert alpha.read_range(1, 3) == b"lph"
         gamma.seek(2)
         assert gamma.read() == b"mma"
+        assert empty.size() == 0
+        assert empty.read() == b""
+        assert empty.read_range(0, 0) == b""
         alpha.close()
         assert alpha.closed
         with pytest.raises(RuntimeError, match="already closed"):
