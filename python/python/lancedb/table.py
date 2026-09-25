@@ -448,6 +448,55 @@ def _cast_to_target_schema(
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
 
 
+def _preserve_blob_v2_fields(
+    inferred_schema: pa.Schema, existing_schema: pa.Schema
+) -> pa.Schema:
+    """Keep existing blob fields when an overwrite infers a replacement schema."""
+    existing_fields = {field.name: field for field in existing_schema}
+    fields = [
+        _preserve_blob_v2_field(field, existing_fields[field.name])
+        if field.name in existing_fields
+        else field
+        for field in inferred_schema
+    ]
+    return pa.schema(fields, metadata=inferred_schema.metadata)
+
+
+def _preserve_blob_v2_field(inferred: pa.Field, existing: pa.Field) -> pa.Field:
+    if is_blob_v2_field(existing):
+        return existing
+
+    inferred_type, existing_type = inferred.type, existing.type
+    if pa.types.is_struct(inferred_type) and pa.types.is_struct(existing_type):
+        existing_children = {field.name: field for field in existing_type}
+        children = [
+            _preserve_blob_v2_field(field, existing_children[field.name])
+            if field.name in existing_children
+            else field
+            for field in inferred_type
+        ]
+        return inferred.with_type(pa.struct(children))
+
+    if _is_list_like(inferred_type) and _is_list_like(existing_type):
+        value_field = _preserve_blob_v2_field(
+            inferred_type.value_field, existing_type.value_field
+        )
+        if value_field == inferred_type.value_field:
+            return inferred
+        value_field = value_field.with_name(existing_type.value_field.name)
+        if pa.types.is_fixed_size_list(inferred_type):
+            value_type = pa.list_(value_field, inferred_type.list_size)
+        elif pa.types.is_large_list(inferred_type):
+            value_type = pa.large_list(value_field)
+        else:
+            value_type = pa.list_(value_field)
+        return inferred.with_type(value_type)
+
+    if blob_v2_column_paths(pa.schema([existing])):
+        return existing
+    return inferred
+
+
 def _coerce_blob_write_columns(
     batch: pa.RecordBatch, target_schema: pa.Schema
 ) -> pa.RecordBatch:
@@ -1605,7 +1654,8 @@ class Table(ABC):
             - pyarrow.Table or pyarrow.RecordBatch
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite".
+            "append" and "overwrite". Overwrite infers a replacement schema
+            but preserves existing blob v2 fields present in the new data.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
@@ -3834,7 +3884,8 @@ class LanceTable(Table):
             The data to insert into the table.
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite".
+            "append" and "overwrite". Overwrite infers a replacement schema
+            but preserves existing blob v2 fields present in the new data.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill", "null".
@@ -5826,7 +5877,8 @@ class AsyncTable:
             - pyarrow.Table or pyarrow.RecordBatch
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite".
+            "append" and "overwrite". Overwrite infers a replacement schema
+            but preserves existing blob v2 fields present in the new data.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill", "null".
@@ -5861,6 +5913,11 @@ class AsyncTable:
             data, _ = sanitize_create_table(
                 data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
+            if blob_v2_column_paths(schema):
+                # Plain bytes cannot be inferred as blob v2. Keep matching blob
+                # fields while allowing other columns to use the inferred schema.
+                target_schema = _preserve_blob_v2_fields(data.schema, schema)
+                data = _cast_to_target_schema(data, target_schema)
         elif on_bad_vectors != "error" or (
             schema.metadata is not None and b"embedding_functions" in schema.metadata
         ):

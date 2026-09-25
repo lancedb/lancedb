@@ -419,6 +419,73 @@ def test_fetch_blobs_round_trip():
     assert [blobs[0].as_py(), blobs[1].as_py()] == [b"alpha", b"beta"]
 
 
+def test_add_overwrite_preserves_blob_v2(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("overwrite_blob", schema=schema)
+    table.add([{"id": 1, "image": b"old"}])
+
+    payload = b"x" * 200_000
+    table.add([{"id": 2, "image": payload}], mode="overwrite")
+
+    assert table.count_rows() == 1
+    assert blob_v2_column_paths(table.schema) == ["image"]
+    assert table.blob_columns() == ["image"]
+    assert table.fetch_blobs("image", [_row_ids_by_id(table)[2]]).to_pylist() == [
+        payload
+    ]
+    assert list(tmp_path.rglob("*.blob"))
+
+
+def test_add_overwrite_with_blob_still_infers_vector_schema():
+    db = lancedb.connect("memory:///overwrite_blob_vector")
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            lancedb.blob("image"),
+        ]
+    )
+    table = db.create_table("overwrite_blob_vector", schema=schema)
+
+    table.add([{"vector": [1.0, 2.0, 3.0], "image": b"data"}], mode="overwrite")
+
+    assert table.schema.field("vector").type == pa.list_(pa.float32(), 3)
+    assert table.blob_columns() == ["image"]
+
+
+@pytest.mark.asyncio
+async def test_add_overwrite_preserves_blob_v2_async():
+    db = await lancedb.connect_async("memory:///overwrite_blob_async")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = await db.create_table("overwrite_blob_async", schema=schema)
+
+    await table.add([{"id": 1, "image": b"updated"}], mode="overwrite")
+
+    assert blob_v2_column_paths(await table.schema()) == ["image"]
+    assert await table.blob_columns() == ["image"]
+    hits = await table.query().with_row_id().to_arrow()
+    assert (await table.fetch_blobs("image", hits)).to_pylist() == [b"updated"]
+
+
+def test_add_overwrite_preserves_nested_blob_v2():
+    db = lancedb.connect("memory:///overwrite_nested_blob")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("info", pa.struct([lancedb.blob("image")])),
+        ]
+    )
+    table = db.create_table("overwrite_nested_blob", schema=schema)
+
+    table.add([{"id": 1, "info": {"image": b"nested"}}], mode="overwrite")
+
+    assert blob_v2_column_paths(table.schema) == ["info.image"]
+    assert table.blob_columns() == ["info.image"]
+    assert table.fetch_blobs("info.image", [_row_ids_by_id(table)[1]]).to_pylist() == [
+        b"nested"
+    ]
+
+
 def test_merge_insert_writes_python_bytes():
     table = _blob_table("merge_bytes", [{"id": 1, "image": b"before"}])
     result = (
