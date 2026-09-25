@@ -262,6 +262,41 @@ pub fn blob(name: impl AsRef<str>, nullable: bool) -> Field {
     lance::blob::blob_field(name.as_ref(), nullable)
 }
 
+/// Options for creating a blob v2 column field with tier thresholds.
+///
+/// Re-exported from lance so the thresholds are built exactly the way
+/// [`lance::blob::blob_field_with_options`] builds them. Note that lance does
+/// not currently expose a pack file size threshold option, so only the inline
+/// and dedicated size thresholds are supported here.
+pub use lance::blob::BlobFieldOptions as BlobOptions;
+
+/// Creates an Arrow field for a Lance blob v2 column with tier thresholds.
+///
+/// Same as [`blob`], but forwards `options` to
+/// [`lance::blob::blob_field_with_options`], storing the inline and dedicated
+/// size thresholds as field metadata. With [`BlobOptions::default()`] this is
+/// identical to [`blob`].
+///
+/// ```
+/// use std::num::NonZeroUsize;
+///
+/// use lancedb::blob::BlobOptions;
+///
+/// let options = BlobOptions {
+///     inline_size_threshold: Some(8 * 1024),
+///     dedicated_size_threshold: NonZeroUsize::new(1 << 20),
+/// };
+/// let field = lancedb::blob::blob_with_options("payload", true, options);
+/// assert!(lancedb::blob::is_blob(&field));
+/// ```
+pub fn blob_with_options(
+    name: impl AsRef<str>,
+    nullable: bool,
+    options: BlobOptions,
+) -> Field {
+    lance::blob::blob_field_with_options(name.as_ref(), nullable, options)
+}
+
 /// Returns true if `field` is a blob v2 column.
 ///
 /// ```
@@ -501,8 +536,13 @@ pub(crate) async fn take_blob_files_aligned(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroUsize;
+
     use arrow_schema::DataType;
-    use lance_arrow::ARROW_EXT_NAME_KEY;
+    use lance_arrow::{
+        ARROW_EXT_NAME_KEY, BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY,
+        BLOB_INLINE_SIZE_THRESHOLD_META_KEY,
+    };
 
     fn blob_schema() -> Schema {
         Schema::new(vec![
@@ -519,6 +559,38 @@ mod tests {
             Some("lance.blob.v2")
         );
         assert!(matches!(field.data_type(), DataType::Struct(_)));
+    }
+
+    #[test]
+    fn blob_with_options_sets_threshold_metadata() {
+        let options = BlobOptions {
+            inline_size_threshold: Some(8 * 1024),
+            dedicated_size_threshold: NonZeroUsize::new(1 << 20),
+        };
+        let field = blob_with_options("payload", true, options);
+        assert!(is_blob(&field));
+        assert_eq!(
+            field
+                .metadata()
+                .get(BLOB_INLINE_SIZE_THRESHOLD_META_KEY)
+                .map(String::as_str),
+            Some("8192")
+        );
+        assert_eq!(
+            field
+                .metadata()
+                .get(BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY)
+                .map(String::as_str),
+            Some("1048576")
+        );
+    }
+
+    #[test]
+    fn blob_with_default_options_matches_plain_blob() {
+        let field = blob_with_options("payload", true, BlobOptions::default());
+        let plain = blob("payload", true);
+        assert_eq!(field.metadata(), plain.metadata());
+        assert_eq!(field.data_type(), plain.data_type());
     }
 
     #[test]

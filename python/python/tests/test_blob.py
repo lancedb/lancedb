@@ -93,6 +93,37 @@ def test_blob_factory_declares_v2_field():
     assert type(field.type) is LanceBlobType
 
 
+def test_blob_thresholds_land_in_field_metadata():
+    field = lancedb.blob(
+        "payload",
+        inline_size_threshold=8 * 1024,
+        dedicated_size_threshold=1 << 20,
+        pack_file_size_threshold=1 << 26,
+    )
+    assert field.type.extension_name == "lance.blob.v2"
+    metadata = field.metadata
+    assert metadata[b"lance-encoding:blob-inline-size-threshold"] == b"8192"
+    assert metadata[b"lance-encoding:blob-dedicated-size-threshold"] == b"1048576"
+    assert metadata[b"lance-encoding:blob-pack-file-size-threshold"] == b"67108864"
+
+
+def test_blob_without_thresholds_has_no_threshold_metadata():
+    field = lancedb.blob("image")
+    metadata = field.metadata or {}
+    assert not any(b"threshold" in key for key in metadata)
+
+
+def test_blob_thresholds_are_validated():
+    with pytest.raises(ValueError, match="inline_size_threshold must be non-negative"):
+        lancedb.blob("payload", inline_size_threshold=-1)
+    with pytest.raises(ValueError, match="dedicated_size_threshold must be positive"):
+        lancedb.blob("payload", dedicated_size_threshold=0)
+    with pytest.raises(ValueError, match="pack_file_size_threshold must be positive"):
+        lancedb.blob("payload", pack_file_size_threshold=0)
+    with pytest.raises(TypeError, match="inline_size_threshold must be an int"):
+        lancedb.blob("payload", inline_size_threshold="8192")
+
+
 def test_blob_type_works_without_pylance():
     script = _HIDE_LANCE_BLOB + textwrap.dedent(
         """\
