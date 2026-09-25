@@ -526,6 +526,8 @@ export abstract class Table {
    * Reads the table's current checkout. IDs from another version can fail after
    * compaction unless stable row ids are enabled. Results keep input order and
    * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   * One missing or deleted row ID rejects the entire batch, including on remote
+   * tables; no partial results are returned.
    */
   abstract fetchBlobs(
     column: string,
@@ -538,6 +540,8 @@ export abstract class Table {
    *
    * Preserves input order, duplicates, and nulls. Use this for large payloads.
    * See {@link Table.fetchBlobs} for row-ID validity across versions.
+   * One missing or deleted row ID rejects the entire batch, including on remote
+   * tables; no partial handles are returned.
    */
   abstract fetchBlobFiles(
     column: string,

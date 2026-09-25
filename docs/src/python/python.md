@@ -322,6 +322,8 @@ pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
 still work. Queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
+One missing or deleted row ID rejects the entire blob-read batch; the APIs do
+not return partial results.
 
 ::: lancedb.blob
 

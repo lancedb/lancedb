@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import operator
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Optional, Union
 
@@ -391,16 +392,30 @@ def _leaf_struct_column(tbl: pa.Table, path: str) -> pa.StructArray:
 
 
 def _normalize_blob_row_ids(
-    row_ids: Union[list[int], pa.Table], blob_column: str
+    row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table], blob_column: str
 ) -> list[int]:
     if isinstance(row_ids, pa.Table):
-        return read_row_ids_from_hits(row_ids, blob_column)
-    if isinstance(row_ids, (pa.Array, pa.ChunkedArray)):
-        raise ValueError(
-            "pass a query table with _rowid, not a column array "
-            "(use fetch_blobs('image', hits), not fetch_blobs('image', hits['image']))"
-        )
-    return list(row_ids)
+        values = read_row_ids_from_hits(row_ids, blob_column)
+    elif isinstance(row_ids, (pa.Array, pa.ChunkedArray)):
+        if not pa.types.is_integer(row_ids.type):
+            raise ValueError(
+                "row id arrays must have an integer type; pass a query table with "
+                "_rowid when using a blob descriptor column"
+            )
+        values = row_ids.to_pylist()
+    else:
+        values = list(row_ids)
+
+    normalized = []
+    for value in values:
+        try:
+            row_id = operator.index(value)
+        except TypeError as exc:
+            raise ValueError("row ids must be integers without nulls") from exc
+        if row_id < 0:
+            raise ValueError("row ids must be non-negative")
+        normalized.append(row_id)
+    return normalized
 
 
 def _wrap_blob_files(handles: Iterable[object]) -> list[Optional[BlobFile]]:

@@ -524,6 +524,8 @@ table's current checkout.
 
 Preserves input order, duplicates, and nulls. Use this for large payloads.
 See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+One missing or deleted row ID rejects the entire batch, including on remote
+tables; no partial handles are returned.
 
 #### Parameters
 
@@ -548,6 +550,8 @@ Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
 Reads the table's current checkout. IDs from another version can fail after
 compaction unless stable row ids are enabled. Results keep input order and
 duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+One missing or deleted row ID rejects the entire batch, including on remote
+tables; no partial results are returned.
 
 #### Parameters
 

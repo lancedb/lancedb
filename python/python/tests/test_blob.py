@@ -68,21 +68,25 @@ def _row_ids_by_id(table):
 
 def _assert_missing_blob_row_ids(exc_info):
     message = str(exc_info.value)
-    assert "row ids" in message
+    assert "row ids but some do not exist in the table" in message
     assert "rowaddr" not in message
     assert "fragment" not in message
 
 
 def _assert_fetch_apis_reject_missing_row_ids(table, row_ids):
+    expected = f"first missing row ids: [{row_ids[0]}]"
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blobs("image", row_ids)
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_files("image", row_ids)
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_ranges("image", [(row_id, 0, 1) for row_id in row_ids])
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
 
 
 def test_blob_factory_declares_v2_field():
@@ -713,6 +717,38 @@ def test_fetch_blobs_accepts_query_result():
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"gamma"}
 
 
+def test_fetch_blob_apis_accept_integer_arrow_row_ids():
+    table = _blob_table(
+        "arrow_row_ids",
+        [{"id": 1, "image": b"alpha"}, {"id": 2, "image": b"beta"}],
+    )
+    by_id = _row_ids_by_id(table)
+    ids = [by_id[2], by_id[1]]
+
+    for row_ids in (
+        pa.array(ids, type=pa.uint64()),
+        pa.chunked_array([ids[:1], ids[1:]], type=pa.int64()),
+    ):
+        assert table.fetch_blobs("image", row_ids).to_pylist() == [b"beta", b"alpha"]
+        files = table.fetch_blob_files("image", row_ids)
+        assert [file.read() for file in files] == [b"beta", b"alpha"]
+
+
+def test_fetch_blob_apis_validate_arrow_and_negative_row_ids():
+    table = _blob_table("invalid_arrow_row_ids", [{"id": 1, "image": b"alpha"}])
+    hits = table.search().with_row_id(True).to_arrow()
+
+    for fetch in (table.fetch_blobs, table.fetch_blob_files):
+        with pytest.raises(ValueError, match="non-negative"):
+            fetch("image", [-1])
+        with pytest.raises(ValueError, match="non-negative"):
+            fetch("image", pa.array([-1], type=pa.int64()))
+        with pytest.raises(ValueError, match="without nulls"):
+            fetch("image", pa.array([None], type=pa.int64()))
+        with pytest.raises(ValueError, match="integer type"):
+            fetch("image", hits["image"])
+
+
 def test_fetch_blobs_after_compact_with_stable_row_ids(tmp_path):
     db = lancedb.connect(
         tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
@@ -844,6 +880,15 @@ def test_fetch_blob_ranges_aligns_repeated_ranges_and_nulls():
     assert ranges.to_pylist() == [b"cde", None, b"ab", b"cde", b""]
 
 
+def test_fetch_blob_ranges_accepts_three_item_sequences():
+    table = _blob_table("range_sequences", [{"id": 1, "image": b"abcdef"}])
+    row_id = _row_ids_by_id(table)[1]
+
+    ranges = table.fetch_blob_ranges("image", [[row_id, 1, 2], (row_id, 4, 2)])
+
+    assert ranges.to_pylist() == [b"bc", b"ef"]
+
+
 def test_fetch_blob_ranges_validates_requests():
     table = _blob_table("range_validation", [{"id": 1, "image": b"abc"}])
     row_id = _row_ids_by_id(table)[1]
@@ -857,6 +902,30 @@ def test_fetch_blob_ranges_validates_requests():
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_ranges("image", [(2**64 - 1, 0, 1)])
     _assert_missing_blob_row_ids(exc_info)
+
+    for index, name in enumerate(("row id", "offset", "length")):
+        request = [row_id, 0, 1]
+        request[index] = -1
+        with pytest.raises(
+            ValueError, match=f"blob range {name} must be a non-negative"
+        ):
+            table.fetch_blob_ranges("image", [request])
+
+    with pytest.raises(ValueError, match="three values"):
+        table.fetch_blob_ranges("image", [[row_id, 0]])
+
+
+def test_fetch_blob_apis_reject_row_past_fragment_end():
+    table = _blob_table(
+        "past_fragment_end",
+        [
+            {"id": 1, "image": b"a"},
+            {"id": 2, "image": b"b"},
+            {"id": 3, "image": b"c"},
+        ],
+    )
+    _assert_fetch_apis_reject_missing_row_ids(table, [3])
+    _assert_fetch_apis_reject_missing_row_ids(table, [3, 0])
 
 
 def test_fetch_blob_apis_reject_missing_fragment_row_addr():
@@ -872,6 +941,19 @@ def test_fetch_blob_apis_reject_deleted_row_ids():
     )
     by_id = _row_ids_by_id(table)
     table.delete("id = 2")
+    _assert_fetch_apis_reject_missing_row_ids(table, [by_id[2], by_id[1]])
+
+
+def test_fetch_blob_apis_reject_deleted_stable_row_ids(tmp_path):
+    db = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("stable_deleted", schema=schema)
+    table.add([{"id": 1, "image": b"one"}, {"id": 2, "image": b"two"}])
+    by_id = _row_ids_by_id(table)
+    table.delete("id = 2")
+
     _assert_fetch_apis_reject_missing_row_ids(table, [by_id[2], by_id[1]])
 
 
