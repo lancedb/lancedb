@@ -612,6 +612,47 @@ async fn blob_columns_lists_nested_dotted_paths() -> Result<()> {
 }
 
 #[tokio::test]
+async fn blob_columns_excludes_list_elements_and_fetches_explain_limitation() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        blob("thumbnail", true),
+        Field::new("imgs", DataType::List(Arc::new(blob("item", true))), true),
+    ]));
+    let table = db
+        .create_empty_table("list_blobs", schema)
+        .execute()
+        .await?;
+
+    assert_eq!(table.blob_columns().await?, vec!["thumbnail"]);
+    for column in ["imgs", "imgs.item"] {
+        let err = table.fetch_blobs(column, &[0]).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+
+        let err = table.fetch_blob_files(column, &[0]).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+
+        let err = table
+            .fetch_blob_ranges(column, [BlobRangeRequest::new(0, 0, 1)])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn blob_columns_lists_blob_fields_in_order() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;

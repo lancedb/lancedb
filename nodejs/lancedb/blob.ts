@@ -42,6 +42,8 @@ export type BlobOptions = {
  *
  * Query results are descriptors, not payload bytes. Use {@link Table.fetchBlobs}
  * or {@link Table.fetchBlobFiles} to read bytes.
+ * Blobs inside lists can be written and queried as descriptors, but cannot
+ * currently be fetched because a row ID does not identify a list element.
  *
  * @example
  * ```ts

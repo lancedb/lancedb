@@ -1921,7 +1921,11 @@ class Table(ABC):
 
     @abstractmethod
     def blob_columns(self) -> list[str]:
-        """Names of the blob v2 columns declared on this table."""
+        """Names of blob v2 columns that can be fetched by row id.
+
+        Struct-nested blobs use dotted paths. Blobs inside lists are omitted
+        because a row id does not identify an individual list element.
+        """
 
     @abstractmethod
     def fetch_blobs(
@@ -1937,6 +1941,8 @@ class Table(ABC):
 
         Convenience for small payloads. For large values use
         :meth:`fetch_blob_files`.
+
+        Blobs inside lists cannot be fetched by row id yet.
         """
 
     @abstractmethod

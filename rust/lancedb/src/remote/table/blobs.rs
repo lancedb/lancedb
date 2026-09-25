@@ -348,6 +348,34 @@ fn validate_partial_response(
 }
 
 impl<S: HttpSend> RemoteTable<S> {
+    async fn reject_list_blob_path_if_known(&self, column: &str) -> Result<()> {
+        // A dotted path needs client-side validation because the server may
+        // report an internal type mismatch when the path crosses a list. Use
+        // an already cached schema for top-level list fields as well.
+        if column.contains('.') || self.schema_cache.try_get().is_some() {
+            let schema = self.schema().await?;
+            crate::blob::reject_list_blob_column(schema.as_ref(), column)?;
+        }
+        Ok(())
+    }
+
+    async fn explain_list_blob_bad_request(&self, column: &str, error: Error) -> Error {
+        let is_bad_request = match &error {
+            Error::Http {
+                status_code: Some(code),
+                ..
+            } => *code == StatusCode::BAD_REQUEST || *code == StatusCode::UNPROCESSABLE_ENTITY,
+            _ => false,
+        };
+        if is_bad_request
+            && let Ok(schema) = self.schema().await
+            && let Err(list_error) = crate::blob::reject_list_blob_column(schema.as_ref(), column)
+        {
+            return list_error;
+        }
+        error
+    }
+
     /// Blob v2 columns are marked in field metadata, which `describe` returns. Reading
     /// them from the cached schema needs no route of its own and no version gate.
     pub(super) async fn blob_columns_impl(&self) -> Result<Vec<String>> {
@@ -360,6 +388,7 @@ impl<S: HttpSend> RemoteTable<S> {
         column: &str,
         row_ids: &[u64],
     ) -> Result<LargeBinaryArray> {
+        self.reject_list_blob_path_if_known(column).await?;
         // Empty requests do not require blob-route support.
         if row_ids.is_empty() {
             return Ok(LargeBinaryArray::from(Vec::<Option<&[u8]>>::new()));
@@ -384,7 +413,10 @@ impl<S: HttpSend> RemoteTable<S> {
         let (request_id, response) = self
             .send_with_freshness(request, true, read_snapshot.freshness)
             .await?;
-        let mut stream = self.read_arrow_response(&request_id, response).await?;
+        let mut stream = match self.read_arrow_response(&request_id, response).await {
+            Ok(stream) => stream,
+            Err(error) => return Err(self.explain_list_blob_bad_request(column, error).await),
+        };
 
         let mut blob_chunks: Vec<Arc<dyn Array>> = Vec::new();
         while let Some(batch) = stream.try_next().await? {
@@ -449,6 +481,7 @@ impl<S: HttpSend> RemoteTable<S> {
         column: &str,
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
+        self.reject_list_blob_path_if_known(column).await?;
         // Empty requests do not require blob-route support.
         if row_ids.is_empty() {
             return Ok(Vec::new());
@@ -481,7 +514,10 @@ impl<S: HttpSend> RemoteTable<S> {
                 requester
             })
             .collect();
-        probe_blob_files(requesters).await
+        match probe_blob_files(requesters).await {
+            Ok(files) => Ok(files),
+            Err(error) => Err(self.explain_list_blob_bad_request(column, error).await),
+        }
     }
 }
 

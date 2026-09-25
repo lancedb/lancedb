@@ -516,7 +516,8 @@ export abstract class Table {
   abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
 
   /**
-   * Blob v2 columns, including nested dotted paths.
+   * Blob v2 columns addressable by row ID, including struct-nested dotted paths.
+   * Blobs inside lists are omitted because a row ID does not identify an element.
    */
   abstract blobColumns(): Promise<string[]>;
 
@@ -526,6 +527,7 @@ export abstract class Table {
    * Reads the table's current checkout. IDs from another version can fail after
    * compaction unless stable row ids are enabled. Results keep input order and
    * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   * Blobs inside lists cannot be fetched by row ID.
    */
   abstract fetchBlobs(
     column: string,

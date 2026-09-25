@@ -1240,10 +1240,11 @@ impl Table {
         self.inner.count_rows(filter).await
     }
 
-    /// Names of the blob v2 columns in this table, in declaration order.
+    /// Names of the row-addressable blob v2 columns, in declaration order.
     ///
-    /// Nested blobs use dotted paths (e.g. `info.blob`). Returns
-    /// [`Error::NotSupported`] on table types without blob support.
+    /// Blobs nested in structs use dotted paths (e.g. `info.blob`). Blobs
+    /// inside lists are omitted because row ids cannot identify their elements.
+    /// Returns [`Error::NotSupported`] on table types without blob support.
     pub async fn blob_columns(&self) -> Result<Vec<String>> {
         self.inner.blob_columns().await
     }
@@ -1279,9 +1280,10 @@ impl Table {
     /// # }
     /// ```
     ///
-    /// Returns [`Error::InvalidInput`] when the column does not exist or is
-    /// not a blob v2 column, and [`Error::NotSupported`] on table types
-    /// without blob support.
+    /// Blobs inside lists cannot be fetched by row id. Returns
+    /// [`Error::InvalidInput`] for those paths, when the column does not exist,
+    /// or when it is not a blob v2 column. Returns [`Error::NotSupported`] on
+    /// table types without blob support.
     pub async fn fetch_blobs(
         &self,
         column: impl AsRef<str>,
