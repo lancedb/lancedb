@@ -119,6 +119,33 @@ def _should_push_down_query_table(
     return namespace_client is not None and "QueryTable" in pushdown_operations
 
 
+_CUDA_UNAVAILABLE_MESSAGE = (
+    "CUDA acceleration is unavailable in this Python environment. Install a "
+    "CUDA-enabled PyTorch build and verify that the CUDA device is accessible, or "
+    "omit `accelerator` (or set `accelerator=None`) to create the index on CPU."
+)
+
+
+def _validate_index_accelerator(accelerator: Any) -> None:
+    if not isinstance(accelerator, str) or accelerator.split(":", 1)[0] != "cuda":
+        return
+
+    try:
+        import torch
+
+        cuda_available = torch.cuda.is_available()
+    except (ImportError, RuntimeError, AssertionError) as err:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
+
+    if not cuda_available:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE)
+
+    try:
+        torch.cuda.init()
+    except (RuntimeError, AssertionError) as err:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
+
+
 def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
     """Return a Polars frame unchanged while blocking predicate pushdown."""
     return frame
@@ -3300,7 +3327,9 @@ class LanceTable(Table):
 
             # Handle accelerator through pylance
             if accelerator is not None:
-                self.to_lance().create_index(
+                dataset = self.to_lance()
+                _validate_index_accelerator(accelerator)
+                dataset.create_index(
                     column=column,
                     index_type=index_type,
                     metric=metric,
@@ -3325,6 +3354,8 @@ class LanceTable(Table):
                 acc = getattr(config, "accelerator", None)
                 if acc is not None:
                     # Dispatch to pylance for GPU acceleration
+                    dataset = self.to_lance()
+                    _validate_index_accelerator(acc)
                     index_type_map = {
                         "IvfFlat": "IVF_FLAT",
                         "IvfSq": "IVF_SQ",
@@ -3336,7 +3367,7 @@ class LanceTable(Table):
                     cfg_type = type(config).__name__
                     lance_index_type = index_type_map.get(cfg_type, "IVF_PQ")
 
-                    self.to_lance().create_index(
+                    dataset.create_index(
                         column=column,
                         index_type=lance_index_type,
                         metric=getattr(config, "distance_type", "l2"),
