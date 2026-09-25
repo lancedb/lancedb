@@ -41,6 +41,7 @@ from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .schema import is_blob_like_field, schema_has_blob_field
 from .util import flatten_columns, get_uri_scheme
+from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
     FetchBlobsAsync,
@@ -2263,6 +2264,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._phrase_query = None
         self._lower_bound = None
         self._upper_bound = None
+        # WAL-PK-FUSION: delete both, and the `with_row_id` override below.
+        # Set by `_create_query_builders` when the legs are fused on the key.
+        self._pk_fusion: Optional[_wal_hybrid.PkFusion] = None
+        # `_with_row_id` is also turned on by `rerank(return_score="all")` for
+        # the reranker's own use, so it cannot answer "did the caller ask?".
+        self._caller_requested_row_id = False
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -2284,6 +2291,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         return vector_query, text_query
 
+    def with_row_id(self, with_row_id: bool) -> Self:  # WAL-PK-FUSION: delete.
+        """Set whether to return row ids.
+
+        Recorded separately from `_with_row_id`, which `rerank(return_score=
+        "all")` also sets for its own use — on a MemWAL table only a caller who
+        asked is refused, and the reranker still falls back to the primary key.
+        """
+        self._caller_requested_row_id = with_row_id
+        return super().with_row_id(with_row_id)
+
     def phrase_query(self, phrase_query: bool = True) -> LanceHybridQueryBuilder:
         """Set whether to use phrase query.
 
@@ -2304,16 +2321,30 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+        # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
+        return _wal_hybrid.with_pk_fallback(
+            lambda: self._run_hybrid(timeout=timeout),
+            self._table,
+            fused=lambda: self._pk_fusion is not None,
+            caller_requested_row_id=self._caller_requested_row_id,
+        )
+
+    def _run_hybrid(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         self._create_query_builders()
+        fts_query, vector_query = self._fts_query, self._vector_query
+        # WAL-PK-FUSION: without the fallback, both legs always ask for row ids.
+        if self._pk_fusion is None:
+            fts_query = fts_query.with_row_id(True)
+            vector_query = vector_query.with_row_id(True)
         with ThreadPoolExecutor() as executor:
-            fts_future = executor.submit(
-                self._fts_query.with_row_id(True).to_arrow, timeout=timeout
-            )
-            vector_future = executor.submit(
-                self._vector_query.with_row_id(True).to_arrow, timeout=timeout
-            )
+            fts_future = executor.submit(fts_query.to_arrow, timeout=timeout)
+            vector_future = executor.submit(vector_query.to_arrow, timeout=timeout)
             fts_results = fts_future.result()
             vector_results = vector_future.result()
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            vector_results, fts_results = self._pk_fusion.stamp(
+                vector_results, fts_results
+            )
 
         results = self._combine_hybrid_results(
             fts_results=fts_results,
@@ -2328,6 +2359,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return self._finish_hybrid_results(results)
 
     def _finish_hybrid_results(self, results: pa.Table) -> pa.Table:
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            return self._pk_fusion.strip(results)
         if self._user_requested_row_id():
             return results
         if self._blob_auto_row_id_enabled():
@@ -2501,7 +2534,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._norm = normalize
         self._reranker = reranker
         if reranker.score == "all":
-            self.with_row_id(True)
+            # WAL-PK-FUSION: without the fallback, `self.with_row_id(True)`.
+            # Not through `with_row_id`, which records caller intent: the
+            # reranker's need for row ids must not refuse a MemWAL table.
+            self._with_row_id = True
 
         return self
 
@@ -2775,13 +2811,24 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             sub_query_limit = self._limit + (self._offset or 0)
             self._vector_query.limit(sub_query_limit)
             self._fts_query.limit(sub_query_limit)
-        if self._columns:
-            self._vector_query.select(self._columns)
-            self._fts_query.select(self._columns)
+        # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
+        self._pk_fusion = None
+        columns = self._columns
+        if _wal_hybrid.pk_fusion_learned(self._table, self._use_lsm):
+            self._pk_fusion = _wal_hybrid.PkFusion.for_query(
+                self._table.schema,
+                self._columns,
+                caller_requested_row_id=self._caller_requested_row_id,
+            )
+            columns = self._pk_fusion.inject(columns)
+        if columns:
+            self._vector_query.select(columns)
+            self._fts_query.select(columns)
         if self._where:
             self._vector_query.where(self._where, not self._postfilter)
             self._fts_query.where(self._where, not self._postfilter)
-        if self._with_row_id:
+        # WAL-PK-FUSION: without the fallback, `if self._with_row_id:`.
+        if self._with_row_id and self._pk_fusion is None:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
         if self._use_lsm is not None:
@@ -3933,6 +3980,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._inner = inner
         self._norm = "score"
         self._reranker = RRFReranker()
+        # WAL-PK-FUSION: delete.
+        # Set by `_create_child_queries` when the legs are fused on the key.
+        self._pk_fusion: Optional[_wal_hybrid.PkFusion] = None
 
     def rerank(
         self, reranker: Reranker = RRFReranker(), normalize: str = "score"
@@ -3964,7 +4014,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         return self
 
-    def _create_child_queries(
+    async def _create_child_queries(
         self,
     ) -> Tuple["AsyncFTSQuery", "AsyncVectorQuery", int, int]:
         """Build the sub-queries that make up this hybrid query.
@@ -3973,7 +4023,8 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         the plans that are reported are the plans that actually run.
 
         Returns the two sub-queries along with the effective limit and offset of
-        the hybrid query itself.
+        the hybrid query itself. The key the legs are fused on, if any, is left
+        on `self._pk_fusion`.
         """
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
@@ -3991,8 +4042,27 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             limit = DEFAULT_HYBRID_LIMIT
         offset = fts_req.offset or vec_req.offset or 0
 
-        fts_query.with_row_id()
-        vec_query.with_row_id()
+        # WAL-PK-FUSION: without the fallback, keep only the two `with_row_id`
+        # calls.
+        self._pk_fusion = None
+        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_lsm):
+            self._pk_fusion = _wal_hybrid.PkFusion.for_query(
+                await self._table.schema(),
+                _query_request_projection(fts_req),
+                caller_requested_row_id=self._user_requested_row_id(),
+            )
+        if self._pk_fusion is None:
+            fts_query.with_row_id()
+            vec_query.with_row_id()
+        else:
+            # Ask for the key columns instead, and never for `_rowid`.
+            # `select` carries the whole projection; `select_source_columns`
+            # keeps only plain column references, so rebuilding from it would
+            # drop computed ones.
+            columns = self._pk_fusion.inject(fts_req.select)
+            if self._pk_fusion.injected:
+                fts_query.select(columns)
+                vec_query.select(columns)
 
         # offset() pushes the offset down into both sub-queries, which would make
         # each of them skip its own first `offset` rows. The window has to be
@@ -4011,7 +4081,23 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
-        fts_query, vec_query, limit, offset = self._create_child_queries()
+        # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
+        return await _wal_hybrid.with_pk_fallback_async(
+            lambda: self._run_hybrid(
+                max_batch_length=max_batch_length, timeout=timeout
+            ),
+            self._table,
+            fused=lambda: self._pk_fusion is not None,
+            caller_requested_row_id=self._user_requested_row_id(),
+        )
+
+    async def _run_hybrid(
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> AsyncRecordBatchReader:
+        fts_query, vec_query, limit, offset = await self._create_child_queries()
 
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
@@ -4035,6 +4121,10 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             fts_query.to_arrow(timeout=timeout),
             vec_query.to_arrow(timeout=timeout),
         )
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            vector_results, fts_results = self._pk_fusion.stamp(
+                vector_results, fts_results
+            )
 
         result = LanceHybridQueryBuilder._combine_hybrid_results(
             fts_results=fts_results,
@@ -4046,7 +4136,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             with_row_ids=True,
             offset=offset,
         )
-        if (
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete this branch.
+            result = self._pk_fusion.strip(result)
+        elif (
             not self._user_requested_row_id()
             and not blob_auto_row_id
             and "_rowid" in result.column_names
@@ -4095,7 +4187,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         plan : str
         """  # noqa: E501
 
-        fts_query, vec_query, _, _ = self._create_child_queries()
+        fts_query, vec_query, _, _ = await self._create_child_queries()
         vector_plan = await vec_query.explain_plan(verbose)
         fts_plan = await fts_query.explain_plan(verbose)
         # Indent sub-plans under the reranker
@@ -4124,7 +4216,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         -------
         plan : str
         """
-        fts_query, vec_query, _, _ = self._create_child_queries()
+        fts_query, vec_query, _, _ = await self._create_child_queries()
 
         results = ["Vector Search Query:"]
         results.append(await vec_query.analyze_plan(distributed_metrics))

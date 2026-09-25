@@ -30,7 +30,7 @@ use crate::function::{
 };
 use crate::job::Job;
 use crate::materialized_view::CreateMaterializedViewRequest;
-use crate::remote::job::{RemoteJob, job_state_to_client};
+use crate::remote::job::{PauseJobResponse, RemoteJob, ResumeJobResponse, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
@@ -216,7 +216,8 @@ impl RemoteDatabaseOptionsBuilder {
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
-    table_cache: Cache<String, Arc<RemoteTable<S>>>,
+    // Cache existence and server capabilities, not mutable per-handle table state.
+    table_cache: Cache<String, ServerVersion>,
     uri: String,
     /// Headers to pass to the namespace client for authentication
     namespace_headers: HashMap<String, String>,
@@ -1209,11 +1210,39 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_view(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        self.drop_view_async(name, namespace_path)
+            .await?
+            .wait()
+            .await
+    }
+
+    async fn drop_view_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
         let view_id = build_object_identifier("View name", name, namespace_path)?;
         let req = self.client.post(&format!("/v1/view/{view_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
-        self.client.check_response(&request_id, response).await?;
-        Ok(())
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        match status {
+            // Nothing was bound to the name, so nothing is being deleted.
+            StatusCode::OK => Ok(Job::new_done()),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "view drop response did not contain a valid job_id".into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Ok(Job::new(Box::new(RemoteJob::new(
+                    self.client.clone(),
+                    job_id,
+                ))))
+            }
+            _ => Err(Error::Http {
+                source: "view drop must return 200 OK or 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            }),
+        }
     }
 
     async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
@@ -1322,6 +1351,40 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
     }
 
+    async fn pause_job(&self, job_id: &str) -> Result<crate::database::PauseJobStatus> {
+        let req = self
+            .client
+            .post("/v1/jobs/pause")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: PauseJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(if body.paused {
+            crate::database::PauseJobStatus::Pausing
+        } else if body.committing {
+            crate::database::PauseJobStatus::Committing
+        } else {
+            crate::database::PauseJobStatus::AlreadyPaused
+        })
+    }
+
+    async fn resume_job(&self, job_id: &str) -> Result<crate::database::ResumeJobStatus> {
+        let req = self
+            .client
+            .post("/v1/jobs/resume")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: ResumeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(if body.resumed {
+            crate::database::ResumeJobStatus::Resumed
+        } else if body.still_pausing {
+            crate::database::ResumeJobStatus::StillPausing
+        } else {
+            crate::database::ResumeJobStatus::NotPaused
+        })
+    }
+
     async fn execute_query_async(
         &self,
         query: &str,
@@ -1371,16 +1434,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         };
 
         for table in &tables {
-            let table_identifier = build_table_identifier(table, &request.namespace_path)?;
+            build_table_identifier(table, &request.namespace_path)?;
             let cache_key = build_cache_key(table, &request.namespace_path);
-            let remote_table = Arc::new(RemoteTable::new(
-                self.client.clone(),
-                table.clone(),
-                request.namespace_path.clone(),
-                table_identifier.clone(),
-                version.clone(),
-            ));
-            self.table_cache.insert(cache_key, remote_table).await;
+            self.table_cache.insert(cache_key, version.clone()).await;
         }
         Ok(tables)
     }
@@ -1407,16 +1463,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // Cache the tables for future use
         let namespace_vec = namespace_parts.to_vec();
         for table in &response.tables {
-            let table_identifier = build_table_identifier(table, &namespace_vec)?;
+            build_table_identifier(table, &namespace_vec)?;
             let cache_key = build_cache_key(table, &namespace_vec);
-            let remote_table = Arc::new(RemoteTable::new(
-                self.client.clone(),
-                table.clone(),
-                namespace_vec.clone(),
-                table_identifier.clone(),
-                version.clone(),
-            ));
-            self.table_cache.insert(cache_key, remote_table).await;
+            self.table_cache.insert(cache_key, version.clone()).await;
         }
 
         Ok(response)
@@ -1484,9 +1533,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             request.name.clone(),
             request.namespace_path.clone(),
             table_identifier,
-            version,
+            version.clone(),
         ));
-        self.table_cache.insert(cache_key, table.clone()).await;
+        self.table_cache.insert(cache_key, version).await;
 
         Ok(table)
     }
@@ -1526,9 +1575,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             request.target_table_name.clone(),
             request.target_namespace_path.clone(),
             table_identifier,
-            version,
+            version.clone(),
         ));
-        self.table_cache.insert(cache_key, table.clone()).await;
+        self.table_cache.insert(cache_key, version).await;
 
         Ok(table)
     }
@@ -1537,10 +1586,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
-        // We describe the table to confirm it exists before moving on.
-        if let Some(table) = self.table_cache.get(&cache_key).await {
-            Ok(table.clone())
+        // Every open gets its own checkout, schema cache, and freshness state.
+        if let Some(version) = self.table_cache.get(&cache_key).await {
+            Ok(Arc::new(RemoteTable::new(
+                self.client.clone(),
+                request.name,
+                request.namespace_path,
+                identifier,
+                version,
+            )))
         } else {
+            // Describe the table to confirm it exists before moving on.
             let req = self
                 .client
                 .post(&format!("/v1/table/{}/describe/", identifier));
@@ -1550,13 +1606,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
             let describe_body = rsp.text().await.ok();
-            let table_identifier = build_table_identifier(&request.name, &request.namespace_path)?;
             let table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 request.name.clone(),
                 request.namespace_path.clone(),
-                table_identifier,
-                version,
+                identifier,
+                version.clone(),
             ));
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
@@ -1564,8 +1619,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             if let Some(body) = &describe_body {
                 table.seed_schema(body);
             }
-            let cache_key = build_cache_key(&request.name, &request.namespace_path);
-            self.table_cache.insert(cache_key, table.clone()).await;
+            self.table_cache.insert(cache_key, version).await;
             Ok(table)
         }
     }
@@ -2269,6 +2323,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_open_table_checkout_is_independent_per_handle() {
+        let latest = Arc::new(AtomicUsize::new(2));
+        let current = latest.clone();
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
+            let body = match request.url().path() {
+                "/v1/table/table1/describe/" => {
+                    let requested_version = request
+                        .body()
+                        .and_then(|body| body.as_bytes())
+                        .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+                        .and_then(|body| body["version"].as_u64());
+                    let version =
+                        requested_version.unwrap_or_else(|| current.load(Ordering::SeqCst) as u64);
+                    serde_json::json!({
+                        "version": version,
+                        "schema": {"fields": [
+                            {"name": "id", "type": {"type": "int32"}, "nullable": false}
+                        ]}
+                    })
+                    .to_string()
+                }
+                "/v1/table/table1/insert/" => {
+                    let version = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    serde_json::json!({"version": version}).to_string()
+                }
+                path => panic!("unexpected request path: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+
+        let writer = conn.open_table("table1").execute().await.unwrap();
+        let reader = conn.open_table("table1").execute().await.unwrap();
+        reader.checkout(1).await.unwrap();
+
+        assert_eq!(reader.version().await.unwrap(), 1);
+        assert_eq!(writer.version().await.unwrap(), 2);
+
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![3]))],
+        )
+        .unwrap();
+        assert_eq!(writer.add(data).execute().await.unwrap().version, 3);
+        assert_eq!(writer.version().await.unwrap(), 3);
+        assert_eq!(reader.version().await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -3481,6 +3588,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_pause_and_resume_job() {
+        use crate::database::{PauseJobStatus, ResumeJobStatus};
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/pause");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "paused": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.pause_job("job-1").await.unwrap(),
+            PauseJobStatus::Pausing
+        );
+
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "paused": false, "committing": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.pause_job("job-1").await.unwrap(),
+            PauseJobStatus::Committing
+        );
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/resume");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1", "resumed": false, "still_pausing": true}"#)
+                .unwrap()
+        });
+        assert_eq!(
+            conn.resume_job("job-1").await.unwrap(),
+            ResumeJobStatus::StillPausing
+        );
+    }
+
+    #[tokio::test]
     async fn test_job_events_scope_to_that_job() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "state",
@@ -3999,6 +4145,55 @@ mod tests {
         conn.drop_view("adults", &["analytics".into()])
             .await
             .unwrap();
+    }
+
+    /// An accepted drop hands back the job so a caller can wait on the delete,
+    /// and the waiting `drop_view` does that for them.
+    #[tokio::test]
+    async fn test_drop_view_async_reports_the_cleanup_job() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j1-do-abc"}"#)
+                .unwrap()
+        });
+        let job = db.drop_view_async("adults", &[]).await.unwrap();
+        assert_eq!(job.id(), Some("j1-do-abc"));
+    }
+
+    /// Nothing was bound, so nothing is being deleted and the job is already done.
+    #[tokio::test]
+    async fn test_drop_view_async_reports_a_finished_job_when_nothing_was_bound() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        let job = db.drop_view_async("adults", &[]).await.unwrap();
+        assert_eq!(job.id(), None);
+        assert_eq!(job.status().await.unwrap(), "finished");
+        job.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_view_rejects_incomplete_acceptance() {
+        for body in ["{}", r#"{"job_id":""}"#, r#"{"job_id":null}"#] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(202).body(body).unwrap()
+            });
+            let error = db.drop_view_async("adults", &[]).await.err().unwrap();
+            assert!(error.to_string().contains("valid job_id"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_view_rejects_unexpected_success_status() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(204).body("").unwrap()
+        });
+        let error = db.drop_view_async("adults", &[]).await.err().unwrap();
+        assert!(
+            error.to_string().contains("200 OK or 202 Accepted"),
+            "{error}"
+        );
     }
 
     /// A schema the client cannot decode is a broken response, not a view

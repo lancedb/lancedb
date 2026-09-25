@@ -2412,6 +2412,23 @@ describe("when dealing with blob columns", () => {
     tmpDir.removeCallback();
   });
 
+  it("rejects unsupported blob values in createTable and add", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const row = { id: 1n, image: new Uint8Array([104]).buffer };
+
+    await expect(db.createTable("invalid", [row], { schema })).rejects.toThrow(
+      /field image at row 0/,
+    );
+
+    const table = await db.createEmptyTable("empty", schema);
+    await expect(table.add([row])).rejects.toThrow(/field image at row 0/);
+    await expect(table.countRows()).resolves.toBe(0);
+  });
+
   it("discovers blob columns", async () => {
     const { table } = await openBlobTable();
     expect(await table.blobColumns()).toEqual(["image"]);
