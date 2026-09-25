@@ -49,6 +49,13 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
+from .graph import (
+    EdgeTable,
+    NodeTable,
+    PropertyGraphDescription,
+    _definition_json,
+    _description_from_json,
+)
 from .job import AsyncJob, Job, _typed_job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -1018,6 +1025,79 @@ class DBConnection(EnforceOverrides):
             "View operations are not supported for this connection type"
         )
 
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraphDescription:
+        """Create a property graph: tables in its namespace read as the nodes
+        and edges of a graph.
+
+        Each node table names its key column and label. Each edge table names
+        its label and the node keys its source and destination columns
+        reference. A name already taken is an error. Local connections raise
+        ``NotImplementedError``.
+
+        >>> import lancedb
+        >>> from lancedb.graph import EdgeTable, Endpoint, NodeTable
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> graph = db.create_property_graph(
+        ...     "social",
+        ...     nodes=[NodeTable("person", key="person_id", label="Person")],
+        ...     edges=[
+        ...         EdgeTable(
+        ...             "knows",
+        ...             label="KNOWS",
+        ...             source=Endpoint("src_id", references=("person", "person_id")),
+        ...             destination=Endpoint(
+        ...                 "dst_id", references=("person", "person_id")
+        ...             ),
+        ...         )
+        ...     ],
+        ... )  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def describe_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        """What this database records about a property graph: its node and
+        edge tables, its size, and the table versions it was built from.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a property graph and wait for its data to be deleted.
+
+        The tables it reads are untouched. Local connections raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def list_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the property graphs in one namespace.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
     def open_job(self, job_id: str) -> Job:
         """Open a server-side job by id, returning a handle with its record
         already populated.
@@ -1882,6 +1962,41 @@ class LanceDBConnection(DBConnection):
     @override
     def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
         return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
+
+    @override
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.create_property_graph(
+                name, nodes, edges, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def describe_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.describe_property_graph(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_property_graph(name, namespace_path=namespace_path))
+
+    @override
+    def list_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        return LOOP.run(self._conn.list_property_graphs(namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -2909,6 +3024,45 @@ class AsyncConnection(object):
     ) -> List[str]:
         """The names of the views in one namespace."""
         return await self._inner.list_views(list(namespace_path or []))
+
+    async def create_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraphDescription:
+        """Create a property graph over tables in its namespace.
+
+        See
+        [DBConnection.create_property_graph][lancedb.DBConnection.create_property_graph].
+        """
+        return _description_from_json(
+            await self._inner.create_property_graph(
+                name, _definition_json(nodes, edges), list(namespace_path or [])
+            )
+        )
+
+    async def describe_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        """What this database records about a property graph."""
+        return _description_from_json(
+            await self._inner.describe_property_graph(name, list(namespace_path or []))
+        )
+
+    async def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a property graph and wait for its data to be deleted."""
+        await self._inner.drop_property_graph(name, list(namespace_path or []))
+
+    async def list_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the property graphs in one namespace."""
+        return await self._inner.list_property_graphs(list(namespace_path or []))
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""

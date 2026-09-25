@@ -36,6 +36,7 @@ import pyarrow as pa
 from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
+from ..graph import EdgeTable, NodeTable, PropertyGraphDescription
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription
@@ -941,6 +942,41 @@ class RemoteDBConnection(DBConnection):
     @override
     def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
         return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
+
+    @override
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.create_property_graph(
+                name, nodes, edges, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def describe_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.describe_property_graph(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_property_graph(name, namespace_path=namespace_path))
+
+    @override
+    def list_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        return LOOP.run(self._conn.list_property_graphs(namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List["JobInfo"]:

@@ -48,6 +48,7 @@ from .materialized_view import (
     MaterializedViewDefinition,
 )
 from .view import ViewDescription as ViewDescription
+from .graph import PropertyGraphDescription as PropertyGraphDescription
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -584,6 +585,7 @@ __all__ = [
     "MaterializedView",
     "MaterializedViewDefinition",
     "ViewDescription",
+    "PropertyGraphDescription",
     "connect",
     "connect_async",
     "tokenize",

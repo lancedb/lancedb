@@ -28,6 +28,7 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::job::Job;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::secrets::SecretInfo;
@@ -288,6 +289,12 @@ fn view_ops_not_supported<T>() -> Result<T> {
     })
 }
 
+fn property_graph_ops_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Property graph operations are not supported by this database".to_string(),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -506,6 +513,42 @@ pub trait Database:
     /// The names of the views in one namespace.
     async fn list_views(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
         view_ops_not_supported()
+    }
+    /// Create a property graph over tables in its namespace.
+    async fn create_property_graph(
+        &self,
+        _name: &str,
+        _definition: &PropertyGraphDefinition,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// What the database records about one property graph.
+    async fn describe_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a property graph and wait for its data to be deleted. The tables it
+    /// reads are untouched.
+    async fn drop_property_graph(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a property graph and return the job deleting its data, without
+    /// waiting.
+    #[doc(hidden)]
+    async fn drop_property_graph_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        property_graph_ops_not_supported()
+    }
+    /// The names of the property graphs in one namespace.
+    async fn list_property_graphs(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+        property_graph_ops_not_supported()
     }
     /// Open a job by id, returning a handle with its record already
     /// populated. Fails with [`crate::Error::JobNotFound`] when the server has

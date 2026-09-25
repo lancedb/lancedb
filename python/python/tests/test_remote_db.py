@@ -17,6 +17,7 @@ from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
+from lancedb.graph import EdgeTable, Endpoint, NodeTable, PropertyGraphDescription
 from lancedb.query import ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
@@ -2828,3 +2829,98 @@ def test_view_crud_addresses_its_own_routes():
         ("GET", "/v1/namespace/analytics/view/list"),
         ("POST", "/v1/view/analytics$adults/drop"),
     ]
+
+
+def test_property_graph_crud_addresses_its_own_routes():
+    # The graph verbs are their own routes: the definition is the create body,
+    # and a description adds the graph's size and the table versions it was
+    # built from.
+    calls = []
+    person = {"table": "person", "column": "person_id"}
+    definition = {
+        "nodes": [
+            {
+                "table": "person",
+                "key": "person_id",
+                "label": "Person",
+                "properties": ["name"],
+            }
+        ],
+        "edges": [
+            {
+                "table": "knows",
+                "label": "KNOWS",
+                "source": {"column": "src_id", "references": person},
+                "destination": {"column": "dst_id", "references": person},
+            }
+        ],
+    }
+    described = {
+        "name": "social",
+        "namespace": ["analytics"],
+        **definition,
+        "vertex_count": 4,
+        "edge_count": 5,
+        "sources": [
+            {"table": "person", "version": 3},
+            {"table": "knows", "version": 2},
+        ],
+    }
+
+    def handler(request):
+        length = int(request.headers.get("Content-Length") or 0)
+        body = json.loads(request.rfile.read(length)) if length else None
+        calls.append((request.command, request.path, body))
+        if request.path.endswith("/property_graph/list"):
+            response = {"property_graphs": ["social"], "page_token": None}
+        elif request.path.endswith("/drop"):
+            response = {}
+        else:
+            response = described
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    nodes = [NodeTable("person", key="person_id", label="Person", properties=["name"])]
+    edges = [
+        EdgeTable(
+            "knows",
+            label="KNOWS",
+            source=Endpoint("src_id", references=("person", "person_id")),
+            destination=Endpoint("dst_id", references=("person", "person_id")),
+        )
+    ]
+    with mock_lancedb_connection(handler) as db:
+        graph = db.create_property_graph(
+            "social", nodes, edges, namespace_path=["analytics"]
+        )
+        assert graph == PropertyGraphDescription(
+            name="social",
+            namespace_path=["analytics"],
+            nodes=nodes,
+            edges=edges,
+            vertex_count=4,
+            edge_count=5,
+            sources={"person": 3, "knows": 2},
+        )
+        assert db.describe_property_graph("social", namespace_path=["analytics"]) == (
+            graph
+        )
+        assert db.list_property_graphs(namespace_path=["analytics"]) == ["social"]
+        db.drop_property_graph("social", namespace_path=["analytics"])
+
+    assert calls == [
+        ("POST", "/v1/property_graph/analytics$social/create", definition),
+        ("POST", "/v1/property_graph/analytics$social/describe", None),
+        ("GET", "/v1/namespace/analytics/property_graph/list", None),
+        ("POST", "/v1/property_graph/analytics$social/drop", None),
+    ]
+
+
+def test_local_connections_refuse_property_graphs(tmp_path):
+    db = lancedb.connect(tmp_path)
+    with pytest.raises(NotImplementedError, match="Property graph operations"):
+        db.list_property_graphs()
+    with pytest.raises(NotImplementedError, match="Property graph operations"):
+        db.describe_property_graph("social")
