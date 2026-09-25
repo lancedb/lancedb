@@ -80,7 +80,7 @@ pub mod freshness;
 pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
-mod primary_key;
+pub(crate) mod primary_key;
 pub mod query;
 pub mod refresh;
 pub mod schema_evolution;
