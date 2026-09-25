@@ -563,12 +563,7 @@ def _coerce_blob_list_values(
 
 
 def _coerce_value_to_blob(values: pa.Array, target_field: pa.Field) -> pa.Array:
-    if pa.types.is_null(values.type):
-        data = pa.nulls(len(values), type=pa.large_binary())
-    elif pa.types.is_large_binary(values.type):
-        data = values
-    else:
-        data = values.cast(pa.large_binary())
+    value_field = "uri" if _is_string_like(values.type) else "data"
     length = len(values)
     storage_type = target_field.type
     if isinstance(storage_type, pa.ExtensionType):
@@ -576,8 +571,11 @@ def _coerce_value_to_blob(values: pa.Array, target_field: pa.Field) -> pa.Array:
     storage_fields = list(storage_type)
     children = []
     for storage_field in storage_fields:
-        if storage_field.name == "data":
-            children.append(data)
+        if storage_field.name == value_field and not pa.types.is_null(values.type):
+            if values.type == storage_field.type:
+                children.append(values)
+            else:
+                children.append(values.cast(storage_field.type))
         else:
             children.append(pa.nulls(length, type=storage_field.type))
     storage = pa.StructArray.from_arrays(
@@ -597,7 +595,19 @@ def _physical_array_and_type(array: pa.Array) -> tuple[pa.Array, pa.DataType]:
 
 
 def _can_coerce_to_blob(data_type: pa.DataType) -> bool:
-    return _is_binary_like(data_type) or pa.types.is_null(data_type)
+    return (
+        _is_binary_like(data_type)
+        or _is_string_like(data_type)
+        or pa.types.is_null(data_type)
+    )
+
+
+def _is_string_like(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_string(data_type)
+        or pa.types.is_large_string(data_type)
+        or pa.types.is_string_view(data_type)
+    )
 
 
 def _is_binary_like(data_type: pa.DataType) -> bool:
@@ -759,6 +769,24 @@ def _arrow_json_storage_type(input_type: pa.DataType) -> Optional[pa.DataType]:
 
 
 def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
+    if is_blob_v2_field(target_field):
+        source_type = field.type
+        if pa.types.is_struct(source_type):
+            if not any(child.name in ("data", "uri") for child in source_type):
+                raise ValueError(
+                    f"blob struct input for column '{field.name}' must contain "
+                    "a 'data' or 'uri' child"
+                )
+        elif not _can_coerce_to_blob(source_type) and not isinstance(
+            source_type, pa.ExtensionType
+        ):
+            raise ValueError(
+                f"cannot coerce column '{field.name}' with type {source_type} "
+                "into a blob v2 struct. expected binary bytes "
+                "(Binary, LargeBinary, BinaryView), strings "
+                "(Utf8, LargeUtf8, Utf8View), or a Struct with a "
+                "'data' or 'uri' child"
+            )
     # LanceDB exposes stored JSON columns as lance.json (JSONB-backed LargeBinary), but
     # casting the input to that storage type here merely relabels the raw JSON bytes as
     # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.

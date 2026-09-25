@@ -434,6 +434,50 @@ def test_merge_insert_writes_python_bytes():
     assert blobs.to_pylist() == [b"updated", b"inserted"]
 
 
+@pytest.mark.parametrize("write", ["merge_insert", "create_table"])
+def test_uri_string_blob_write_reaches_external_base_validation(tmp_path, write):
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(b"payload")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    rows = pa.table(
+        {"id": pa.array([1], pa.int64()), "image": pa.array([blob_path.as_uri()])}
+    )
+    db = lancedb.connect(tmp_path)
+
+    # These APIs do not expose add's outside-base opt-in. The URI should reach
+    # the blob policy check instead of failing at PyArrow's string-to-struct cast.
+    with pytest.raises(ValueError, match="outside registered external bases"):
+        if write == "merge_insert":
+            table = db.create_table("merge_uri", schema=schema)
+            table.merge_insert("id").when_not_matched_insert_all().execute(rows)
+        else:
+            db.create_table("create_uri", data=rows, schema=schema)
+
+
+@pytest.mark.parametrize("write", ["merge_insert", "create_table"])
+@pytest.mark.parametrize(
+    "source_type, value",
+    [
+        (pa.binary(4), b"abcd"),
+        (pa.list_(pa.uint8()), [1, 2]),
+        (pa.int64(), 42),
+    ],
+)
+def test_blob_write_rejects_unsupported_input(write, source_type, value):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    rows = pa.table(
+        {"id": pa.array([1], pa.int64()), "image": pa.array([value], source_type)}
+    )
+    db = lancedb.connect("memory:///")
+
+    with pytest.raises(ValueError, match="cannot coerce column 'image' with type"):
+        if write == "merge_insert":
+            table = db.create_table("merge_invalid", schema=schema)
+            table.merge_insert("id").when_not_matched_insert_all().execute(rows)
+        else:
+            db.create_table("create_invalid", data=rows, schema=schema)
+
+
 def test_merge_insert_bytes_after_reopen_without_touching_blob_type(tmp_path):
     db = lancedb.connect(tmp_path)
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
