@@ -815,13 +815,14 @@ def test_add_list_of_dicts_to_blob_list_column(large_list):
     table = db.create_table(f"blob_{large_list}_list_add", data=seed)
 
     table.add([{"id": 1, "items": [None]}])
+    table.add([{"id": 2, "items": [b"a", None, b""]}])
     table.add(
-        [{"id": 2, "items": [b"a", None]}],
+        [{"id": 3, "items": [b"b", None]}],
         on_bad_vectors="fill",
     )
 
     ids = table.search().select(["id"]).to_arrow()["id"].to_pylist()
-    assert sorted(ids) == [0, 1, 2]
+    assert sorted(ids) == [0, 1, 2, 3]
     assert pa.types.is_large_list(table.schema.field("items").type) is large_list
 
 

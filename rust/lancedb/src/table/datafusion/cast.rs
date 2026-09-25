@@ -20,7 +20,7 @@ use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance_arrow::json::{ARROW_JSON_EXT_NAME, has_json_fields, is_arrow_json_field, is_json_field};
 use lance_arrow::{ARROW_EXT_NAME_KEY, FieldExt};
 
-use super::blob_coerce::coerce_blob_expr;
+use super::blob_coerce::{coerce_blob_expr, coerce_blob_list_expr};
 use crate::{Error, Result};
 
 pub fn cast_to_table_schema(
@@ -110,6 +110,14 @@ fn build_field_exprs(
                 table_field,
                 &config,
             )?);
+            continue;
+        }
+
+        // Blob values in lists need the same coercion as top-level blob columns.
+        if let Some(coerced) =
+            coerce_blob_list_expr(input_expr.clone(), input_field, table_field, &config)?
+        {
+            result.push(coerced);
             continue;
         }
 
