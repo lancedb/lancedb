@@ -195,6 +195,15 @@ pub fn validate_view_component(what: &str, value: &str) -> Result<()> {
     })
 }
 
+/// Validate a property graph's name and the namespace path holding it, under
+/// the object-name rules views follow.
+pub fn validate_property_graph_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    for segment in namespace_path {
+        validate_view_component("property graph namespace path segment", segment)?;
+    }
+    validate_view_component("property graph name", name)
+}
+
 /// Validate all components of a namespace
 ///
 /// Iterates through all namespace components and validates each one.

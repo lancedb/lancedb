@@ -202,6 +202,22 @@ listing a storage directory.
 
 ::: lancedb.view.ViewDescription
 
+## Property Graphs
+
+A property graph reads tables as the nodes and edges of a graph. Manage one
+with [create_property_graph][lancedb.DBConnection.create_property_graph],
+[describe_property_graph][lancedb.DBConnection.describe_property_graph],
+[list_property_graphs][lancedb.DBConnection.list_property_graphs] and
+[drop_property_graph][lancedb.DBConnection.drop_property_graph].
+
+::: lancedb.graph.NodeTable
+
+::: lancedb.graph.EdgeTable
+
+::: lancedb.graph.Endpoint
+
+::: lancedb.graph.PropertyGraphDescription
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead

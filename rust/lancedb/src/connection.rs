@@ -28,6 +28,7 @@ use crate::database::{
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
@@ -38,8 +39,8 @@ use crate::remote::{
 };
 use crate::secrets::SecretInfo;
 use crate::utils::{
-    validate_namespace, validate_secret_component, validate_secret_reference,
-    validate_view_reference,
+    validate_namespace, validate_property_graph_reference, validate_secret_component,
+    validate_secret_reference, validate_view_reference,
 };
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
@@ -864,6 +865,92 @@ impl Connection {
     pub async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
         validate_namespace(namespace_path)?;
         self.internal.list_views(namespace_path).await
+    }
+
+    /// Create a property graph: tables in its namespace read as the nodes and
+    /// edges of a graph.
+    ///
+    /// The definition names the node tables with their keys and labels, and
+    /// the edge tables with the node keys their source and destination columns
+    /// reference. A name already taken is an error. Local databases return
+    /// [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::graph::{EdgeTable, Endpoint, EndpointReference, NodeTable,
+    /// #     PropertyGraphDefinition};
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let person = EndpointReference {
+    ///     table: "person".to_string(),
+    ///     column: "person_id".to_string(),
+    /// };
+    /// let definition = PropertyGraphDefinition {
+    ///     nodes: vec![NodeTable {
+    ///         table: "person".to_string(),
+    ///         key: "person_id".to_string(),
+    ///         label: "Person".to_string(),
+    ///         properties: None,
+    ///     }],
+    ///     edges: vec![EdgeTable {
+    ///         table: "knows".to_string(),
+    ///         label: "KNOWS".to_string(),
+    ///         source: Endpoint { column: "src_id".to_string(), references: person.clone() },
+    ///         destination: Endpoint { column: "dst_id".to_string(), references: person },
+    ///         properties: None,
+    ///     }],
+    /// };
+    /// let graph = connection.create_property_graph("social", &definition, &[]).await?;
+    /// println!("{} nodes, {} edges", graph.vertex_count, graph.edge_count);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        definition: &PropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_property_graph(name.as_ref(), definition, namespace_path)
+            .await
+    }
+
+    /// What this database records about one property graph: its definition,
+    /// its size, and the table versions it was built from. Local databases
+    /// return [`Error::NotSupported`].
+    pub async fn describe_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a property graph and wait for its data to be deleted.
+    ///
+    /// The tables it reads are untouched. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn drop_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of the property graphs in one namespace.
+    ///
+    /// The client walks all server pages before returning. Local databases
+    /// return [`Error::NotSupported`].
+    pub async fn list_property_graphs(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        validate_namespace(namespace_path)?;
+        self.internal.list_property_graphs(namespace_path).await
     }
 
     /// Rename a table in the database.

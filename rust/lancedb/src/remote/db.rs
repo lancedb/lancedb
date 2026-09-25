@@ -28,6 +28,7 @@ use crate::function::{
     FunctionArtifactRequest, FunctionRegistrationRequest, FunctionSignature, FunctionVersion,
     PythonRuntimeSpec,
 };
+use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::job::Job;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::job::{PauseJobResponse, RemoteJob, ResumeJobResponse, job_state_to_client};
@@ -839,6 +840,14 @@ struct RemoteListViewsResponse {
     page_token: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct RemoteListPropertyGraphsResponse {
+    #[serde(default)]
+    property_graphs: Vec<String>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -1276,6 +1285,111 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             page_token = Some(next_page_token);
         }
         Ok(views)
+    }
+
+    async fn create_property_graph(
+        &self,
+        name: &str,
+        definition: &PropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_object_identifier("Property graph name", name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/create"))
+            .json(definition);
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn describe_property_graph(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_object_identifier("Property graph name", name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/describe"));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn drop_property_graph(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        self.drop_property_graph_async(name, namespace_path)
+            .await?
+            .wait()
+            .await
+    }
+
+    async fn drop_property_graph_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let graph_id = build_object_identifier("Property graph name", name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/drop"));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        match status {
+            // Nothing was bound to the name, so nothing is being deleted.
+            StatusCode::OK => Ok(Job::new_done()),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "property graph drop response did not contain a valid job_id".into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Ok(Job::new(Box::new(RemoteJob::new(
+                    self.client.clone(),
+                    job_id,
+                ))))
+            }
+            _ => Err(Error::Http {
+                source: "property graph drop must return 200 OK or 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            }),
+        }
+    }
+
+    async fn list_property_graphs(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        let namespace_id = build_namespace_identifier(namespace_path)?;
+        let path = format!("/v1/namespace/{namespace_id}/property_graph/list");
+        let mut graphs = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut seen_page_tokens = HashSet::new();
+        loop {
+            let mut req = self.client.get(&path);
+            if let Some(token) = &page_token {
+                req = req.query(&[("page_token", token)]);
+            }
+            let (request_id, response) = self.client.send(req).await?;
+            let response = self.client.check_response(&request_id, response).await?;
+            let status = response.status();
+            let response: RemoteListPropertyGraphsResponse =
+                response.json().await.err_to_http(request_id.clone())?;
+            graphs.extend(response.property_graphs);
+            let Some(next_page_token) = response.page_token.filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next_page_token.clone()) {
+                return Err(Error::Http {
+                    source: "Property graph listing response repeated a page_token".into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+            page_token = Some(next_page_token);
+        }
+        Ok(graphs)
     }
 
     async fn open_job(&self, job_id: &str) -> Result<Job> {
@@ -4277,6 +4391,192 @@ mod tests {
                 error.contains("view name") || error.contains("view namespace path segment"),
                 "{error}"
             );
+        }
+    }
+
+    fn social_graph() -> crate::graph::PropertyGraphDefinition {
+        crate::graph::PropertyGraphDefinition::from_json(
+            r#"{"nodes": [{"table": "person", "key": "person_id", "label": "Person"}],
+                "edges": [{"table": "knows", "label": "KNOWS",
+                           "source": {"column": "src_id",
+                                      "references": {"table": "person", "column": "person_id"}},
+                           "destination": {"column": "dst_id",
+                                           "references": {"table": "person",
+                                                          "column": "person_id"}},
+                           "properties": ["since"]}]}"#,
+        )
+        .unwrap()
+    }
+
+    fn property_graph_description_body(name: &str, namespace: &[&str]) -> String {
+        let mut body = serde_json::to_value(social_graph()).unwrap();
+        let fields = body.as_object_mut().unwrap();
+        fields.insert("name".into(), name.into());
+        fields.insert("namespace".into(), namespace.into());
+        fields.insert("vertex_count".into(), 4.into());
+        fields.insert("edge_count".into(), 5.into());
+        fields.insert(
+            "sources".into(),
+            serde_json::json!([{"table": "person", "version": 3}, {"table": "knows", "version": 2}]),
+        );
+        body.to_string()
+    }
+
+    #[tokio::test]
+    async fn test_create_property_graph_posts_the_definition() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(
+                request.url().path(),
+                "/v1/property_graph/analytics$social/create"
+            );
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body, serde_json::to_value(social_graph()).unwrap());
+            http::Response::builder()
+                .status(200)
+                .body(property_graph_description_body("social", &["analytics"]))
+                .unwrap()
+        });
+        let graph = conn
+            .create_property_graph("social", &social_graph(), &["analytics".into()])
+            .await
+            .unwrap();
+        assert_eq!(graph.name, "social");
+        assert_eq!(graph.namespace_path, vec!["analytics".to_string()]);
+        assert_eq!(graph.nodes, social_graph().nodes);
+        assert_eq!(graph.edges, social_graph().edges);
+        assert_eq!((graph.vertex_count, graph.edge_count), (4, 5));
+        assert_eq!(
+            graph.sources[1],
+            crate::graph::GraphSourceVersion {
+                table: "knows".to_string(),
+                version: 2
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_describe_and_drop_address_the_property_graph_in_the_path() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/property_graph/social/describe");
+            assert!(request.body().is_none(), "{:?}", request.body());
+            http::Response::builder()
+                .status(200)
+                .body(property_graph_description_body("social", &[]))
+                .unwrap()
+        });
+        let graph = conn.describe_property_graph("social", &[]).await.unwrap();
+        assert!(graph.namespace_path.is_empty());
+        assert_eq!(graph.edges[0].properties, Some(vec!["since".to_string()]));
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(
+                request.url().path(),
+                "/v1/property_graph/analytics$social/drop"
+            );
+            assert!(request.body().is_none(), "{:?}", request.body());
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_property_graph("social", &["analytics".into()])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_property_graph_async_reports_the_cleanup_job() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j1-do-graph"}"#)
+                .unwrap()
+        });
+        let job = db.drop_property_graph_async("social", &[]).await.unwrap();
+        assert_eq!(job.id(), Some("j1-do-graph"));
+
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        let job = db.drop_property_graph_async("social", &[]).await.unwrap();
+        assert_eq!(job.id(), None);
+        job.wait().await.unwrap();
+
+        for (status, body, expected) in [
+            (202, "{}", "valid job_id"),
+            (204, "", "200 OK or 202 Accepted"),
+        ] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(status).body(body).unwrap()
+            });
+            let error = db
+                .drop_property_graph_async("social", &[])
+                .await
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_property_graphs_walks_pages() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(
+                request.url().path(),
+                "/v1/namespace/analytics/property_graph/list"
+            );
+            let page = request
+                .url()
+                .query_pairs()
+                .find(|(key, _)| key == "page_token")
+                .map(|(_, value)| value.into_owned());
+            let body = match page.as_deref() {
+                None => r#"{"property_graphs":["social"],"page_token":"p2"}"#,
+                Some("p2") => r#"{"property_graphs":["payments"],"page_token":null}"#,
+                Some(other) => panic!("unexpected page token: {other}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        assert_eq!(
+            conn.list_property_graphs(&["analytics".into()])
+                .await
+                .unwrap(),
+            vec!["social".to_string(), "payments".to_string()]
+        );
+
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"property_graphs":["social"],"page_token":"same"}"#)
+                .unwrap()
+        });
+        let error = conn.list_property_graphs(&[]).await.unwrap_err();
+        assert!(
+            error.to_string().contains("repeated a page_token"),
+            "{error}"
+        );
+    }
+
+    /// A name carrying the delimiter would split back apart as a different
+    /// graph, so it is refused before it reaches a route.
+    #[tokio::test]
+    async fn test_property_graph_names_that_would_resplit_are_refused() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("an invalid identifier must not reach the service")
+        });
+        for (name, namespace) in [
+            ("analytics$social", vec![]),
+            ("social", vec!["ana$lytics".to_string()]),
+            ("", vec![]),
+            ("..", vec![]),
+        ] {
+            let error = match conn.describe_property_graph(name, &namespace).await {
+                Ok(_) => panic!("accepted {name:?} in {namespace:?}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("property graph"), "{error}");
         }
     }
 
