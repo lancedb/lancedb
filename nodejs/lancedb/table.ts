@@ -526,6 +526,10 @@ export abstract class Table {
    * Reads the table's current checkout. IDs from another version can fail after
    * compaction unless stable row ids are enabled. Results keep input order and
    * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   * Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+   * The client splits requests automatically and reads an individual larger
+   * blob through the Range route. This method still materializes all bytes in
+   * memory; use {@link Table.fetchBlobFiles} for large values.
    */
   abstract fetchBlobs(
     column: string,

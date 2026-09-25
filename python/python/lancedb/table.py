@@ -1935,8 +1935,10 @@ class Table(ABC):
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
 
-        Convenience for small payloads. For large values use
-        :meth:`fetch_blob_files`.
+        Remote servers limit each request to 1024 row IDs and 64 MiB of blob
+        bytes. The client splits requests automatically and reads an individual
+        larger blob through the Range route. This method still materializes all
+        bytes in memory; for large values use :meth:`fetch_blob_files`.
         """
 
     @abstractmethod

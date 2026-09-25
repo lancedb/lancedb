@@ -21,7 +21,22 @@ use crate::error::Result;
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 use crate::table::BaseTable;
 
-use super::{FreshnessHeaders, FreshnessState, RemoteTable, freshness_headers_snapshot};
+use super::{
+    FreshnessHeaders, FreshnessState, ReadSnapshot, RemoteTable, freshness_headers_snapshot,
+};
+
+// The Cloud route rejects larger row-id lists. Its separate 64 MiB byte limit
+// is handled by splitting a rejected request below.
+const MAX_FETCH_BLOBS_ROW_IDS: usize = 1024;
+
+fn is_fetch_blobs_byte_limit_error(error: &Error) -> bool {
+    matches!(error, Error::Http {
+        source,
+        status_code: Some(StatusCode::BAD_REQUEST),
+        ..
+    } if source.to_string().contains("fetch_blobs accepts at most")
+        && source.to_string().contains("total blob bytes"))
+}
 
 #[derive(Debug, Clone, Copy)]
 enum RangeRequestMode {
@@ -369,7 +384,62 @@ impl<S: HttpSend> RemoteTable<S> {
                 message: "fetch_blobs is not supported on this LanceDB Cloud server".into(),
             });
         }
-        let read_snapshot = self.snapshot_read_state().await;
+        let mut read_snapshot = self.snapshot_read_state().await;
+        // A selection spanning requests must use one exact dataset version.
+        // Resolve latest before the first chunk; a checked-out version is exact already.
+        if row_ids.len() > MAX_FETCH_BLOBS_ROW_IDS && read_snapshot.version.is_none() {
+            read_snapshot.version = Some(self.describe_read_snapshot(read_snapshot).await?.version);
+        }
+        let mut pending: Vec<&[u64]> = row_ids.chunks(MAX_FETCH_BLOBS_ROW_IDS).rev().collect();
+        let mut chunks = Vec::new();
+        while let Some(ids) = pending.pop() {
+            match self.fetch_blobs_chunk(column, ids, read_snapshot).await {
+                Ok(blobs) => chunks.push(blobs),
+                Err(error) if is_fetch_blobs_byte_limit_error(&error) => {
+                    // A single-request call may turn into several requests after a
+                    // byte-cap error. No bytes from the failed request were used.
+                    if read_snapshot.version.is_none() {
+                        read_snapshot.version =
+                            Some(self.describe_read_snapshot(read_snapshot).await?.version);
+                    }
+                    if ids.len() == 1 {
+                        // The whole-byte route cannot serve this blob. The Range route
+                        // has no aggregate response limit and preserves null alignment.
+                        let mut files = self
+                            .fetch_blob_files_with_snapshot(column, ids, read_snapshot)
+                            .await?;
+                        let blob = match files.pop().unwrap() {
+                            Some(file) => Some(file.read().await?),
+                            None => None,
+                        };
+                        chunks.push(LargeBinaryArray::from(vec![blob.as_deref()]));
+                    } else {
+                        let mid = ids.len() / 2;
+                        pending.push(&ids[mid..]);
+                        pending.push(&ids[..mid]);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        if chunks.len() == 1 {
+            return Ok(chunks.pop().unwrap());
+        }
+        let chunk_refs: Vec<&dyn Array> = chunks.iter().map(|chunk| chunk as &dyn Array).collect();
+        Ok(arrow::compute::concat(&chunk_refs)?
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .expect("concatenating LargeBinary arrays returns LargeBinary")
+            .clone())
+    }
+
+    async fn fetch_blobs_chunk(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+        read_snapshot: ReadSnapshot,
+    ) -> Result<LargeBinaryArray> {
         let mut body = serde_json::json!({
             "version": read_snapshot.version,
             "column": column,
@@ -460,6 +530,16 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         let read_snapshot = self.snapshot_read_state().await;
+        self.fetch_blob_files_with_snapshot(column, row_ids, read_snapshot)
+            .await
+    }
+
+    async fn fetch_blob_files_with_snapshot(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+        read_snapshot: ReadSnapshot,
+    ) -> Result<Vec<Option<BlobFile>>> {
         let encoded_column = urlencoding::encode(column);
         let requesters = row_ids
             .iter()
