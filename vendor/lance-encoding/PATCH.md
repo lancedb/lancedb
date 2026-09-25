@@ -1,5 +1,5 @@
 This is `rust/lance-encoding` from
-[`lance-format/lance` v13.0.0-beta.12](https://github.com/lance-format/lance/tree/5d2946fa452c61cb018144f3200892b6dd4a8b4f/rust/lance-encoding),
+[`lance-format/lance` v13.0.0-beta.14](https://github.com/lance-format/lance/tree/b80ac1d9f3c24b47bd8e297d03053ea35d216a9f/rust/lance-encoding),
 with the crate's build protos copied into `protos/`. Its manifest uses explicit
 dependencies so it can be built outside the Lance workspace.
 

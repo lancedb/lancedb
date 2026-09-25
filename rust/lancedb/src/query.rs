@@ -48,6 +48,7 @@ use crate::{
 };
 
 mod hybrid;
+pub(crate) mod wal_fusion; // WAL-PK-FUSION: delete with the module.
 
 pub(crate) const DEFAULT_TOP_K: usize = 10;
 
@@ -1412,14 +1413,36 @@ impl VectorQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        // WAL-PK-FUSION: without the fallback, this body is `run_hybrid`'s,
+        // with its `pk_fusion` branches taken as `None`.
+        wal_fusion::with_pk_fallback(self, |pk_fusion| {
+            self.run_hybrid(pk_fusion, options.clone())
+        })
+        .await
+    }
+
+    async fn run_hybrid(
+        &self,
+        pk_fusion: Option<wal_fusion::PkFusion>,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
         let max_batch_length = options.max_batch_length as usize;
         let internal_options = options.without_output_batch_length_limit();
         // clone query and specify we want to include row IDs, which can be needed for reranking
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
-        fts_query = fts_query.with_row_id();
-
-        let mut vector_query = self.clone().with_row_id();
+        let mut vector_query = self.clone();
+        // WAL-PK-FUSION: without the fallback, keep only the `None` arm.
+        match &pk_fusion {
+            None => {
+                fts_query = fts_query.with_row_id();
+                vector_query = vector_query.with_row_id();
+            }
+            Some(pk_fusion) => {
+                pk_fusion.prepare_leg(&mut fts_query.request.select);
+                pk_fusion.prepare_leg(&mut vector_query.request.base.select);
+            }
+        }
 
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
@@ -1439,6 +1462,11 @@ impl VectorQuery {
         // concatenate all the batches together
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
         let mut vec_results = concat_batches(&vec_schema, vec_results.iter())?;
+
+        // WAL-PK-FUSION: delete.
+        if let Some(pk_fusion) = &pk_fusion {
+            (vec_results, fts_results) = pk_fusion.stamp(vec_results, fts_results)?;
+        }
 
         if matches!(self.request.base.norm, Some(NormalizeMethod::Rank)) {
             vec_results = hybrid::rank(vec_results, DIST_COL, None)?;
@@ -1475,8 +1503,14 @@ impl VectorQuery {
             results = results.slice(0, limit);
         }
 
-        if !self.request.base.with_row_id {
-            results = results.drop_column(ROW_ID)?;
+        // WAL-PK-FUSION: without the fallback, keep only the `None` arm.
+        match &pk_fusion {
+            None => {
+                if !self.request.base.with_row_id {
+                    results = results.drop_column(ROW_ID)?;
+                }
+            }
+            Some(pk_fusion) => results = pk_fusion.strip(results)?,
         }
 
         Ok(single_batch_stream(results, max_batch_length))
