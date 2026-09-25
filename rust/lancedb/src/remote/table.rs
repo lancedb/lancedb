@@ -46,6 +46,7 @@ use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     MaxBatchLengthStream, TimeoutStream, public_fts_field_path_by_id, resolve_arrow_field_path,
     resolve_arrow_fts_field_path, supported_btree_data_type, supported_vector_data_type,
+    validate_fts_field,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -595,6 +596,7 @@ impl<S: HttpSend> RemoteTable<S> {
             Index::BloomFilter(p) => ("BLOOM_FILTER", Some(to_json(p)?)),
             Index::RTree(p) => ("RTREE", Some(to_json(p)?)),
             Index::FTS(p) => {
+                validate_fts_field(&field)?;
                 let mut params = to_json(p)?;
                 if p.get_document_granularity().is_list_element() {
                     params["document_granularity"] = "list_element".into();
@@ -6541,19 +6543,24 @@ mod tests {
         ];
 
         for (index_type, expected_body, index) in cases {
+            let data_type = match &index {
+                Index::FTS(params) if params.get_document_granularity().is_list_element() => {
+                    DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
+                }
+                Index::FTS(_) => DataType::Utf8,
+                _ => DataType::Int32,
+            };
+            let schema = Schema::new(vec![Field::new("a", data_type, false)]);
             let table = Table::new_with_handler_version(
                 "my_table",
                 semver::Version::new(0, 6, 0),
                 move |request| {
                     assert_eq!(request.method(), "POST");
                     match request.url().path() {
-                        "/v1/table/my_table/describe/" => {
-                            let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
-                            http::Response::builder()
-                                .status(200)
-                                .body(describe_response(&schema))
-                                .unwrap()
-                        }
+                        "/v1/table/my_table/describe/" => http::Response::builder()
+                            .status(200)
+                            .body(describe_response(&schema))
+                            .unwrap(),
                         "/v1/table/my_table/create_index/" => {
                             assert_eq!(
                                 request.headers().get("Content-Type").unwrap(),

@@ -75,6 +75,17 @@ pub enum Index {
 
     /// Full text search index using BM25.
     ///
+    /// Supports strings, lists of strings, and `lance.json` logical fields
+    /// stored as `LargeBinary`. Raw binary fields are not supported. Lance
+    /// selects its JSON-aware tokenizer from the field metadata.
+    ///
+    /// JSON queries use `path,str,value` triples, where the dotted path is
+    /// relative to the indexed column. For example, `meta.tag,str,nature`
+    /// searches the string value at `$.meta.tag`, not other paths or key names.
+    /// Create the index on the JSON column, not on a JSON subpath. Plain text
+    /// queries are invalid for this tokenizer; malformed triples can panic in
+    /// the current Lance dependency (see [lance#8812](https://github.com/lance-format/lance/issues/8812)).
+    ///
     /// The posting block size defaults to 128. Supported values are 128 and 256;
     /// a value of 256 uses the experimental FTS V3 format and may introduce
     /// breaking changes.

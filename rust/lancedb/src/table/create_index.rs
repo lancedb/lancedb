@@ -29,8 +29,8 @@ use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
     resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
-    supported_fm_data_type, supported_fts_data_type, supported_label_list_data_type,
-    supported_vector_data_type, supported_zonemap_data_type,
+    supported_fm_data_type, supported_label_list_data_type, supported_vector_data_type,
+    supported_zonemap_data_type, validate_fts_field,
 };
 
 use super::NativeTable;
@@ -286,7 +286,7 @@ impl NativeTable {
                 ))
             }
             Index::FTS(fts_opts) => {
-                Self::validate_index_type(field, "FTS", supported_fts_data_type)?;
+                validate_fts_field(field)?;
                 Ok(Box::new(fts_opts))
             }
             Index::IvfFlat(index) => {
