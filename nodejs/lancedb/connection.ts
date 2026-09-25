@@ -650,6 +650,24 @@ export abstract class Connection {
    * such job exists. Cancelling an already-terminal job is a no-op success.
    */
   abstract cancelJob(jobId: string): Promise<boolean>;
+
+  /**
+   * Pause a server-side job by id.
+   *
+   * The job's workers drain and it stays parked until resumed. Resolves to
+   * "pausing", "already_paused", or "committing" -- a job finalizing its
+   * results cannot be parked; retry shortly.
+   */
+  abstract pauseJob(jobId: string): Promise<string>;
+
+  /**
+   * Resume a paused server-side job by id.
+   *
+   * Its workers pick their work back up from checkpoints. Resolves to
+   * "resumed", "still_pausing" -- the pause's worker drain is not confirmed
+   * yet; retry shortly -- or "not_paused".
+   */
+  abstract resumeJob(jobId: string): Promise<string>;
 }
 
 /** @hideconstructor */
@@ -1048,6 +1066,14 @@ export class LocalConnection extends Connection {
 
   async cancelJob(jobId: string): Promise<boolean> {
     return this.inner.cancelJob(jobId);
+  }
+
+  async pauseJob(jobId: string): Promise<string> {
+    return this.inner.pauseJob(jobId);
+  }
+
+  async resumeJob(jobId: string): Promise<string> {
+    return this.inner.resumeJob(jobId);
   }
 }
 

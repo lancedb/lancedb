@@ -2647,6 +2647,18 @@ class Table(ABC):
         to check if the table is already using the new path style.
         """
 
+    # WAL-PK-FUSION: delete both hooks, here and on AsyncTable and RemoteTable.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        """Whether a hybrid query here has already been refused ``_rowid``.
+
+        Learned from a refusal, never probed, so asking is free. ``False`` for
+        table types that never refuse.
+        """
+        return False
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        """Remember a ``_rowid`` refusal, so later hybrid queries skip it."""
+
 
 class LanceTable(Table):
     """
@@ -5293,6 +5305,15 @@ class AsyncTable:
         resolved when the spec was set — ``None`` never round-trips.
         """
         return await self._inner.get_lsm_write_spec()
+
+    # WAL-PK-FUSION: delete both hooks.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        """See [`Table._hybrid_pk_fusion_learned`][lancedb.table.Table]."""
+        return self._inner.hybrid_pk_fusion_learned()
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        """See [`Table._note_hybrid_pk_fusion`][lancedb.table.Table]."""
+        self._inner.note_hybrid_pk_fusion()
 
     async def checkpoint_lsm(self) -> None:
         """Converge this table's LSM write path into its base table.
