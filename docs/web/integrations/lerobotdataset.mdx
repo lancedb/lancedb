@@ -18,16 +18,18 @@ What you get:
 
 - **Train from object storage while keeping your GPUs fed.** Lance reads random frames straight from S3, GCS, the HF Hub or HF Storage Buckets, fetching only the bytes each batch needs, so every batch is a global shuffle: any frame, from anywhere in the dataset. In the table below (samples/s, 8 workers, batch 64), Lance and upstream local both draw every batch from the whole dataset. Upstream streaming does a reservoir shuffle, reading the dataset in order and drawing each batch from a pool of recently seen frames, so those two columns are not the same job:
 
-| dataset | frames | cameras | Lance, S3 (global shuffle) | upstream, local (global shuffle) | same job | upstream, streaming (reservoir shuffle) | vs streaming |
-|---|---|---|---|---|---|---|---|
-| DROID | 27,630,375 | 3 | 2,258.5 | 346.7 | 6.5x | 898.6 | 1.7x |
-| berkeley_rpt | 392,578 | 1 | 1,740.6 | 1,209.9 | 1.4x | 274.5 | 6.3x |
-| toto | 325,699 | 1 | 1,097.0 | 936.3 | 1.2x | 121.3 | 9.0x |
-| roboturk | 187,507 | 1 | 1,276.8 | 1,082.3 | 1.2x | 128.2 | 10.0x |
-| aloha_mobile_cabinet | 127,500 | 3 | 815.7 | 294.2 | 2.8x | 77.7 | 10.5x |
-| koch_pick_place | 37,972 | 2 | 854.7 | 274.9 | 3.1x | 58.1 | 14.7x |
+| dataset | window shuffle, Lance from object store | window shuffle, upstream streaming from the Hub | Lance (object store) vs upstream streaming | RAM, Lance | RAM, streaming | global shuffle, Lance from object store | global shuffle, upstream from local NVMe | Lance (object store) vs upstream (local NVMe) |
+|---|---|---|---|---|---|---|---|---|
+| DROID | 904 | 478 | 1.9x | 8 GB | 122 GB | 257 | 224 | 1.1x |
+| roboturk | 778 | 152 | 5.1x | 6 GB | 9 GB | 1,074 | 983 | 1.1x |
+| aloha_mobile_cabinet | 772 | 51 | 15.2x | 9 GB | 30 GB | 693 | 573 | 1.2x |
+| koch_pick_place_5_lego | 701 | 54 | 13.0x | 8 GB | 15 GB | 876 | 526 | 1.7x |
+| pusht | 5,340 | 648 | 8.2x | 3 GB | 7 GB | 5,508 | 4,224 | 1.3x |
+| aloha_static_cups_open | 597 | 45 | 13.2x | 10 GB | 38 GB | 575 | 483 | 1.2x |
 
-The gap grows with how much video each sample carries: about 1.2x with one camera, 2.8x with three, 6.5x on DROID.
+The shuffle window is 0.05% of the dataset, at least 5,000 frames: 5,000 on the small sets, 13,815 on DROID. Streaming DROID at that window in upstream default needs 122 GB, so those two runs used a 256 GB machine with the same decode speed. The DROID pair is noisy: Lance 684 and 1,124, streaming 303 and 653.
+
+Same batches: Lance from an object store is 1.9x faster than upstream streaming on DROID and 5x to 15x on the other datasets, with 8 GB of RAM against 122 GB on DROID. Global shuffle: Lance with nothing downloaded is 1.1x to 1.7x faster than upstream reading local NVMe after the download. berkeley_rpt, toto and soarm101 are left out because their metadata lists frames the videos do not have; `lerobot-lance-doctor` reports that before you train.
 
 - **Faster iteration, end to end.** 10,000 steps of SmolVLA on DROID, 8xH100, lerobot's default `num_workers=4`, same seed:
 
