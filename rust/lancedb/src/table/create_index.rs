@@ -2079,6 +2079,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_indices_with_missing_fts_index_files() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("text", Utf8, ["alpha", "beta", "gamma"])
+        )
+        .unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        table
+            .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let fts_uuid = table
+            .list_indices()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|index| index.name == "text_idx")
+            .and_then(|index| index.index_uuid)
+            .unwrap();
+        std::fs::remove_dir_all(tmp_dir.path().join("t.lance/_indices").join(fts_uuid)).unwrap();
+
+        // A new connection, so the index cache cannot serve the deleted files.
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn.open_table("t").execute().await.unwrap();
+        let mut indices = table.list_indices().await.unwrap();
+        indices.sort_by(|a, b| a.name.cmp(&b.name));
+        let names = indices.iter().map(|i| i.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["id_idx", "text_idx"]);
+        assert_eq!(indices[1].index_type, crate::index::IndexType::FTS);
+        assert_eq!(indices[1].index_details, None);
+        assert!(indices[0].index_details.is_some());
+    }
+
+    #[tokio::test]
     async fn test_create_inverted_index() {
         let conn = connect("memory://").execute().await.unwrap();
 

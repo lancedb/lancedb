@@ -3788,7 +3788,20 @@ impl BaseTable for NativeTable {
             let Some(segment) = segments.first() else {
                 continue;
             };
-            let params = load_segment_params(&dataset, segment).await?;
+            // The listing itself only needs the manifest. Missing index files must
+            // not hide every other index, or callers cannot find the one to repair.
+            let params = match load_segment_params(&dataset, segment).await {
+                Ok(params) => params,
+                Err(err) => {
+                    log::warn!(
+                        "Failed to read full text search configuration for index '{}': {}",
+                        index.name,
+                        err
+                    );
+                    index.index_details = None;
+                    continue;
+                }
+            };
             let details = serde_json::to_string(&params).map_err(|source| Error::Other {
                 message: format!(
                     "Failed to serialize full text search configuration for index '{}'",
