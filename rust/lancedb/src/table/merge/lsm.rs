@@ -97,7 +97,8 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     table.checkout_latest().await?;
     let mut dataset = (*table.dataset.get().await?).clone();
     let schema = arrow_schema::Schema::from(dataset.schema());
-    if !crate::table::computed_columns::computed_columns(&schema).is_empty() {
+    // Legacy-tagged too: admitting one leaves no usable write path.
+    if !crate::table::computed_columns::write_protected_columns(&schema).is_empty() {
         return Err(Error::NotSupported {
             message: "an LSM write spec cannot be installed on a table with computed \
                       columns: rows in un-compacted tiers are invisible to refresh"
