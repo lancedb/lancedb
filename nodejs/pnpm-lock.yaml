@@ -80,7 +80,7 @@ importers:
         version: 0.2.7
       ts-jest:
         specifier: ^29.1.2
-        version: 29.4.12(@babel/core@7.29.7)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.7))(jest-util@29.7.0)(jest@29.7.0(@types/node@22.7.4))(typescript@5.5.4)
+        version: 29.4.13(@babel/core@7.29.7)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.7))(jest-util@29.7.0)(jest@29.7.0(@types/node@22.7.4))(typescript@5.5.4)
       typedoc:
         specifier: 0.26.4
         version: 0.26.4(typescript@5.5.4)
@@ -3239,12 +3239,12 @@ packages:
     peerDependencies:
       typescript: '>=4.2.0'
 
-  ts-jest@29.4.12:
-    resolution: {integrity: sha512-Ov6ClY53Fflh6BGAnY2DlTq1hYDrTycz2PVTXBWFW2CU+9zrEqAp9fWdGXl42EXO5RLSFAcAZ2JFKbP+zBTFfw==}
+  ts-jest@29.4.13:
+    resolution: {integrity: sha512-rUQG+Ar95cNQf//KvsSjvabLpCTbwk+vKGWkAgiKFugqVwmOpGR7n7xa3S68/AB21Wn0KNhIAVxmxrUsz0L1AQ==}
     engines: {node: ^14.15.0 || ^16.10.0 || ^18.0.0 || >=20.0.0}
     hasBin: true
     peerDependencies:
-      '@babel/core': '>=7.0.0-beta.0 <8'
+      '@babel/core': '>=7.0.0-beta.0 <9'
       '@jest/transform': ^29.0.0 || ^30.0.0
       '@jest/types': ^29.0.0 || ^30.0.0
       babel-jest: ^29.0.0 || ^30.0.0
@@ -7327,7 +7327,7 @@ snapshots:
     dependencies:
       typescript: 5.5.4
 
-  ts-jest@29.4.12(@babel/core@7.29.7)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.7))(jest-util@29.7.0)(jest@29.7.0(@types/node@22.7.4))(typescript@5.5.4):
+  ts-jest@29.4.13(@babel/core@7.29.7)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.7))(jest-util@29.7.0)(jest@29.7.0(@types/node@22.7.4))(typescript@5.5.4):
     dependencies:
       bs-logger: 0.2.6
       fast-json-stable-stringify: 2.1.0
