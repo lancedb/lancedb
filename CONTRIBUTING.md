@@ -88,9 +88,11 @@ npm i -g mint      # https://mintlify.com/docs/installation
 cd docs/web && mint dev
 ```
 
-Enterprise pages live in a separate private repository and are merged in when
-the published site is assembled, so links to `/enterprise/...` and the SQL and
-Geneva sections will not resolve locally. Every open-source page does.
+This repository holds a page at every path the site publishes, so the whole
+navigation resolves locally. Enterprise pages exist here as open-source pages --
+what the capability is, and what the embedded form does instead. A separate
+private repository supplies the fuller version of each, which replaces the page
+at the same path when the published site is assembled.
 
 Two things to know before editing:
 
