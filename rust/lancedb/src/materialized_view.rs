@@ -313,7 +313,7 @@ pub fn read_staging(metadata: &HashMap<String, String>) -> Result<Option<Staging
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedViewDefinition {
     /// A table-bound native pair source. It is never evaluated per source row.
-    pub duplicate_pairs: Option<DuplicatePairsView>,
+    pub duplicate_pairs: Option<Box<DuplicatePairsView>>,
     /// Name of the source table, in the same database as the view.
     pub source_table: String,
     /// Namespace path holding the source table; empty is the root namespace.

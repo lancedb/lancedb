@@ -30,7 +30,7 @@ use crate::table::datafusion::udtf::duplicate_pairs::{
 };
 use crate::{Error, Result};
 
-pub(crate) const FUNCTION_NAME: &str = "vector_duplicate_pairs";
+pub(super) const FUNCTION_NAME: &str = "vector_duplicate_pairs";
 
 /// A native table-function source, pinned for the lifetime of the view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

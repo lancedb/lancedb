@@ -284,7 +284,7 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
             && index_hints.is_empty() =>
         {
             let (namespace, table, config) = super::duplicate_pairs::source(args)?;
-            duplicate_pairs = Some(config);
+            duplicate_pairs = Some(Box::new(config));
             (namespace, table)
         }
         Some(TableFactor::Table { args: Some(_), .. }) => {
