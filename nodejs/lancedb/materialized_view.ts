@@ -9,9 +9,10 @@ export const DEFINITION_META_KEY = "mv.definition";
 
 /**
  * The newest stored layout this version reads: `{"format": N, "query": "<SQL>"}`,
- * format 2 being a query with `GROUP BY`.
+ * format 2 being a query with `GROUP BY`, format 3 native pairs and format 4
+ * native dedup results.
  */
-export const DEFINITION_FORMAT = 2;
+export const DEFINITION_FORMAT = 4;
 
 /**
  * The query that defines a materialized view, as stored:
