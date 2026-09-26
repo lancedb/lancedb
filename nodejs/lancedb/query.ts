@@ -79,7 +79,16 @@ export interface QueryExecutionOptions {
    */
   timeoutMs?: number;
 
-  /** Parse JSON extension columns into native JavaScript objects. */
+  /**
+   * Parse JSON extension columns into native JavaScript objects.
+   *
+   * @example
+   * const defaultRows = await table.query().toArray();
+   * // defaultRows[0].metadata is '{"source":"api"}'
+   *
+   * const parsedRows = await table.query().toArray({ parseJson: true });
+   * // parsedRows[0].metadata is { source: "api" }
+   */
   parseJson?: boolean;
 }
 
@@ -100,8 +109,23 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isMapRow(value: unknown): value is { toArray: () => unknown[] } {
-  return isObject(value) && typeof value.toArray === "function";
+function isIterable(value: object): value is Iterable<unknown> {
+  return typeof (value as Iterable<unknown>)[Symbol.iterator] === "function";
+}
+
+function isMapRow(value: unknown): value is Iterable<[unknown, unknown]> {
+  return (
+    isObject(value) && typeof value.toArray === "function" && isIterable(value)
+  );
+}
+
+function isArrowVector(value: unknown): value is Iterable<unknown> {
+  return (
+    isObject(value) &&
+    typeof value.length === "number" &&
+    typeof value.get === "function" &&
+    isIterable(value)
+  );
 }
 
 function isMapEntry(value: unknown): value is [unknown, unknown] {
@@ -120,6 +144,10 @@ function parseJsonValue(value: unknown, field: JsonFieldLike): unknown {
     return value;
   }
 
+  if (!containsJsonField(field)) {
+    return value;
+  }
+
   if (isJsonField(field)) {
     if (typeof value !== "string") {
       return value;
@@ -135,9 +163,6 @@ function parseJsonValue(value: unknown, field: JsonFieldLike): unknown {
   }
 
   if (DataType.isMap(field.type as DataType)) {
-    if (!containsJsonField(field)) {
-      return value;
-    }
     const entriesField = field.type.children?.[0];
     const entryFields = entriesField?.type.children;
     if (entryFields?.length !== 2) {
@@ -153,7 +178,7 @@ function parseJsonValue(value: unknown, field: JsonFieldLike): unknown {
     if (value instanceof Map) {
       entries = Array.from(value.entries());
     } else if (isMapRow(value)) {
-      entries = value.toArray();
+      entries = Array.from(value);
     } else if (Array.isArray(value)) {
       entries = value;
     }
@@ -175,6 +200,26 @@ function parseJsonValue(value: unknown, field: JsonFieldLike): unknown {
     return value;
   }
 
+  if (
+    (DataType.isList(field.type as DataType) ||
+      DataType.isFixedSizeList(field.type as DataType)) &&
+    isArrowVector(value) &&
+    field.type.children?.length === 1
+  ) {
+    const childField = field.type.children[0];
+    return Array.from(value, (item) => parseJsonValue(item, childField));
+  }
+
+  if (
+    (DataType.isList(field.type as DataType) ||
+      DataType.isFixedSizeList(field.type as DataType)) &&
+    Array.isArray(value) &&
+    field.type.children?.length === 1
+  ) {
+    const childField = field.type.children[0];
+    return value.map((item) => parseJsonValue(item, childField));
+  }
+
   if (isObject(value) && field.type.children !== undefined) {
     const children = new Map(
       field.type.children.map((child) => [child.name, child]),
@@ -187,11 +232,6 @@ function parseJsonValue(value: unknown, field: JsonFieldLike): unknown {
           : childValue,
       ]),
     );
-  }
-
-  if (Array.isArray(value) && field.type.children?.length === 1) {
-    const childField = field.type.children[0];
-    return value.map((item) => parseJsonValue(item, childField));
   }
 
   return value;

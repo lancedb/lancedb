@@ -3945,6 +3945,57 @@ describe("when creating an empty table", () => {
     );
   });
 
+  it("parses JSON values inside map columns", async () => {
+    const schema = new Schema([
+      new Field(
+        "attributes",
+        new Map_<Utf8, Utf8>(
+          new Field(
+            "entries",
+            new Struct<{ key: Utf8; value: Utf8 }>([
+              new Field("key", new Utf8(), false),
+              makeJsonField("value"),
+            ]),
+            false,
+          ),
+        ),
+      ),
+    ]);
+    const table = await con.createEmptyTable("json_map", schema);
+    await table.add([{ attributes: new Map([["key", '{"nested":true}']]) }]);
+
+    const [defaultRow] = await table.query().toArray();
+    expect(defaultRow.attributes.toArray()).toEqual(['{"nested":true}']);
+
+    const [parsedRow] = await table.query().toArray({ parseJson: true });
+    expect(parsedRow.attributes).toBeInstanceOf(Map);
+    expect(parsedRow.attributes.get("key")).toEqual({ nested: true });
+  });
+
+  it("preserves vectors and parses JSON values nested in lists", async () => {
+    const schema = new Schema([
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32())),
+      ),
+      new Field("items", new List(makeJsonField("item"))),
+      makeJsonField("metadata"),
+    ]);
+    const table = await con.createEmptyTable("json_with_vector", schema);
+    await table.add([
+      {
+        vector: [1, 2],
+        items: ['{"nested":true}'],
+        metadata: '{"value":1}',
+      },
+    ]);
+
+    const [row] = await table.query().toArray({ parseJson: true });
+    expect(row.metadata).toEqual({ value: 1 });
+    expect(row.vector.toArray()).toEqual(new Float32Array([1, 2]));
+    expect(row.items).toEqual([{ nested: true }]);
+  });
+
   it("can create an empty table from schema that specifies field types by name", async () => {
     const schemaLike = {
       fields: [

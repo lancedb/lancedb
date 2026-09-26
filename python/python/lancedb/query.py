@@ -1232,6 +1232,13 @@ class LanceQueryBuilder(ABC):
         parse_json: bool
             If True, parse values in JSON columns into native Python objects.
             Defaults to False, returning JSON values as strings.
+
+        Examples
+        --------
+        >>> table.query().to_list()
+        [{"metadata": '{"source":"api"}'}]
+        >>> table.query().to_list(parse_json=True)
+        [{"metadata": {"source": "api"}}]
         """
         return _to_pylist(self.to_arrow(timeout=timeout), parse_json)
 
@@ -3063,6 +3070,13 @@ class AsyncQueryBase(object):
         parse_json: bool
             If True, parse values in JSON columns into native Python objects.
             Defaults to False, returning JSON values as strings.
+
+        Examples
+        --------
+        >>> await table.query().to_list()
+        [{"metadata": '{"source":"api"}'}]
+        >>> await table.query().to_list(parse_json=True)
+        [{"metadata": {"source": "api"}}]
         """
         return _to_pylist(await self.to_arrow(timeout=timeout), parse_json)
 
@@ -4343,6 +4357,13 @@ class BaseQueryBuilder(object):
         parse_json: bool
             If True, parse values in JSON columns into native Python objects.
             Defaults to False, returning JSON values as strings.
+
+        Examples
+        --------
+        >>> table.query().to_list()
+        [{"metadata": '{"source":"api"}'}]
+        >>> table.query().to_list(parse_json=True)
+        [{"metadata": {"source": "api"}}]
         """
         return LOOP.run(self._inner.to_list(timeout, parse_json=parse_json))
 
