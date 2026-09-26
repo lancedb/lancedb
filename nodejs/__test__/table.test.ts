@@ -416,6 +416,26 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(await table.countRows("id == 10")).toBe(1);
     });
 
+    it("should let me update float values to NaN and Infinity", async () => {
+      const db = await connect(tmpDir.name);
+      const floats = await db.createTable("floats", [
+        { id: 1, price: 1.5 },
+        { id: 2, price: 2.5 },
+        { id: 3, price: 3.5 },
+        { id: 4, price: 4.5 },
+      ]);
+      await floats.update({ values: { price: NaN }, where: "id = 1" });
+      await floats.update({ values: { price: Infinity }, where: "id = 2" });
+      await floats.update({ values: { price: -Infinity }, where: "id = 3" });
+
+      const rows = await floats.query().toArray();
+      const price = (id: number) => rows.find((row) => row.id === id).price;
+      expect(price(1)).toBeNaN();
+      expect(price(2)).toBe(Infinity);
+      expect(price(3)).toBe(-Infinity);
+      expect(price(4)).toBe(4.5);
+    });
+
     // https://github.com/lancedb/lancedb/issues/1293
     test.each([new arrow.Float16(), new arrow.Float32(), new arrow.Float64()])(
       "can create empty table with non default float type: %s",
