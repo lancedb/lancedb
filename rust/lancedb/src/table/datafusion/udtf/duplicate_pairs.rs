@@ -60,7 +60,7 @@ pub struct DuplicatePairsConfig {
 
 /// One worker input, never a row of source vectors. The complete task identity
 /// also includes the dataset URI/version, column, threshold and operator version.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DuplicatePairTask {
     pub segment_id: Uuid,
     pub partition_id: usize,

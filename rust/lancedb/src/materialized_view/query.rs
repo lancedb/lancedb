@@ -264,7 +264,29 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
     };
 
     let mut from = select.from.iter();
+    let mut duplicate_pairs = None;
     let (source_namespace, source_table) = match from.next().map(|f| &f.relation) {
+        Some(TableFactor::Table {
+            name,
+            args: Some(args),
+            alias: None,
+            with_hints,
+            version: None,
+            with_ordinality: false,
+            partitions,
+            json_path: None,
+            sample: None,
+            index_hints,
+            ..
+        }) if name.to_string() == super::duplicate_pairs::FUNCTION_NAME
+            && with_hints.is_empty()
+            && partitions.is_empty()
+            && index_hints.is_empty() =>
+        {
+            let (namespace, table, config) = super::duplicate_pairs::source(args)?;
+            duplicate_pairs = Some(config);
+            (namespace, table)
+        }
         Some(TableFactor::Table { args: Some(_), .. }) => {
             return Err(invalid(
                 "a view reads a table; a Function in FROM position follows it: \
@@ -416,6 +438,7 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
     };
 
     let definition = MaterializedViewDefinition {
+        duplicate_pairs,
         source_table,
         source_namespace,
         lateral,
@@ -424,6 +447,9 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
         group_by,
         limit,
     };
+    if definition.duplicate_pairs.is_some() {
+        super::duplicate_pairs::check_shape(&definition)?;
+    }
     check_grouping(&definition)?;
     Ok(definition)
 }
@@ -483,7 +509,18 @@ pub fn render(definition: &MaterializedViewDefinition) -> String {
         .chain(std::iter::once(&definition.source_table))
         .map(|part| ident_sql(part))
         .collect();
-    sql.push_str(&table.join("."));
+    if let Some(native) = &definition.duplicate_pairs {
+        sql.push_str(&format!(
+            "{}('{}', {}, '{}', {})",
+            super::duplicate_pairs::FUNCTION_NAME,
+            table.join(".").replace('\'', "''"),
+            native.dataset_version,
+            native.column.replace('\'', "''"),
+            native.distance_threshold
+        ));
+    } else {
+        sql.push_str(&table.join("."));
+    }
     if let Some(lateral) = &definition.lateral {
         match &lateral.source {
             LateralSource::Unnest { column } => {
@@ -510,6 +547,45 @@ pub fn render(definition: &MaterializedViewDefinition) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_pairs_are_a_table_source_with_literal_snapshot_arguments() {
+        for threshold in ["4", "4.0", "-1", "0.05"] {
+            let sql =
+                format!("SELECT * FROM vector_duplicate_pairs('images', 3, 'phash', {threshold})");
+            let definition = parse(&sql).unwrap();
+            assert_eq!(definition.source_table, "images");
+            assert!(definition.lateral.is_none());
+            assert_eq!(
+                definition.duplicate_pairs.as_ref().unwrap().dataset_version,
+                3
+            );
+            assert_eq!(parse(&render(&definition)).unwrap(), definition);
+            let metadata = std::collections::HashMap::from([(
+                super::super::DEFINITION_META_KEY.to_string(),
+                definition.to_json().unwrap(),
+            )]);
+            assert_eq!(
+                super::super::read_definition(&metadata).unwrap(),
+                Some(super::super::StoredDefinition::Query(definition))
+            );
+        }
+        for sql in [
+            "SELECT row_id_a FROM vector_duplicate_pairs('images', 3, 'phash', 4)",
+            "SELECT * FROM vector_duplicate_pairs('images', 0, 'phash', 4)",
+            "SELECT * FROM vector_duplicate_pairs('images', 3, 'phash', 1e100)",
+            "SELECT * FROM vector_duplicate_pairs('images', 3, 'phash', cutoff)",
+            "SELECT * FROM vector_duplicate_pairs('images', 3, 'phash', 4) LIMIT 1",
+            "SELECT * FROM vector_duplicate_pairs('images', 3, 'phash', 4) WHERE distance < 2",
+            "SELECT * FROM vector_duplicate_pairs('images', 3, 'phash', 4) AS p",
+            "SELECT * FROM vector_duplicate_pairs('images', 3, 'phash', 4), f(phash) AS p",
+        ] {
+            assert!(
+                parse(sql).is_err(),
+                "accepted unsupported native view: {sql}"
+            );
+        }
+    }
 
     #[test]
     fn a_query_round_trips_through_its_canonical_form() {

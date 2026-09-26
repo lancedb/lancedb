@@ -2140,6 +2140,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let definition = match response.query {
             Some(query) => MaterializedViewDefinition::from_sql(&query)?,
             None => MaterializedViewDefinition {
+                duplicate_pairs: None,
                 source_table: response.source_table,
                 source_namespace: response.source_namespace,
                 lateral: None,

@@ -9,8 +9,11 @@
 //! query this version cannot maintain reads back as unrefreshable, not as a
 //! plain table. Queries, indexes and search work on the view unchanged.
 
+mod duplicate_pairs;
 mod grouped;
 mod grouped_units;
+mod partitioned;
+pub use duplicate_pairs::DuplicatePairsView;
 pub use grouped::IVF_PARTITION;
 /// Refreshing a view grouped by [`IVF_PARTITION`] in units, one per index
 /// partition, so the work can be spread over several processes. The caller
@@ -73,6 +76,10 @@ pub use grouped::IVF_PARTITION;
 pub use grouped_units::{
     GroupedRefreshPlan, WrittenUnit, commit_grouped_refresh, plan_grouped_refresh,
     write_grouped_unit,
+};
+pub use partitioned::{
+    PartitionedRefreshPlan, WrittenPartition, commit_partitioned_refresh, plan_partitioned_refresh,
+    write_refresh_partition,
 };
 mod query;
 pub mod refresh;
@@ -146,18 +153,23 @@ const COLUMN_DEFINITIONS_META_KEY: &str = "lancedb::column_definitions";
 
 /// The newest layout this version reads under [`DEFINITION_META_KEY`]:
 /// `{"format": N, "query": "<SQL>"}`, the query as
-/// [`MaterializedViewDefinition::to_sql`] renders it. Format 2 is a query
-/// with `GROUP BY`; every other query is written as format 1, so a reader
-/// that predates grouping reports a grouped view as unrefreshable rather
-/// than failing to parse it. A reader refuses a newer format rather than
+/// [`MaterializedViewDefinition::to_sql`] renders it. Format 3 identifies a
+/// native duplicate-pair source, format 2 a query with `GROUP BY`, and
+/// format 1 an ordinary query. A reader refuses a newer format rather than
 /// guess at it. The layout also carries `"kind": "query"`, which readers
 /// older than the format number report as an unrefreshable view instead of
 /// failing to read the metadata.
-pub const DEFINITION_FORMAT: u64 = 2;
+pub const DEFINITION_FORMAT: u64 = 3;
 
 /// The format `definition` is written in; see [`DEFINITION_FORMAT`].
 fn format_of(definition: &MaterializedViewDefinition) -> u64 {
-    if definition.is_grouped() { 2 } else { 1 }
+    if definition.duplicate_pairs.is_some() {
+        3
+    } else if definition.is_grouped() {
+        2
+    } else {
+        1
+    }
 }
 
 /// Legacy `kind` tag of the structured layout written before
@@ -300,6 +312,8 @@ pub fn read_staging(metadata: &HashMap<String, String>) -> Result<Option<Staging
 /// for the shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedViewDefinition {
+    /// A table-bound native pair source. It is never evaluated per source row.
+    pub duplicate_pairs: Option<DuplicatePairsView>,
     /// Name of the source table, in the same database as the view.
     pub source_table: String,
     /// Namespace path holding the source table; empty is the root namespace.
@@ -498,6 +512,7 @@ pub fn read_definition(metadata: &HashMap<String, String>) -> Result<Option<Stor
         )));
     }
     Ok(Some(StoredDefinition::Query(MaterializedViewDefinition {
+        duplicate_pairs: None,
         source_table: legacy.source_table,
         source_namespace: legacy.source_namespace,
         lateral: None,
@@ -554,6 +569,9 @@ pub(crate) fn plan(
     definition: &MaterializedViewDefinition,
     staging: Option<&StagingBinding>,
 ) -> Result<Planned> {
+    if definition.duplicate_pairs.is_some() {
+        return duplicate_pairs::plan(source_schema, definition);
+    }
     let filter = definition
         .filter
         .as_deref()
@@ -712,6 +730,7 @@ pub(crate) fn plan(
     }
 
     let definition = MaterializedViewDefinition {
+        duplicate_pairs: None,
         source_table: definition.source_table.clone(),
         source_namespace: definition.source_namespace.clone(),
         lateral: definition.lateral.clone(),
@@ -1145,6 +1164,11 @@ impl PreparedDeclaration {
     /// read: the column the view projects it to, if any, otherwise an
     /// internal projection added here, named by [`input_column_name`].
     pub fn input_column(&mut self, source_column: &str) -> Result<String> {
+        if self.definition.duplicate_pairs.is_some() {
+            return Err(Error::InvalidInput {
+                message: "native pair views have no per-source-row inputs".into(),
+            });
+        }
         // A grouped view's rows are groups; no source row carries a value into one.
         if self.definition.is_grouped() {
             return Err(Error::InvalidInput {
@@ -1245,6 +1269,11 @@ impl PreparedDeclaration {
         columns: Vec<(usize, ArrowField)>,
         bindings: &[FunctionBinding],
     ) -> Result<Self> {
+        if self.definition.duplicate_pairs.is_some() {
+            return Err(Error::InvalidInput {
+                message: "computed columns on native pair views are not supported".into(),
+            });
+        }
         let invalid = |message: String| Error::InvalidInput { message };
         if columns.is_empty() {
             return Err(invalid("at least one computed column is needed".into()));
@@ -1451,6 +1480,7 @@ pub async fn prepare_declaration(
     limit: Option<u64>,
 ) -> Result<PreparedDeclaration> {
     let definition = MaterializedViewDefinition {
+        duplicate_pairs: None,
         source_table: source.name().to_string(),
         source_namespace: source.namespace().to_vec(),
         lateral: None,
@@ -1627,7 +1657,9 @@ async fn prepare_with(
             ),
         });
     }
-    if !native.dataset.get().await?.manifest.uses_stable_row_ids() {
+    if definition.duplicate_pairs.is_none()
+        && !native.dataset.get().await?.manifest.uses_stable_row_ids()
+    {
         return Err(Error::InvalidInput {
             message: format!(
                 "materialized views require stable row ids on the source table; \
@@ -1653,7 +1685,22 @@ async fn prepare_with(
             message: format!("view column name '{}' is reserved", reserved.output),
         });
     }
-    let source_schema = resolved.schema().await?;
+    let source_schema = if let Some(pairs) = &definition.duplicate_pairs {
+        let ds = native
+            .dataset
+            .get()
+            .await?
+            .checkout_version(pairs.dataset_version)
+            .await?;
+        crate::table::datafusion::udtf::duplicate_pairs::plan_duplicate_pairs(
+            Arc::new(ds.clone()),
+            &pairs.config()?,
+        )
+        .await?;
+        Arc::new(ArrowSchema::from(ds.schema()))
+    } else {
+        resolved.schema().await?
+    };
     let source_metadata = source_schema.metadata().clone();
     let Planned {
         definition,
@@ -1670,11 +1717,13 @@ async fn prepare_with(
         None => source_schema.clone(),
         Some(unnest) => flattened_schema(&source_schema, &unnest)?,
     };
-    fields.push(ArrowField::new(
-        SOURCE_ROW_ID_COLUMN,
-        DataType::UInt64,
-        false,
-    ));
+    if definition.duplicate_pairs.is_none() {
+        fields.push(ArrowField::new(
+            SOURCE_ROW_ID_COLUMN,
+            DataType::UInt64,
+            false,
+        ));
+    }
     // Only column-describing metadata comes along: structural declarations
     // describe how a table is written, and a view is written by refresh alone.
     let mut metadata: HashMap<String, String> = HashMap::new();
@@ -2186,6 +2235,7 @@ mod tests {
         assert_eq!(
             view.definition(),
             &MaterializedViewDefinition {
+                duplicate_pairs: None,
                 source_table: "people".into(),
                 source_namespace: Vec::new(),
                 projections: vec![
@@ -3235,6 +3285,7 @@ mod tests {
 
     fn definition(source_namespace: Vec<String>) -> MaterializedViewDefinition {
         MaterializedViewDefinition {
+            duplicate_pairs: None,
             source_table: "people".to_string(),
             source_namespace,
             lateral: None,
@@ -3321,8 +3372,8 @@ mod tests {
     #[test]
     fn a_newer_format_is_reported_not_guessed() {
         assert_eq!(
-            read(r#"{"format":3,"query":"SELECT name FROM people"}"#).unwrap(),
-            Some(StoredDefinition::Newer { format: "3".into() })
+            read(r#"{"format":4,"query":"SELECT name FROM people"}"#).unwrap(),
+            Some(StoredDefinition::Newer { format: "4".into() })
         );
         assert_eq!(
             read(r#"{"kind":"join"}"#).unwrap(),

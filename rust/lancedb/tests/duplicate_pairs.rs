@@ -206,6 +206,67 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             );
             let retry = ctx.sql(&sql).await?.collect().await?;
             assert_eq!(pairs(&retry), pairs(&actual));
+            // The same table function can be maintained through the MV unit
+            // lifecycle. Staging attempts do not make any rows visible.
+            use lancedb::materialized_view::{
+                MaterializedViewDefinition, commit_partitioned_refresh, plan_partitioned_refresh,
+                prepare_definition, write_refresh_partition,
+            };
+            let view_name = format!("pairs_{}", threshold.to_bits());
+            let view = prepare_definition(&table, MaterializedViewDefinition::from_sql(&sql)?)
+                .await?
+                .create(&view_name)
+                .await?;
+            assert_eq!(view.table().schema().await?.fields().len(), 3);
+            let plan = plan_partitioned_refresh(view.table(), Some(version))
+                .await?
+                .unwrap();
+            assert_eq!(plan.units() as usize, tasks.len());
+            let plan = serde_json::from_slice(&serde_json::to_vec(&plan)?)?;
+            let first = write_refresh_partition(view.table(), 0, &plan).await?;
+            assert_eq!(view.table().count_rows(None).await?, 0);
+            assert!(
+                commit_partitioned_refresh(
+                    view.table(),
+                    &plan,
+                    vec![first.clone(), first.clone()],
+                    view.incarnation()
+                )
+                .await
+                .is_err()
+            );
+            // Lost receipt: its files remain unreferenced; the retry writes
+            // another attempt, of which only one receipt is ever committed.
+            drop(write_refresh_partition(view.table(), 0, &plan).await?);
+            let mut units = vec![first];
+            for unit in 1..plan.units() {
+                units.push(write_refresh_partition(view.table(), unit, &plan).await?);
+            }
+            assert_eq!(view.table().count_rows(None).await?, 0);
+            let outcome =
+                commit_partitioned_refresh(view.table(), &plan, units.clone(), view.incarnation())
+                    .await?;
+            assert_eq!(outcome.rows_written as usize, pairs(&expected).len());
+            assert!(
+                commit_partitioned_refresh(view.table(), &plan, units, view.incarnation())
+                    .await
+                    .is_err()
+            );
+            use lancedb::query::ExecutableQuery;
+            let written = view
+                .table()
+                .query()
+                .execute()
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            assert_eq!(pairs(&written), pairs(&expected));
+            // Repeating a refresh replaces the view rather than appending.
+            view.refresh().execute().await?;
+            assert_eq!(
+                view.table().count_rows(None).await? as usize,
+                pairs(&expected).len()
+            );
             assert!(
                 DuplicatePairsExec::try_new(
                     ds.clone(),

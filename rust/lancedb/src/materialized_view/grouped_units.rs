@@ -53,6 +53,7 @@ const PROBE_ROWS: usize = 256;
 
 /// How a grouped view can be refreshed in units.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GroupedRefreshPlan {
     /// Units `0..units`: unit `p` before the last holds index partition
     /// `p`'s groups; the last holds the rows the index cannot place (null or
@@ -177,6 +178,7 @@ pub async fn plan_grouped_refresh(
 /// accounted for has to be refusable. Travels to whoever commits, so it
 /// serializes, but its fields are not a caller's to write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WrittenUnit {
     unit: u32,
     plan: GroupedRefreshPlan,
@@ -492,9 +494,37 @@ pub async fn commit_grouped_refresh(
     units: Vec<WrittenUnit>,
     expected_incarnation: Option<&str>,
 ) -> Result<RefreshMaterializedViewResult> {
+    let grouped = open_planned(view, plan).await?;
+    let units = complete_set(view.name(), plan, units)?;
+    let rows_written = units.iter().map(|unit| unit.rows).sum();
+    let new_fragments = units.into_iter().flat_map(|unit| unit.fragments).collect();
+    commit_fragments(
+        view,
+        plan,
+        &grouped.definition,
+        grouped.source.manifest.timestamp_nanos,
+        new_fragments,
+        rows_written,
+        expected_incarnation,
+    )
+    .await
+}
+
+/// The common all-or-nothing unit sink, shared by grouped and native views.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn commit_fragments(
+    view: &Table,
+    plan: &GroupedRefreshPlan,
+    definition: &MaterializedViewDefinition,
+    source_ts: u128,
+    new_fragments: Vec<Fragment>,
+    rows_written: u64,
+    expected_incarnation: Option<&str>,
+) -> Result<RefreshMaterializedViewResult> {
     let view_native = view.as_native().ok_or_else(|| Error::NotSupported {
         message: "materialized views are supported only on local tables".into(),
     })?;
+    view_native.dataset.ensure_mutable()?;
     let lock = refresh_lock(view_native.dataset.get().await?.uri());
     let _guard = lock.lock().await;
     if let Some(expected) = expected_incarnation
@@ -508,10 +538,17 @@ pub async fn commit_grouped_refresh(
             ),
         });
     }
-    let grouped = open_planned(view, plan).await?;
-    let source_ts = grouped.source.manifest.timestamp_nanos;
-
-    let ds = Arc::new(grouped.view_ds);
+    view_native.dataset.reload().await?;
+    let ds = view_native.dataset.get().await?.as_ref().clone();
+    ensure_incarnation(&ds, Some(&plan.incarnation), view.name()).await?;
+    if super::read_definition(&ds.schema().metadata)?
+        != Some(super::StoredDefinition::Query(definition.clone()))
+    {
+        return Err(Error::InvalidInput {
+            message: "view definition changed while its units were written".into(),
+        });
+    }
+    let ds = Arc::new(ds);
     if ds.version().version != plan.view_version {
         return Err(Error::Runtime {
             message: format!(
@@ -523,11 +560,8 @@ pub async fn commit_grouped_refresh(
             ),
         });
     }
-    let units = complete_set(view.name(), plan, units)?;
     let removed_fragment_ids: Vec<u64> = ds.get_fragments().iter().map(|f| f.id() as u64).collect();
     // Fragment ids are assigned at commit; the units' fragments all carry 0.
-    let rows_written = units.iter().map(|unit| unit.rows).sum();
-    let new_fragments = units.into_iter().flat_map(|unit| unit.fragments).collect();
     let transaction = Transaction::new(
         plan.view_version,
         Operation::Update {
@@ -566,7 +600,7 @@ pub async fn commit_grouped_refresh(
         committed,
         plan.source_version,
         source_ts,
-        Some(&grouped.definition),
+        Some(definition),
         expected_incarnation,
     )
     .await?;
