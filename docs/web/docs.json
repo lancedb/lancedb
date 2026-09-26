@@ -167,6 +167,7 @@
             "pages": [
               "basics/lance",
               "basics/catalog",
+              "basics/lakehouse",
               "basics/query",
               "basics/jobs",
               "tables/consistency",

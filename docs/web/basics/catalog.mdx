@@ -1,18 +1,20 @@
 ---
-title: "Lakehouse and catalog"
-sidebarTitle: "Lakehouse & Catalog"
-description: "What a multimodal lakehouse holds, and how the catalog organizes it."
+title: "Lance Catalog"
+sidebarTitle: "Lance Catalog"
+description: "The naming layer: what objects exist, how they nest, and who may reach them."
 icon: sitemap
-keywords: ["lakehouse", "catalog", "database", "namespace", "table", "view", "function"]
+keywords: ["catalog", "namespace", "hierarchy", "governance", "database", "table", "view", "function"]
 ---
 
-LanceDB is a **multimodal lakehouse**: data sits in open [Lance](/basics/lance)
-tables on object storage, and a catalog gives those tables names, structure, and
-the operations that act on them.
+A catalog answers one question: **what exists, and what is it called.** It holds
+names, the hierarchy they sit in, and the rules about who may reach them. It
+does not store rows, run queries, or build indexes -- that is the
+[lakehouse](/basics/lakehouse) on top of it.
 
-The lakehouse part is why images, embeddings, and the columns you derive from
-them live in one table rather than in a warehouse plus a vector store plus a
-feature store. The catalog part is what this page is about.
+Keeping the two apart is what lets a Lance table be reached by something that is
+not LanceDB. The catalog is a specification -- the
+[Lance Namespace](/basics/lance#standard) -- so any engine that implements it
+resolves the same names to the same tables.
 
 ## The objects {#objects}
 
@@ -21,7 +23,7 @@ feature store. The catalog part is what this page is about.
 | [Database](/management/database) | The root. A connection opens exactly one. |
 | [Namespace](/management/namespace) | A named grouping inside a database. Can nest. |
 | [Table](/management/table) | Rows and columns, versioned. What most operations act on. |
-| [Materialized view](/feature-engineering/materialized-views) | A table whose contents come from a query, computed and stored. |
+| [Materialized view](/management/materialized-view) | A table whose contents come from a query, computed and stored. |
 | [View](/management/view) | A saved query. Computed when read, not stored. |
 | [Function](/management/function) | Registered code, applied to produce column values. |
 
@@ -34,34 +36,46 @@ database
     └── function
 ```
 
-A namespace can contain further namespaces, so the hierarchy goes as deep as you
-need. A table is reached by its path through it.
+A namespace can contain further namespaces, so the hierarchy goes as deep as
+your organisation needs. A table is reached by its path through it:
+`prod.events.clicks`.
 
-This page is about what the objects *are*. For the operations on them --
-connecting, creating, listing, dropping -- see [Management](/management).
+This page is about what the objects *are*. For the operations on them, see
+[Management](/management).
 
-## A table is more than rows {#tables}
+## Resolution {#resolution}
 
-A Lance table carries things a warehouse table does not, and most of the rest of
-these docs is about one of them:
+A name is resolved by walking the path, and the walk is the point: reaching a
+table means traversing the namespaces above it. That is what makes the hierarchy
+more than decoration -- it is the unit of both organisation and access.
 
-| | |
-| --- | --- |
-| **Columns** | including vectors, blobs, and columns [computed](/feature-engineering/add-computed-column) from other columns |
-| **Versions** | every write commits one, so reads can [travel back](/management/table#versioning) |
-| **Indexes** | vector, full-text, and scalar, built over the columns |
-| **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
+A flat set of tables needs none of this. Namespaces start earning their keep when
+several teams, environments or domains share one catalog and you want
+`prod.search.documents` and `staging.search.documents` to be unambiguous.
 
-That is why "add a feature column" is a normal operation here rather than a
-migration: it writes one new column and leaves the expensive data alone.
+## Governance {#governance}
+
+<Badge color="red">Enterprise</Badge>
+
+Because the catalog knows the hierarchy, it is the layer that can enforce
+access. A grant names **one privilege** on **one object** for **one subject**,
+and it inherits down the path: reaching a table requires `USAGE` on the
+namespace containing it and on the database containing that.
+
+That is the practical reason to put a boundary in the hierarchy -- a namespace
+per team gives you something to grant on. See
+[Authorization](/governance/authorization).
+
+Embedded LanceDB has no such layer. Access is whatever the object store enforces
+on the bucket, which has no concept of a table.
 
 ## Views and materialized views are different objects {#views}
 
-The names are close enough to mislead. Both are defined by a query over other
-tables; the difference is when that query runs.
+The names are close enough to mislead. Both are catalog objects defined by a
+query over other tables; the difference is when that query runs.
 
-- A **materialized view** stores its rows. A refresh computes them, and reads are
-  reads of stored data -- fast, and as current as the last refresh.
+- A **materialized view** stores its rows. A refresh computes them, and reads
+  are reads of stored data -- fast, and as current as the last refresh.
 - A **view** stores only the query. Every read runs it, so a view is never stale
   and never faster than the query it wraps.
 
@@ -69,10 +83,24 @@ Reach for a materialized view when the query is expensive and the data changes
 less often than it is read. Reach for a view when correctness matters more than
 latency, or when the query is cheap.
 
-## What is not a catalog object {#elsewhere}
+## What the catalog does not hold {#elsewhere}
 
-**Indexes** belong to a table rather than standing alone, and creating one is a
-performance decision -- see [Maintenance](/indexing).
+**Indexes** belong to a table rather than standing alone. Creating one is a
+performance decision, not a structural one -- see [Indexing](/indexing).
 
-**Jobs** are not stored data at all; they are handles to work the server is
-doing. See [Jobs](/basics/jobs).
+**Jobs** are not stored data at all; they are handles to work in progress. See
+[Jobs](/basics/jobs).
+
+**Rows** are in the [Lance](/basics/lance) files the catalog points at. The
+catalog knows a table exists and where it lives; it does not know what is in it.
+
+## Next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Lance Lakehouse" icon="layer-group" href="/basics/lakehouse">
+    What operates on these objects: search, compute, maintenance.
+  </Card>
+  <Card title="Management" icon="folder-tree" href="/management">
+    Creating, listing and dropping each one.
+  </Card>
+</CardGroup>
