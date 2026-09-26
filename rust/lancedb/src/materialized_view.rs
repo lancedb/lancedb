@@ -1555,6 +1555,7 @@ pub async fn prepare_declaration(
 /// tasks and source-fragment materialization tasks.
 ///
 /// ```
+/// # #![recursion_limit = "256"]
 /// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
 /// # async fn dedup(images: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
 /// let version = images.version().await?;
