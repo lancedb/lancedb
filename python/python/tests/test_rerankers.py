@@ -395,6 +395,38 @@ def test_mrr_multivector_rewards_consensus():
     assert result["_rowid"].to_pylist()[0] == 2
 
 
+def test_rrf_multivector_ranks_each_result_list():
+    # RRF scores a document by its rank *within each* result list. The top hit
+    # of the second list must score the same as the top hit of the first list,
+    # not as if it were ranked after every row of the first list.
+    reranker = RRFReranker(K=60)
+
+    def ranking(row_ids):
+        return pa.table({"_rowid": pa.array(row_ids, type=pa.int64())})
+
+    rs1 = ranking([1, 2, 3])
+    rs2 = ranking([4, 5, 6])
+
+    result = reranker.rerank_multivector([rs1, rs2])
+    scores = dict(
+        zip(result["_rowid"].to_pylist(), result["_relevance_score"].to_pylist())
+    )
+
+    assert scores[1] == pytest.approx(1 / 61)
+    assert scores[4] == pytest.approx(1 / 61)
+    assert scores[5] == pytest.approx(1 / 62)
+    # the second-ranked hit of the second list beats the third hit of the first
+    assert scores[5] > scores[3]
+
+    # A document found by both lists sums its reciprocal ranks from each list.
+    result = reranker.rerank_multivector([ranking([1, 2]), ranking([2, 3])])
+    scores = dict(
+        zip(result["_rowid"].to_pylist(), result["_relevance_score"].to_pylist())
+    )
+    assert scores[2] == pytest.approx(1 / 62 + 1 / 61)
+    assert result["_rowid"].to_pylist() == [2, 1, 3]
+
+
 def test_rrf_reranker_distance():
     data = pa.table(
         {
