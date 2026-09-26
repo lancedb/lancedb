@@ -267,6 +267,135 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
                 view.table().count_rows(None).await? as usize,
                 pairs(&expected).len()
             );
+            // The complete declarative pipeline keeps direct representatives
+            // and materializes original rows, including isolated source rows.
+            use lancedb::materialized_view::write_refresh_partition_with_inputs;
+            use lancedb::query::QueryBase;
+            let definition = MaterializedViewDefinition::from_sql(&format!(
+                "SELECT * FROM vector_dedup('source', {version}, 'vector', {threshold})"
+            ))?;
+            let clean = prepare_definition(&table, definition)
+                .await?
+                .create(&format!("clean_{}", threshold.to_bits()))
+                .await?;
+            let clean_plan = plan_partitioned_refresh(clean.table(), Some(version))
+                .await?
+                .unwrap();
+            assert_eq!(clean_plan.dependency_units() as usize, tasks.len());
+            assert_eq!(clean_plan.units() as usize, tasks.len() + 2);
+            let clean_plan: lancedb::materialized_view::PartitionedRefreshPlan =
+                serde_json::from_slice(&serde_json::to_vec(&clean_plan)?)?;
+            assert!(
+                write_refresh_partition(clean.table(), tasks.len() as u32, &clean_plan)
+                    .await
+                    .is_err()
+            );
+            let mut receipts = Vec::new();
+            for unit in 0..clean_plan.units() {
+                let dependencies = &receipts[..receipts.len().min(tasks.len())];
+                if unit == 0 || unit == tasks.len() as u32 {
+                    // Both selection and materialization can lose a receipt.
+                    drop(
+                        write_refresh_partition_with_inputs(
+                            clean.table(),
+                            unit,
+                            &clean_plan,
+                            dependencies,
+                        )
+                        .await?,
+                    );
+                }
+                let receipt = write_refresh_partition_with_inputs(
+                    clean.table(),
+                    unit,
+                    &clean_plan,
+                    dependencies,
+                )
+                .await?;
+                receipts.push(serde_json::from_slice(&serde_json::to_vec(&receipt)?)?);
+            }
+            assert_eq!(clean.table().count_rows(None).await?, 0);
+            assert!(
+                commit_partitioned_refresh(
+                    clean.table(),
+                    &clean_plan,
+                    receipts[..receipts.len() - 1].to_vec(),
+                    clean.incarnation()
+                )
+                .await
+                .is_err()
+            );
+            commit_partitioned_refresh(clean.table(), &clean_plan, receipts, clean.incarnation())
+                .await?;
+            let mut edges = pairs(&expected)
+                .into_iter()
+                .map(|(a, b, _)| (a.min(b), a.max(b)))
+                .collect::<Vec<_>>();
+            edges.sort_unstable();
+            let mut removed = std::collections::BTreeSet::new();
+            for (a, b) in edges {
+                if !removed.contains(&a) {
+                    removed.insert(b);
+                }
+            }
+            let source_ids = ds
+                .scan()
+                .project(&["id"])?
+                .with_row_id()
+                .try_into_stream()
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            let mut expected_ids = Vec::new();
+            for batch in source_ids {
+                let ids = batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                let rowids = batch
+                    .column_by_name("_rowid")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .unwrap();
+                for i in 0..batch.num_rows() {
+                    if !removed.contains(&rowids.value(i)) {
+                        expected_ids.push(ids.value(i));
+                    }
+                }
+            }
+            let kept = clean
+                .table()
+                .query()
+                .select(lancedb::query::Select::columns(&["id"]))
+                .execute()
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            let mut actual_ids = kept
+                .iter()
+                .flat_map(|b| {
+                    b.column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .values()
+                        .iter()
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            actual_ids.sort_unstable();
+            expected_ids.sort_unstable();
+            assert_eq!(actual_ids, expected_ids);
+            if threshold == 1.0 {
+                assert!(actual_ids.contains(&0) && actual_ids.contains(&2));
+                assert!(!actual_ids.contains(&1), "A-B-C retains A and C");
+            }
+            clean.refresh().execute().await?;
+            assert_eq!(clean.table().count_rows(None).await?, expected_ids.len());
+            assert_eq!(table.count_rows(None).await?, n * 2);
             assert!(
                 DuplicatePairsExec::try_new(
                     ds.clone(),
@@ -294,6 +423,138 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             .collect()
             .await
             .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() -> anyhow::Result<()>
+{
+    use arrow_array::{LargeBinaryArray, StringArray, StructArray, types::Float32Type};
+    use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+    for stable in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let conn = lancedb::connect(dir.path().to_str().unwrap())
+            .execute()
+            .await?;
+        let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            [
+                Some(vec![Some(0.0), Some(0.0)]),
+                Some(vec![Some(1.0), Some(0.0)]),
+                Some(vec![Some(2.0), Some(0.0)]),
+                None,
+                Some(vec![Some(30.0), Some(0.0)]),
+                Some(vec![Some(40.0), Some(0.0)]),
+            ],
+            2,
+        );
+        let blob = lancedb::blob::blob("image", true);
+        let DataType::Struct(fields) = blob.data_type().clone() else {
+            unreachable!()
+        };
+        let images = StructArray::new(
+            fields,
+            vec![
+                Arc::new(LargeBinaryArray::from_iter_values(
+                    (0..6).map(|id| vec![id; 4096]),
+                )),
+                Arc::new(StringArray::from(vec![None::<&str>; 6])),
+            ],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("vector", vectors.data_type().clone(), true),
+                blob,
+            ])),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..6)),
+                Arc::new(vectors),
+                Arc::new(images),
+            ],
+        )?;
+        let table = conn
+            .create_table("source", batch)
+            .storage_option("new_table_enable_stable_row_ids", stable.to_string())
+            .execute()
+            .await?;
+        table.delete("id = 5").await?;
+        table
+            .optimize(lancedb::table::OptimizeAction::Compact {
+                options: lancedb::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await?;
+        let uri = table.uri().await?;
+        let mut ds = Dataset::open(&uri).await?;
+        assert!(
+            ds.fragments().iter().all(|f| f.id > 0),
+            "compaction must change physical row addresses"
+        );
+        let centroids = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            [Some(vec![Some(0.0), Some(0.0)])],
+            2,
+        );
+        let ivf = IvfBuildParams {
+            centroids: Some(Arc::new(centroids)),
+            ..IvfBuildParams::new(1)
+        };
+        ds.create_index(
+            &["vector"],
+            IndexType::Vector,
+            Some("vector_idx".into()),
+            &VectorIndexParams::with_ivf_flat_params(MetricType::L2, ivf),
+            true,
+        )
+        .await?;
+        let version = ds.version().version;
+        let definition = MaterializedViewDefinition::from_sql(&format!(
+            "SELECT * FROM vector_dedup('source', {version}, 'vector', 1)"
+        ))?;
+        let clean = prepare_definition(&table, definition)
+            .await?
+            .create("clean")
+            .await?;
+        // A later source delete does not change the declared result snapshot.
+        table.delete("id = 0").await?;
+        clean.refresh().execute().await?;
+        assert_eq!(clean.table().count_rows(None).await?, 4);
+        let output = Dataset::open(&clean.table().uri().await?).await?;
+        let batches = output
+            .scan()
+            .blob_handling(lance_core::datatypes::BlobHandling::AllBinary)
+            .try_into_stream()
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let mut ids = Vec::new();
+        for batch in batches {
+            let row_ids = batch
+                .column_by_name("id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let images = batch
+                .column_by_name("image")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                let id = row_ids.value(i);
+                assert_eq!(images.value(i), vec![id as u8; 4096]);
+                ids.push(id);
+            }
+        }
+        ids.sort_unstable();
+        assert_eq!(ids, [0, 2, 3, 4]);
+        assert_eq!(
+            table.count_rows(None).await?,
+            4,
+            "refresh must not mutate the source"
         );
     }
     Ok(())

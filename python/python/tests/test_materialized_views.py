@@ -520,9 +520,13 @@ def test_stored_queries_and_legacy_layouts_are_read():
         "SELECT * FROM people"
     )
 
+    for fmt, function in [(3, "vector_duplicate_pairs"), (4, "vector_dedup")]:
+        native = f"SELECT * FROM {function}('images', 3, 'phash', 4)"
+        assert read({"format": fmt, "query": native}).query == native
+
     # A newer writer's layout is reported, never guessed at.
     for newer in (
-        {"format": 3, "query": query},
+        {"format": 5, "query": query},
         {"kind": "select_v3", "source_table": "people"},
     ):
         with pytest.raises(NotImplementedError, match="cannot refresh"):

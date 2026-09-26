@@ -29,9 +29,10 @@ SelectArg = Union[
 ]
 
 
-DEFINITION_FORMAT = 2
+DEFINITION_FORMAT = 4
 """The newest stored layout this version reads: ``{"format": N, "query": "<SQL>"}``,
-format 2 being a query with ``GROUP BY``. A ``kind`` key beside it is for
+format 2 being a query with ``GROUP BY``, format 3 native pairs and format 4
+native dedup results. A ``kind`` key beside it is for
 readers older than the format number."""
 
 

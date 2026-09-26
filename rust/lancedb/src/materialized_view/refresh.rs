@@ -121,7 +121,7 @@ pub(crate) async fn execute_refresh(
     // local execution; Sophon drives these units through its job registry.
     if let Some(super::StoredDefinition::Query(definition)) =
         super::read_definition(view.schema().await?.metadata())?
-        && definition.duplicate_pairs.is_some()
+        && definition.vector_source.is_some()
     {
         let plan = super::plan_partitioned_refresh(view, pinned)
             .await?
@@ -130,7 +130,10 @@ pub(crate) async fn execute_refresh(
             })?;
         let mut units = Vec::with_capacity(plan.units() as usize);
         for unit in 0..plan.units() {
-            units.push(super::write_refresh_partition(view, unit, &plan).await?);
+            let dependencies = &units[..units.len().min(plan.dependency_units() as usize)];
+            units.push(
+                super::write_refresh_partition_with_inputs(view, unit, &plan, dependencies).await?,
+            );
         }
         return super::commit_partitioned_refresh(view, &plan, units, expected_incarnation).await;
     }
@@ -745,7 +748,7 @@ pub(super) async fn open_source(
         message: "materialized views are supported only on local tables".into(),
     })?;
     let dataset = native.dataset.get().await?.as_ref().clone();
-    if definition.duplicate_pairs.is_none() && !dataset.manifest.uses_stable_row_ids() {
+    if definition.vector_source.is_none() && !dataset.manifest.uses_stable_row_ids() {
         return Err(Error::InvalidInput {
             message: format!(
                 "source table '{}' does not have stable row ids; it is not the \
@@ -3691,7 +3694,7 @@ pub(crate) mod tests {
         let (_conn, _, view) = refreshed_doubled(vec![1, 2]).await;
 
         let replacement = crate::materialized_view::MaterializedViewDefinition {
-            duplicate_pairs: None,
+            vector_source: None,
             source_table: "src".into(),
             source_namespace: Vec::new(),
             projections: vec![
@@ -3733,7 +3736,7 @@ pub(crate) mod tests {
         let (_conn, _, view) = refreshed_doubled(vec![1, 2]).await;
 
         let narrower = crate::materialized_view::MaterializedViewDefinition {
-            duplicate_pairs: None,
+            vector_source: None,
             source_table: "src".into(),
             source_namespace: Vec::new(),
             projections: vec![crate::materialized_view::ViewProjection {

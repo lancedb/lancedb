@@ -264,7 +264,7 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
     };
 
     let mut from = select.from.iter();
-    let mut duplicate_pairs = None;
+    let mut vector_source = None;
     let (source_namespace, source_table) = match from.next().map(|f| &f.relation) {
         Some(TableFactor::Table {
             name,
@@ -278,13 +278,20 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
             sample: None,
             index_hints,
             ..
-        }) if name.to_string() == super::duplicate_pairs::FUNCTION_NAME
-            && with_hints.is_empty()
+        }) if matches!(
+            name.to_string().as_str(),
+            super::duplicate_pairs::FUNCTION_NAME | super::duplicate_pairs::DEDUP_FUNCTION_NAME
+        ) && with_hints.is_empty()
             && partitions.is_empty()
             && index_hints.is_empty() =>
         {
-            let (namespace, table, config) = super::duplicate_pairs::source(args)?;
-            duplicate_pairs = Some(Box::new(config));
+            let kind = if name.to_string() == super::duplicate_pairs::FUNCTION_NAME {
+                super::VectorSourceKind::Pairs
+            } else {
+                super::VectorSourceKind::Dedup
+            };
+            let (namespace, table, config) = super::duplicate_pairs::source(args, kind)?;
+            vector_source = Some(Box::new(config));
             (namespace, table)
         }
         Some(TableFactor::Table { args: Some(_), .. }) => {
@@ -438,7 +445,7 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
     };
 
     let definition = MaterializedViewDefinition {
-        duplicate_pairs,
+        vector_source,
         source_table,
         source_namespace,
         lateral,
@@ -447,7 +454,7 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
         group_by,
         limit,
     };
-    if definition.duplicate_pairs.is_some() {
+    if definition.vector_source.is_some() {
         super::duplicate_pairs::check_shape(&definition)?;
     }
     check_grouping(&definition)?;
@@ -509,10 +516,10 @@ pub fn render(definition: &MaterializedViewDefinition) -> String {
         .chain(std::iter::once(&definition.source_table))
         .map(|part| ident_sql(part))
         .collect();
-    if let Some(native) = &definition.duplicate_pairs {
+    if let Some(native) = &definition.vector_source {
         sql.push_str(&format!(
             "{}('{}', {}, '{}', {})",
-            super::duplicate_pairs::FUNCTION_NAME,
+            native.function_name(),
             table.join(".").replace('\'', "''"),
             native.dataset_version,
             native.column.replace('\'', "''"),
@@ -557,7 +564,7 @@ mod tests {
             assert_eq!(definition.source_table, "images");
             assert!(definition.lateral.is_none());
             assert_eq!(
-                definition.duplicate_pairs.as_ref().unwrap().dataset_version,
+                definition.vector_source.as_ref().unwrap().dataset_version,
                 3
             );
             assert_eq!(parse(&render(&definition)).unwrap(), definition);

@@ -31,18 +31,35 @@ use crate::table::datafusion::udtf::duplicate_pairs::{
 use crate::{Error, Result};
 
 pub(super) const FUNCTION_NAME: &str = "vector_duplicate_pairs";
+pub(super) const DEDUP_FUNCTION_NAME: &str = "vector_dedup";
+
+/// The result of a pinned native vector source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VectorSourceKind {
+    /// The qualifying pair relation.
+    Pairs,
+    /// Original source rows retained by greedy direct representatives.
+    Dedup,
+}
 
 /// A native table-function source, pinned for the lifetime of the view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DuplicatePairsView {
+pub struct VectorSource {
+    pub kind: VectorSourceKind,
     pub dataset_version: u64,
     pub column: String,
     /// Validated numeric SQL spelling; execution and task identity use f32 bits.
     pub distance_threshold: String,
 }
 
-impl DuplicatePairsView {
+impl VectorSource {
+    pub(super) fn function_name(&self) -> &'static str {
+        match self.kind {
+            VectorSourceKind::Pairs => FUNCTION_NAME,
+            VectorSourceKind::Dedup => DEDUP_FUNCTION_NAME,
+        }
+    }
     pub(crate) fn config(&self) -> Result<DuplicatePairsConfig> {
         let threshold: f32 = self
             .distance_threshold
@@ -69,7 +86,8 @@ fn invalid(message: impl Into<String>) -> Error {
 
 pub(super) fn source(
     args: &TableFunctionArgs,
-) -> Result<(Vec<String>, String, DuplicatePairsView)> {
+    kind: VectorSourceKind,
+) -> Result<(Vec<String>, String, VectorSource)> {
     if args.settings.is_some() {
         return Err(invalid("duplicate pairs do not accept function settings"));
     }
@@ -85,7 +103,7 @@ pub(super) fn source(
         .collect::<Result<Vec<_>>>()?;
     let [table, version, column, threshold] = exprs.as_slice() else {
         return Err(invalid(
-            "vector_duplicate_pairs requires (table, dataset_version, column, distance_threshold)",
+            "native vector sources require (table, dataset_version, column, distance_threshold)",
         ));
     };
     let string = |expr: &Expr| match expr {
@@ -97,7 +115,7 @@ pub(super) fn source(
     };
     let table = string(table)?;
     let plain = MaterializedViewDefinition::from_sql(&format!("SELECT * FROM {table}"))?;
-    if plain.duplicate_pairs.is_some()
+    if plain.vector_source.is_some()
         || plain.lateral.is_some()
         || plain.filter.is_some()
         || plain.is_grouped()
@@ -114,7 +132,8 @@ pub(super) fn source(
         },
         _ => return Err(invalid("source version must be an integer literal")),
     };
-    let config = DuplicatePairsView {
+    let config = VectorSource {
+        kind,
         dataset_version,
         column: string(column)?,
         distance_threshold: threshold.to_string(),
@@ -124,6 +143,23 @@ pub(super) fn source(
 }
 
 pub(super) fn check_shape(definition: &MaterializedViewDefinition) -> Result<()> {
+    if definition
+        .vector_source
+        .as_ref()
+        .is_some_and(|s| s.kind == VectorSourceKind::Dedup)
+    {
+        if !definition.selects_star()
+            || definition.filter.is_some()
+            || definition.limit.is_some()
+            || definition.lateral.is_some()
+            || definition.is_grouped()
+        {
+            return Err(invalid(
+                "a vector_dedup view must select * without other clauses",
+            ));
+        }
+        return Ok(());
+    }
     let schema = duplicate_pair_schema();
     let projections = schema
         .fields()
@@ -151,9 +187,29 @@ pub(super) fn plan(
     definition: &MaterializedViewDefinition,
 ) -> Result<Planned> {
     check_shape(definition)?;
-    let config = definition.duplicate_pairs.as_ref().expect("native source");
+    let config = definition.vector_source.as_ref().expect("native source");
     config.config()?;
     source_schema.field_with_name(&config.column)?;
+    if config.kind == VectorSourceKind::Dedup {
+        return Ok(Planned {
+            definition: definition.clone(),
+            fields: source_schema
+                .fields()
+                .iter()
+                .map(|f| super::without_declarations(f))
+                .collect(),
+            lineage: source_schema
+                .fields()
+                .iter()
+                .map(|f| (f.name().clone(), vec![f.name().clone()]))
+                .collect(),
+            inputs: source_schema
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect(),
+        });
+    }
     let schema = duplicate_pair_schema();
     let projections = schema
         .fields()
@@ -197,7 +253,7 @@ pub struct WrittenPairsPartition {
 }
 
 impl DuplicatePairsRefreshPlan {
-    fn identity(&self) -> Result<String> {
+    pub(super) fn identity(&self) -> Result<String> {
         use sha2::{Digest, Sha256};
         let encoded = serde_json::to_vec(&(
             &self.snapshot,
@@ -224,7 +280,7 @@ async fn open(view: &Table) -> Result<(Dataset, MaterializedViewDefinition, Arc<
         return Err(invalid("view does not carry a supported definition"));
     };
     let config = definition
-        .duplicate_pairs
+        .vector_source
         .as_ref()
         .ok_or_else(|| invalid("not a native pair view"))?
         .config()?;
@@ -236,7 +292,7 @@ async fn open(view: &Table) -> Result<(Dataset, MaterializedViewDefinition, Arc<
     );
     ensure_no_mem_wal(&source, "source table", &definition.source_table).await?;
     let planned = plan(Arc::new(Schema::from(source.schema())), &definition)?;
-    let expected = duplicate_pair_schema();
+    let expected = Schema::new(planned.fields);
     let physical = Schema::from(view_ds.schema());
     if physical.fields().len() != expected.fields().len()
         || physical
@@ -260,7 +316,7 @@ pub(super) async fn plan_refresh(
 ) -> Result<DuplicatePairsRefreshPlan> {
     let (view_ds, definition, source) = open(view).await?;
     let config = definition
-        .duplicate_pairs
+        .vector_source
         .as_ref()
         .expect("native")
         .config()?;
@@ -292,14 +348,14 @@ pub(super) async fn plan_refresh(
     })
 }
 
-async fn open_planned(
+pub(super) async fn open_planned(
     view: &Table,
     plan: &DuplicatePairsRefreshPlan,
 ) -> Result<(Dataset, MaterializedViewDefinition, Arc<Dataset>)> {
     let (view_ds, definition, source) = open(view).await?;
     ensure_incarnation(&view_ds, Some(&plan.snapshot.incarnation), view.name()).await?;
     let config = definition
-        .duplicate_pairs
+        .vector_source
         .as_ref()
         .expect("native")
         .config()?;
@@ -329,7 +385,7 @@ pub(super) async fn write_unit(
         .ok_or_else(|| invalid("pair partition is outside the plan"))?
         .clone();
     let config = definition
-        .duplicate_pairs
+        .vector_source
         .as_ref()
         .expect("native")
         .config()?;
@@ -378,7 +434,7 @@ pub(super) async fn commit(
 ) -> Result<RefreshMaterializedViewResult> {
     let (_, definition, source) = open_planned(view, plan).await?;
     let config = definition
-        .duplicate_pairs
+        .vector_source
         .as_ref()
         .expect("native")
         .config()?;

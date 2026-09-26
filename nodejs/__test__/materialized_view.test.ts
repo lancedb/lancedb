@@ -52,9 +52,19 @@ describe("materialized views", () => {
       "SELECT * FROM people",
     );
 
+    for (const [format, fn] of [
+      [3, "vector_duplicate_pairs"],
+      [4, "vector_dedup"],
+    ]) {
+      const native = `SELECT * FROM ${fn}('images', 3, 'phash', 4)`;
+      expect(read(JSON.stringify({ format, query: native })).query).toBe(
+        native,
+      );
+    }
+
     // A newer writer's layout is reported, never guessed at.
     for (const newer of [
-      `{"format":3,"query":${JSON.stringify(query)}}`,
+      `{"format":5,"query":${JSON.stringify(query)}}`,
       '{"kind":"select_v3","source_table":"people"}',
     ]) {
       expect(() => read(newer)).toThrow(/cannot refresh/);
