@@ -99,25 +99,45 @@ impl TerminalResult {
 
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let value = self.value.ok_or_else(|| match &self.request_id {
-            Some(request_id) => Error::Http {
-                source: "successful typed job response did not contain a result".into(),
-                request_id: request_id.clone(),
-                status_code: None,
-            },
+            Some(request_id) => remote_job_error(
+                request_id.clone(),
+                "successful typed job response did not contain a result".to_string(),
+            ),
             None => Error::Runtime {
                 message: "successful typed job did not contain a result".to_string(),
             },
         })?;
         serde_json::from_value(value).map_err(|error| match self.request_id {
-            Some(request_id) => Error::Http {
-                source: format!("failed to parse typed job result: {error}").into(),
+            Some(request_id) => remote_job_error(
                 request_id,
-                status_code: None,
-            },
+                format!("failed to parse typed job result: {error}"),
+            ),
             None => Error::Runtime {
                 message: format!("failed to parse typed job result: {error}"),
             },
         })
+    }
+}
+
+/// Build the error for a failed remote typed-job result.
+///
+/// The `Error::Http` variant is gated behind the `remote` feature, so without
+/// it we fall back to `Error::Runtime`. A `request_id` is only ever `Some`
+/// for remote jobs, making the fallback unreachable in practice without the
+/// feature.
+#[cfg(feature = "remote")]
+fn remote_job_error(request_id: String, source: String) -> Error {
+    Error::Http {
+        source: source.into(),
+        request_id,
+        status_code: None,
+    }
+}
+
+#[cfg(not(feature = "remote"))]
+fn remote_job_error(request_id: String, source: String) -> Error {
+    Error::Runtime {
+        message: format!("{source} (request_id={request_id})"),
     }
 }
 
@@ -584,5 +604,47 @@ mod tests {
         job.cancel().await.unwrap();
         assert!(matches!(job.wait().await, Err(Error::JobCancelled { .. })));
         assert_eq!(job.status().await.unwrap(), "cancelled");
+    }
+
+    #[test]
+    fn decode_missing_result_uses_feature_appropriate_error() {
+        // A `request_id` is only `Some` for remote jobs. The error for a
+        // missing result must use `Error::Http` with the `remote` feature and
+        // fall back to `Error::Runtime` without it (where `Error::Http`
+        // does not exist). See https://github.com/lancedb/lancedb/issues/4142.
+        let result = TerminalResult {
+            value: None,
+            request_id: Some("req-1".to_string()),
+        };
+        let err = result.decode::<Value>().unwrap_err();
+        #[cfg(feature = "remote")]
+        assert!(
+            matches!(err, Error::Http { .. }),
+            "expected Error::Http, got {err:?}"
+        );
+        #[cfg(not(feature = "remote"))]
+        assert!(
+            matches!(err, Error::Runtime { .. }),
+            "expected Error::Runtime, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_unparsable_result_uses_feature_appropriate_error() {
+        let result = TerminalResult {
+            value: Some(Value::String("not a u64".to_string())),
+            request_id: Some("req-1".to_string()),
+        };
+        let err = result.decode::<u64>().unwrap_err();
+        #[cfg(feature = "remote")]
+        assert!(
+            matches!(err, Error::Http { .. }),
+            "expected Error::Http, got {err:?}"
+        );
+        #[cfg(not(feature = "remote"))]
+        assert!(
+            matches!(err, Error::Runtime { .. }),
+            "expected Error::Runtime, got {err:?}"
+        );
     }
 }
