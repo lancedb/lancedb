@@ -31,6 +31,7 @@ from lancedb.db import AsyncConnection, DBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.expr import col, lit
 from lancedb.pydantic import LanceModel, Vector
+from lancedb.query import _parse_json_value
 from lancedb.table import LanceTable
 from pydantic import BaseModel
 
@@ -3257,6 +3258,76 @@ def test_json_serialization_plan_skips_non_json_branches():
     assert documents_item is not None
     assert documents_item.children is not None
     assert set(documents_item.children) == {"payload"}
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_to_list_parses_json_when_requested(mem_db_async: AsyncConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+    table = await mem_db_async.create_table("json_to_list", schema=schema)
+    await table.add(
+        _json_arrow_table(
+            schema,
+            [("a", '{"nested":{"value": 1}}'), ("b", None)],
+        )
+    )
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": '{"nested":{"value":1}}'},
+        {"id": "b", "j": None},
+    ]
+
+    parsed = sorted(
+        await table.query().to_list(parse_json=True), key=lambda row: row["id"]
+    )
+    assert parsed == [
+        {"id": "a", "j": {"nested": {"value": 1}}},
+        {"id": "b", "j": None},
+    ]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_to_list_parses_json_sync(mem_db: DBConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+    table = mem_db.create_table("json_to_list_sync", schema=schema)
+    table.add(_json_arrow_table(schema, [("a", '{"value": 1}')]))
+
+    assert table.search().to_list(parse_json=True) == [{"id": "a", "j": {"value": 1}}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_parse_json_is_scoped_and_safe_for_nested_values():
+    json_type = pa.json_()
+    json_field = pa.field("json", json_type)
+    nested_field = pa.field(
+        "nested",
+        pa.struct(
+            [
+                json_field,
+                pa.field("items", pa.list_(pa.field("item", json_type))),
+                pa.field("mapping", pa.map_(pa.string(), json_type)),
+            ]
+        ),
+    )
+
+    assert _parse_json_value('{"value": 1}', json_field) == {"value": 1}
+    assert _parse_json_value("not json", json_field) == "not json"
+    assert _parse_json_value('{"value": 1}', pa.field("text", pa.string())) == (
+        '{"value": 1}'
+    )
+    assert _parse_json_value(
+        {
+            "json": '{"value": 1}',
+            "items": ['{"value": 2}'],
+            "mapping": [("key", '{"value": 3}')],
+        },
+        nested_field,
+    ) == {
+        "json": {"value": 1},
+        "items": [{"value": 2}],
+        "mapping": [("key", {"value": 3})],
+    }
 
 
 @pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")

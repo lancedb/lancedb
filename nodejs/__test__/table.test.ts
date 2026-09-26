@@ -20,6 +20,7 @@ import {
   VectorQuery,
   blob,
   connect,
+  makeJsonField,
   tokenize,
 } from "../lancedb";
 import {
@@ -31,6 +32,7 @@ import {
   Int32,
   Int64,
   List,
+  Map_,
   Schema,
   SchemaLike,
   Struct,
@@ -3918,15 +3920,10 @@ describe("when creating an empty table", () => {
   it("can add and query JSON data", async () => {
     const schema = new Schema([
       new Field("id", new Int32(), true),
-      new Field(
-        "meta",
-        new Utf8(),
-        true,
-        new Map([["ARROW:extension:name", "arrow.json"]]),
-      ),
+      makeJsonField("meta"),
     ]);
     const table = await con.createEmptyTable("json", schema);
-    const meta = JSON.stringify({ x: 1 });
+    const meta = JSON.stringify({ nested: { value: 1 } });
 
     await table.add([{ id: 1, meta }]);
 
@@ -3934,6 +3931,86 @@ describe("when creating an empty table", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe(1);
     expect(rows[0].meta).toBe(meta);
+
+    const parsedRows = await table.query().toArray({ parseJson: true });
+    expect(parsedRows).toEqual([{ id: 1, meta: { nested: { value: 1 } } }]);
+  });
+
+  it("preserves non-JSON maps when parsing JSON columns", async () => {
+    const schema = new Schema([
+      new Field(
+        "attributes",
+        new Map_<Utf8, Utf8>(
+          new Field(
+            "entries",
+            new Struct<{ key: Utf8; value: Utf8 }>([
+              new Field("key", new Utf8(), false),
+              new Field("value", new Utf8(), true),
+            ]),
+            false,
+          ),
+        ),
+      ),
+    ]);
+    const table = await con.createEmptyTable("map", schema);
+    await table.add([{ attributes: new Map([["key", "value"]]) }]);
+
+    const defaultRows = await table.query().toArray();
+    const rows = await table.query().toArray({ parseJson: true });
+    expect(rows[0].attributes.toArray()).toEqual(
+      defaultRows[0].attributes.toArray(),
+    );
+  });
+
+  it("parses JSON values inside map columns", async () => {
+    const schema = new Schema([
+      new Field(
+        "attributes",
+        new Map_<Utf8, Utf8>(
+          new Field(
+            "entries",
+            new Struct<{ key: Utf8; value: Utf8 }>([
+              new Field("key", new Utf8(), false),
+              makeJsonField("value"),
+            ]),
+            false,
+          ),
+        ),
+      ),
+    ]);
+    const table = await con.createEmptyTable("json_map", schema);
+    await table.add([{ attributes: new Map([["key", '{"nested":true}']]) }]);
+
+    const [defaultRow] = await table.query().toArray();
+    expect(defaultRow.attributes.toArray()).toEqual(['{"nested":true}']);
+
+    const [parsedRow] = await table.query().toArray({ parseJson: true });
+    expect(parsedRow.attributes).toBeInstanceOf(Map);
+    expect(parsedRow.attributes.get("key")).toEqual({ nested: true });
+  });
+
+  it("preserves vectors and parses JSON values nested in lists", async () => {
+    const schema = new Schema([
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32())),
+      ),
+      new Field("items", new List(makeJsonField("item"))),
+      makeJsonField("metadata"),
+    ]);
+    const table = await con.createEmptyTable("json_with_vector", schema);
+    await table.add([
+      {
+        vector: [1, 2],
+        items: ['{"nested":true}'],
+        metadata: '{"value":1}',
+      },
+    ]);
+
+    const [row] = await table.query().toArray({ parseJson: true });
+    expect(row.metadata).toEqual({ value: 1 });
+    expect(row.vector.toArray()).toEqual(new Float32Array([1, 2]));
+    expect(row.items).toEqual([{ nested: true }]);
   });
 
   it("can create an empty table from schema that specifies field types by name", async () => {
