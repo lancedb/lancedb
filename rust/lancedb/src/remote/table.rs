@@ -2167,9 +2167,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         full: bool,
         source_version: Option<u64>,
         expected_incarnation: Option<&str>,
+        cascade: bool,
     ) -> Result<Job<RefreshMaterializedViewResult>> {
         self.check_mutable().await?;
         let mut body = serde_json::json!({ "full": full });
+        if cascade {
+            body["cascade"] = true.into();
+        }
         if let Some(source_version) = source_version {
             body["source_version"] = source_version.into();
         }
@@ -12550,7 +12554,8 @@ mod tests {
                     json!({
                         "full": true,
                         "source_version": 7,
-                        "expected_incarnation": "inc-1"
+                        "expected_incarnation": "inc-1",
+                        "cascade": true
                     })
                 );
                 http::Response::builder()
@@ -12586,6 +12591,7 @@ mod tests {
             .full(true)
             .source_version(7)
             .expect_incarnation("inc-1")
+            .cascade(true)
             .execute()
             .await
             .unwrap();

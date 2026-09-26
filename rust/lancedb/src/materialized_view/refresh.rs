@@ -110,23 +110,32 @@ pub(super) fn refresh_lock(uri: &str) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
-/// Internal implementation of the refresh logic.
-pub(crate) async fn execute_refresh(
-    view: &Table,
-    full: bool,
-    pinned: Option<u64>,
-    expected_incarnation: Option<&str>,
-) -> Result<RefreshMaterializedViewResult> {
-    let view_native = view.as_native().ok_or_else(|| Error::NotSupported {
+/// A view that passed [`check_view`]: its latest state, definition and staging.
+struct CheckedView {
+    view_ds: Dataset,
+    definition: MaterializedViewDefinition,
+    staging: Option<super::StagingBinding>,
+}
+
+/// `view`'s native table, refused if the handle is read-only.
+fn writable_native(view: &Table) -> Result<&NativeTable> {
+    let native = view.as_native().ok_or_else(|| Error::NotSupported {
         message: "materialized views are supported only on local tables".into(),
     })?;
-    view_native.dataset.ensure_mutable()?;
-    let lock = refresh_lock(view_native.dataset.get().await?.uri());
-    let _guard = lock.lock().await;
-    // Force-load the latest view state under the lock: each handle caches
-    // lazily, and a second handle would otherwise plan from a snapshot taken
-    // before another handle's commit -- appending the same rows again or
-    // reporting NoOp over a mutated view.
+    native.dataset.ensure_mutable()?;
+    Ok(native)
+}
+
+/// Every check on the view itself that refresh makes before writing.
+async fn check_view(
+    view: &Table,
+    view_native: &NativeTable,
+    expected_incarnation: Option<&str>,
+) -> Result<CheckedView> {
+    // Force-load the latest view state: each handle caches lazily, and a
+    // second handle would otherwise plan from a snapshot taken before another
+    // handle's commit -- appending the same rows again or reporting NoOp over
+    // a mutated view.
     view_native.dataset.reload().await?;
     let view_ds = view_native.dataset.get().await?.as_ref().clone();
 
@@ -151,9 +160,31 @@ pub(crate) async fn execute_refresh(
             });
         }
     };
-    let definition = &definition;
     let staging = super::read_staging(&view_ds.schema().metadata)?;
     ensure_no_mem_wal(&view_ds, "materialized view", view.name()).await?;
+    Ok(CheckedView {
+        view_ds,
+        definition,
+        staging,
+    })
+}
+
+/// Internal implementation of the refresh logic.
+pub(crate) async fn execute_refresh(
+    view: &Table,
+    full: bool,
+    pinned: Option<u64>,
+    expected_incarnation: Option<&str>,
+) -> Result<RefreshMaterializedViewResult> {
+    let view_native = writable_native(view)?;
+    let lock = refresh_lock(view_native.dataset.get().await?.uri());
+    let _guard = lock.lock().await;
+    let CheckedView {
+        view_ds,
+        definition,
+        staging,
+    } = check_view(view, view_native, expected_incarnation).await?;
+    let definition = &definition;
 
     let source_ds = open_source(view, definition, staging.as_ref()).await?;
     let source_ds = match pinned {
@@ -694,6 +725,91 @@ pub(crate) async fn ensure_no_mem_wal(dataset: &Dataset, role: &str, name: &str)
         });
     }
     Ok(())
+}
+
+/// Refresh every upstream view of `view` furthest first, each reading the
+/// version the previous one left, then `view` itself. `full` is `view`'s only.
+pub(crate) async fn execute_cascade(
+    view: &Table,
+    full: bool,
+    pinned: Option<u64>,
+    expected_incarnation: Option<&str>,
+) -> Result<RefreshMaterializedViewResult> {
+    check_view(view, writable_native(view)?, expected_incarnation).await?;
+    let (incarnation, hops) = upstream_views(view).await?;
+    let mut settled = None;
+    for (hop, incarnation) in &hops {
+        settled = Some(
+            execute_refresh(hop, false, settled, incarnation.as_deref())
+                .await?
+                .version,
+        );
+    }
+    let expected = expected_incarnation.or(incarnation.as_deref());
+    execute_refresh(view, full, pinned.or(settled), expected).await
+}
+
+/// `view`'s incarnation and the upstream views refresh reads through,
+/// furthest first, each with the incarnation read alongside its lineage.
+async fn upstream_views(view: &Table) -> Result<(Option<String>, Vec<(Table, Option<String>)>)> {
+    let database = view.database_opt().ok_or_else(|| Error::InvalidInput {
+        message: "the view was not opened through a database connection".into(),
+    })?;
+    let open = |namespace_path: Vec<String>, name: String| {
+        database.open_table(OpenTableRequest {
+            name,
+            namespace_path,
+            index_cache_size: None,
+            lance_read_params: None,
+            location: None,
+            namespace_client: None,
+            managed_versioning: None,
+        })
+    };
+    let mut key = (view.namespace().to_vec(), view.name().to_string());
+    let mut visited = HashSet::new();
+    let mut named_incarnation = None;
+    let mut hops = Vec::new();
+    loop {
+        if !visited.insert(key.clone()) {
+            return Err(Error::InvalidInput {
+                message: format!("materialized view lineage of '{}' is cyclic", view.name()),
+            });
+        }
+        let table = Table::new(open(key.0.clone(), key.1.clone()).await?, database.clone());
+        let metadata = table.schema().await?.metadata().clone();
+        let definition = match super::read_definition(&metadata)? {
+            Some(super::StoredDefinition::Query(definition)) => definition,
+            Some(super::StoredDefinition::Newer { format }) => {
+                return Err(Error::NotSupported {
+                    message: format!(
+                        "materialized view '{}' is stored in format {format}, which this \
+                         version of lancedb cannot refresh",
+                        table.name()
+                    ),
+                });
+            }
+            None if visited.len() == 1 => {
+                return Err(Error::NotAMaterializedView {
+                    name: view.name().to_string(),
+                });
+            }
+            None => break,
+        };
+        let incarnation = metadata.get(INCARNATION_META_KEY).cloned();
+        if visited.len() == 1 {
+            named_incarnation = incarnation;
+        } else {
+            hops.push((table, incarnation));
+        }
+        // The next hop is the table refresh scans; see `open_source`.
+        key = match super::read_staging(&metadata)? {
+            Some(staging) => (staging.namespace, staging.table),
+            None => (definition.source_namespace, definition.source_table),
+        };
+    }
+    hops.reverse();
+    Ok((named_incarnation, hops))
 }
 
 /// The table refresh scans: the staging table when the query calls a
@@ -3441,6 +3557,115 @@ pub(crate) mod tests {
         let result = second.refresh().execute().await.unwrap();
         assert_eq!(result.mode, RefreshMode::Incremental);
         assert_eq!(read(second.table(), "twice").await, vec![60, 100]);
+    }
+
+    async fn view_over_doubled(conn: &Connection) -> MaterializedView {
+        conn.create_materialized_view("second", "doubled")
+            .with_no_data(true)
+            .only_if("twice > 10")
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_cascade_refreshes_upstream_views_first() {
+        let (conn, source) = db_with_source(vec![1, 30]).await;
+        let first = doubled_view(&conn).await;
+        let second = view_over_doubled(&conn).await;
+
+        second.refresh().execute().await.unwrap();
+        assert_eq!(read(second.table(), "twice").await, Vec::<i32>::new());
+
+        let result = second
+            .refresh()
+            .cascade(true)
+            .full(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        let doubled = conn.open_table("doubled").execute().await.unwrap();
+        assert_eq!(read(&doubled, "twice").await, vec![2, 60]);
+        assert_eq!(read(second.table(), "twice").await, vec![60]);
+
+        append(&source, vec![50]).await;
+        let job = second
+            .refresh()
+            .cascade(true)
+            .execute_async()
+            .await
+            .unwrap();
+        assert_eq!(job.wait().await.unwrap().mode, RefreshMode::Incremental);
+        assert_eq!(read(second.table(), "twice").await, vec![60, 100]);
+        assert_eq!(
+            first.refresh().execute().await.unwrap().mode,
+            RefreshMode::NoOp
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cascade_checks_the_incarnation_before_any_hop() {
+        let (conn, _) = db_with_source(vec![1, 30]).await;
+        doubled_view(&conn).await;
+        let second = view_over_doubled(&conn).await;
+
+        let err = second
+            .refresh()
+            .cascade(true)
+            .expect_incarnation("stale")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("dropped and recreated"), "{err}");
+        let doubled = conn.open_table("doubled").execute().await.unwrap();
+        assert_eq!(read(&doubled, "twice").await, Vec::<i32>::new());
+    }
+
+    #[tokio::test]
+    async fn test_cascade_over_a_plain_table_is_a_refresh() {
+        let (conn, _) = db_with_source(vec![1, 2]).await;
+        let view = doubled_view(&conn).await;
+        view.refresh().cascade(true).execute().await.unwrap();
+        assert_eq!(read(view.table(), "twice").await, vec![2, 4]);
+    }
+
+    #[tokio::test]
+    async fn test_cascade_refuses_a_checked_out_view_before_any_hop() {
+        let (conn, _) = db_with_source(vec![1]).await;
+        doubled_view(&conn).await;
+        let second = view_over_doubled(&conn).await;
+        let version = second.table().version().await.unwrap();
+        second.table().checkout(version).await.unwrap();
+
+        assert!(second.refresh().cascade(true).execute().await.is_err());
+        let doubled = conn.open_table("doubled").execute().await.unwrap();
+        assert_eq!(read(&doubled, "twice").await, Vec::<i32>::new());
+    }
+
+    /// A staged view reads its staging table, not the query's source, so
+    /// the cascade follows the staging.
+    #[tokio::test]
+    async fn test_cascade_over_a_staged_view_reads_its_staging() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let staging = conn
+            .create_table("docs__chunk", chunked_batch())
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        let query =
+            "SELECT id AS doc, e.chunk AS text, e.ordinal FROM docs, chunk(meta.title, 2) AS e";
+        let definition = MaterializedViewDefinition::from_sql(query).unwrap();
+        let view = crate::materialized_view::prepare_staged_definition(&staging, definition, "c")
+            .await
+            .unwrap()
+            .create("chunks")
+            .await
+            .unwrap();
+
+        view.refresh().cascade(true).execute().await.unwrap();
+        assert_eq!(read(view.table(), "ordinal").await, [0, 0, 1]);
     }
 
     /// The watermark speaks only for the state a refresh left behind: a

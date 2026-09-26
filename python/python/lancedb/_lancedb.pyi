@@ -488,10 +488,16 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, full: bool = False, source_version: Optional[int] = None
+        self,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        cascade: bool = False,
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, full: bool = False, source_version: Optional[int] = None
+        self,
+        full: bool = False,
+        source_version: Optional[int] = None,
+        cascade: bool = False,
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
