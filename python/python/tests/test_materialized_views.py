@@ -531,3 +531,155 @@ def test_stored_queries_and_legacy_layouts_are_read():
     ):
         with pytest.raises(NotImplementedError, match="cannot refresh"):
             read(newer)
+
+
+def indexed_dedup_source(db, name="images"):
+    import pyarrow as pa
+    from lancedb.index import IvfFlat
+
+    vectors = pa.FixedSizeListArray.from_arrays(
+        pa.array(
+            [v for i in range(256) for v in (float(i if i < 3 else i * 10), 0.0)],
+            type=pa.float32(),
+        ),
+        2,
+    )
+    table = db.create_table(name, pa.table({"id": range(256), "vector": vectors}))
+    table.create_index("vector", config=IvfFlat(num_partitions=1))
+    return table
+
+
+@pytest.mark.parametrize("stable", [False, True])
+def test_vector_dedup_source_captures_snapshot_and_preserves_source(tmp_path, stable):
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_enable_stable_row_ids": str(stable).lower()},
+    )
+    source = indexed_dedup_source(db, "images.with.dot")
+    version = source.version
+    expression = lancedb.vector_dedup(
+        source.name, column="vector", distance_threshold=1
+    )
+    view = db.create_materialized_view("clean", expression)
+    assert "vector_dedup(" in view.definition.query
+    assert f", {version}, 'vector', 1.0)" in view.definition.query
+    assert view.table.count_rows() == 255
+    assert [r["id"] for r in view.table.search().where("id < 3").to_list()] == [0, 2]
+    assert source.version == version
+    assert source.count_rows() == 256
+
+    source.delete("id = 0")
+    view.refresh_async().wait()
+    assert view.table.search().where("id = 0").to_list() == [
+        {"id": 0, "vector": [0.0, 0.0]}
+    ]
+    assert expression.dataset_version is None  # reusable immutable declaration
+
+
+def test_vector_dedup_create_job_and_explicit_snapshot(tmp_path):
+    db = lancedb.connect(tmp_path)
+    source = indexed_dedup_source(db)
+    version = source.version
+    source.delete("id = 0")
+    job = db.create_materialized_view_async(
+        "clean",
+        lancedb.vector_dedup(
+            "images", column="vector", distance_threshold=1, dataset_version=version
+        ),
+    )
+    assert job.wait() is None
+    view = db.open_materialized_view("clean")
+    assert view.table.count_rows() == 255
+    assert len(view.table.search().where("id = 0").to_list()) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_vector_dedup_declaration_and_creation(tmp_path):
+    sync_db = lancedb.connect(tmp_path)
+    source = indexed_dedup_source(sync_db)
+    db = await lancedb.connect_async(tmp_path)
+    expression = lancedb.vector_dedup("images", column="vector", distance_threshold=1)
+    view = await db.create_materialized_view("clean", expression, with_no_data=True)
+    assert await view.table.count_rows() == 0
+    # The snapshot is captured at declaration even if refresh comes later.
+    source.delete("id = 0")
+    job = await view.refresh_async()
+    await job.wait()
+    assert await view.table.count_rows() == 255
+    another = await db.create_materialized_view_async(
+        "later", expression, with_no_data=True
+    )
+    await another.wait()
+    later = await db.open_materialized_view("later")
+    assert (await later.definition()).query != (await view.definition()).query
+    assert await later.table.count_rows() == 0
+
+
+@pytest.mark.parametrize(
+    "options", [{"select": ["id"]}, {"select": []}, {"where": "id > 0"}, {"limit": 1}]
+)
+def test_vector_dedup_rejects_extra_clauses_before_opening_source(tmp_path, options):
+    db = lancedb.connect(tmp_path)
+    expression = lancedb.vector_dedup("missing", column="vector", distance_threshold=1)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        db.create_materialized_view("bad", expression, **options)
+    assert db.list_tables().tables == []
+
+
+@pytest.mark.parametrize("version", [0, -1, True, 1.5, "2", 2**64])
+def test_vector_dedup_rejects_invalid_snapshot(version):
+    with pytest.raises(ValueError, match="dataset_version"):
+        lancedb.vector_dedup(
+            "images", column="vector", distance_threshold=1, dataset_version=version
+        )
+
+
+@pytest.mark.parametrize(
+    "threshold", [float("nan"), float("inf"), -float("inf"), 1e100, 10**1000, True, "4"]
+)
+def test_vector_dedup_rejects_invalid_threshold(threshold):
+    with pytest.raises((ValueError, TypeError), match="distance_threshold"):
+        lancedb.vector_dedup("images", column="vector", distance_threshold=threshold)
+
+
+def test_vector_dedup_descriptor_is_frozen():
+    from dataclasses import FrozenInstanceError
+
+    expression = lancedb.vector_dedup("images", column="vector", distance_threshold=1)
+    with pytest.raises(FrozenInstanceError):
+        expression.column = "other"
+
+
+@pytest.mark.parametrize("with_no_data", [False, True])
+def test_remote_vector_dedup_uses_mv_endpoint_without_sql_client(with_no_data):
+    with mock_remote_materialized_view_create() as (host, requests):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            sql_host_override="grpc://127.0.0.1:1",
+            client_config={"retry_config": {"retries": 0}},
+        )
+        job = db.create_materialized_view_async(
+            "clean",
+            lancedb.vector_dedup(
+                "images.with'dot",
+                column="vector'field",
+                distance_threshold=4,
+                dataset_version=7,
+            ),
+            with_no_data=with_no_data,
+        )
+        assert job.id == "mv-create-123"
+    assert requests == [
+        (
+            "/v1/materialized_view/clean/create",
+            {
+                "query": (
+                    "SELECT * FROM vector_dedup('`images.with''dot`', "
+                    "7, 'vector''field', 4.0)"
+                ),
+                "with_no_data": with_no_data,
+            },
+        )
+    ]

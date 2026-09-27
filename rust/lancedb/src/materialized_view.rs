@@ -1792,6 +1792,7 @@ pub struct CreateMaterializedViewBuilder {
     namespace: Vec<String>,
     source: String,
     source_namespace: Vec<String>,
+    vector_source: Option<VectorSource>,
     projections: Vec<(String, String)>,
     filter: Option<String>,
     limit: Option<u64>,
@@ -1806,6 +1807,7 @@ impl CreateMaterializedViewBuilder {
             namespace: Vec::new(),
             source,
             source_namespace: Vec::new(),
+            vector_source: None,
             projections: Vec::new(),
             filter: None,
             limit: None,
@@ -1824,6 +1826,38 @@ impl CreateMaterializedViewBuilder {
     pub fn source_namespace(mut self, namespace_path: Vec<String>) -> Self {
         self.source_namespace = namespace_path;
         self
+    }
+
+    /// Read native pairs or retained original rows from a fixed indexed snapshot.
+    /// This source selects its full output schema and cannot be combined with
+    /// projections, filters or limits. Remote creation uses the ordinary MV
+    /// endpoint and its registry job; it does not execute a SQL query client-side.
+    pub fn vector_source(mut self, source: VectorSource) -> Self {
+        self.vector_source = Some(source);
+        self
+    }
+
+    fn native_definition(&self) -> Result<Option<MaterializedViewDefinition>> {
+        let Some(source) = &self.vector_source else {
+            return Ok(None);
+        };
+        source.config()?;
+        if !self.projections.is_empty() || self.filter.is_some() || self.limit.is_some() {
+            return Err(Error::InvalidInput {
+                message: "native vector sources cannot be combined with select, where or limit"
+                    .into(),
+            });
+        }
+        Ok(Some(MaterializedViewDefinition {
+            vector_source: Some(Box::new(source.clone())),
+            source_table: self.source.clone(),
+            source_namespace: self.source_namespace.clone(),
+            projections: vec![ViewProjection::star()],
+            filter: None,
+            lateral: None,
+            group_by: Vec::new(),
+            limit: None,
+        }))
     }
 
     /// The view's columns, as `(name, SQL expression)` pairs. Not calling
@@ -1858,7 +1892,10 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    fn query(&self) -> String {
+    fn query(&self) -> Result<String> {
+        if let Some(definition) = self.native_definition()? {
+            return Ok(definition.to_sql());
+        }
         fn quote(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
         }
@@ -1887,12 +1924,13 @@ impl CreateMaterializedViewBuilder {
         if let Some(limit) = self.limit {
             query.push_str(&format!(" LIMIT {limit}"));
         }
-        query
+        Ok(query)
     }
 
     /// Submit creation and initial population, returning a [`Job`] that
-    /// settles when the view is ready. The source must keep stable row ids --
-    /// they hold provenance across compaction, and cannot be enabled later.
+    /// settles when the view is ready. Ordinary sources must keep stable row
+    /// ids for provenance across compaction. Native vector sources also support
+    /// physical row IDs because their definitions pin the dataset version.
     pub async fn execute_async(self) -> Result<Job> {
         if self.connection.uri().starts_with("db://") {
             return self
@@ -1901,7 +1939,7 @@ impl CreateMaterializedViewBuilder {
                 .create_materialized_view_async(CreateMaterializedViewRequest {
                     name: self.name.clone(),
                     namespace_path: self.namespace.clone(),
-                    query: self.query(),
+                    query: self.query()?,
                     with_no_data: self.with_no_data,
                 })
                 .await;
@@ -1929,19 +1967,24 @@ impl CreateMaterializedViewBuilder {
     }
 
     async fn execute_native(self) -> Result<MaterializedView> {
+        let native_definition = self.native_definition()?;
         let source = self
             .connection
             .open_table(&self.source)
             .namespace(self.source_namespace.clone())
             .execute()
             .await?;
-        let prepared = prepare_declaration(
-            &source,
-            (!self.projections.is_empty()).then_some(self.projections.as_slice()),
-            self.filter.as_deref(),
-            self.limit,
-        )
-        .await?;
+        let prepared = if let Some(definition) = native_definition {
+            prepare_definition(&source, definition).await?
+        } else {
+            prepare_declaration(
+                &source,
+                (!self.projections.is_empty()).then_some(self.projections.as_slice()),
+                self.filter.as_deref(),
+                self.limit,
+            )
+            .await?
+        };
         let view = prepared.create_in(&self.namespace, &self.name).await?;
         if !self.with_no_data {
             view.refresh().execute().await?;
@@ -2384,10 +2427,46 @@ mod tests {
             .select([("double\"age", "age * 2")])
             .only_if("age >= 18")
             .limit(10)
-            .query();
+            .query()
+            .unwrap();
         assert_eq!(
             query,
             "SELECT age * 2 AS \"double\"\"age\" FROM \"raw data\".\"odd\"\"source\" WHERE age >= 18 LIMIT 10"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_vector_builder_preserves_source_and_rejects_extra_clauses() {
+        let conn = people_db().await;
+        let source = VectorSource {
+            kind: VectorSourceKind::Dedup,
+            dataset_version: 7,
+            column: "vector'field".into(),
+            distance_threshold: "4.0".into(),
+        };
+        let builder = || {
+            conn.create_materialized_view("clean", "odd.source'name")
+                .source_namespace(vec!["raw space".into()])
+                .vector_source(source.clone())
+        };
+        let query = builder().query().unwrap();
+        let definition = MaterializedViewDefinition::from_sql(&query).unwrap();
+        assert_eq!(definition.source_table, "odd.source'name");
+        assert_eq!(definition.source_namespace, ["raw space"]);
+        assert_eq!(definition.vector_source.as_deref(), Some(&source));
+        assert!(definition.selects_star());
+        assert!(builder().select([("id", "id")]).query().is_err());
+        assert!(builder().only_if("true").query().is_err());
+        assert!(builder().limit(1).query().is_err());
+        let invalid_source = VectorSource {
+            dataset_version: 0,
+            ..source
+        };
+        assert!(
+            conn.create_materialized_view("bad", "people")
+                .vector_source(invalid_source)
+                .query()
+                .is_err()
         );
     }
 
