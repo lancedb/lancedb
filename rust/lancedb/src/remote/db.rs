@@ -1368,7 +1368,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         namespace_path: &[String],
     ) -> Result<PropertyGraphDescription> {
         let graph_id = build_object_identifier("Property graph name", name, namespace_path)?;
-        let body = stream_as_body(data.scan_as_stream())?;
+        // One insert is one commit the server builds in memory, so the rows are
+        // sent whole: a sized body the client can also retry.
+        let mut rows = data.scan_as_stream();
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &rows.schema())?;
+            while let Some(batch) = futures::StreamExt::next(&mut rows).await {
+                writer.write(&batch?)?;
+            }
+            writer.finish()?;
+        }
         let req = self
             .client
             .post(&format!("/v1/property_graph/{graph_id}/insert"))
