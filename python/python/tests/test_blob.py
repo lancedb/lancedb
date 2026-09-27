@@ -6,11 +6,9 @@ import subprocess
 import sys
 import textwrap
 
-import lance
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
-from lance.blob import BlobType as LanceBlobType
 
 import lancedb
 from lancedb._blob import (
@@ -86,6 +84,7 @@ def _assert_fetch_apis_reject_missing_row_ids(table, row_ids):
 
 
 def test_blob_factory_declares_v2_field():
+    LanceBlobType = pytest.importorskip("lance.blob").BlobType
     field = lancedb.blob("image")
     assert isinstance(field.type, pa.ExtensionType)
     assert field.type.extension_name == "lance.blob.v2"
@@ -138,6 +137,7 @@ def test_blob_type_works_without_pylance():
 
 
 def test_blob_resolves_pylance_type_without_eager_import():
+    pytest.importorskip("lance.blob")
     script = textwrap.dedent(
         """\
         import sys
@@ -209,6 +209,7 @@ def test_blob_fallback_fails_if_name_already_registered():
 
 
 def test_blob_type_rejects_competing_registration_with_pylance():
+    pytest.importorskip("lance.blob")
     script = textwrap.dedent(
         """\
         import pyarrow as pa
@@ -376,6 +377,7 @@ def test_blob_query_explicit_row_id_opt_in():
 
 
 def test_table_to_pandas_descriptions_mode_omits_row_id():
+    pytest.importorskip("pandas")
     table = _blob_table("descriptions_no_leak", [{"id": 1, "image": b"x"}])
     df = table.to_pandas(blob_mode="descriptions")
     descriptor = df["image"].iloc[0]
@@ -385,6 +387,7 @@ def test_table_to_pandas_descriptions_mode_omits_row_id():
 
 @pytest.mark.asyncio
 async def test_async_table_to_pandas_descriptions_mode_omits_row_id():
+    pytest.importorskip("pandas")
     db = await lancedb.connect_async("memory:///")
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = await db.create_table("descriptions_no_leak_async", schema=schema)
@@ -523,6 +526,7 @@ def test_merge_insert_bytes_after_reopen_without_pylance(tmp_path):
 
 
 def test_merge_insert_blob_array_into_reopened_unregistered_table(tmp_path):
+    pytest.importorskip("lance")
     db = lancedb.connect(tmp_path)
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     table = db.create_table("images", schema=schema)
@@ -683,6 +687,8 @@ def test_row_addressable_paths_exclude_list_children():
 
 
 def test_merge_insert_writes_pylance_blob_array():
+    lance = pytest.importorskip("lance")
+    LanceBlobType = pytest.importorskip("lance.blob").BlobType
     table = _blob_table("merge_pylance", [{"id": 1, "image": b"before"}])
     image = lance.blob_array([b"updated", b"inserted"])
     assert type(image.type) is LanceBlobType

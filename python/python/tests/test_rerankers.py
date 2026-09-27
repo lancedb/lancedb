@@ -125,7 +125,7 @@ def _run_test_reranker(
     if deterministic:
         assert result1 == result2
 
-    query_vector = table.to_pandas()["vector"][0]
+    query_vector = table.to_arrow()["vector"][0].as_py()
     result = (
         table.search(query_type="hybrid", vector_column_name="vector")
         .vector(query_vector)
@@ -248,7 +248,7 @@ def _run_test_hybrid_reranker(reranker, tmp_path):
     assert result1 == result3  # 2 & 3 should be the same as they use score as score
 
     query = "Our father who art in heaven"
-    query_vector = table.to_pandas()["vector"][0]
+    query_vector = table.to_arrow()["vector"][0].as_py()
     result = (
         table.search(query_type="hybrid", vector_column_name="vector")
         .vector(query_vector)

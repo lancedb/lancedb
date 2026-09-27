@@ -103,6 +103,7 @@ async def test_async_hybrid_query_filters(table: AsyncTable):
 async def test_hybrid_query_with_stale_fixed_size_binary_prefilter(
     tmpdir_factory,
 ):
+    pytest.importorskip("lance")
     tmp_path = str(tmpdir_factory.mktemp("stale_scalar_prefilter"))
     db = await lancedb.connect_async(tmp_path)
 

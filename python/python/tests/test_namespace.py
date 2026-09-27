@@ -167,13 +167,14 @@ class TestNamespaceConnection:
         assert len(table_names) == 1
 
         # Verify empty table
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 0
-        assert list(result.columns) == ["id", "vector", "text"]
+        assert result.column_names == ["id", "vector", "text"]
 
     def test_table_to_pandas_blob_lazy_through_namespace(self):
         """Namespace-backed tables should use Lance blob-aware pandas conversion."""
         pytest.importorskip("lance")
+        pytest.importorskip("pandas")
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
         db.create_namespace(["test_ns"])
         data = pa.table(
@@ -230,9 +231,9 @@ class TestNamespaceConnection:
         assert table.id == "test_ns$test_table"
 
         # Verify empty table with correct schema
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 0
-        assert list(result.columns) == ["id", "vector"]
+        assert result.column_names == ["id", "vector"]
 
     def test_drop_table_through_namespace(self):
         """Test dropping a table through namespace."""
@@ -382,9 +383,9 @@ class TestNamespaceConnection:
         table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
 
         # Verify empty table was created
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 0
-        assert list(result.columns) == ["id", "vector", "text"]
+        assert result.column_names == ["id", "vector", "text"]
 
         # Test add data to the table
         new_data = [
@@ -392,19 +393,19 @@ class TestNamespaceConnection:
             {"id": 2, "vector": [2.0, 3.0], "text": "item_2"},
         ]
         table.add(new_data)
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 2
 
         # Test delete
         table.delete("id = 1")
-        result = table.to_pandas()
+        result = table.to_arrow()
         assert len(result) == 1
-        assert result["id"].values[0] == 2
+        assert result["id"][0].as_py() == 2
 
         # Test update
         table.update(where="id = 2", values={"text": "updated"})
-        result = table.to_pandas()
-        assert result["text"].values[0] == "updated"
+        result = table.to_arrow()
+        assert result["text"][0].as_py() == "updated"
 
     def test_storage_options(self):
         """Test passing storage options through namespace connection."""
@@ -544,28 +545,28 @@ class TestNamespaceConnection:
         opened_table_a = db.open_table(
             "same_name_table", namespace_path=["namespace_a"]
         )
-        result_a = opened_table_a.to_pandas().sort_values("id").reset_index(drop=True)
+        result_a = opened_table_a.to_arrow().sort_by([("id", "ascending")])
         assert len(result_a) == 2
-        assert result_a["id"].tolist() == [1, 2]
-        assert result_a["text"].tolist() == [
+        assert result_a["id"].to_pylist() == [1, 2]
+        assert result_a["text"].to_pylist() == [
             "data_from_namespace_a",
             "also_from_namespace_a",
         ]
-        assert [v.tolist() for v in result_a["vector"]] == [[1.0, 2.0], [3.0, 4.0]]
+        assert result_a["vector"].to_pylist() == [[1.0, 2.0], [3.0, 4.0]]
 
         # Verify data in namespace_b table
         opened_table_b = db.open_table(
             "same_name_table", namespace_path=["namespace_b"]
         )
-        result_b = opened_table_b.to_pandas().sort_values("id").reset_index(drop=True)
+        result_b = opened_table_b.to_arrow().sort_by([("id", "ascending")])
         assert len(result_b) == 3
-        assert result_b["id"].tolist() == [10, 20, 30]
-        assert result_b["text"].tolist() == [
+        assert result_b["id"].to_pylist() == [10, 20, 30]
+        assert result_b["text"].to_pylist() == [
             "data_from_namespace_b",
             "also_from_namespace_b",
             "more_from_namespace_b",
         ]
-        assert [v.tolist() for v in result_b["vector"]] == [
+        assert result_b["vector"].to_pylist() == [
             [10.0, 20.0],
             [30.0, 40.0],
             [50.0, 60.0],
@@ -725,9 +726,8 @@ class TestAsyncNamespaceConnection:
         assert result.schema.field("vector").type == pa.list_(pa.float32(), 2)
 
         # Verify data content
-        result_df = result.to_pandas()
-        assert result_df["id"].tolist() == [1, 2, 3]
-        assert [v.tolist() for v in result_df["vector"]] == [
+        assert result["id"].to_pylist() == [1, 2, 3]
+        assert result["vector"].to_pylist() == [
             [1.0, 2.0],
             [3.0, 4.0],
             [5.0, 6.0],
@@ -736,15 +736,13 @@ class TestAsyncNamespaceConnection:
         # Test update operation
         await table.update({"id": 20}, where="id = 2")
         result = await table.to_arrow()
-        result_df = result.to_pandas().sort_values("id").reset_index(drop=True)
-        assert result_df["id"].tolist() == [1, 3, 20]
+        assert result.sort_by([("id", "ascending")])["id"].to_pylist() == [1, 3, 20]
 
         # Test delete operation
         await table.delete("id = 1")
         result = await table.to_arrow()
         assert len(result) == 2
-        result_df = result.to_pandas().sort_values("id").reset_index(drop=True)
-        assert result_df["id"].tolist() == [3, 20]
+        assert result.sort_by([("id", "ascending")])["id"].to_pylist() == [3, 20]
 
     async def test_drop_table_async(self):
         """Test dropping a table asynchronously through namespace."""
@@ -937,23 +935,24 @@ class TestPushdownOperations:
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
         assert db._route_pushdown_to_rust is True
 
-    def test_lance_table_to_arrow_uses_query_pushdown(self):
+    @pytest.mark.parametrize("as_pandas", [False, True], ids=["arrow", "pandas"])
+    def test_lance_table_query_pushdown(self, as_pandas):
+        if as_pandas:
+            pytest.importorskip("pandas")
         namespace_client = _NamespaceClient()
         table = _namespace_lance_table(namespace_client)
 
-        assert table.to_arrow().equals(PUSHDOWN_DATA)
-        assert table.to_pandas()["id"].tolist() == list(range(12))
-        assert len(namespace_client.requests) == 2
+        if as_pandas:
+            assert table.to_pandas()["id"].tolist() == list(range(12))
+        else:
+            assert table.to_arrow().equals(PUSHDOWN_DATA)
+        assert len(namespace_client.requests) == 1
         assert [request.id for request in namespace_client.requests] == [
-            ["geneva", "hist"],
-            ["geneva", "hist"],
+            ["geneva", "hist"]
         ]
         # Unlimited reads cap k at i32::MAX (the namespace query_table `k`
         # field is i32); sys.maxsize would overflow the Rust binding.
-        assert [request.k for request in namespace_client.requests] == [
-            _MAX_QUERY_K,
-            _MAX_QUERY_K,
-        ]
+        assert [request.k for request in namespace_client.requests] == [_MAX_QUERY_K]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
 
@@ -992,7 +991,10 @@ class TestAsyncPushdownOperations:
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
         assert len(db._namespace_client_pushdown_operations) == 0
 
-    async def test_async_table_to_arrow_uses_query_pushdown(self):
+    @pytest.mark.parametrize("as_pandas", [False, True], ids=["arrow", "pandas"])
+    async def test_async_table_query_pushdown(self, as_pandas):
+        if as_pandas:
+            pytest.importorskip("pandas")
         namespace_client = _NamespaceClient()
 
         table = AsyncTable(
@@ -1002,23 +1004,24 @@ class TestAsyncPushdownOperations:
             pushdown_operations={"QueryTable"},
         )
 
-        assert (await table.to_arrow()).equals(PUSHDOWN_DATA)
-        assert (await table.to_pandas())["id"].tolist() == list(range(12))
-        assert len(namespace_client.requests) == 2
+        if as_pandas:
+            assert (await table.to_pandas())["id"].tolist() == list(range(12))
+        else:
+            assert (await table.to_arrow()).equals(PUSHDOWN_DATA)
+        assert len(namespace_client.requests) == 1
         assert [request.id for request in namespace_client.requests] == [
-            ["geneva", "hist"],
-            ["geneva", "hist"],
+            ["geneva", "hist"]
         ]
         # Unlimited reads cap k at i32::MAX (the namespace query_table `k`
         # field is i32); sys.maxsize would overflow the Rust binding.
-        assert [request.k for request in namespace_client.requests] == [
-            _MAX_QUERY_K,
-            _MAX_QUERY_K,
-        ]
+        assert [request.k for request in namespace_client.requests] == [_MAX_QUERY_K]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
 
-def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
+@pytest.mark.parametrize("as_pandas", [False, True], ids=["arrow", "pandas"])
+def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path, as_pandas):
+    if as_pandas:
+        pytest.importorskip("pandas")
     db = lancedb.connect(str(tmp_path / "db"))
     table = db.create_table(
         "local",
@@ -1028,5 +1031,7 @@ def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
         ],
     )
 
-    assert table.to_arrow().column("id").to_pylist() == [1, 2]
-    assert table.to_pandas()["id"].tolist() == [1, 2]
+    if as_pandas:
+        assert table.to_pandas()["id"].tolist() == [1, 2]
+    else:
+        assert table.to_arrow().column("id").to_pylist() == [1, 2]

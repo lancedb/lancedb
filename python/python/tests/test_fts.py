@@ -36,7 +36,6 @@ from lancedb.query import (
 )
 import numpy as np
 import pyarrow as pa
-import pandas as pd
 import pytest
 import pytest_asyncio
 from utils import exception_output
@@ -82,7 +81,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
     count = [local_random.randint(1, 10000) for _ in range(100)]
     table = db.create_table(
         "test",
-        data=pd.DataFrame(
+        data=pa.table(
             {
                 "vector": vectors,
                 "id": [i % 2 for i in range(100)],
@@ -167,7 +166,7 @@ async def async_table(tmp_path) -> ldb.table.AsyncTable:
     count = [local_random.randint(1, 10000) for _ in range(100)]
     table = await db.create_table(
         "test",
-        data=pd.DataFrame(
+        data=pa.table(
             {
                 "vector": vectors,
                 "id": [i % 2 for i in range(100)],
@@ -628,9 +627,9 @@ def test_search_order_by_ascending(table):
 
 def test_create_index_from_table(tmp_path, table):
     table.create_fts_index("text")
-    df = table.search("puppy").limit(5).select(["text"]).to_pandas()
-    assert len(df) <= 5
-    assert "text" in df.columns
+    result = table.search("puppy").limit(5).select(["text"]).to_arrow()
+    assert len(result) <= 5
+    assert "text" in result.column_names
 
     # Check whether it can be updated
     table.add(
@@ -650,7 +649,7 @@ def test_create_index_from_table(tmp_path, table):
         table.create_fts_index("text")
 
     table.create_fts_index("text", replace=True)
-    assert len(table.search("gorilla").limit(1).to_pandas()) == 1
+    assert len(table.search("gorilla").limit(1).to_arrow()) == 1
 
 
 def test_create_index_multiple_columns(tmp_path, table):

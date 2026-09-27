@@ -840,12 +840,12 @@ def test_iter_with_different_formats(some_permutation: Permutation):
     python_batches = list(python_perm.iter(batch_size, skip_last_batch=False))
     assert all(isinstance(batch, list) for batch in python_batches)
 
-    # Test with pandas format
+
+def test_iter_with_pandas_format(some_permutation: Permutation):
+    pd = pytest.importorskip("pandas")
+    batch_size = 100
     pandas_perm = some_permutation.with_format("pandas")
     pandas_batches = list(pandas_perm.iter(batch_size, skip_last_batch=False))
-    # Import pandas to check the type
-    import pandas as pd
-
     assert all(isinstance(batch, pd.DataFrame) for batch in pandas_batches)
 
 
@@ -947,28 +947,12 @@ def test_identity_permutation(mem_db):
 
 
 def test_transform_fn(mem_db):
-    import numpy as np
-    import pandas as pd
     import polars as pl
 
     tbl = mem_db.create_table(
         "test_table", pa.table({"id": range(10), "value": range(10)})
     )
     permutation = Permutation.identity(tbl)
-
-    np_result = list(permutation.with_format("numpy").iter(10, skip_last_batch=False))[
-        0
-    ]
-    assert np_result.shape == (10, 2)
-    assert np_result.dtype == np.int64
-    assert isinstance(np_result, np.ndarray)
-
-    pd_result = list(permutation.with_format("pandas").iter(10, skip_last_batch=False))[
-        0
-    ]
-    assert pd_result.shape == (10, 2)
-    assert pd_result.dtypes.tolist() == [np.int64, np.int64]
-    assert isinstance(pd_result, pd.DataFrame)
 
     pl_result = list(permutation.with_format("polars").iter(10, skip_last_batch=False))[
         0
@@ -1033,6 +1017,27 @@ def test_transform_fn(mem_db):
     assert arrow_result.shape == (10, 2)
     assert arrow_result.schema == pa.schema([("id", pa.int64()), ("value", pa.int64())])
     assert isinstance(arrow_result, pa.RecordBatch)
+
+
+def test_transform_fn_pandas(mem_db):
+    pd = pytest.importorskip("pandas")
+    import numpy as np
+
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"id": range(10), "value": range(10)})
+    )
+    permutation = Permutation.identity(tbl)
+    numpy_result = list(
+        permutation.with_format("numpy").iter(10, skip_last_batch=False)
+    )[0]
+    assert numpy_result.shape == (10, 2)
+    assert numpy_result.dtype == np.int64
+    assert isinstance(numpy_result, np.ndarray)
+
+    result = list(permutation.with_format("pandas").iter(10, skip_last_batch=False))[0]
+    assert result.shape == (10, 2)
+    assert result.dtypes.tolist() == [np.int64, np.int64]
+    assert isinstance(result, pd.DataFrame)
 
 
 def test_custom_transform(mem_db):
