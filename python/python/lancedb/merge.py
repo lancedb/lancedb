@@ -102,15 +102,27 @@ class LanceMergeInsertBuilder(object):
         """
         Controls whether to use indexes for the merge operation.
 
-        When set to `True` (the default), the operation will use an index if available
-        on the join key for improved performance. When set to `False`, it forces a full
-        table scan even if an index exists. This can be useful for benchmarking or when
-        the query optimizer chooses a suboptimal path.
+        On the standard (non-MemWAL) merge path, `True` (the default) allows an
+        indexed probe when every join key has a usable scalar index. `False`
+        forces a full-table join even when those indexes exist.
+
+        The indexed path also scans fragments not covered by every join-key
+        index and combines those rows with index matches. Appends and updates
+        that remove join-key index coverage can therefore add scan cost to
+        later merges, even when index use is enabled.
+
+        For a partial-column update, the indexed path patches the supplied
+        columns for every row in each fragment with a match. Scalar indexes on
+        patched columns lose coverage for those fragments. The full-table path
+        instead rewrites matched rows as complete rows, but its join can
+        materialize the entire target table in memory. Do not use `False` as a
+        general optimization for sparse updates on large tables. See the
+        [merge execution guide](https://docs.lancedb.com/tables/update/#how-merge-insert-executes).
 
         Parameters
         ----------
         use_index: bool
-            Whether to use indices for the merge operation. Defaults to `True`.
+            Whether to allow an indexed probe. Defaults to `True`.
         """
         self._use_index = use_index
         return self
