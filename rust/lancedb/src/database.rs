@@ -550,6 +550,33 @@ pub trait Database:
     async fn list_property_graphs(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
         property_graph_ops_not_supported()
     }
+    /// Insert rows of one node label or edge label into an independent
+    /// property graph, as one commit.
+    async fn insert_into_property_graph(
+        &self,
+        _name: &str,
+        _label: &str,
+        _data: Box<dyn Scannable>,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Bring a materialized view property graph up to its tables.
+    async fn refresh_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Make a property graph's previous commit current again.
+    async fn rollback_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
     /// Open a job by id, returning a handle with its record already
     /// populated. Fails with [`crate::Error::JobNotFound`] when the server has
     /// no such job.

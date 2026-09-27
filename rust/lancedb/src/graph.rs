@@ -1,19 +1,134 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Property graphs: tables read as the nodes and edges of a graph.
+//! Property graphs: catalog objects read as graphs, in one of two modes.
 //!
-//! A property graph is a catalog object in a namespace, next to the tables it
-//! reads. Its definition says which tables hold nodes and which hold edges:
-//! each node table's key and label, each edge table's label, and how its
-//! source and destination columns reference node keys -- the shape of SQL/PGQ's
-//! `CREATE PROPERTY GRAPH`. The tables themselves stay ordinary tables.
+//! - Independent: the graph holds its own rows. Its node and edge types have
+//!   schemas, and rows are inserted into the graph itself.
+//! - Materialized view: the graph reads tables in its namespace -- which hold
+//!   nodes and which hold edges, each node table's key and label, each edge
+//!   table's label and how its source and destination columns reference node
+//!   keys, the shape of SQL/PGQ's `CREATE PROPERTY GRAPH` -- and is refreshed
+//!   from them. The tables stay ordinary tables.
 //!
 //! The verbs live on [`crate::connection::Connection`].
 
+use arrow_schema::Schema;
+use lance_namespace::models::JsonArrowSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+
+/// A graph's definition, tagged with its mode.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum PropertyGraphDefinition {
+    /// The graph holds its own rows, inserted into it.
+    Independent {
+        /// The node types, one per label.
+        nodes: Vec<NodeType>,
+        /// The edge types, one per label.
+        #[serde(default)]
+        edges: Vec<EdgeType>,
+    },
+    /// The graph reads tables and is refreshed from them.
+    MaterializedView {
+        /// The node tables, one per label.
+        nodes: Vec<NodeTable>,
+        /// The edge tables, one per label.
+        #[serde(default)]
+        edges: Vec<EdgeTable>,
+    },
+}
+
+impl PropertyGraphDefinition {
+    /// Parse a definition from its JSON form.
+    pub fn from_json(json: &str) -> Result<Self> {
+        serde_json::from_str(json).map_err(|source| Error::InvalidInput {
+            message: format!("invalid property graph definition: {source}"),
+        })
+    }
+}
+
+/// The nodes of one label of an independent graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeType {
+    /// The label its nodes carry.
+    pub label: String,
+    /// The field that identifies a node: a non-nullable integer, string or
+    /// binary field of `schema`.
+    pub key: String,
+    /// Every property, the key among them.
+    pub schema: JsonArrowSchema,
+}
+
+impl NodeType {
+    pub fn new(label: impl Into<String>, key: impl Into<String>, schema: &Schema) -> Result<Self> {
+        Ok(Self {
+            label: label.into(),
+            key: key.into(),
+            schema: lance_namespace::schema::arrow_schema_to_json(schema)?,
+        })
+    }
+
+    /// The properties as an Arrow schema.
+    pub fn arrow_schema(&self) -> Result<Schema> {
+        Ok(lance_namespace::schema::convert_json_arrow_schema(
+            &self.schema,
+        )?)
+    }
+}
+
+/// The edges of one label of an independent graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeType {
+    /// The label its edges carry.
+    pub label: String,
+    /// The label of each edge's source node, and the column inserted rows
+    /// carry its key in.
+    pub source: EndpointType,
+    /// The label of each edge's destination node, and the column inserted
+    /// rows carry its key in.
+    pub destination: EndpointType,
+    /// The edge's properties, when it has any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<JsonArrowSchema>,
+}
+
+impl EdgeType {
+    pub fn new(
+        label: impl Into<String>,
+        source: EndpointType,
+        destination: EndpointType,
+        schema: Option<&Schema>,
+    ) -> Result<Self> {
+        Ok(Self {
+            label: label.into(),
+            source,
+            destination,
+            schema: schema
+                .map(lance_namespace::schema::arrow_schema_to_json)
+                .transpose()?,
+        })
+    }
+
+    /// The properties as an Arrow schema; empty when there are none.
+    pub fn arrow_schema(&self) -> Result<Schema> {
+        match &self.schema {
+            Some(schema) => Ok(lance_namespace::schema::convert_json_arrow_schema(schema)?),
+            None => Ok(Schema::empty()),
+        }
+    }
+}
+
+/// One end of an edge type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointType {
+    /// The label of the node at this end.
+    pub label: String,
+    /// The column of inserted edge rows holding that node's key.
+    pub column: String,
+}
 
 /// A table whose rows are the nodes of one label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,7 +139,8 @@ pub struct NodeTable {
     pub key: String,
     /// The label its nodes carry.
     pub label: String,
-    /// The columns exposed as node properties; every column when absent.
+    /// The columns exposed as node properties; every column when absent. A
+    /// created graph reports the list it resolved to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub properties: Option<Vec<String>>,
 }
@@ -40,7 +156,8 @@ pub struct EdgeTable {
     pub source: Endpoint,
     /// The column naming each edge's destination node.
     pub destination: Endpoint,
-    /// The columns exposed as edge properties; every column when absent.
+    /// The columns exposed as edge properties; every column when absent. A
+    /// created graph reports the list it resolved to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub properties: Option<Vec<String>>,
 }
@@ -63,55 +180,42 @@ pub struct EndpointReference {
     pub column: String,
 }
 
-/// The node and edge tables that make up a property graph.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PropertyGraphDefinition {
-    /// The node tables, one per label.
-    pub nodes: Vec<NodeTable>,
-    /// The edge tables, one per label.
-    #[serde(default)]
-    pub edges: Vec<EdgeTable>,
-}
-
-impl PropertyGraphDefinition {
-    /// Parse a definition from its JSON form.
-    pub fn from_json(json: &str) -> Result<Self> {
-        serde_json::from_str(json).map_err(|source| Error::InvalidInput {
-            message: format!("invalid property graph definition: {source}"),
-        })
-    }
-}
-
-/// The version of one table a graph was built from.
+/// The version of one table a graph's current commit was refreshed from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphSourceVersion {
     /// The table.
     pub table: String,
-    /// Its version when the graph was built.
+    /// Its version when the graph was refreshed.
     pub version: u64,
 }
 
 /// What a database records about one property graph.
 ///
 /// Returned by [`crate::connection::Connection::describe_property_graph`], and
-/// by `create_property_graph`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// by every call that writes a graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PropertyGraphDescription {
     /// The graph's name within its namespace.
     pub name: String,
     /// The namespace holding the graph; empty is the root namespace.
     #[serde(rename = "namespace", default)]
     pub namespace_path: Vec<String>,
-    /// The node tables.
-    pub nodes: Vec<NodeTable>,
-    /// The edge tables.
-    #[serde(default)]
-    pub edges: Vec<EdgeTable>,
-    /// How many nodes the graph held when it was built.
+    /// The graph's mode and definition.
+    #[serde(flatten)]
+    pub definition: PropertyGraphDefinition,
+    /// The graph's current commit.
+    pub commit: String,
+    /// When the current commit landed, as RFC 3339.
+    pub committed_at: String,
+    /// The commit a rollback returns to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_commit: Option<String>,
+    /// How many nodes the current commit holds.
     pub vertex_count: u64,
-    /// How many edges the graph held when it was built.
+    /// How many edges the current commit holds.
     pub edge_count: u64,
-    /// The table versions the graph was built from.
+    /// The table versions a materialized view's current commit was refreshed
+    /// from; empty for an independent graph.
     #[serde(default)]
     pub sources: Vec<GraphSourceVersion>,
 }
@@ -127,6 +231,8 @@ impl PropertyGraphDescription {
 
 #[cfg(test)]
 mod tests {
+    use arrow_schema::{DataType, Field};
+
     use super::*;
 
     fn social() -> PropertyGraphDefinition {
@@ -134,7 +240,7 @@ mod tests {
             table: "person".to_string(),
             column: "person_id".to_string(),
         };
-        PropertyGraphDefinition {
+        PropertyGraphDefinition::MaterializedView {
             nodes: vec![NodeTable {
                 table: "person".to_string(),
                 key: "person_id".to_string(),
@@ -163,6 +269,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
+                "mode": "materialized_view",
                 "nodes": [{"table": "person", "key": "person_id", "label": "Person",
                            "properties": ["name"]}],
                 "edges": [{"table": "knows", "label": "KNOWS",
@@ -177,7 +284,49 @@ mod tests {
             PropertyGraphDefinition::from_json(&json.to_string()).unwrap(),
             social()
         );
-        assert!(PropertyGraphDefinition::from_json(r#"{"edges": []}"#).is_err());
+        assert!(PropertyGraphDefinition::from_json(r#"{"nodes": []}"#).is_err());
+    }
+
+    #[test]
+    fn test_an_independent_definition_carries_its_schemas() {
+        let person = NodeType::new(
+            "Person",
+            "person_id",
+            &Schema::new(vec![
+                Field::new("person_id", DataType::Int64, false),
+                Field::new("tags", DataType::new_list(DataType::Utf8, true), true),
+            ]),
+        )
+        .unwrap();
+        let knows = EdgeType::new(
+            "KNOWS",
+            EndpointType {
+                label: "Person".to_string(),
+                column: "src_id".to_string(),
+            },
+            EndpointType {
+                label: "Person".to_string(),
+                column: "dst_id".to_string(),
+            },
+            None,
+        )
+        .unwrap();
+        let definition = PropertyGraphDefinition::Independent {
+            nodes: vec![person.clone()],
+            edges: vec![knows],
+        };
+        let json = serde_json::to_value(&definition).unwrap();
+        assert_eq!(json["mode"], "independent");
+        assert_eq!(json["nodes"][0]["schema"]["fields"][0]["name"], "person_id");
+        assert!(json["edges"][0].get("schema").is_none());
+        assert_eq!(
+            PropertyGraphDefinition::from_json(&json.to_string()).unwrap(),
+            definition
+        );
+        assert_eq!(
+            person.arrow_schema().unwrap().field(1).data_type(),
+            &DataType::new_list(DataType::Utf8, true)
+        );
     }
 
     #[tokio::test]
@@ -201,6 +350,16 @@ mod tests {
         );
         refused(
             conn.describe_property_graph("social", &[])
+                .await
+                .unwrap_err(),
+        );
+        refused(
+            conn.refresh_property_graph("social", &[])
+                .await
+                .unwrap_err(),
+        );
+        refused(
+            conn.rollback_property_graph("social", &[])
                 .await
                 .unwrap_err(),
         );

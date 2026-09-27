@@ -1,21 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Property graphs: tables read as the nodes and edges of a graph.
+"""Property graphs: catalog objects read as graphs, in one of two modes.
 
-A property graph is a catalog object in a namespace, next to the tables it
-reads. Its definition says which tables hold nodes and which hold edges: each
-node table's key and label, each edge table's label, and how its source and
-destination columns reference node keys -- the shape of SQL/PGQ's
-``CREATE PROPERTY GRAPH``. The tables stay ordinary tables. See
-``DBConnection.create_property_graph``.
+An *independent* graph holds its own rows. Its node types (:class:`NodeType`)
+and edge types (:class:`EdgeType`) have schemas, and rows are inserted into the
+graph itself with ``insert_into_property_graph``.
+
+A *materialized view* graph reads tables in its namespace. Its definition says
+which tables hold nodes and which hold edges: each node table's key and label
+(:class:`NodeTable`), each edge table's label and how its source and
+destination columns reference node keys (:class:`EdgeTable`) -- the shape of
+SQL/PGQ's ``CREATE PROPERTY GRAPH``. The tables stay ordinary tables; after
+they change, ``refresh_property_graph`` brings the graph up to date.
+
+See ``DBConnection.create_property_graph``.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+import pyarrow as pa
+
+from ._lancedb import graph_schema_from_json, graph_schema_to_json
 
 
 @dataclass(frozen=True)
@@ -29,7 +39,8 @@ class NodeTable:
     label: str
     """The label its nodes carry."""
     properties: Optional[List[str]] = None
-    """The columns exposed as node properties; every column when ``None``."""
+    """The columns exposed as node properties; every column when ``None``. A
+    created graph reports the list it resolved to."""
 
 
 @dataclass(frozen=True)
@@ -55,7 +66,37 @@ class EdgeTable:
     destination: Endpoint
     """The column naming each edge's destination node."""
     properties: Optional[List[str]] = None
-    """The columns exposed as edge properties; every column when ``None``."""
+    """The columns exposed as edge properties; every column when ``None``. A
+    created graph reports the list it resolved to."""
+
+
+@dataclass(frozen=True)
+class NodeType:
+    """The nodes of one label of an independent graph."""
+
+    label: str
+    """The label its nodes carry."""
+    key: str
+    """The field that identifies a node: a non-nullable integer, string or
+    binary field of ``schema``."""
+    schema: pa.Schema
+    """Every property, the key among them."""
+
+
+@dataclass(frozen=True)
+class EdgeType:
+    """The edges of one label of an independent graph."""
+
+    label: str
+    """The label its edges carry."""
+    source: Tuple[str, str]
+    """The label of each edge's source node, and the column inserted rows carry
+    its key in, as ``(label, column)``."""
+    destination: Tuple[str, str]
+    """The label of each edge's destination node, and the column inserted rows
+    carry its key in, as ``(label, column)``."""
+    schema: Optional[pa.Schema] = None
+    """The edge's properties, when it has any."""
 
 
 @dataclass(frozen=True)
@@ -66,21 +107,48 @@ class PropertyGraphDescription:
     """The graph's name within its namespace."""
     namespace_path: List[str]
     """The namespace holding the graph; empty is the root namespace."""
-    nodes: List[NodeTable]
-    """The node tables."""
-    edges: List[EdgeTable]
-    """The edge tables."""
+    mode: str
+    """``"independent"`` or ``"materialized_view"``."""
+    nodes: List[Union[NodeTable, NodeType]]
+    """The node tables (materialized view) or node types (independent)."""
+    edges: List[Union[EdgeTable, EdgeType]]
+    """The edge tables (materialized view) or edge types (independent)."""
+    commit: str
+    """The graph's current commit."""
+    committed_at: str
+    """When the current commit landed, as RFC 3339."""
+    previous_commit: Optional[str]
+    """The commit a rollback returns to, if there is one."""
     vertex_count: int
-    """How many nodes the graph held when it was built."""
+    """How many nodes the current commit holds."""
     edge_count: int
-    """How many edges the graph held when it was built."""
+    """How many edges the current commit holds."""
     sources: Dict[str, int]
-    """The version of each table the graph was built from, by table name."""
+    """For a materialized view, the version of each table the current commit
+    was refreshed from, by table name."""
 
 
-def _definition_json(nodes: Sequence[NodeTable], edges: Sequence[EdgeTable]) -> str:
+INDEPENDENT = "independent"
+MATERIALIZED_VIEW = "materialized_view"
+
+
+def _mode_of(nodes: Sequence[Any], edges: Sequence[Any]) -> str:
+    kinds = {type(element) for element in [*nodes, *edges]}
+    if kinds <= {NodeType, EdgeType} and kinds:
+        return INDEPENDENT
+    if kinds <= {NodeTable, EdgeTable}:
+        return MATERIALIZED_VIEW
+    raise ValueError(
+        "A property graph's nodes and edges are either all tables "
+        "(NodeTable, EdgeTable) or all types (NodeType, EdgeType)"
+    )
+
+
+def _definition_json(nodes: Sequence[Any], edges: Sequence[Any]) -> str:
+    mode = _mode_of(nodes, edges)
     return json.dumps(
         {
+            "mode": mode,
             "nodes": [_node_to_json(node) for node in nodes],
             "edges": [_edge_to_json(edge) for edge in edges],
         }
@@ -89,11 +157,16 @@ def _definition_json(nodes: Sequence[NodeTable], edges: Sequence[EdgeTable]) -> 
 
 def _description_from_json(text: str) -> PropertyGraphDescription:
     described = json.loads(text)
+    mode = described["mode"]
     return PropertyGraphDescription(
         name=described["name"],
         namespace_path=list(described.get("namespace", [])),
-        nodes=[_node_from_json(node) for node in described["nodes"]],
-        edges=[_edge_from_json(edge) for edge in described.get("edges", [])],
+        mode=mode,
+        nodes=[_node_from_json(mode, node) for node in described["nodes"]],
+        edges=[_edge_from_json(mode, edge) for edge in described.get("edges", [])],
+        commit=described["commit"],
+        committed_at=described["committed_at"],
+        previous_commit=described.get("previous_commit"),
         vertex_count=described["vertex_count"],
         edge_count=described["edge_count"],
         sources={
@@ -103,7 +176,21 @@ def _description_from_json(text: str) -> PropertyGraphDescription:
     )
 
 
-def _node_to_json(node: NodeTable) -> Dict[str, Any]:
+def _schema_to_json(schema: pa.Schema) -> Dict[str, Any]:
+    return json.loads(graph_schema_to_json(schema))
+
+
+def _schema_from_json(schema: Dict[str, Any]) -> pa.Schema:
+    return graph_schema_from_json(json.dumps(schema))
+
+
+def _node_to_json(node: Union[NodeTable, NodeType]) -> Dict[str, Any]:
+    if isinstance(node, NodeType):
+        return {
+            "label": node.label,
+            "key": node.key,
+            "schema": _schema_to_json(node.schema),
+        }
     encoded: Dict[str, Any] = {
         "table": node.table,
         "key": node.key,
@@ -114,8 +201,20 @@ def _node_to_json(node: NodeTable) -> Dict[str, Any]:
     return encoded
 
 
-def _edge_to_json(edge: EdgeTable) -> Dict[str, Any]:
-    encoded: Dict[str, Any] = {
+def _edge_to_json(edge: Union[EdgeTable, EdgeType]) -> Dict[str, Any]:
+    if isinstance(edge, EdgeType):
+        encoded: Dict[str, Any] = {
+            "label": edge.label,
+            "source": {"label": edge.source[0], "column": edge.source[1]},
+            "destination": {
+                "label": edge.destination[0],
+                "column": edge.destination[1],
+            },
+        }
+        if edge.schema is not None:
+            encoded["schema"] = _schema_to_json(edge.schema)
+        return encoded
+    encoded = {
         "table": edge.table,
         "label": edge.label,
         "source": _endpoint_to_json(edge.source),
@@ -134,7 +233,13 @@ def _endpoint_to_json(endpoint: Endpoint) -> Dict[str, Any]:
     }
 
 
-def _node_from_json(node: Dict[str, Any]) -> NodeTable:
+def _node_from_json(mode: str, node: Dict[str, Any]) -> Union[NodeTable, NodeType]:
+    if mode == INDEPENDENT:
+        return NodeType(
+            label=node["label"],
+            key=node["key"],
+            schema=_schema_from_json(node["schema"]),
+        )
     return NodeTable(
         table=node["table"],
         key=node["key"],
@@ -143,7 +248,15 @@ def _node_from_json(node: Dict[str, Any]) -> NodeTable:
     )
 
 
-def _edge_from_json(edge: Dict[str, Any]) -> EdgeTable:
+def _edge_from_json(mode: str, edge: Dict[str, Any]) -> Union[EdgeTable, EdgeType]:
+    if mode == INDEPENDENT:
+        schema = edge.get("schema")
+        return EdgeType(
+            label=edge["label"],
+            source=(edge["source"]["label"], edge["source"]["column"]),
+            destination=(edge["destination"]["label"], edge["destination"]["column"]),
+            schema=None if schema is None else _schema_from_json(schema),
+        )
     return EdgeTable(
         table=edge["table"],
         label=edge["label"],

@@ -11,7 +11,7 @@ use crate::{
     error::PythonErrorExt,
     namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
     runtime::future_into_py,
-    table::Table,
+    table::{Table, scannable::PyScannable},
 };
 use arrow::{
     datatypes::Schema,
@@ -1031,6 +1031,62 @@ impl Connection {
             inner
                 .list_property_graphs(&namespace_path)
                 .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, label, data, namespace_path=None))]
+    pub fn insert_into_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        label: String,
+        data: PyScannable,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .insert_into_property_graph(name, label, data, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn refresh_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .refresh_property_graph(name, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn rollback_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .rollback_property_graph(name, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
                 .infer_error()
         })
     }

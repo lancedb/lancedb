@@ -867,13 +867,14 @@ impl Connection {
         self.internal.list_views(namespace_path).await
     }
 
-    /// Create a property graph: tables in its namespace read as the nodes and
-    /// edges of a graph.
+    /// Create a property graph.
     ///
-    /// The definition names the node tables with their keys and labels, and
-    /// the edge tables with the node keys their source and destination columns
-    /// reference. A name already taken is an error. Local databases return
-    /// [`Error::NotSupported`].
+    /// A materialized view graph names the tables in its namespace that hold
+    /// its nodes, with their keys and labels, and its edges, with the node keys
+    /// their source and destination columns reference; it is built from them
+    /// now. An independent graph names its node and edge types with their
+    /// schemas, and starts empty. A name already taken is an error. Local
+    /// databases return [`Error::NotSupported`].
     ///
     /// ```no_run
     /// # use lancedb::graph::{EdgeTable, Endpoint, EndpointReference, NodeTable,
@@ -883,7 +884,7 @@ impl Connection {
     ///     table: "person".to_string(),
     ///     column: "person_id".to_string(),
     /// };
-    /// let definition = PropertyGraphDefinition {
+    /// let definition = PropertyGraphDefinition::MaterializedView {
     ///     nodes: vec![NodeTable {
     ///         table: "person".to_string(),
     ///         key: "person_id".to_string(),
@@ -915,9 +916,10 @@ impl Connection {
             .await
     }
 
-    /// What this database records about one property graph: its definition,
-    /// its size, and the table versions it was built from. Local databases
-    /// return [`Error::NotSupported`].
+    /// What this database records about one property graph: its mode and
+    /// definition, its current and previous commits, its size, and, for a
+    /// materialized view, the table versions it was refreshed from. Local
+    /// databases return [`Error::NotSupported`].
     pub async fn describe_property_graph(
         &self,
         name: impl AsRef<str>,
@@ -951,6 +953,65 @@ impl Connection {
     pub async fn list_property_graphs(&self, namespace_path: &[String]) -> Result<Vec<String>> {
         validate_namespace(namespace_path)?;
         self.internal.list_property_graphs(namespace_path).await
+    }
+
+    /// Insert rows into an independent property graph, as one commit.
+    ///
+    /// The rows are one node label's or one edge label's. Nodes upsert by key:
+    /// a key the graph holds replaces that node's properties. Edges append,
+    /// carrying their endpoints' keys in the columns the edge type names; an
+    /// edge whose endpoint is not a node of the graph refuses the whole
+    /// insert. A materialized view graph is written through its tables and
+    /// [refreshed](Self::refresh_property_graph) instead. Local databases
+    /// return [`Error::NotSupported`].
+    pub async fn insert_into_property_graph<T: Scannable + 'static>(
+        &self,
+        name: impl AsRef<str>,
+        label: impl AsRef<str>,
+        data: T,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .insert_into_property_graph(
+                name.as_ref(),
+                label.as_ref(),
+                Box::new(data),
+                namespace_path,
+            )
+            .await
+    }
+
+    /// Bring a materialized view property graph up to its tables' latest
+    /// versions.
+    ///
+    /// Until it is refreshed, a query over a table that has changed reads the
+    /// tables rather than the graph. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn refresh_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .refresh_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Return a property graph to its previous commit.
+    ///
+    /// The commit rolled back from is discarded, so a second rollback in a row
+    /// is an error. Local databases return [`Error::NotSupported`].
+    pub async fn rollback_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .rollback_property_graph(name.as_ref(), namespace_path)
+            .await
     }
 
     /// Rename a table in the database.

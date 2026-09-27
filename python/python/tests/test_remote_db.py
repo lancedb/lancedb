@@ -17,7 +17,14 @@ from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.graph import EdgeTable, Endpoint, NodeTable, PropertyGraphDescription
+from lancedb.graph import (
+    EdgeTable,
+    EdgeType,
+    Endpoint,
+    NodeTable,
+    NodeType,
+    PropertyGraphDescription,
+)
 from lancedb.query import ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
@@ -2833,11 +2840,12 @@ def test_view_crud_addresses_its_own_routes():
 
 def test_property_graph_crud_addresses_its_own_routes():
     # The graph verbs are their own routes: the definition is the create body,
-    # and a description adds the graph's size and the table versions it was
-    # built from.
+    # and a description adds the graph's commits, its size and the table
+    # versions it was refreshed from.
     calls = []
     person = {"table": "person", "column": "person_id"}
     definition = {
+        "mode": "materialized_view",
         "nodes": [
             {
                 "table": "person",
@@ -2859,6 +2867,8 @@ def test_property_graph_crud_addresses_its_own_routes():
         "name": "social",
         "namespace": ["analytics"],
         **definition,
+        "commit": "6f1c2d3e-0000-4000-8000-000000000000",
+        "committed_at": "2026-09-26T17:00:00Z",
         "vertex_count": 4,
         "edge_count": 5,
         "sources": [
@@ -2898,8 +2908,12 @@ def test_property_graph_crud_addresses_its_own_routes():
         assert graph == PropertyGraphDescription(
             name="social",
             namespace_path=["analytics"],
+            mode="materialized_view",
             nodes=nodes,
             edges=edges,
+            commit="6f1c2d3e-0000-4000-8000-000000000000",
+            committed_at="2026-09-26T17:00:00Z",
+            previous_commit=None,
             vertex_count=4,
             edge_count=5,
             sources={"person": 3, "knows": 2},
@@ -2916,6 +2930,96 @@ def test_property_graph_crud_addresses_its_own_routes():
         ("GET", "/v1/namespace/analytics/property_graph/list", None),
         ("POST", "/v1/property_graph/analytics$social/drop", None),
     ]
+
+
+def test_an_independent_graph_carries_schemas_and_takes_arrow_rows():
+    # Node and edge types go up as JSON Arrow schemas and come back as pyarrow
+    # schemas; inserted rows go up as an Arrow IPC stream.
+    calls = []
+    person = NodeType(
+        "Person",
+        key="person_id",
+        schema=pa.schema(
+            [
+                pa.field("person_id", pa.int64(), nullable=False),
+                ("tags", pa.list_(pa.string())),
+            ]
+        ),
+    )
+    knows = EdgeType(
+        "KNOWS",
+        source=("Person", "src_id"),
+        destination=("Person", "dst_id"),
+        schema=pa.schema([("since", pa.int32())]),
+    )
+    created = {}
+
+    def handler(request):
+        length = int(request.headers.get("Content-Length") or 0)
+        raw = request.rfile.read(length) if length else b""
+        if request.path.split("?")[0].endswith("/insert"):
+            body = pa.ipc.open_stream(raw).read_all().to_pylist()
+        else:
+            body = json.loads(raw) if raw else None
+        calls.append((request.command, request.path, body))
+        if request.path.endswith("/create"):
+            created.update(body)
+        response = {
+            "name": "people",
+            "namespace": [],
+            **created,
+            "commit": "c2",
+            "committed_at": "2026-09-26T17:00:00Z",
+            "previous_commit": "c1",
+            "vertex_count": 1,
+            "edge_count": 0,
+        }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        graph = db.create_property_graph("people", [person], [knows])
+        assert graph.mode == "independent"
+        assert graph.nodes == [person] and graph.edges == [knows]
+        assert graph.previous_commit == "c1"
+        inserted = db.insert_into_property_graph(
+            "people", "Person", [{"person_id": 1, "tags": ["a"]}]
+        )
+        assert inserted.vertex_count == 1
+        db.refresh_property_graph("people")
+        db.rollback_property_graph("people")
+
+    create, insert, refresh, rollback = calls
+    assert create[:2] == ("POST", "/v1/property_graph/people/create")
+    assert create[2]["mode"] == "independent"
+    assert create[2]["nodes"][0]["schema"]["fields"][0]["name"] == "person_id"
+    assert create[2]["edges"][0]["source"] == {"label": "Person", "column": "src_id"}
+    assert insert == (
+        "POST",
+        "/v1/property_graph/people/insert?label=Person",
+        [{"person_id": 1, "tags": ["a"]}],
+    )
+    assert refresh[:2] == ("POST", "/v1/property_graph/people/refresh")
+    assert rollback[:2] == ("POST", "/v1/property_graph/people/rollback")
+
+    with pytest.raises(ValueError, match="either all tables"):
+        with mock_lancedb_connection(handler) as db:
+            db.create_property_graph(
+                "mixed",
+                [person],
+                [
+                    EdgeTable(
+                        "knows",
+                        label="KNOWS",
+                        source=Endpoint("src_id", references=("person", "person_id")),
+                        destination=Endpoint(
+                            "dst_id", references=("person", "person_id")
+                        ),
+                    )
+                ],
+            )
 
 
 def test_local_connections_refuse_property_graphs(tmp_path):

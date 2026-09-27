@@ -37,7 +37,7 @@ use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyListMethods},
 };
 
-mod scannable;
+pub(crate) mod scannable;
 
 /// Convert `LsmStats` to a Python dict, preserving the per-bucket list.
 ///

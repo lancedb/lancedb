@@ -26,6 +26,7 @@ pub mod catalog;
 pub mod connection;
 pub mod error;
 pub mod expr;
+pub mod graph;
 pub mod header;
 pub mod index;
 pub mod job;
@@ -65,6 +66,8 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_class::<catalog::Catalog>()?;
     m.add_function(wrap_pyfunction!(catalog::connect_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(graph::graph_schema_to_json, m)?)?;
+    m.add_function(wrap_pyfunction!(graph::graph_schema_from_json, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
     m.add_class::<crate::oauth::PyOAuthSession>()?;

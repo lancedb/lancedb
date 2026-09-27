@@ -51,11 +51,14 @@ from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
 from .graph import (
     EdgeTable,
+    EdgeType,
     NodeTable,
+    NodeType,
     PropertyGraphDescription,
     _definition_json,
     _description_from_json,
 )
+from .scannable import to_scannable
 from .job import AsyncJob, Job, _typed_job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -1028,17 +1031,23 @@ class DBConnection(EnforceOverrides):
     def create_property_graph(
         self,
         name: str,
-        nodes: List[NodeTable],
-        edges: List[EdgeTable],
+        nodes: List[Union[NodeTable, NodeType]],
+        edges: List[Union[EdgeTable, EdgeType]],
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> PropertyGraphDescription:
-        """Create a property graph: tables in its namespace read as the nodes
-        and edges of a graph.
+        """Create a property graph.
 
-        Each node table names its key column and label. Each edge table names
-        its label and the node keys its source and destination columns
-        reference. A name already taken is an error. Local connections raise
+        With [NodeTable][lancedb.graph.NodeTable] and
+        [EdgeTable][lancedb.graph.EdgeTable], the graph is a materialized view
+        of tables in its namespace: each node table names its key column and
+        label, each edge table its label and the node keys its source and
+        destination columns reference, and the graph is built from them now.
+        With [NodeType][lancedb.graph.NodeType] and
+        [EdgeType][lancedb.graph.EdgeType], the graph is independent: it holds
+        its own rows, starts empty, and takes rows from
+        [insert_into_property_graph][lancedb.db.DBConnection.insert_into_property_graph].
+        A name already taken is an error. Local connections raise
         ``NotImplementedError``.
 
         >>> import lancedb
@@ -1066,10 +1075,87 @@ class DBConnection(EnforceOverrides):
     def describe_property_graph(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> PropertyGraphDescription:
-        """What this database records about a property graph: its node and
-        edge tables, its size, and the table versions it was built from.
+        """What this database records about a property graph: its mode and
+        definition, its current and previous commits, its size, and, for a
+        materialized view, the table versions it was refreshed from.
 
         Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def insert_into_property_graph(
+        self,
+        name: str,
+        label: str,
+        data: DATA,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraphDescription:
+        """Insert rows into an independent property graph, as one commit.
+
+        The rows are one node label's or one edge label's. Nodes upsert by key:
+        a key the graph holds replaces that node's properties. Edges append,
+        carrying their endpoints' keys in the columns the edge type names; an
+        edge whose endpoint is not a node of the graph refuses the whole
+        insert. A materialized view graph is written through its tables and
+        refreshed instead. Local connections raise ``NotImplementedError``.
+
+        >>> import pyarrow as pa
+        >>> from lancedb.graph import EdgeType, NodeType
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> db.create_property_graph(
+        ...     "people",
+        ...     nodes=[
+        ...         NodeType(
+        ...             "Person",
+        ...             key="person_id",
+        ...             schema=pa.schema(
+        ...                 [
+        ...                     pa.field("person_id", pa.int64(), False),
+        ...                     ("name", pa.string()),
+        ...                 ]
+        ...             ),
+        ...         )
+        ...     ],
+        ...     edges=[
+        ...         EdgeType(
+        ...             "KNOWS",
+        ...             source=("Person", "src_id"),
+        ...             destination=("Person", "dst_id"),
+        ...         )
+        ...     ],
+        ... )  # doctest: +SKIP
+        >>> db.insert_into_property_graph(
+        ...     "people", "Person", [{"person_id": 1, "name": "Alice"}]
+        ... )  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def refresh_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        """Bring a materialized view property graph up to its tables' latest
+        versions.
+
+        Until it is refreshed, a query over a table that has changed reads the
+        tables rather than the graph. Local connections raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def rollback_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        """Return a property graph to its previous commit.
+
+        The commit rolled back from is discarded, so a second rollback in a row
+        is an error. Local connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "Property graph operations are not supported for this connection type"
@@ -1967,8 +2053,8 @@ class LanceDBConnection(DBConnection):
     def create_property_graph(
         self,
         name: str,
-        nodes: List[NodeTable],
-        edges: List[EdgeTable],
+        nodes: List[Union[NodeTable, NodeType]],
+        edges: List[Union[EdgeTable, EdgeType]],
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> PropertyGraphDescription:
@@ -1984,6 +2070,37 @@ class LanceDBConnection(DBConnection):
     ) -> PropertyGraphDescription:
         return LOOP.run(
             self._conn.describe_property_graph(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def insert_into_property_graph(
+        self,
+        name: str,
+        label: str,
+        data: DATA,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.insert_into_property_graph(
+                name, label, data, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def refresh_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.refresh_property_graph(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def rollback_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.rollback_property_graph(name, namespace_path=namespace_path)
         )
 
     @override
@@ -3028,12 +3145,13 @@ class AsyncConnection(object):
     async def create_property_graph(
         self,
         name: str,
-        nodes: List[NodeTable],
-        edges: List[EdgeTable],
+        nodes: List[Union[NodeTable, NodeType]],
+        edges: List[Union[EdgeTable, EdgeType]],
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> PropertyGraphDescription:
-        """Create a property graph over tables in its namespace.
+        """Create a property graph: a materialized view of tables in its
+        namespace, or an independent graph that holds its own rows.
 
         See
         [DBConnection.create_property_graph][lancedb.DBConnection.create_property_graph].
@@ -3050,6 +3168,41 @@ class AsyncConnection(object):
         """What this database records about a property graph."""
         return _description_from_json(
             await self._inner.describe_property_graph(name, list(namespace_path or []))
+        )
+
+    async def insert_into_property_graph(
+        self,
+        name: str,
+        label: str,
+        data: DATA,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraphDescription:
+        """Insert rows of one label into an independent property graph.
+
+        See
+        [DBConnection.insert_into_property_graph][lancedb.DBConnection.insert_into_property_graph].
+        """
+        return _description_from_json(
+            await self._inner.insert_into_property_graph(
+                name, label, to_scannable(data), list(namespace_path or [])
+            )
+        )
+
+    async def refresh_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        """Bring a materialized view property graph up to its tables."""
+        return _description_from_json(
+            await self._inner.refresh_property_graph(name, list(namespace_path or []))
+        )
+
+    async def rollback_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        """Return a property graph to its previous commit."""
+        return _description_from_json(
+            await self._inner.rollback_property_graph(name, list(namespace_path or []))
         )
 
     async def drop_property_graph(

@@ -19,6 +19,7 @@ use lance_namespace::models::{
 };
 
 use crate::Error;
+use crate::data::scannable::Scannable;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, JobInfo,
     OpenTableRequest, ReadConsistency, TableNamesRequest,
@@ -1357,6 +1358,54 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 status_code: Some(status),
             }),
         }
+    }
+
+    async fn insert_into_property_graph(
+        &self,
+        name: &str,
+        label: &str,
+        mut data: Box<dyn Scannable>,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_object_identifier("Property graph name", name, namespace_path)?;
+        let body = stream_as_body(data.scan_as_stream())?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/insert"))
+            .query(&[("label", label)])
+            .body(body)
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn refresh_property_graph(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_object_identifier("Property graph name", name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/refresh"));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn rollback_property_graph(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_object_identifier("Property graph name", name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/rollback"));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
     }
 
     async fn list_property_graphs(&self, namespace_path: &[String]) -> Result<Vec<String>> {
@@ -4396,7 +4445,8 @@ mod tests {
 
     fn social_graph() -> crate::graph::PropertyGraphDefinition {
         crate::graph::PropertyGraphDefinition::from_json(
-            r#"{"nodes": [{"table": "person", "key": "person_id", "label": "Person"}],
+            r#"{"mode": "materialized_view",
+                "nodes": [{"table": "person", "key": "person_id", "label": "Person"}],
                 "edges": [{"table": "knows", "label": "KNOWS",
                            "source": {"column": "src_id",
                                       "references": {"table": "person", "column": "person_id"}},
@@ -4413,6 +4463,11 @@ mod tests {
         let fields = body.as_object_mut().unwrap();
         fields.insert("name".into(), name.into());
         fields.insert("namespace".into(), namespace.into());
+        fields.insert(
+            "commit".into(),
+            "6f1c2d3e-0000-4000-8000-000000000000".into(),
+        );
+        fields.insert("committed_at".into(), "2026-09-26T17:00:00Z".into());
         fields.insert("vertex_count".into(), 4.into());
         fields.insert("edge_count".into(), 5.into());
         fields.insert(
@@ -4444,8 +4499,9 @@ mod tests {
             .unwrap();
         assert_eq!(graph.name, "social");
         assert_eq!(graph.namespace_path, vec!["analytics".to_string()]);
-        assert_eq!(graph.nodes, social_graph().nodes);
-        assert_eq!(graph.edges, social_graph().edges);
+        assert_eq!(graph.definition, social_graph());
+        assert_eq!(graph.commit, "6f1c2d3e-0000-4000-8000-000000000000");
+        assert_eq!(graph.previous_commit, None);
         assert_eq!((graph.vertex_count, graph.edge_count), (4, 5));
         assert_eq!(
             graph.sources[1],
@@ -4454,6 +4510,52 @@ mod tests {
                 version: 2
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_graph_writes_post_to_their_routes() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            match request.url().path() {
+                "/v1/property_graph/analytics$people/insert" => {
+                    assert_eq!(request.url().query(), Some("label=Person"));
+                    assert_eq!(
+                        request.headers().get("Content-Type").unwrap(),
+                        ARROW_STREAM_CONTENT_TYPE
+                    );
+                }
+                "/v1/property_graph/analytics$people/refresh"
+                | "/v1/property_graph/analytics$people/rollback" => {
+                    assert!(request.body().is_none(), "{:?}", request.body());
+                }
+                other => panic!("unexpected path {other}"),
+            }
+            http::Response::builder()
+                .status(200)
+                .body(property_graph_description_body("people", &["analytics"]))
+                .unwrap()
+        });
+        let namespace = ["analytics".to_string()];
+        let rows = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "person_id",
+                DataType::Int32,
+                false,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        let inserted = conn
+            .insert_into_property_graph("people", "Person", rows, &namespace)
+            .await
+            .unwrap();
+        assert_eq!(inserted.name, "people");
+        conn.refresh_property_graph("people", &namespace)
+            .await
+            .unwrap();
+        conn.rollback_property_graph("people", &namespace)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -4469,7 +4571,12 @@ mod tests {
         });
         let graph = conn.describe_property_graph("social", &[]).await.unwrap();
         assert!(graph.namespace_path.is_empty());
-        assert_eq!(graph.edges[0].properties, Some(vec!["since".to_string()]));
+        let crate::graph::PropertyGraphDefinition::MaterializedView { edges, .. } =
+            graph.definition
+        else {
+            panic!("expected a materialized view graph")
+        };
+        assert_eq!(edges[0].properties, Some(vec!["since".to_string()]));
 
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);

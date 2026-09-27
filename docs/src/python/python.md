@@ -204,11 +204,22 @@ listing a storage directory.
 
 ## Property Graphs
 
-A property graph reads tables as the nodes and edges of a graph. Manage one
-with [create_property_graph][lancedb.DBConnection.create_property_graph],
+A property graph is read as nodes and edges, in one of two modes. An
+independent graph holds its own rows: define it with node and edge types, and
+write it with
+[insert_into_property_graph][lancedb.DBConnection.insert_into_property_graph].
+A materialized view graph reads tables: define it with node and edge tables,
+and bring it up to them with
+[refresh_property_graph][lancedb.DBConnection.refresh_property_graph]. Manage
+either with [create_property_graph][lancedb.DBConnection.create_property_graph],
 [describe_property_graph][lancedb.DBConnection.describe_property_graph],
+[rollback_property_graph][lancedb.DBConnection.rollback_property_graph],
 [list_property_graphs][lancedb.DBConnection.list_property_graphs] and
 [drop_property_graph][lancedb.DBConnection.drop_property_graph].
+
+::: lancedb.graph.NodeType
+
+::: lancedb.graph.EdgeType
 
 ::: lancedb.graph.NodeTable
 

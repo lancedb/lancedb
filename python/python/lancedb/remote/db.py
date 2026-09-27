@@ -36,7 +36,7 @@ import pyarrow as pa
 from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
-from ..graph import EdgeTable, NodeTable, PropertyGraphDescription
+from ..graph import EdgeTable, EdgeType, NodeTable, NodeType, PropertyGraphDescription
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription
@@ -947,8 +947,8 @@ class RemoteDBConnection(DBConnection):
     def create_property_graph(
         self,
         name: str,
-        nodes: List[NodeTable],
-        edges: List[EdgeTable],
+        nodes: List[Union[NodeTable, NodeType]],
+        edges: List[Union[EdgeTable, EdgeType]],
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> PropertyGraphDescription:
@@ -964,6 +964,37 @@ class RemoteDBConnection(DBConnection):
     ) -> PropertyGraphDescription:
         return LOOP.run(
             self._conn.describe_property_graph(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def insert_into_property_graph(
+        self,
+        name: str,
+        label: str,
+        data: DATA,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.insert_into_property_graph(
+                name, label, data, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def refresh_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.refresh_property_graph(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def rollback_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        return LOOP.run(
+            self._conn.rollback_property_graph(name, namespace_path=namespace_path)
         )
 
     @override
