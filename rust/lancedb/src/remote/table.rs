@@ -96,6 +96,8 @@ const SCHEMA_SELECTOR_CHANGED: &str = "table selector changed while fetching sch
 
 fn fts_query_requires_document_granularity_support(query: &FtsQuery) -> bool {
     match query {
+        // Combined-fields queries do not expose a document granularity option.
+        FtsQuery::CombinedFields(_) => false,
         FtsQuery::Match(query) => query
             .document_granularity
             .is_some_and(|granularity| granularity.is_list_element()),
@@ -6146,6 +6148,53 @@ mod tests {
             ))
             .with_row_id()
             .limit(10)
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_combined_fields_uses_structured_fts() {
+        use lance_index::scalar::inverted::query::CombinedFieldsQuery;
+
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 3, 0), |request| {
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(
+                    body["full_text_query"]["query"],
+                    serde_json::json!({
+                        "combined_fields": {
+                            "query": "hello world",
+                            "columns": ["title", "text"],
+                            "boost": [1.0, 1.0],
+                            "operator": "Or"
+                        }
+                    })
+                );
+
+                let data = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                    vec![Arc::new(Int32Array::from(vec![1]))],
+                )
+                .unwrap();
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                    .body(write_ipc_file(&data))
+                    .unwrap()
+            });
+
+        table
+            .query()
+            .full_text_search(FullTextSearchQuery::new_query(
+                CombinedFieldsQuery::try_new(
+                    "hello world".into(),
+                    vec!["title".into(), "text".into()],
+                )
+                .unwrap()
+                .into(),
+            ))
             .execute()
             .await
             .unwrap();
