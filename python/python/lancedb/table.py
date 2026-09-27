@@ -2217,6 +2217,13 @@ class Table(ABC):
             All files belonging to versions older than this will be removed.  Set
             to 0 days to remove all versions except the latest.  The latest version
             is never removed.
+
+            .. warning::
+
+                Setting this to 0 deletes the data files of every older
+                version, so any other reader or writer still using an older
+                version of the table will fail. Only set it to 0 if no other
+                process is working on this dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
@@ -4423,6 +4430,13 @@ class LanceTable(Table):
             All files belonging to versions older than this will be removed.  Set
             to 0 days to remove all versions except the latest.  The latest version
             is never removed.
+
+            .. warning::
+
+                Setting this to 0 deletes the data files of every older
+                version, so any other reader or writer still using an older
+                version of the table will fail. Only set it to 0 if no other
+                process is working on this dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
@@ -6958,6 +6972,13 @@ class AsyncTable:
             All files belonging to versions older than this will be removed.  Set
             to 0 days to remove all versions except the latest.  The latest version
             is never removed.
+
+            .. warning::
+
+                Setting this to 0 deletes the data files of every older
+                version, so any other reader or writer still using an older
+                version of the table will fail. Only set it to 0 if no other
+                process is working on this dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
@@ -6984,10 +7005,17 @@ class AsyncTable:
         cleanup_since_ms: Optional[int] = None
         if cleanup_older_than is not None:
             cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
+            if cleanup_since_ms <= 0:
+                warnings.warn(
+                    "optimize(cleanup_older_than=0) removes every version except "
+                    "the latest. Any concurrent reader or writer still using an "
+                    "older version will fail. Use a longer cleanup_older_than "
+                    "unless no other process is working on this table.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         if retrain:
-            import warnings
-
             warnings.warn(
                 "The 'retrain' parameter is deprecated and will be removed in a "
                 "future version.",
