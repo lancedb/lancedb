@@ -367,6 +367,27 @@ still work. Queries return descriptors. Call
 
 ::: lancedb.streaming.StreamingDataset
 
+When a transform fails for some rows, fill mode replaces each failed row in place:
+
+```python
+dataset = StreamingDataset(
+    table,
+    num_splits=8,
+    transform=transform,
+    on_transform_error="fill",
+    fill_value={"id": -1, "vector": [0.0, 0.0]},
+)
+for row in dataset:
+    train(row)
+print(dataset.rows_filled)
+```
+
+The placeholder must have the same structure as a successful transform output.
+Pass `repair(exc, row_batch) -> row` instead of `fill_value` to construct a
+replacement from the failed one-row Arrow batch. Keep the repair deterministic
+when using elastic training or checkpoints. Fill mode preserves split lengths
+and sample positions.
+
 ::: lancedb.streaming.StreamingDataLoader
 
 ::: lancedb.permutation.permutation_builder
