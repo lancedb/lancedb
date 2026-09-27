@@ -4341,6 +4341,24 @@ async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_pat
     assert stats.prune.old_versions_removed == 2
 
 
+@pytest.mark.asyncio
+async def test_optimize_warns_on_zero_cleanup(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("test", data=[{"x": [1]}])
+    with pytest.warns(UserWarning, match="concurrent"):
+        await table.optimize(cleanup_older_than=timedelta(0))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        await table.optimize(cleanup_older_than=timedelta(days=1))
+        await table.optimize()
+
+
+def test_optimize_warns_on_zero_cleanup_sync(mem_db: DBConnection):
+    table = mem_db.create_table("test", data=[{"x": [1]}])
+    with pytest.warns(UserWarning, match="concurrent"):
+        table.optimize(cleanup_older_than=timedelta(0))
+
+
 def test_replace_field_metadata(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"x": 0}])
