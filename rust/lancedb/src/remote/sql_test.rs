@@ -65,6 +65,9 @@ struct CapturedHeaders {
     database_prefix: String,
 }
 
+/// Every exchange's statement and the parameter row it arrived with.
+type ReceivedExchanges = Arc<std::sync::Mutex<Vec<(String, Option<RecordBatch>)>>>;
+
 #[derive(Clone)]
 struct TestSqlService {
     query_count: Arc<AtomicUsize>,
@@ -79,8 +82,7 @@ struct TestSqlService {
     transient_poll_failures: Arc<AtomicUsize>,
     headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
     gate_refresh_release: Arc<Notify>,
-    /// Every exchange's statement and the parameter row it arrived with.
-    exchanges: Arc<std::sync::Mutex<Vec<(String, Option<RecordBatch>)>>>,
+    exchanges: ReceivedExchanges,
     /// How many exchange responses have been dropped, finished or not.
     exchange_drops: Arc<AtomicUsize>,
     result: RecordBatch,
@@ -452,6 +454,9 @@ impl FlightService for TestSqlService {
                 "parameter 1 is not referenced by the statement",
             ));
         }
+        if query == "SELECT exchange stall" {
+            return Ok(Response::new(futures::stream::pending().boxed()));
+        }
         let rows =
             parameters.ok_or_else(|| Status::invalid_argument("exchange without parameters"))?;
         let schema = rows.schema();
@@ -495,6 +500,7 @@ fn parameterized(query: &str, parameters: RecordBatch) -> ExecuteQueryRequest {
 
 async fn start_sql_service(
     service: TestSqlService,
+    client_config: ClientConfig,
 ) -> (SqlClient, tokio::sync::oneshot::Sender<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -516,7 +522,7 @@ async fn start_sql_service(
         "test-key".to_string(),
         None,
         Some(format!("grpc://{address}")),
-        ClientConfig::default(),
+        client_config,
     );
     (client, shutdown_tx)
 }
@@ -540,7 +546,7 @@ async fn parameters_travel_on_one_exchange() {
     let query_count = service.query_count.clone();
     let do_get_count = service.do_get_count.clone();
     let headers = service.headers.clone();
-    let (client, _shutdown) = start_sql_service(service).await;
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
 
     let parameters = parameter_row();
     let query = client
@@ -597,7 +603,8 @@ async fn parameters_travel_on_one_exchange() {
 /// The server plans before it answers, so a refusal is the submission's.
 #[tokio::test]
 async fn a_refused_statement_fails_its_submission() {
-    let (client, _shutdown) = start_sql_service(TestSqlService::default()).await;
+    let (client, _shutdown) =
+        start_sql_service(TestSqlService::default(), ClientConfig::default()).await;
     let refused = client
         .execute(parameterized("SELECT exchange refused", parameter_row()))
         .await
@@ -624,7 +631,7 @@ async fn a_refused_statement_fails_its_submission() {
 async fn cancelling_or_abandoning_an_exchange_ends_the_call() {
     let service = TestSqlService::default();
     let drops = service.exchange_drops.clone();
-    let (client, _shutdown) = start_sql_service(service).await;
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
 
     let reading = client
         .execute(parameterized("SELECT exchange slow", parameter_row()))
@@ -665,6 +672,35 @@ async fn cancelling_or_abandoning_an_exchange_ends_the_call() {
     let rows = dropped_reader.reader().await.unwrap();
     drop(rows);
     wait_for(&drops, 3, "dropping a reader must end the call").await;
+}
+
+/// A reader that gives up before the first batch has already taken the rows,
+/// so the query must say it failed rather than report `Running` for a call
+/// that is gone.
+#[tokio::test]
+async fn a_reader_that_times_out_reports_the_failure() {
+    let mut client_config = ClientConfig::default();
+    client_config.timeout_config.timeout = Some(Duration::from_millis(200));
+    let (client, _shutdown) = start_sql_service(TestSqlService::default(), client_config).await;
+
+    let stalled = client
+        .execute(parameterized("SELECT exchange stall", parameter_row()))
+        .await
+        .unwrap();
+    assert_overall_timeout(stalled.reader().await, "result");
+    let Err(retried) = stalled.reader().await else {
+        panic!("the rows are gone, so a second reader cannot succeed");
+    };
+    for error in [
+        stalled.describe().await.unwrap_err(),
+        client.describe(stalled.id()).await.unwrap_err(),
+        retried,
+    ] {
+        assert!(
+            matches!(&error, Error::Runtime { message } if message == "SQL query result timed out"),
+            "{error}"
+        );
+    }
 }
 
 #[tokio::test]

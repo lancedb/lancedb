@@ -42,6 +42,15 @@ enum Lifecycle {
     Failed(String),
 }
 
+/// A failed statement, keeping the message `describe` reports it with -- not
+/// `Runtime error: …` again when `describe` wraps it in a runtime error.
+fn failure(error: &Error) -> Lifecycle {
+    Lifecycle::Failed(match error {
+        Error::Runtime { message } => message.clone(),
+        other => other.to_string(),
+    })
+}
+
 /// A statement running on its own `DoExchange` call.
 pub(super) struct ExchangeQuery {
     id: Uuid,
@@ -209,14 +218,7 @@ impl ExchangeQuery {
         let first = tokio::select! {
             biased;
             _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
-            result = rows.next_batch() => result,
-        };
-        let first = match first {
-            Ok(first) => first,
-            Err(error) => {
-                self.settle(Lifecycle::Failed(error.to_string()));
-                return Err(error);
-            }
+            result = rows.next_batch() => result?,
         };
         let schema = first
             .as_ref()
@@ -271,7 +273,7 @@ impl ExchangeQuery {
                     return Ok(());
                 }
                 Err(error) => {
-                    self.settle(Lifecycle::Failed(error.to_string()));
+                    self.settle(failure(&error));
                     return Err(error);
                 }
             }
@@ -347,7 +349,15 @@ impl QueryHandle for ExchangeQueryHandle {
         self.query.touch();
         let started = Instant::now();
         let prepared =
-            with_overall_timeout(timeout, "SQL query result", self.query.prepare()).await?;
+            match with_overall_timeout(timeout, "SQL query result", self.query.prepare()).await {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    // The rows were taken before the wait, so whatever ended
+                    // it -- a failed read or the timeout -- the call is gone.
+                    self.query.settle(failure(&error));
+                    return Err(error);
+                }
+            };
         let remaining_timeout = timeout.map(|timeout| timeout.saturating_sub(started.elapsed()));
         let schema = prepared.schema.clone();
         let (sender, receiver) = mpsc::channel(2);
@@ -361,7 +371,7 @@ impl QueryHandle for ExchangeQueryHandle {
             )
             .await;
             if let Err(error) = result {
-                query.settle(Lifecycle::Failed(error.to_string()));
+                query.settle(failure(&error));
                 let _ = error_sender.send(Err(error)).await;
             }
         });
