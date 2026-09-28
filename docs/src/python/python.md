@@ -28,6 +28,17 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.Session
 
+## Catalogs (Synchronous)
+
+Remote catalogs manage databases through a server's root namespace. Opened databases
+are ordinary connections. Dropping a database requires it to be empty.
+
+::: lancedb.connect_catalog
+
+::: lancedb.catalog.Catalog
+
+::: lancedb.catalog.ListDatabasesResponse
+
 ## Remote SQL
 
 Submit SQL against a remote LanceDB database through the connection.
@@ -125,6 +136,10 @@ listing a storage directory.
 
 ::: lancedb.functions.UdfDefinition
 
+::: lancedb.secrets.EnvVarSecret
+
+::: lancedb.secrets.SecretInfo
+
 ::: lancedb.functions.FunctionRegistrationRequest
 
 ::: lancedb.functions.FunctionArtifactRequest
@@ -132,6 +147,8 @@ listing a storage directory.
 ::: lancedb.functions.FunctionArtifactContent
 
 ::: lancedb.functions.PythonAdapterSpec
+
+::: lancedb.functions.FunctionImage
 
 ::: lancedb.functions.FunctionVersion
 
@@ -152,6 +169,12 @@ listing a storage directory.
 ::: lancedb.functions.FunctionBinding
 
 ::: lancedb.functions.RefreshColumnResult
+
+::: lancedb.FunctionErrors
+
+::: lancedb.FunctionErrorRecord
+
+::: lancedb.FunctionErrorFragment
 
 ::: lancedb.job.Job
 
@@ -174,6 +197,10 @@ listing a storage directory.
 ::: lancedb.materialized_view.MaterializedView
 
 ::: lancedb.materialized_view.MaterializedViewDefinition
+
+## Views
+
+::: lancedb.view.ViewDescription
 
 ## Expressions
 
@@ -352,12 +379,39 @@ still work. Queries return descriptors. Call
 
 ## Reranking
 
+`TypeSafeReranker` supports opt-in request batching:
+
+```python
+from lancedb.rerankers import TypeSafeReranker
+
+reranker = TypeSafeReranker(batch_size=40, max_concurrency=8)
+```
+
+The default `batch_size=1` keeps the query and document in request state and
+sends one request per non-null candidate. With `batch_size=40`, 80 non-null
+candidates require two requests. `max_concurrency` still limits simultaneous
+requests, and the SDK handles retries.
+
+In batched mode, state contains only `{"query": query}`. Each independent
+question contains `{"question": instructions, "document": document}` in its
+structured instructions, so it sees only its own document and the shared query.
+Custom instructions and criteria are kept verbatim: adapt prompts that explicitly
+reference request-state fields such as `state.document` before enabling batching.
+Null documents retain a zero score without an API call; empty strings are scored.
+API failures, mismatched answer IDs, and invalid probabilities raise errors.
+Batching changes the payload and can affect model scores; compare quality and
+latency on your workload before opting in.
+
 ::: lancedb.rerankers
     options:
       show_root_heading: false
       show_root_toc_entry: false
 
 ## Connections (Asynchronous)
+
+::: lancedb.connect_catalog_async
+
+::: lancedb.catalog.AsyncCatalog
 
 Connections represent a connection to a LanceDb database and
 can be used to create, list, or open tables.

@@ -9,7 +9,8 @@
 //! - [`drop_columns`](execute_drop_columns): Remove columns from the table
 
 use arrow_schema::Schema as ArrowSchema;
-use lance::dataset::{ColumnAlteration, NewColumnTransform};
+use lance::dataset::transaction::{Operation, Transaction, UpdateMap, UpdateMapEntry};
+use lance::dataset::{ColumnAlteration, CommitBuilder, Dataset, NewColumnTransform};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -103,9 +104,10 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
-    computed_columns::ensure_no_function_bindings_for_mutation(
+    computed_columns::ensure_not_function_bound(
         table.schema().await?.as_ref(),
         "schema evolution",
+        new_column_names(&transforms),
     )?;
     // Declarations are admitted only through [`execute_declare`].
     match &transforms {
@@ -131,9 +133,10 @@ pub(crate) async fn execute_declare(
     // An LSM write spec keeps visible rows in tiers refresh cannot reach;
     // checked against latest committed state, not this handle's snapshot.
     table.checkout_latest().await?;
-    computed_columns::ensure_no_function_bindings_for_mutation(
+    computed_columns::ensure_not_function_bound(
         table.schema().await?.as_ref(),
         "schema evolution",
+        columns.iter().map(|(name, _)| name),
     )?;
     // Unset drops the MemWAL index, so the spec alone stops describing a table
     // whose SSTables still hold rows. The shard directories outlive it and are
@@ -154,6 +157,26 @@ pub(crate) async fn execute_declare(
     }
     let transform = computed_columns::declare(table.schema().await?, columns)?;
     commit_add_columns(table, transform, None).await
+}
+
+/// The top-level columns `transforms` adds.
+pub(crate) fn new_column_names(transforms: &NewColumnTransform) -> Vec<String> {
+    let names = |schema: &ArrowSchema| {
+        schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>()
+    };
+    match transforms {
+        NewColumnTransform::SqlExpressions(expressions) => {
+            expressions.iter().map(|(name, _)| name.clone()).collect()
+        }
+        NewColumnTransform::AllNulls(schema) => names(schema),
+        NewColumnTransform::BatchUDF(udf) => names(&udf.output_schema),
+        NewColumnTransform::Stream(stream) => names(&stream.schema()),
+        NewColumnTransform::Reader(reader) => names(&reader.schema()),
+    }
 }
 
 pub(crate) async fn commit_add_columns(
@@ -178,13 +201,18 @@ pub(crate) async fn execute_alter_columns(
 ) -> Result<AlterColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
-    // Nullability is not part of what an expression resolves against, so only
-    // a rename or a retype can invalidate a binding.
     let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
-    computed_columns::ensure_no_function_bindings_for_mutation(
+    // A Function binding stores its columns' exact fields, nullability
+    // included, so every alteration of one counts, and a rename's target too.
+    computed_columns::ensure_not_function_bound(
         schema.as_ref(),
         "schema evolution",
+        alterations.iter().flat_map(|alteration| {
+            std::iter::once(alteration.path.as_str()).chain(alteration.rename.as_deref())
+        }),
     )?;
+    // Nullability is not part of what an expression resolves against, so only
+    // a rename or a retype can invalidate a binding.
     let rebinding = alterations
         .iter()
         .filter(|alteration| alteration.rename.is_some() || alteration.data_type.is_some())
@@ -212,18 +240,95 @@ pub(crate) async fn execute_drop_columns(
 ) -> Result<DropColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
-    computed_columns::ensure_no_function_bindings_for_mutation(
-        &ArrowSchema::from(dataset.schema()),
-        "schema evolution",
-    )?;
-    computed_columns::ensure_not_an_input(
-        &std::sync::Arc::new(ArrowSchema::from(dataset.schema())),
-        columns,
-    )?;
-    dataset.drop_columns(columns).await?;
+    let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    let unbinding = computed_columns::plan_function_unbinding(schema.as_ref(), columns)?;
+
+    let mut names = columns.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+    names.extend(unbinding.assignment_columns.iter().cloned());
+    let dropped = names.iter().map(String::as_str).collect::<Vec<_>>();
+    computed_columns::ensure_not_bound_by(&unbinding.retained, "schema evolution", &dropped)?;
+    computed_columns::ensure_not_an_input_of(&schema, &dropped, &dropped)?;
+
+    if !unbinding.is_noop() {
+        // The retirement commits before the projection, so the whole
+        // projection has to be known valid against this revision first --
+        // otherwise the binding is gone and the columns are not. Lance plans
+        // it rather than this repeating the rules: dropping a struct's last
+        // child removes the struct, and data files that disagree on metadata
+        // semantics are refused, neither of which an approximation here would
+        // get right.
+        dataset.plan_drop_columns(&dropped)?;
+        dataset = commit_function_unbinding(dataset, &unbinding).await?;
+    }
+    dataset.drop_columns(&dropped).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
     Ok(DropColumnsResult { version })
+}
+
+/// Retire the bindings a drop covers, in the commit before it.
+///
+/// A binding lives in three places -- the schema-metadata envelope, each
+/// output's `computed_column.*` field metadata, and the columns themselves --
+/// and readers cross-check the first two, so a state with one of them removed
+/// is a table that refuses every write. Clearing both metadata halves in one
+/// `UpdateConfig` leaves the outputs as ordinary columns holding their last
+/// values: valid on its own, and the drop that follows is then an ordinary
+/// drop. Interrupted in between, the columns are still there to be dropped
+/// again.
+///
+/// Not folded into the drop's own `Operation::Project`, though it carries a
+/// schema: the transaction proto records `Project` as fields alone, so the
+/// metadata edit would survive only in this writer's memory.
+async fn commit_function_unbinding(
+    dataset: Dataset,
+    unbinding: &computed_columns::FunctionUnbinding,
+) -> Result<Dataset> {
+    let bindings = UpdateMap {
+        update_entries: vec![UpdateMapEntry {
+            key: computed_columns::FUNCTION_BINDINGS_META_KEY.to_string(),
+            value: unbinding.bindings_metadata.clone(),
+        }],
+        replace: false,
+    };
+    let mut field_metadata_updates = HashMap::new();
+    for column in &unbinding.cleared_columns {
+        let field = dataset
+            .schema()
+            .field(column)
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!("Function output '{column}' does not exist in the table"),
+            })?;
+        let cleared = field
+            .metadata
+            .keys()
+            .filter(|key| computed_columns::is_declaration_key(key))
+            .map(|key| UpdateMapEntry {
+                key: key.clone(),
+                value: None,
+            })
+            .collect::<Vec<_>>();
+        field_metadata_updates.insert(
+            field.id,
+            UpdateMap {
+                update_entries: cleared,
+                replace: false,
+            },
+        );
+    }
+    let transaction = Transaction::new(
+        dataset.manifest.version,
+        Operation::UpdateConfig {
+            config_updates: None,
+            table_metadata_updates: None,
+            schema_metadata_updates: Some(bindings),
+            field_metadata_updates,
+        },
+        None,
+    );
+    Ok(CommitBuilder::new(std::sync::Arc::new(dataset))
+        .execute(transaction)
+        .await?)
 }
 
 /// Internal implementation of the update field metadata logic.
@@ -241,7 +346,11 @@ pub(crate) async fn execute_update_field_metadata(
     // binding out from under a refresh. A replace on a declared column would
     // silently erase it.
     let schema = ArrowSchema::from(dataset.schema());
-    computed_columns::ensure_no_function_bindings_for_mutation(&schema, "schema evolution")?;
+    computed_columns::ensure_not_function_bound(
+        &schema,
+        "field metadata update",
+        updates.iter().map(|update| update.path.as_str()),
+    )?;
     let declared: Vec<String> = computed_columns::computed_columns(&schema)
         .into_iter()
         .map(|declaration| declaration.name)
@@ -263,7 +372,7 @@ pub(crate) async fn execute_update_field_metadata(
         if update.replace
             && declared
                 .iter()
-                .any(|name| name == computed_columns::root(&update.path))
+                .any(|name| *name == computed_columns::root(&update.path))
         {
             return Err(Error::InvalidInput {
                 message: format!(
@@ -300,8 +409,260 @@ mod tests {
 
     use super::FieldMetadataUpdate;
     use crate::connect;
+    use crate::function::FunctionBinding;
     use crate::query::{ExecutableQuery, QueryBase, Select};
     use crate::table::NewColumnTransform;
+    use crate::table::computed_columns::{
+        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL, FUNCTION_BINDINGS_META_KEY,
+        ensure_supported_function_metadata, function_bindings, function_bindings_metadata,
+        function_computed_column_metadata, is_declaration_key,
+    };
+    use crate::{Error, Table};
+    use std::collections::HashMap;
+
+    /// A table carrying the fixture binding: `title` and `body` are its
+    /// inputs, `search_text` and `search_token_count` its outputs, `spare`
+    /// nobody's. Stamped the way the server does it, since no local path
+    /// declares a binding.
+    async fn bound_table() -> Table {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("title", Utf8, ["a"]),
+            ("body", Utf8, ["b"]),
+            ("search_text", Utf8, ["a b"]),
+            ("search_token_count", Int64, [2]),
+            ("spare", Int32, [1])
+        )
+        .unwrap();
+        let table = conn.create_table("bound", batch).execute().await.unwrap();
+        stamp_bindings(&table, &[text_features_binding("")]).await;
+        table
+    }
+
+    /// The fixture binding, its id and output names suffixed so a table can
+    /// carry more than one.
+    fn text_features_binding(suffix: &str) -> FunctionBinding {
+        let raw = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        );
+        if suffix.is_empty() {
+            return FunctionBinding::from_json(raw).unwrap();
+        }
+        FunctionBinding::from_json(
+            &raw.replace("fb_01K3TEXT", &format!("fb_01K3TEXT{suffix}"))
+                .replace("search_text", &format!("search_text{suffix}"))
+                .replace("search_token_count", &format!("search_token_count{suffix}")),
+        )
+        .unwrap()
+    }
+
+    /// Stamp bindings the way the server does it, since no local path
+    /// declares one: the envelope on the schema, a declaration marker on
+    /// every output field.
+    async fn stamp_bindings(table: &Table, bindings: &[FunctionBinding]) {
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_schema_metadata(vec![(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                Some(function_bindings_metadata(bindings).unwrap()),
+            )])
+            .await
+            .unwrap();
+        let inputs = ["title".to_string(), "body".to_string()];
+        let outputs = bindings
+            .iter()
+            .flat_map(|binding| {
+                let assignment = binding.assignment().map(|assignment| {
+                    (
+                        assignment.output_name.clone(),
+                        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL,
+                    )
+                });
+                binding
+                    .outputs()
+                    .iter()
+                    .map(|output| (output.output_name.clone(), output.output_ordinal))
+                    .chain(assignment)
+                    .map(|(name, ordinal)| {
+                        (
+                            dataset.schema().field(&name).unwrap().id as u32,
+                            function_computed_column_metadata(
+                                binding.binding_id(),
+                                ordinal,
+                                &inputs,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        dataset.replace_field_metadata(outputs).await.unwrap();
+        native.dataset.update(dataset);
+        ensure_supported_function_metadata(&table.schema().await.unwrap()).unwrap();
+    }
+
+    fn metadata_update(path: &str) -> FieldMetadataUpdate {
+        FieldMetadataUpdate {
+            path: path.into(),
+            metadata: HashMap::from([("unit".to_string(), Some("label".to_string()))]),
+            replace: false,
+        }
+    }
+
+    /// Columns no binding uses evolve as on any table, and the binding is
+    /// still valid afterwards, which is what every later write checks.
+    #[tokio::test]
+    async fn test_schema_evolution_leaves_unbound_columns_free_on_a_bound_table() {
+        let table = bound_table().await;
+        table
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "eager".into(),
+                "1".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .add_columns()
+            .computed("derived", "spare * 2")
+            .execute()
+            .await
+            .unwrap();
+        table
+            .update_field_metadata(&[metadata_update("eager")])
+            .await
+            .unwrap();
+        table
+            .alter_columns(&[ColumnAlteration::new("eager".into()).rename("moved".into())])
+            .await
+            .unwrap();
+        table.drop_columns(&["moved"]).await.unwrap();
+
+        let schema = table.schema().await.unwrap();
+        ensure_supported_function_metadata(&schema).unwrap();
+        assert_eq!(function_bindings(&schema).unwrap().len(), 1);
+        assert!(schema.field_with_name("derived").is_ok());
+        assert!(schema.field_with_name("moved").is_err());
+    }
+
+    fn bound(err: Error) {
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("a Function binding reads or writes it")),
+            "{err:?}"
+        );
+    }
+
+    fn incomplete_group(err: Error) {
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("must drop every output of its binding")),
+            "{err:?}"
+        );
+    }
+
+    async fn bindings_of(table: &Table) -> Vec<FunctionBinding> {
+        function_bindings(table.schema().await.unwrap().as_ref()).unwrap()
+    }
+
+    /// Every schema-evolution door refuses a column a binding reads or
+    /// writes, including a rename onto one.
+    #[tokio::test]
+    async fn test_schema_evolution_refuses_the_columns_a_function_binding_uses() {
+        let table = bound_table().await;
+        let version = table.version().await.unwrap();
+        for column in ["title", "body", "search_text", "search_token_count"] {
+            // A lone drop of an output is refused too, but for its siblings
+            // rather than for the binding; see the retirement tests below.
+            let err = table.drop_columns(&[column]).await.unwrap_err();
+            if column.starts_with("search_") {
+                incomplete_group(err);
+            } else {
+                bound(err);
+            }
+            bound(
+                table
+                    .alter_columns(&[ColumnAlteration::new(column.into()).rename("moved".into())])
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .alter_columns(&[ColumnAlteration::new(column.into()).set_nullable(false)])
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .update_field_metadata(&[metadata_update(column)])
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .add_columns()
+                    .transform(NewColumnTransform::SqlExpressions(vec![(
+                        column.into(),
+                        "1".into(),
+                    )]))
+                    .execute()
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .add_columns()
+                    .computed(column, "1")
+                    .execute()
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        bound(
+            table
+                .alter_columns(&[ColumnAlteration::new("spare".into()).rename("title".into())])
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(table.version().await.unwrap(), version);
+    }
+
+    /// Lance resolves a quoted spelling to the same field as the bare one,
+    /// so the guard compares identities, not text.
+    #[tokio::test]
+    async fn quoted_function_output_path_is_still_refused() {
+        let table = bound_table().await;
+        let version = table.version().await.unwrap();
+        for path in ["`title`", "`search_text`", "`title`.nested"] {
+            let err = table.drop_columns(&[path]).await.unwrap_err();
+            if path == "`search_text`" {
+                incomplete_group(err);
+            } else {
+                bound(err);
+            }
+            bound(
+                table
+                    .alter_columns(&[ColumnAlteration::new(path.into()).set_nullable(false)])
+                    .await
+                    .unwrap_err(),
+            );
+            bound(
+                table
+                    .update_field_metadata(&[metadata_update(path)])
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        bound(
+            table
+                .alter_columns(&[ColumnAlteration::new("spare".into()).rename("`title`".into())])
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(table.version().await.unwrap(), version);
+    }
 
     // Add Columns Tests
 
@@ -816,6 +1177,264 @@ mod tests {
         assert!(drop_result.version > v3);
         let v4 = table.version().await.unwrap();
         assert_eq!(drop_result.version, v4);
+    }
+
+    // Retiring a Function binding by dropping its outputs (ENT-2669).
+
+    /// The whole output set goes, and the binding with it: no envelope, no
+    /// declaration markers, and the inputs it held are ordinary again.
+    #[tokio::test]
+    async fn dropping_every_output_retires_the_binding() {
+        let table = bound_table().await;
+        table
+            .drop_columns(&["search_text", "search_token_count"])
+            .await
+            .unwrap();
+
+        let schema = table.schema().await.unwrap();
+        assert!(schema.field_with_name("search_text").is_err());
+        assert!(schema.field_with_name("search_token_count").is_err());
+        assert!(!schema.metadata().contains_key(FUNCTION_BINDINGS_META_KEY));
+        assert!(bindings_of(&table).await.is_empty());
+
+        // What the binding used to protect is now ordinary schema.
+        table.drop_columns(&["title"]).await.unwrap();
+        table
+            .update_field_metadata(&[metadata_update("body")])
+            .await
+            .unwrap();
+        ensure_supported_function_metadata(&table.schema().await.unwrap()).unwrap();
+    }
+
+    /// One output of a multi-output binding cannot go alone: its siblings are
+    /// written by the same refresh in the same commit.
+    #[tokio::test]
+    async fn dropping_part_of_an_output_group_names_the_missing_siblings() {
+        let table = bound_table().await;
+        let version = table.version().await.unwrap();
+        for (named, missing) in [
+            ("search_text", "search_token_count"),
+            ("search_token_count", "search_text"),
+        ] {
+            let err = table.drop_columns(&[named]).await.unwrap_err();
+            let Error::InvalidInput { message } = &err else {
+                panic!("{err:?}");
+            };
+            assert!(
+                message.contains("must drop every output of its binding")
+                    && message.contains(missing),
+                "{message}"
+            );
+        }
+        assert_eq!(table.version().await.unwrap(), version);
+        assert_eq!(bindings_of(&table).await.len(), 1);
+    }
+
+    /// An input is protected by the binding, not by its own name, so it drops
+    /// in the request that retires the binding reading it.
+    #[tokio::test]
+    async fn an_input_drops_with_the_binding_that_reads_it() {
+        let table = bound_table().await;
+        bound(table.drop_columns(&["title"]).await.unwrap_err());
+
+        table
+            .drop_columns(&["title", "body", "search_text", "search_token_count"])
+            .await
+            .unwrap();
+        let schema = table.schema().await.unwrap();
+        assert_eq!(schema.fields().len(), 1);
+        assert!(schema.field_with_name("spare").is_ok());
+        assert!(bindings_of(&table).await.is_empty());
+    }
+
+    /// Lance resolves a quoted spelling to the same field, so it retires the
+    /// same binding rather than slipping past the group rule.
+    #[tokio::test]
+    async fn a_quoted_output_spelling_retires_the_same_binding() {
+        let table = bound_table().await;
+        incomplete_group(table.drop_columns(&["`search_text`"]).await.unwrap_err());
+        table
+            .drop_columns(&["`search_text`", "`search_token_count`"])
+            .await
+            .unwrap();
+        assert!(bindings_of(&table).await.is_empty());
+    }
+
+    /// The unbind lands before the drop, and on its own: at that version the
+    /// outputs are still there as plain columns, with no binding and no
+    /// declaration metadata left pointing at one. A crash in between leaves
+    /// that state, which every later write must accept.
+    #[tokio::test]
+    async fn the_unbind_commit_leaves_a_valid_table_before_the_drop() {
+        let table = bound_table().await;
+        let before = table.version().await.unwrap();
+        table
+            .drop_columns(&["search_text", "search_token_count"])
+            .await
+            .unwrap();
+        assert_eq!(table.version().await.unwrap(), before + 2);
+
+        table.checkout(before + 1).await.unwrap();
+        let schema = table.schema().await.unwrap();
+        assert!(!schema.metadata().contains_key(FUNCTION_BINDINGS_META_KEY));
+        for column in ["search_text", "search_token_count"] {
+            let field = schema.field_with_name(column).unwrap();
+            assert!(
+                !field.metadata().keys().any(|key| is_declaration_key(key)),
+                "{column}: {:?}",
+                field.metadata()
+            );
+        }
+        ensure_supported_function_metadata(&schema).unwrap();
+        assert!(function_bindings(&schema).unwrap().is_empty());
+    }
+
+    /// A table carrying two bindings retires only the one whose outputs the
+    /// drop names; the other keeps its envelope entry and its protection.
+    #[tokio::test]
+    async fn retiring_one_binding_leaves_the_others_standing() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("title", Utf8, ["a"]),
+            ("body", Utf8, ["b"]),
+            ("search_text", Utf8, ["a b"]),
+            ("search_token_count", Int64, [2]),
+            ("search_text_2", Utf8, ["a b"]),
+            ("search_token_count_2", Int64, [2])
+        )
+        .unwrap();
+        let table = conn.create_table("two", batch).execute().await.unwrap();
+        stamp_bindings(
+            &table,
+            &[text_features_binding(""), text_features_binding("_2")],
+        )
+        .await;
+
+        table
+            .drop_columns(&["search_text", "search_token_count"])
+            .await
+            .unwrap();
+        let remaining = bindings_of(&table).await;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].binding_id(), "fb_01K3TEXT_2");
+        // The survivor still protects the inputs it shared with the retired one.
+        bound(table.drop_columns(&["title"]).await.unwrap_err());
+        // And its own outputs are still a group.
+        incomplete_group(table.drop_columns(&["search_text_2"]).await.unwrap_err());
+    }
+
+    /// A multi-output binding also owns a hidden `__function_assignment_*`
+    /// column, which the caller never names. Retiring the binding has to take
+    /// it: leaving it behind orphans a column nothing can fill or explain.
+    #[tokio::test]
+    async fn retiring_a_binding_drops_its_assignment_column() {
+        const ASSIGNMENT: &str = "__function_assignment_fb_01K3TEXT";
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("title", Utf8, ["a"]),
+            ("body", Utf8, ["b"]),
+            ("search_text", Utf8, ["a b"]),
+            ("search_token_count", Int64, [2]),
+            (ASSIGNMENT, Boolean, [Some(true)]),
+            ("spare", Int32, [1])
+        )
+        .unwrap();
+        let table = conn
+            .create_table("assigned", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let raw = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        )
+        .replace(
+            r#""future_binding""#,
+            &format!(
+                r#""assignment": {{"output_name": "{ASSIGNMENT}", "output_field_id": -1}}, "future_binding""#
+            ),
+        )
+        // The assignment column is a physical sibling, so it belongs to the
+        // binding's output schema too -- the server writes it that way.
+        .replace(
+            r#"{"name": "search_token_count", "nullable": true, "type": {"type": "int64"}}"#,
+            &format!(
+                r#"{{"name": "search_token_count", "nullable": true, "type": {{"type": "int64"}}}}, {{"name": "{ASSIGNMENT}", "nullable": true, "type": {{"type": "bool"}}}}"#
+            ),
+        );
+        let binding = FunctionBinding::from_json(&raw).unwrap();
+        assert!(binding.assignment().is_some(), "fixture must carry one");
+        stamp_bindings(&table, std::slice::from_ref(&binding)).await;
+
+        // The assignment column is the binding's, so it is protected too...
+        bound(table.drop_columns(&[ASSIGNMENT]).await.unwrap_err());
+
+        // ...and goes with the outputs without the caller naming it.
+        table
+            .drop_columns(&["search_text", "search_token_count"])
+            .await
+            .unwrap();
+        let schema = table.schema().await.unwrap();
+        assert!(
+            schema.field_with_name(ASSIGNMENT).is_err(),
+            "the assignment column outlived its binding: {:?}",
+            schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
+        );
+        assert!(bindings_of(&table).await.is_empty());
+        ensure_supported_function_metadata(&schema).unwrap();
+    }
+
+    /// An input error must not cost the binding. The retirement commits
+    /// first, so a projection that could never succeed is refused before it,
+    /// leaving the table exactly as it was.
+    #[rstest::rstest]
+    #[case::unknown_column(
+        &["search_text", "search_token_count", "nope"],
+        "does not exist"
+    )]
+    #[case::every_column(
+        &["title", "body", "search_text", "search_token_count", "spare"],
+        "Cannot drop all columns"
+    )]
+    #[case::every_column_quoted(
+        &["`title`", "`body`", "`search_text`", "`search_token_count`", "`spare`"],
+        "Cannot drop all columns"
+    )]
+    #[tokio::test]
+    async fn an_invalid_drop_leaves_the_binding_in_place(
+        #[case] columns: &[&str],
+        #[case] expected: &str,
+    ) {
+        let table = bound_table().await;
+        let version = table.version().await.unwrap();
+
+        let err = table.drop_columns(columns).await.unwrap_err();
+        let Error::InvalidInput { message } = &err else {
+            panic!("{err:?}");
+        };
+        assert!(message.contains(expected), "{message}");
+
+        // Read durable state, not this handle: the error path never calls
+        // `dataset.update`, so the cached handle would report the old version
+        // even if the unbind had committed.
+        table.checkout_latest().await.unwrap();
+        assert_eq!(table.version().await.unwrap(), version);
+        let schema = table.schema().await.unwrap();
+        assert!(schema.metadata().contains_key(FUNCTION_BINDINGS_META_KEY));
+        assert_eq!(bindings_of(&table).await.len(), 1);
+        for column in ["search_text", "search_token_count"] {
+            assert!(
+                schema
+                    .field_with_name(column)
+                    .unwrap()
+                    .metadata()
+                    .keys()
+                    .any(|key| is_declaration_key(key)),
+                "{column} lost its declaration metadata"
+            );
+        }
+        ensure_supported_function_metadata(&schema).unwrap();
     }
 
     #[tokio::test]

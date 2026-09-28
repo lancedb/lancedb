@@ -116,6 +116,7 @@ async fn execute_refresh_column_with_source(
     // since they were computed, or the definition did. Decided once, from
     // the manifest the values are read from.
     let inputs = freshness::fields_for_paths(dataset.schema(), &bound.inputs)?;
+    let bases = freshness::Bases::of(&dataset)?;
     let definition = freshness::definition_version(&expression);
     let staleness = freshness::staleness_against(&dataset, column, &definition, &inputs).await?;
 
@@ -143,7 +144,7 @@ async fn execute_refresh_column_with_source(
         if whole {
             computed.insert(
                 fragment_id,
-                freshness::fragment_input_signature(fragment.metadata(), &inputs)?,
+                freshness::fragment_input_signature(&bases, fragment.metadata(), &inputs)?,
             );
         }
         let gained = Arc::new(AtomicU64::new(0));
@@ -877,6 +878,74 @@ mod tests {
         assert_eq!(
             read(&table, "doubled").await,
             vec![Some(2), Some(4), Some(6)]
+        );
+    }
+
+    /// A branch inherits the freshness main recorded: its first refresh
+    /// fills nothing, and only its own appends after that.
+    #[tokio::test]
+    async fn test_a_branch_inherits_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("x", Int32, vec![1, 2, 3])).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+        let branch = table
+            .create_branch("exp", table.version().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            branch.refresh_column("doubled").await.unwrap().rows_filled,
+            0
+        );
+        append(&branch, vec![4]).await;
+        assert_eq!(
+            branch.refresh_column("doubled").await.unwrap().rows_filled,
+            1
+        );
+        assert_eq!(
+            table.refresh_column("doubled").await.unwrap().rows_filled,
+            0
+        );
+        assert_eq!(
+            read(&branch, "doubled").await,
+            vec![Some(2), Some(4), Some(6), Some(8)]
+        );
+    }
+
+    /// A shallow clone inherits the freshness its source recorded.
+    #[tokio::test]
+    async fn test_a_shallow_clone_inherits_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("x", Int32, vec![1, 2, 3])).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+        let clone = conn
+            .clone_table("copy", dir.path().join("t.lance").to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            clone.refresh_column("doubled").await.unwrap().rows_filled,
+            0
+        );
+        append(&clone, vec![4]).await;
+        assert_eq!(
+            clone.refresh_column("doubled").await.unwrap().rows_filled,
+            1
+        );
+        assert_eq!(
+            table.refresh_column("doubled").await.unwrap().rows_filled,
+            0
         );
     }
 

@@ -20,6 +20,7 @@ import {
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
+  makeJsonField,
 } from "../lancedb/arrow";
 import {
   EmbeddingFunction,
@@ -27,6 +28,21 @@ import {
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
 import { sanitizeTable } from "../lancedb/sanitize";
+
+it("creates a nullable JSON field with the Arrow extension metadata", () => {
+  const field = makeJsonField("metadata");
+
+  expect(field.name).toBe("metadata");
+  expect(field.type).toEqual(new arrow15.Utf8());
+  expect(field.nullable).toBe(true);
+  expect(field.metadata).toEqual(
+    new Map([["ARROW:extension:name", "arrow.json"]]),
+  );
+});
+
+it("allows JSON fields to be non-nullable", () => {
+  expect(makeJsonField("metadata", false).nullable).toBe(false);
+});
 
 // biome-ignore lint/suspicious/noExplicitAny: skip
 function sampleRecords(): Array<Record<string, any>> {
@@ -583,6 +599,103 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(() => makeArrowTable([{ value: 1 }, { value: "two" }])).toThrow(
           "Failed to infer schema for data. Previously inferred type Float64 but found Utf8 for field value at row 1. Consider providing an explicit schema.",
         );
+      });
+
+      it.each([
+        ["ArrayBuffer", new Uint8Array([104]).buffer],
+        ["URL", new URL("https://example.com/")],
+        ["empty object", {}],
+        [
+          "class instance with enumerable fields",
+          Object.assign(new Blob(["x"]), { position: 0 }),
+        ],
+      ])("rejects %s values without a schema", (_name, value) => {
+        expect(() => makeArrowTable([{ id: 1, value }])).toThrow(
+          /field value at row 0/,
+        );
+        expect(() => makeArrowTable([{ value }])).toThrow(
+          /field value at row 0/,
+        );
+      });
+
+      it.each([
+        ["Binary", new Binary(), new Uint8Array([104]).buffer],
+        ["Utf8", new Utf8(), new URL("https://example.com/")],
+      ])("rejects %s values with a schema", (_name, type, value) => {
+        const schema = new Schema([new Field("value", type, true)]);
+        expect(() => makeArrowTable([{ value }], { schema })).toThrow(
+          /field value at row 0/,
+        );
+      });
+
+      it("rejects unsupported values in nested struct fields", () => {
+        const schema = new Schema([
+          new Field(
+            "metadata",
+            new Struct([new Field("bytes", new Binary(), true)]),
+            true,
+          ),
+        ]);
+        expect(() =>
+          makeArrowTable(
+            [{ metadata: { bytes: new Uint8Array([104]).buffer } }],
+            { schema },
+          ),
+        ).toThrow(/field metadata\.bytes at row 0/);
+      });
+
+      it("rejects unsupported objects in list elements", () => {
+        const schema = new Schema([
+          new Field(
+            "images",
+            new List(new Field("item", new Binary(), true)),
+            true,
+          ),
+        ]);
+        expect(() =>
+          makeArrowTable([{ images: [new Blob(["abc"])] }], { schema }),
+        ).toThrow(/field images\[0\] at row 0/);
+      });
+
+      it("rejects unsupported objects in nested lists", () => {
+        const schema = new Schema([
+          new Field(
+            "images",
+            new List(
+              new Field(
+                "item",
+                new List(new Field("item", new Binary(), true)),
+                true,
+              ),
+            ),
+            true,
+          ),
+        ]);
+        expect(() =>
+          makeArrowTable([{ images: [[new Blob(["abc"])]] }], { schema }),
+        ).toThrow(/field images\[0\]\[0\] at row 0/);
+      });
+
+      it("rejects unsupported nested struct fields in lists", () => {
+        const schema = new Schema([
+          new Field(
+            "items",
+            new List(
+              new Field(
+                "item",
+                new Struct([new Field("bytes", new Binary(), true)]),
+                true,
+              ),
+            ),
+            true,
+          ),
+        ]);
+        expect(() =>
+          makeArrowTable(
+            [{ items: [{ bytes: new Uint8Array([104]).buffer }] }],
+            { schema },
+          ),
+        ).toThrow(/field items\[0\]\.bytes at row 0/);
       });
 
       it("will ignore generated dictionary IDs when comparing inferred types", function () {

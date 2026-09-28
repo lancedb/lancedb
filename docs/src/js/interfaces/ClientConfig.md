@@ -22,6 +22,10 @@ optional extraHeaders: Record<string, string>;
 optional idDelimiter: string;
 ```
 
+The delimiter joining a namespace path and a name into one object
+identifier. `"$"` is the only supported value, and leaving this unset is
+how to get it; anything else is rejected when the connection is created.
+
 ***
 
 ### retryConfig?

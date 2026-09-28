@@ -174,6 +174,7 @@
 
 pub mod arrow;
 pub mod blob;
+pub mod catalog;
 pub mod connection;
 pub mod data;
 pub mod database;
@@ -195,11 +196,13 @@ pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod rerankers;
+pub mod secrets;
 pub mod sql;
 pub mod table;
 #[cfg(test)]
 pub mod test_utils;
 pub mod utils;
+pub mod view;
 
 use std::{fmt::Display, str::FromStr};
 
@@ -383,3 +386,9 @@ pub use lance_io::object_store::ObjectStoreRegistry;
 /// declaring their own (potentially mismatched) direct `datafusion` dependency.
 /// See <https://github.com/lancedb/lancedb/issues/3575>.
 pub use datafusion;
+
+/// Connect to a remote catalog through its HTTP(S) root namespace endpoint.
+#[cfg(feature = "remote")]
+pub fn connect_catalog(endpoint: impl Into<String>) -> catalog::ConnectCatalogBuilder {
+    catalog::ConnectCatalogBuilder::new(endpoint)
+}

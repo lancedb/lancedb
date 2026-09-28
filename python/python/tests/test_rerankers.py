@@ -21,6 +21,7 @@ from lancedb.rerankers import (
     OpenaiReranker,
     JinaReranker,
     AnswerdotaiRerankers,
+    TypeSafeReranker,
     VoyageAIReranker,
     MRRReranker,
     WatsonxReranker,
@@ -101,7 +102,15 @@ def get_test_table(tmp_path):
     return table, MyTable
 
 
-def _run_test_reranker(reranker, table, query, query_vector, schema):
+def _run_test_reranker(
+    reranker, table, query, query_vector, schema, deterministic=True
+):
+    """Exercise a reranker across search types.
+
+    Set ``deterministic=False`` for rerankers whose scores can vary between
+    identical calls, such as remote model APIs; repeated searches are then not
+    expected to return the same order.
+    """
     # Hybrid search setting
     result1 = (
         table.search(query, query_type="hybrid", vector_column_name="vector")
@@ -113,7 +122,8 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .rerank(reranker=reranker)
         .to_pydantic(schema)
     )
-    assert result1 == result2
+    if deterministic:
+        assert result1 == result2
 
     query_vector = table.to_pandas()["vector"][0]
     result = (
@@ -203,7 +213,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
     )
     assert len(result_deduped) <= 20
     result_arrow = reranker.rerank_multivector([rs1.to_arrow(), rs2.to_arrow()], query)
-    assert len(result) == 20 and result == result_arrow
+    assert len(result) == 20 and len(result_arrow) == 20
+    if deterministic:
+        assert result == result_arrow
 
 
 def _run_test_hybrid_reranker(reranker, tmp_path):
@@ -469,6 +481,14 @@ def test_cross_encoder_reranker(tmp_path):
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
+def test_cross_encoder_reranker_kwargs(tmp_path):
+    pytest.importorskip("sentence_transformers")
+    reranker = CrossEncoderReranker(batch_size=4, max_length=64)
+    assert reranker.model.max_length == 64
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
 def test_colbert_reranker(tmp_path):
     pytest.importorskip("rerankers")
     reranker = ColbertReranker()
@@ -513,6 +533,110 @@ def test_voyageai_reranker(tmp_path):
     reranker = VoyageAIReranker(model_name="rerank-2.5")
     table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
+class _FakeTypeSafeClient:
+    """Stands in for ``typesafe_sdk.TypeSafeClient``; scores by word overlap."""
+
+    def __init__(self):
+        self.requests = []
+
+    def system_one(self, state, questions, model):
+        self.requests.append((state, questions, model))
+        query_words = set(state["query"].lower().split())
+        answers = {}
+        for key, question in questions.items():
+            document = (
+                state["document"]
+                if "document" in state
+                else question["instructions"]["document"]
+            )
+            doc_words = set(document.lower().split())
+            noul = len(query_words & doc_words) / len(query_words)
+            answers[key] = type("NoulAnswer", (), {"noul": noul})()
+        return type("SystemOneResponse", (), {"answers": answers})()
+
+
+@pytest.mark.parametrize("batch_size", [1, 40])
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_typesafe_reranker_with_fake_client(tmp_path, batch_size, return_score):
+    reranker = TypeSafeReranker(
+        max_concurrency=4, batch_size=batch_size, return_score=return_score
+    )
+    reranker._client = _FakeTypeSafeClient()
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+    state, questions, model = reranker._client.requests[0]
+    assert model == "jev-latest"
+    if batch_size == 1:
+        assert set(state) == {"query", "document"}
+        assert questions == {
+            "relevance": {
+                "type": "noul",
+                "instructions": reranker.instructions,
+                "criteria": reranker.criteria,
+            }
+        }
+    else:
+        assert set(state) == {"query"}
+        assert 1 <= len(questions) <= batch_size
+
+
+def test_typesafe_reranker_scores_each_row():
+    reranker = TypeSafeReranker(
+        column="body",
+        instructions="Is this about cats?",
+        criteria={},
+        return_score="all",
+    )
+    reranker._client = _FakeTypeSafeClient()
+    results = pa.table(
+        {
+            "body": ["dogs bark", "cats purr and cats nap", None, "cats"],
+            "_distance": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
+
+    reranked = reranker.rerank_vector("cats nap", results)
+
+    assert reranked["body"].to_pylist() == [
+        "cats purr and cats nap",
+        "cats",
+        "dogs bark",
+        None,
+    ]
+    assert reranked["_relevance_score"].to_pylist() == [1.0, 0.5, 0.0, 0.0]
+    assert reranked["_distance"].to_pylist() == [0.2, 0.4, 0.1, 0.3]
+    # Null documents are scored 0 without a request.
+    assert len(reranker._client.requests) == 3
+    assert reranker._client.requests[0][1] == {
+        "relevance": {"type": "noul", "instructions": "Is this about cats?"}
+    }
+
+
+def test_typesafe_reranker_rejects_invalid_arguments():
+    with pytest.raises(ValueError, match="criteria keys"):
+        TypeSafeReranker(criteria={"yes": "relevant"})
+    with pytest.raises(ValueError, match="max_concurrency"):
+        TypeSafeReranker(max_concurrency=0)
+
+
+@pytest.mark.skipif(
+    os.environ.get("TYPESAFE_API_KEY") is None, reason="TYPESAFE_API_KEY not set"
+)
+def test_typesafe_reranker(tmp_path):
+    pytest.importorskip("typesafe_sdk")
+    reranker = TypeSafeReranker()
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(
+        reranker,
+        table,
+        "single player experience",
+        None,
+        schema,
+        deterministic=False,
+    )
 
 
 def test_empty_result_reranker():

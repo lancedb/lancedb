@@ -2412,6 +2412,23 @@ describe("when dealing with blob columns", () => {
     tmpDir.removeCallback();
   });
 
+  it("rejects unsupported blob values in createTable and add", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const row = { id: 1n, image: new Uint8Array([104]).buffer };
+
+    await expect(db.createTable("invalid", [row], { schema })).rejects.toThrow(
+      /field image at row 0/,
+    );
+
+    const table = await db.createEmptyTable("empty", schema);
+    await expect(table.add([row])).rejects.toThrow(/field image at row 0/);
+    await expect(table.countRows()).resolves.toBe(0);
+  });
+
   it("discovers blob columns", async () => {
     const { table } = await openBlobTable();
     expect(await table.blobColumns()).toEqual(["image"]);
@@ -2766,6 +2783,15 @@ describe("when dealing with tags", () => {
   });
 });
 
+/** Returns a Date strictly later than every instant observed before the call. */
+async function nextMillisecond(): Promise<Date> {
+  const start = Date.now();
+  while (Date.now() <= start) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  return new Date();
+}
+
 describe("when optimizing a dataset", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
@@ -2788,7 +2814,12 @@ describe("when optimizing a dataset", () => {
   });
 
   it("cleanups old versions", async () => {
-    const stats = await table.optimize({ cleanupOlderThan: new Date() });
+    // Lance stores version timestamps with nanosecond precision while a JS
+    // Date only has millisecond precision. A cutoff captured in the same
+    // millisecond as the last commit would truncate to *before* that commit
+    // and leave it in place, so wait for the clock to tick over first.
+    const cutoff = await nextMillisecond();
+    const stats = await table.optimize({ cleanupOlderThan: cutoff });
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
     expect(stats.prune.oldVersionsRemoved).toBe(2);
   });
@@ -4342,6 +4373,14 @@ describe("computed columns", () => {
 
     rows = await table.query().toArray();
     expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
+  });
+
+  it("records Function errors only on remote tables", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("errors_local", [{ x: 1 }]);
+    await expect(table.functionErrors()).rejects.toThrow(
+      "LanceDB Cloud and Enterprise",
+    );
   });
 
   it("returns a job handle from refreshColumnAsync", async () => {

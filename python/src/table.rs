@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use crate::runtime::{block_on, future_into_py};
+use crate::runtime::{block_on, future_into_py, spawn_background};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
@@ -441,6 +447,117 @@ impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
     }
 }
 
+/// One row a Function refresh skipped, as the server recorded it.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorRecord {
+    pub job_id: String,
+    pub fragment_id: u64,
+    pub row_offset: Option<u32>,
+    pub column: String,
+    pub function: String,
+    pub function_version: String,
+    pub table_version: u64,
+    pub error_type: String,
+    pub error_message: String,
+    pub created_at_millis: i64,
+}
+
+#[pymethods]
+impl FunctionErrorRecord {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={:?}, column={:?}, \
+             error_type={:?}, error_message={:?})",
+            self.job_id,
+            self.fragment_id,
+            self.row_offset,
+            self.column,
+            self.error_type,
+            self.error_message
+        )
+    }
+}
+
+impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
+    fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
+        Self {
+            job_id: record.job_id,
+            fragment_id: record.fragment_id,
+            row_offset: record.row_offset,
+            column: record.column,
+            function: record.function,
+            function_version: record.function_version,
+            table_version: record.table_version,
+            error_type: record.error_type,
+            error_message: record.error_message,
+            created_at_millis: record.created_at_millis,
+        }
+    }
+}
+
+/// A fragment whose per-row error detail was capped.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorFragment {
+    pub job_id: String,
+    pub fragment_id: u64,
+    pub rows_skipped: u64,
+    pub rows_recorded: u64,
+}
+
+#[pymethods]
+impl FunctionErrorFragment {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "FunctionErrorFragment(job_id={:?}, fragment_id={}, rows_skipped={}, rows_recorded={})",
+            self.job_id, self.fragment_id, self.rows_skipped, self.rows_recorded
+        )
+    }
+}
+
+impl From<lancedb::function::FunctionErrorFragment> for FunctionErrorFragment {
+    fn from(fragment: lancedb::function::FunctionErrorFragment) -> Self {
+        Self {
+            job_id: fragment.job_id,
+            fragment_id: fragment.fragment_id,
+            rows_skipped: fragment.rows_skipped,
+            rows_recorded: fragment.rows_recorded,
+        }
+    }
+}
+
+/// A table's per-row Function errors.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrors {
+    pub records: Vec<FunctionErrorRecord>,
+    pub fragments: Vec<FunctionErrorFragment>,
+    pub truncated: bool,
+}
+
+#[pymethods]
+impl FunctionErrors {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "FunctionErrors(records={}, fragments={}, truncated={})",
+            self.records.len(),
+            self.fragments.len(),
+            self.truncated
+        )
+    }
+}
+
+impl From<lancedb::function::FunctionErrors> for FunctionErrors {
+    fn from(errors: lancedb::function::FunctionErrors) -> Self {
+        Self {
+            records: errors.records.into_iter().map(Into::into).collect(),
+            fragments: errors.fragments.into_iter().map(Into::into).collect(),
+            truncated: errors.truncated,
+        }
+    }
+}
+
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct RefreshMaterializedViewResult {
@@ -452,6 +569,17 @@ pub struct RefreshMaterializedViewResult {
 
 #[pymethods]
 impl RefreshMaterializedViewResult {
+    #[staticmethod]
+    pub fn from_json(value: &str) -> PyResult<Self> {
+        let result: lancedb::RefreshMaterializedViewResult =
+            serde_json::from_str(value).map_err(|err| {
+                PyValueError::new_err(format!(
+                    "failed to decode materialized-view refresh result: {err}"
+                ))
+            })?;
+        Ok(Self::from(result))
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
             "RefreshMaterializedViewResult(mode={}, rows_written={}, source_version={}, version={})",
@@ -558,11 +686,23 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
 #[pyclass(name = "BlobFile")]
 pub struct PyBlobFile {
     inner: Arc<BlobFile>,
+    closed: AtomicBool,
+}
+
+impl PyBlobFile {
+    fn ensure_open(&self) -> PyResult<()> {
+        if self.closed.load(Ordering::Acquire) {
+            Err(PyRuntimeError::new_err("blob file is already closed"))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[pymethods]
 impl PyBlobFile {
     fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         let py = self_.py();
         let bytes = py
@@ -572,6 +712,7 @@ impl PyBlobFile {
     }
 
     pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let bytes = inner
@@ -583,7 +724,20 @@ impl PyBlobFile {
     }
 
     fn close(self_: PyRef<'_, Self>) -> PyResult<()> {
+        if self_.closed.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
         let inner = self_.inner.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // IOBase.__del__ can call close while cyclic GC runs on a worker.
+            // The status changes immediately; release Lance's async state there.
+            spawn_background(async move {
+                if let Err(error) = inner.close().await {
+                    log::warn!("blob close failed: {error}");
+                }
+            });
+            return Ok(());
+        }
         self_
             .py()
             .detach(move || block_on(async move { inner.close().await }))
@@ -591,13 +745,11 @@ impl PyBlobFile {
     }
 
     fn is_closed(self_: PyRef<'_, Self>) -> bool {
-        let inner = self_.inner.clone();
-        self_
-            .py()
-            .detach(move || block_on(async move { inner.is_closed().await }))
+        self_.closed.load(Ordering::Acquire)
     }
 
     fn seek(self_: PyRef<'_, Self>, position: u64) -> PyResult<()> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         self_
             .py()
@@ -606,6 +758,7 @@ impl PyBlobFile {
     }
 
     fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         self_
             .py()
@@ -619,6 +772,7 @@ impl PyBlobFile {
 
     /// Read a blob-local byte range without moving the cursor.
     fn read_range(self_: PyRef<'_, Self>, offset: u64, length: usize) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let end = offset
             .checked_add(length as u64)
             .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))?;
@@ -631,6 +785,7 @@ impl PyBlobFile {
     }
 
     fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         let py = self_.py();
         let bytes = py
@@ -1333,6 +1488,7 @@ impl Table {
                 .map(|handle| {
                     handle.map(|file| PyBlobFile {
                         inner: Arc::new(file),
+                        closed: AtomicBool::new(false),
                     })
                 })
                 .collect::<Vec<_>>())
@@ -1481,6 +1637,21 @@ impl Table {
         })
     }
 
+    /// Whether a hybrid query on this table has already been refused `_rowid`.
+    /// Learned from a previous refusal, never probed, so this is free.
+    ///
+    /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
+    pub fn hybrid_pk_fusion_learned(self_: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(self_.inner_ref()?.base_table().hybrid_pk_fusion_learned())
+    }
+
+    /// Remember that this table refused `_rowid`, so later hybrid queries skip
+    /// straight to the primary-key fusion.
+    pub fn note_hybrid_pk_fusion(self_: PyRef<'_, Self>) -> PyResult<()> {
+        self_.inner_ref()?.base_table().note_hybrid_pk_fusion();
+        Ok(())
+    }
+
     /// Converge the table's LSM write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last
@@ -1627,6 +1798,25 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (job_id=None, column=None, limit=None))]
+    pub fn function_errors(
+        self_: PyRef<'_, Self>,
+        job_id: Option<String>,
+        column: Option<String>,
+        limit: Option<usize>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let request = lancedb::function::FunctionErrorsRequest {
+            job_id,
+            column,
+            limit,
+        };
+        future_into_py(self_.py(), async move {
+            let errors = inner.function_errors(request).await.infer_error()?;
+            Ok(FunctionErrors::from(errors))
+        })
+    }
+
     #[pyo3(signature = (full=false, source_version=None))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
@@ -1644,6 +1834,40 @@ impl Table {
             }
             let result = builder.execute().await.infer_error()?;
             Ok(RefreshMaterializedViewResult::from(result))
+        })
+    }
+
+    #[pyo3(signature = (full=false, source_version=None))]
+    pub fn refresh_materialized_view_async(
+        self_: PyRef<'_, Self>,
+        full: bool,
+        source_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            let mut builder = view.refresh().full(full);
+            if let Some(version) = source_version {
+                builder = builder.source_version(version);
+            }
+            let job = builder.execute_async().await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
+        })
+    }
+
+    pub fn materialized_view_definition(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            view.definition().to_json().map_err(|err| {
+                PyRuntimeError::new_err(format!(
+                    "failed to serialize materialized-view definition: {err}"
+                ))
+            })
         })
     }
 

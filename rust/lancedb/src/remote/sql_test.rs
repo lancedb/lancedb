@@ -18,7 +18,10 @@ use futures::{StreamExt, TryStreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
 use super::*;
+use crate::database::Database;
+use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
+use crate::remote::db::RemoteDatabase;
 
 #[derive(Debug, Default)]
 struct DelayedHeaderProvider {
@@ -173,7 +176,10 @@ impl FlightService for TestSqlService {
             namespace_path: header("namespace-path"),
             request_id: header("x-request-id"),
             api_key: header("x-api-key"),
-            database_prefix: header("x-lancedb-database-prefix"),
+            database_prefix: metadata
+                .get("x-lancedb-database-prefix")
+                .map(|value| value.to_str().unwrap().to_string())
+                .unwrap_or_default(),
         });
 
         let command = Any::decode(request.get_ref().cmd.as_ref())
@@ -384,6 +390,60 @@ impl FlightService for TestSqlService {
     ) -> std::result::Result<Response<Self::DoExchangeStream>, Status> {
         Err(Status::unimplemented("do_exchange"))
     }
+}
+
+#[tokio::test]
+async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = futures::stream::try_unfold(listener, |listener| async {
+        let (socket, _) = listener.accept().await?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    });
+    let service = TestSqlService::default();
+    let headers = service.headers.clone();
+    let expected = service.result.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let options = RemoteCatalogOptions {
+        api_key: Some("catalog-key".into()),
+        sql_host_override: Some(format!("grpc://{address}")),
+        ..Default::default()
+    };
+    for name in ["analytics", "team/search"] {
+        let database =
+            RemoteDatabase::for_catalog("https://catalog.example", Some(name), &options).unwrap();
+        let query = database
+            .execute_query_async("SELECT 42", &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            collect_result(&query).await.unwrap(),
+            vec![expected.clone()]
+        );
+    }
+    {
+        let headers = headers.lock().unwrap();
+        assert!(headers.iter().any(|header| header.database == "analytics"));
+        assert!(
+            headers
+                .iter()
+                .any(|header| header.database == "team/search")
+        );
+        for header in headers.iter() {
+            assert_eq!(header.api_key, "catalog-key");
+            assert_eq!(header.namespace_path, "public");
+            assert!(header.database_prefix.is_empty());
+        }
+    }
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
 }
 
 #[tokio::test]

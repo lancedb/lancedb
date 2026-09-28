@@ -948,6 +948,55 @@ def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
     ]
 
 
+def test_cast_to_target_schema_labels_json_text_with_table_extension_metadata():
+    # A table created from pa.json_() stores the empty ARROW:extension:metadata that
+    # pyarrow exports next to the name. Lance keeps that key when it turns the
+    # arrow.json label back into lance.json on write and then requires the field to
+    # match the stored one exactly, so the label has to mirror the table's metadata.
+    target = pa.schema(
+        [
+            pa.field(
+                "payload",
+                pa.large_binary(),
+                metadata={
+                    b"ARROW:extension:name": b"lance.json",
+                    b"ARROW:extension:metadata": b"",
+                },
+            ),
+            pa.field(
+                "docs",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.large_binary(),
+                        metadata={b"ARROW:extension:name": b"lance.json"},
+                    )
+                ),
+            ),
+        ]
+    )
+    data = pa.table(
+        {
+            "payload": pa.array(['{"a": 1}', None], type=pa.string()),
+            "docs": pa.array([['{"b": 2}'], []], type=pa.list_(pa.string())),
+        }
+    )
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    payload = output.schema.field("payload")
+    assert payload.type == pa.string()
+    assert payload.metadata == {
+        b"ARROW:extension:name": b"arrow.json",
+        b"ARROW:extension:metadata": b"",
+    }
+    docs_item = output.schema.field("docs").type.value_field
+    assert docs_item.type == pa.string()
+    assert docs_item.metadata == {b"ARROW:extension:name": b"arrow.json"}
+    assert output["payload"].to_pylist() == ['{"a": 1}', None]
+    assert output["docs"].to_pylist() == [['{"b": 2}'], []]
+
+
 def test_cast_to_target_schema_coerces_nested_binary_blob():
     data = pa.table(
         {
