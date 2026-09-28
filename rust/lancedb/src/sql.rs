@@ -60,7 +60,9 @@ pub(crate) trait QueryHandle: Send + Sync {
 /// A handle to a submitted SQL query.
 ///
 /// The handle can be inspected, opened as an Arrow reader, or cancelled.
-/// Dropping it does not cancel the server-side query.
+/// Dropping it does not cancel the server-side query, unless the query was
+/// submitted with parameters: those run on the call that returns their rows,
+/// so dropping the handle before reading, or dropping the reader, stops them.
 /// Identifier lookup is scoped to the connection that submitted the query and
 /// is not a durable resume mechanism.
 pub struct Query {

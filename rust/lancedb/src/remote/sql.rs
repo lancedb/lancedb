@@ -25,10 +25,16 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 use uuid::Uuid;
 
 use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
+use crate::database::ExecuteQueryRequest;
 use crate::error::{Error, Result};
 use crate::remote::client::{ClientConfig, TlsConfig};
 use crate::remote::retry::ResolvedRetryConfig;
 use crate::sql::{Query, QueryDescription, QueryHandle, QueryStatus};
+
+#[path = "sql_exchange.rs"]
+mod exchange;
+
+use exchange::{ExchangeQuery, ExchangeQueryHandle};
 
 const DEFAULT_SQL_PORT: u16 = 10025;
 const DEFAULT_SQL_TLS_PORT: u16 = 10026;
@@ -182,6 +188,23 @@ impl SqlClient {
         }
     }
 
+    pub(super) async fn execute(&self, request: ExecuteQueryRequest) -> Result<Query> {
+        match request.parameters {
+            Some(parameters) => {
+                self.submit_with_parameters(
+                    &request.query,
+                    parameters,
+                    &request.default_namespace_path,
+                )
+                .await
+            }
+            None => {
+                self.submit(&request.query, &request.default_namespace_path)
+                    .await
+            }
+        }
+    }
+
     pub(super) async fn submit(
         &self,
         query: &str,
@@ -203,8 +226,38 @@ impl SqlClient {
                 default_namespace_path.to_vec(),
                 poll_info,
             )?);
-            self.queries.insert(query_id, query.clone());
+            self.queries
+                .insert(query_id, RegisteredQuery::Polled(query.clone()));
             Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
+        })
+        .await
+    }
+
+    /// Values cannot ride on a poll, so a statement that has them is sent on
+    /// its own exchange instead.
+    pub(super) async fn submit_with_parameters(
+        &self,
+        query: &str,
+        parameters: RecordBatch,
+        default_namespace_path: &[String],
+    ) -> Result<Query> {
+        let timeout = self.inner.overall_timeout()?;
+        with_overall_timeout(timeout, "SQL query submission", async {
+            validate_namespace_path(default_namespace_path)?;
+            let query_id = Uuid::now_v7();
+            let query = Arc::new(
+                ExchangeQuery::open(
+                    query_id,
+                    self.inner.clone(),
+                    query,
+                    parameters,
+                    default_namespace_path,
+                )
+                .await?,
+            );
+            self.queries
+                .insert(query_id, RegisteredQuery::Exchanged(query.clone()));
+            Ok(Query::new(Arc::new(ExchangeQueryHandle::new(query))))
         })
         .await
     }
@@ -491,8 +544,40 @@ impl SqlClientInner {
     }
 }
 
+/// A submitted query as the connection remembers it.
+#[derive(Clone)]
+enum RegisteredQuery {
+    Polled(Arc<RemoteQuery>),
+    Exchanged(Arc<ExchangeQuery>),
+}
+
+impl RegisteredQuery {
+    fn touch(&self) {
+        match self {
+            Self::Polled(query) => query.touch(),
+            Self::Exchanged(query) => query.touch(),
+        }
+    }
+
+    /// Whether the registry may forget this query. It is abandoned when the
+    /// registry holds the only reference to it.
+    fn registry_expired(&self) -> bool {
+        match self {
+            Self::Polled(query) => query.registry_expired(Arc::strong_count(query) == 1),
+            Self::Exchanged(query) => query.registry_expired(Arc::strong_count(query) == 1),
+        }
+    }
+
+    async fn describe(&self) -> Result<QueryDescription> {
+        match self {
+            Self::Polled(query) => query.describe().await,
+            Self::Exchanged(query) => query.describe(),
+        }
+    }
+}
+
 struct QueryRegistry {
-    queries: StdMutex<HashMap<Uuid, Arc<RemoteQuery>>>,
+    queries: StdMutex<HashMap<Uuid, RegisteredQuery>>,
 }
 
 impl QueryRegistry {
@@ -502,12 +587,12 @@ impl QueryRegistry {
         }
     }
 
-    fn insert(&self, id: Uuid, query: Arc<RemoteQuery>) {
+    fn insert(&self, id: Uuid, query: RegisteredQuery) {
         self.remove_expired();
         self.queries.lock().unwrap().insert(id, query);
     }
 
-    fn get(&self, id: Uuid) -> Option<Arc<RemoteQuery>> {
+    fn get(&self, id: Uuid) -> Option<RegisteredQuery> {
         self.remove_expired();
         let query = self.queries.lock().unwrap().get(&id).cloned();
         if let Some(query) = &query {
@@ -520,7 +605,7 @@ impl QueryRegistry {
         self.queries
             .lock()
             .unwrap()
-            .retain(|_, query| !query.registry_expired(Arc::strong_count(query) == 1));
+            .retain(|_, query| !query.registry_expired());
     }
 }
 

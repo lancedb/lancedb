@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
 use lance::dataset::ReadParams;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
@@ -186,6 +187,32 @@ impl CloneTableRequest {
             source_tag: None,
             is_shallow: true,
             namespace_client: None,
+        }
+    }
+}
+
+/// A request to start a SQL statement on a remote database.
+#[derive(Clone, Debug)]
+pub struct ExecuteQueryRequest {
+    /// The SQL text.
+    pub query: String,
+    /// The namespace unqualified table names resolve in. Empty is `public`,
+    /// the SQL name of the root namespace.
+    pub default_namespace_path: Vec<String>,
+    /// Values for the statement's placeholders, as a single-row batch.
+    ///
+    /// Column `i` binds `$<i + 1>`, and a column whose name is not a number
+    /// also binds `$<name>`. See
+    /// [`ExecuteQueryAsyncBuilder::parameters`](crate::connection::ExecuteQueryAsyncBuilder::parameters).
+    pub parameters: Option<RecordBatch>,
+}
+
+impl ExecuteQueryRequest {
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            default_namespace_path: vec!["public".to_string()],
+            parameters: None,
         }
     }
 }
@@ -536,8 +563,7 @@ pub trait Database:
     /// Start executing a SQL statement on a remote database.
     async fn execute_query_async(
         &self,
-        _query: &str,
-        _default_namespace_path: &[String],
+        _request: ExecuteQueryRequest,
     ) -> Result<crate::sql::Query> {
         Err(crate::error::Error::NotSupported {
             message: "SQL is not supported by this database".to_string(),
