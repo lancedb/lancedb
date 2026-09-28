@@ -23,8 +23,8 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, PauseJobStatus,
-    ReadConsistency, ResumeJobStatus, TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, ExecuteQueryRequest, JobInfo, OpenTableRequest,
+    PauseJobStatus, ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -335,16 +335,14 @@ pub struct CloneTableBuilder {
 /// Builder for asynchronously executing a SQL statement on a remote database.
 pub struct ExecuteQueryAsyncBuilder {
     parent: Arc<dyn Database>,
-    query: String,
-    default_namespace_path: Vec<String>,
+    request: ExecuteQueryRequest,
 }
 
 impl ExecuteQueryAsyncBuilder {
     fn new(parent: Arc<dyn Database>, query: String) -> Self {
         Self {
             parent,
-            query,
-            default_namespace_path: vec!["public".to_string()],
+            request: ExecuteQueryRequest::new(query),
         }
     }
 
@@ -357,15 +355,60 @@ impl ExecuteQueryAsyncBuilder {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self.request.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Bind values to the statement's placeholders.
+    ///
+    /// `parameters` is a single-row batch. Column `i` binds `$<i + 1>`, and a
+    /// column whose name is not a number also binds `$<name>`, so
+    /// `WHERE id = $1` and `WHERE id = $id` both work. The values travel as
+    /// Arrow rather than as SQL text, so a float keeps its exact bits and type
+    /// and a vector stays a compact `FixedSizeList`.
+    ///
+    /// Every placeholder needs a value and every parameter must be used by a
+    /// placeholder. Parameters are supported in queries (`SELECT`, and
+    /// `EXPLAIN` of one), not in DDL or DML, nor in table-function arguments.
+    /// Do not follow a named placeholder directly with `$`: `$a$` starts a
+    /// dollar-quoted string.
+    ///
+    /// A parameterized statement runs on the call that returns its rows rather
+    /// than detached from it: cancelling the query, or dropping its handle
+    /// before reading it, stops the statement on the server.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use arrow_array::{ArrayRef, FixedSizeListArray, Int64Array, RecordBatch};
+    /// # use arrow_array::types::Float32Type;
+    /// # async fn query(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///     [Some([0.1_f32, 0.2, 0.3].map(Some))],
+    ///     3,
+    /// );
+    /// let parameters = RecordBatch::try_from_iter([
+    ///     ("vector", Arc::new(vector) as ArrayRef),
+    ///     ("k", Arc::new(Int64Array::from(vec![10])) as ArrayRef),
+    /// ])?;
+    /// let query = db
+    ///     .execute_query_async("SELECT id FROM docs ORDER BY distance(vector, $vector) LIMIT $k")
+    ///     .parameters(parameters)
+    ///     .execute()
+    ///     .await?;
+    /// let rows = query.reader().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn parameters(mut self, parameters: RecordBatch) -> Self {
+        self.request.parameters = Some(parameters);
         self
     }
 
     /// Start the statement and return its asynchronous query handle.
     pub async fn execute(self) -> Result<crate::sql::Query> {
-        self.parent
-            .execute_query_async(&self.query, &self.default_namespace_path)
-            .await
+        self.parent.execute_query_async(self.request).await
     }
 }
 
@@ -456,8 +499,9 @@ impl Connection {
     ///
     /// The query can reference tables in other databases with SQL dot notation.
     /// Use [`ExecuteQueryAsyncBuilder::default_namespace_path`] to avoid qualifying
-    /// tables in the default namespace. Local connections return
-    /// [`Error::NotSupported`].
+    /// tables in the default namespace, and [`ExecuteQueryAsyncBuilder::parameters`]
+    /// to bind Arrow values to `$1` / `$name` placeholders instead of writing them
+    /// into the SQL text. Local connections return [`Error::NotSupported`].
     ///
     /// # Example
     ///

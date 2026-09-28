@@ -53,7 +53,7 @@ from .functions import FunctionVersion, UdfDefinition
 from .job import AsyncJob, Job, _typed_job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
-from .sql import QueryDescription
+from .sql import QueryDescription, QueryParameters, to_parameter_batch
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
@@ -1178,6 +1178,7 @@ class DBConnection(EnforceOverrides):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> pa.RecordBatchReader:
         """Execute SQL and return a blocking Arrow reader.
 
@@ -1188,6 +1189,7 @@ class DBConnection(EnforceOverrides):
         return self.execute_query_async(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         ).reader()
 
     def execute_query_async(
@@ -1195,8 +1197,29 @@ class DBConnection(EnforceOverrides):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> SqlQuery:
         """Start executing SQL and return its query handle.
+
+        ``parameters`` binds values to the statement's ``$1`` / ``$name``
+        placeholders. They travel as Arrow rather than as SQL text, so a
+        float keeps its exact value and type and a vector stays a compact
+        fixed-size list. A list binds by position, a dict binds by name, and
+        a one-row ``pyarrow.RecordBatch`` or ``pyarrow.Table`` binds both
+        ways. A 1-D numpy or pyarrow array becomes a fixed-size list of its
+        element type, the shape of a vector column:
+
+        .. code-block:: python
+
+            db.execute_query(
+                "SELECT id FROM docs ORDER BY distance(vector, $1) LIMIT $2",
+                parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
+            )
+
+        Parameters are supported in queries, not in DDL or DML. A
+        parameterized query runs on the call that returns its rows:
+        cancelling it, or dropping its handle before reading, stops it on the
+        server.
 
         Local connections do not support SQL.
         """
@@ -3267,6 +3290,7 @@ class AsyncConnection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncRecordBatchReader:
         """Execute SQL and return an asynchronous Arrow reader.
 
@@ -3277,6 +3301,7 @@ class AsyncConnection(object):
         submitted = await self.execute_query_async(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         )
         return await submitted.reader()
 
@@ -3285,17 +3310,21 @@ class AsyncConnection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncSqlQuery:
         """Start executing SQL and return its query handle.
 
         The database from ``connect_async`` is used for unqualified database
-        references. The namespace defaults to ``["public"]``. Local
-        connections raise ``NotImplementedError``.
+        references. The namespace defaults to ``["public"]``. ``parameters``
+        binds values to ``$1`` / ``$name`` placeholders; see
+        [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
+        Local connections raise ``NotImplementedError``.
         """
         return AsyncSqlQuery(
             await self._inner.execute_query_async(
                 query,
                 default_namespace_path=default_namespace_path,
+                parameters=to_parameter_batch(parameters),
             )
         )
 
