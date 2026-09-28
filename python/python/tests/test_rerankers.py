@@ -481,6 +481,14 @@ def test_cross_encoder_reranker(tmp_path):
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
+def test_cross_encoder_reranker_kwargs(tmp_path):
+    pytest.importorskip("sentence_transformers")
+    reranker = CrossEncoderReranker(batch_size=4, max_length=64)
+    assert reranker.model.max_length == 64
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
 def test_colbert_reranker(tmp_path):
     pytest.importorskip("rerankers")
     reranker = ColbertReranker()
