@@ -587,7 +587,8 @@ impl Connection {
         )
     }
 
-    /// Build and register a Python callable as an immutable Function version.
+    /// Build and register a Python callable as an immutable Function version
+    /// in `namespace_path`, which is empty for the root namespace.
     ///
     /// The server-side job builds the OCI image, then registers the completed
     /// artifact. Waiting on the returned typed job yields the durable
@@ -597,8 +598,11 @@ impl Connection {
     pub async fn create_function_async(
         &self,
         request: crate::function::FunctionRegistrationRequest,
+        namespace_path: &[String],
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
-        self.internal.create_function_async(request).await
+        self.internal
+            .create_function_async(request, namespace_path)
+            .await
     }
 
     /// Look up one exact immutable Function version in the remote catalog.
@@ -610,13 +614,15 @@ impl Connection {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        namespace_path: &[String],
     ) -> Result<crate::function::FunctionVersion> {
         self.internal
-            .get_function(name.as_ref(), version.as_ref())
+            .get_function(name.as_ref(), version.as_ref(), namespace_path)
             .await
     }
 
-    /// List every published immutable Function version in the remote catalog.
+    /// List every published immutable Function version in `namespace_path` of
+    /// the remote catalog. Functions in child namespaces are not included.
     ///
     /// Results are ordered by Function name then version. The client walks all
     /// server pages before returning. Local databases return
@@ -628,14 +634,17 @@ impl Connection {
     /// # async fn list_functions(
     /// #     connection: &lancedb::Connection,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// for function in connection.list_functions().await? {
+    /// for function in connection.list_functions(&[]).await? {
     ///     println!("{} {}", function.name(), function.version());
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
-        self.internal.list_functions().await
+    pub async fn list_functions(
+        &self,
+        namespace_path: &[String],
+    ) -> Result<Vec<crate::function::FunctionVersion>> {
+        self.internal.list_functions(namespace_path).await
     }
 
     /// Remove the current Function name binding, retaining the object history.
@@ -647,9 +656,10 @@ impl Connection {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        namespace_path: &[String],
     ) -> Result<bool> {
         self.internal
-            .drop_function(name.as_ref(), version.as_ref())
+            .drop_function(name.as_ref(), version.as_ref(), namespace_path)
             .await
     }
 
@@ -663,9 +673,10 @@ impl Connection {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        namespace_path: &[String],
     ) -> Result<(bool, crate::job::Job)> {
         self.internal
-            .drop_function_async(name.as_ref(), version.as_ref())
+            .drop_function_async(name.as_ref(), version.as_ref(), namespace_path)
             .await
     }
 
