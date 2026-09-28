@@ -456,10 +456,21 @@ impl FlightService for TestSqlService {
             } else {
                 futures::stream::empty().boxed()
             };
+        let delay = if query == "SELECT exchange delayed" {
+            Duration::from_millis(300)
+        } else {
+            Duration::ZERO
+        };
         let dropped = DropSignal(self.exchange_drops.clone());
         let stream = FlightDataEncoderBuilder::new()
             .with_schema(schema)
-            .build(futures::stream::once(async move { Ok(rows) }).chain(rest))
+            .build(
+                futures::stream::once(async move {
+                    tokio::time::sleep(delay).await;
+                    Ok(rows)
+                })
+                .chain(rest),
+            )
             .map_err(Status::from)
             .map(move |message| {
                 let _dropped = &dropped;
@@ -662,6 +673,44 @@ async fn cancelling_or_abandoning_an_exchange_ends_the_call() {
     let rows = dropped_reader.reader().await.unwrap();
     drop(rows);
     wait_for(&drops, 3, "dropping a reader must end the call").await;
+}
+
+/// A reader abandoned before the first batch -- its task cancelled -- must
+/// leave the rows for the next reader, as a polled query does, rather than
+/// take the call down with it.
+#[tokio::test]
+async fn an_abandoned_reader_leaves_the_rows_for_the_next_one() {
+    let service = TestSqlService::default();
+    let drops = service.exchange_drops.clone();
+    let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+
+    let delayed = Arc::new(
+        client
+            .execute(parameterized("SELECT exchange delayed", parameter_row()))
+            .await
+            .unwrap(),
+    );
+    let abandoned = {
+        let delayed = delayed.clone();
+        tokio::spawn(async move { delayed.reader().await.map(|_| ()) })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    abandoned.abort();
+    assert!(abandoned.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        delayed.describe().await.unwrap().status,
+        QueryStatus::Running
+    );
+    assert_eq!(drops.load(Ordering::SeqCst), 0, "the call must survive");
+
+    assert_eq!(
+        collect_result(&delayed).await.unwrap(),
+        vec![parameter_row()]
+    );
+    assert_eq!(
+        delayed.describe().await.unwrap().status,
+        QueryStatus::Finished
+    );
 }
 
 /// A reader that gives up before the first batch has already taken the rows,
