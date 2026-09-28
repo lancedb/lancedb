@@ -2296,7 +2296,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             norm=self._norm,
             fts_query=self._fts_query._query,
             reranker=self._reranker,
-            limit=self._limit,
+            limit=self._limit or DEFAULT_HYBRID_LIMIT,
             with_row_ids=True,
             offset=self._offset,
         )
@@ -2748,13 +2748,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
 
         # Apply common configurations
-        if self._limit:
-            # The final offset/limit window is sliced out of the combined,
-            # reranked results, so each sub-query must fetch enough rows to
-            # cover the skipped prefix as well as the window itself.
-            sub_query_limit = self._limit + (self._offset or 0)
-            self._vector_query.limit(sub_query_limit)
-            self._fts_query.limit(sub_query_limit)
+        # The final offset/limit window is sliced out of the combined,
+        # reranked results, so each sub-query must fetch enough rows to
+        # cover the skipped prefix as well as the window itself.
+        limit = self._limit or DEFAULT_HYBRID_LIMIT
+        sub_query_limit = limit + (self._offset or 0)
+        self._vector_query.limit(sub_query_limit)
+        self._fts_query.limit(sub_query_limit)
         # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
         self._pk_fusion = None
         columns = self._columns
