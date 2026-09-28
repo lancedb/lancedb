@@ -4357,8 +4357,12 @@ async def test_optimize_warns_on_zero_cleanup(mem_db_async: AsyncConnection):
 
 def test_optimize_warns_on_zero_cleanup_sync(mem_db: DBConnection):
     table = mem_db.create_table("test", data=[{"x": [1]}])
-    with pytest.warns(UserWarning, match="concurrent"):
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("default")
         table.optimize(cleanup_older_than=timedelta(0))
+        table.optimize(cleanup_older_than=timedelta(0))
+    assert [w.filename for w in seen] == [__file__, __file__]
+    assert all("concurrent" in str(w.message) for w in seen)
 
 
 def test_replace_field_metadata(tmp_path):
