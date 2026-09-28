@@ -69,6 +69,41 @@ struct PreparedExchange {
     rest: Option<ResultEndpointStream>,
 }
 
+/// The call's rows while a reader waits for their first batch.
+///
+/// A reader whose future is dropped mid-wait -- its caller gave up, or its
+/// task was cancelled -- puts them back, so the next reader finds the query as
+/// this one did. A query cancelled meanwhile has its rows dropped instead,
+/// which ends the call.
+struct Borrowed<'a> {
+    query: &'a ExchangeQuery,
+    rows: Option<ResultEndpointStream>,
+}
+
+impl Borrowed<'_> {
+    fn get(&mut self) -> &mut ResultEndpointStream {
+        self.rows.as_mut().expect("rows are borrowed until kept")
+    }
+
+    fn keep(mut self) -> ResultEndpointStream {
+        self.rows.take().expect("rows are borrowed until kept")
+    }
+}
+
+impl Drop for Borrowed<'_> {
+    fn drop(&mut self) {
+        let Some(rows) = self.rows.take() else {
+            return;
+        };
+        // Checked under the response lock: `cancel` settles first and takes
+        // the response after, so rows put back here are never missed by it.
+        let mut response = self.query.response.lock().unwrap();
+        if *self.query.lifecycle.lock().unwrap() == Lifecycle::Running {
+            *response = Some(rows);
+        }
+    }
+}
+
 impl ExchangeQuery {
     /// Send the statement and its parameters, returning once the server has
     /// planned it: a statement it refuses is refused here, as a polled one is
@@ -164,10 +199,12 @@ impl ExchangeQuery {
     /// Stop the statement. Idempotent, and a no-op once it has ended.
     pub(super) fn cancel(&self) {
         self.touch();
-        if self.settle(Lifecycle::Cancelled) {
-            // An unread response is dropped here, which cancels the call. A
-            // reader's stream is dropped by its task when it sees this.
-            self.response.lock().unwrap().take();
+        let settled = self.settle(Lifecycle::Cancelled);
+        // Unread rows are dropped here, which cancels the call; a query that
+        // already ended has none. A reader's stream is dropped by its task
+        // when it sees the cancellation.
+        self.response.lock().unwrap().take();
+        if settled {
             self.cancelled.notify_waiters();
         }
     }
@@ -206,7 +243,7 @@ impl ExchangeQuery {
 
     /// Take the rows and wait for the first batch, which carries the schema.
     async fn prepare(&self) -> Result<PreparedExchange> {
-        let Some(mut rows) = self.response.lock().unwrap().take() else {
+        let Some(rows) = self.response.lock().unwrap().take() else {
             // Taken by an earlier attempt that failed, or dropped by a cancel.
             return Err(match &*self.lifecycle.lock().unwrap() {
                 Lifecycle::Failed(message) => Error::Runtime {
@@ -215,11 +252,19 @@ impl ExchangeQuery {
                 _ => self.cancelled_error(),
             });
         };
+        let mut rows = Borrowed {
+            query: self,
+            rows: Some(rows),
+        };
         let first = tokio::select! {
             biased;
             _ = self.wait_for_cancellation() => return Err(self.cancelled_error()),
-            result = rows.next_batch() => result?,
+            result = rows.get().next_batch() => result,
         };
+        // Read or failed, the rows are this attempt's now: a failed read is
+        // not worth putting back.
+        let rows = rows.keep();
+        let first = first?;
         let schema = first
             .as_ref()
             .map(RecordBatch::schema)
@@ -352,9 +397,10 @@ impl QueryHandle for ExchangeQueryHandle {
             match with_overall_timeout(timeout, "SQL query result", self.query.prepare()).await {
                 Ok(prepared) => prepared,
                 Err(error) => {
-                    // The rows were taken before the wait, so whatever ended
-                    // it -- a failed read or the timeout -- the call is gone.
+                    // A failed read or the timeout ends the query, and with it
+                    // the call, including rows a timed-out wait put back.
                     self.query.settle(failure(&error));
+                    self.query.response.lock().unwrap().take();
                     return Err(error);
                 }
             };
