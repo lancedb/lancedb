@@ -18,7 +18,7 @@ import {
 } from '/snippets/tables.mdx';
 
 <Note>
-In SQL this is [`UPDATE`](/sql/dml#update).
+In SQL this is [`UPDATE`](/sql/dml/update).
 </Note>
 
 ## Update rows {#update-rows}
@@ -76,7 +76,7 @@ Expected table contents:
 | 2 | Bob | 21 |
 
 <Note title="SQL syntax">
-See the [SQL queries](/search/sql/) page for more information on the supported SQL syntax.
+See the [SQL queries](/sql#connecting) page for more information on the supported SQL syntax.
 </Note>
 
 When rows are updated, they are moved out of any existing index. The row will still show up in search queries, but the query will not be as fast as it would be if the row was in the index. If you update a large proportion of rows, consider triggering an index rebuild afterwards.

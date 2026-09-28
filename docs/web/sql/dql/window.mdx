@@ -10,7 +10,7 @@ keywords: ["window", "over", "partition by", "row_number", "rank", "lag", "lead"
 
 A window function computes across a set of rows related to the current one and
 returns a value **per row**. That is the difference from
-[aggregation](/sql/aggregation), which collapses the rows it covers.
+[aggregation](/sql/dql/aggregation), which collapses the rows it covers.
 
 ```sql
 SELECT
@@ -73,7 +73,7 @@ lag  lead  first_value  last_value  nth_value
 
 **Aggregates**
 
-Any [aggregate function](/sql/aggregation#functions) used with `OVER` becomes a
+Any [aggregate function](/sql/dql/aggregation#functions) used with `OVER` becomes a
 window function — that is how running totals and moving averages are written.
 
 ## Deduplicating with a window {#dedup}

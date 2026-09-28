@@ -73,7 +73,7 @@ Two things dominate join cost on a lakehouse table.
 
 **Index the join key.** A [scalar index](/indexing/scalar-index) on the key lets
 the planner look rows up instead of scanning for them. Check with
-[`EXPLAIN`](/sql/explain): an indexed key shows a `ScalarIndexQuery`, an
+[`EXPLAIN`](/sql/dql/explain): an indexed key shows a `ScalarIndexQuery`, an
 unindexed one shows a `LanceScan` feeding the join.
 
 **Do not carry wide columns through.** Select the columns you need before
@@ -88,4 +88,4 @@ JOIN labels AS l ON l.image_id = i.id
 
 ## Reference {#reference}
 
-The join types and their semantics are in [Joins](/sql/join).
+The join types and their semantics are in [Joins](/sql/dql/join).

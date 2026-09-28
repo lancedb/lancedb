@@ -19,7 +19,7 @@ SELECT * FROM (
 WHERE n > 100
 ```
 
-A derived table needs an alias. It can be [sampled](/sql/sampling) like a base
+A derived table needs an alias. It can be [sampled](/sql/dql/sampling) like a base
 table:
 
 ```sql
@@ -60,14 +60,14 @@ correlated, and is conceptually evaluated per outer row. The planner usually
 rewrites it into a join.
 
 <Note>
-Check with [`EXPLAIN`](/sql/explain) when a correlated subquery is slow. A plan
+Check with [`EXPLAIN`](/sql/dql/explain) when a correlated subquery is slow. A plan
 showing a join has been optimized; one showing a repeated scan has not, and
-rewriting it as an explicit [join](/sql/join) is the fix.
+rewriting it as an explicit [join](/sql/dql/join) is the fix.
 </Note>
 
 ## CTEs as an alternative {#ctes}
 
-A [CTE](/sql/select#ctes) is a named subquery, and is usually more readable when
+A [CTE](/sql/dql/select#ctes) is a named subquery, and is usually more readable when
 the same subquery appears twice or when nesting gets deep.
 
 ```sql

@@ -15,8 +15,8 @@ plus what Lance adds.
 | | |
 | --- | --- |
 | [Scalar functions](/sql/scalar-functions) | per row — math, string, regex, date/time, array, struct, JSON |
-| [Aggregate functions](/sql/aggregation#functions) | per group — `count`, `sum`, statistical, approximate |
-| [Window functions](/sql/window#functions) | per window — ranking, offset, running aggregates |
+| [Aggregate functions](/sql/dql/aggregation#functions) | per group — `count`, `sum`, statistical, approximate |
+| [Window functions](/sql/dql/window#functions) | per window — ranking, offset, running aggregates |
 | [Table functions](#table-functions) | produce a relation rather than a value |
 
 <Note>
@@ -63,6 +63,9 @@ For a keyword test that needs no score, the
 [`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate is
 index-accelerated and usable directly in `WHERE`.
 
+See [Full-Text Search](/sql/dql/fts) for the fuzzy, phrase, boolean, boost and
+multi-match query forms.
+
 ### `_score` {#score}
 
 A pseudo-column produced by `fts()`, carrying relevance for the row. It behaves
@@ -89,5 +92,5 @@ between a fast predicate and a slow one:
 | [`contains_tokens`](/sql/scalar-functions#contains-tokens) | full-text index |
 | [`json_get`, typed variants, `json_extract`](/sql/scalar-functions#json) | JSON scalar index |
 
-Confirm with [`EXPLAIN`](/sql/explain): an accelerated predicate shows an index
-node rather than a `LanceScan` followed by a filter.
+Confirm with [`EXPLAIN`](/sql/dql/explain): an accelerated predicate shows an
+index node rather than a `LanceScan` followed by a filter.

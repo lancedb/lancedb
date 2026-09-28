@@ -27,6 +27,6 @@ defined by a query; the difference is entirely when that query runs.
 | Read cost | the full query, every read | a table scan |
 | Write cost | none | a refresh |
 
-Views are created in SQL, over the [Flight SQL endpoint](/search/sql) -- there
-is no SDK method, because the thing a view stores *is* a SQL statement. See
-[DDL](/sql/ddl#views).
+Views are created in SQL, over the [Flight SQL endpoint](/sql#connecting) --
+there is no SDK method, because the thing a view stores *is* a SQL statement.
+See [View](/sql/ddl/view) for `CREATE VIEW`, `DROP VIEW`, and listing.

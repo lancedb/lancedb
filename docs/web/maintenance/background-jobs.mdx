@@ -13,14 +13,14 @@ Every job documented elsewhere in these docs -- [Build & Repair](/indexing/reind
 [Column Refresh](/feature-engineering/refresh-column) -- is one you cause,
 directly or by a schedule you set. This page is the rest: jobs the deployment
 runs to keep itself correct and fast, which you may see named in
-[`SHOW JOBS`](/sql/ddl#job) without having asked for any of them.
+[`SHOW JOBS`](/sql/ddl/job#show) without having asked for any of them.
 
 There is no action to take on these beyond recognizing the name. None of them
 has a parameter you set or a call you make.
 
 ## Write-ahead log maintenance {#wal}
 
-For a table with a [write-ahead log](/sql/ddl#table) enabled, two jobs keep the
+For a table with a [write-ahead log](/sql/ddl/table#properties) enabled, two jobs keep the
 log from growing without bound:
 
 | Job type | What it does |
@@ -61,5 +61,5 @@ table.
 | `drop_object` | Deletes a dropped catalog object's content, then clears it from the database's cleanup backlog. Covers namespaces, views, and functions -- everything [`drop_table`](/management/table#drop) does not, since that one fences a directory with its own marker instead. |
 
 You trigger this indirectly, by dropping a [namespace](/management/namespace),
-[view](/sql/ddl#view), or [function](/management/function#drop) -- the teardown
+[view](/sql/ddl/view#drop), or [function](/management/function#drop) -- the teardown
 itself runs as this job rather than inline with the call.

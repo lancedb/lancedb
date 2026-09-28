@@ -10,7 +10,7 @@ keywords: ["refresh column", "refresh materialized view", "backfill", "cascade"]
 
 LanceDB extensions with no DataFusion equivalent. They are what makes
 [feature engineering](/feature-engineering) reachable from SQL: a column
-declared by [DDL](/sql/ddl#computed-column) starts empty, and a refresh fills it.
+declared by [DDL](/sql/ddl/table#computed-column) starts empty, and a refresh fills it.
 
 ## REFRESH COLUMN {#refresh-column}
 
@@ -80,8 +80,8 @@ refreshed by refreshing each in dependency order yourself.
 ## Watching a refresh {#watching}
 
 Both statements submit work that outlives the call. Track it with
-[`SHOW JOBS`](/sql/show#jobs), and diagnose failures with
-[`SHOW ERRORS`](/sql/show#errors).
+[`SHOW JOBS`](/sql/ddl/job#show), and diagnose failures with
+[`SHOW ERRORS`](/sql/ddl/job#errors).
 
 ## See also {#see-also}
 
@@ -89,7 +89,7 @@ Both statements submit work that outlives the call. Track it with
   <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
     The same operation from the SDKs, and what a refresh guarantees.
   </Card>
-  <Card title="DDL" icon="pen-ruler" href="/sql/ddl#columns">
+  <Card title="Table" icon="table" href="/sql/ddl/table#alter">
     Declaring the columns this fills.
   </Card>
 </CardGroup>

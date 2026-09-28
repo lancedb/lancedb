@@ -1,0 +1,62 @@
+---
+title: "Materialized View"
+sidebarTitle: "Materialized View"
+description: "SHOW MATERIALIZED VIEWS — creation and refresh are SDK and REFRESH statements, not CREATE."
+icon: table
+keywords: ["materialized view", "show materialized views", "sql"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+A materialized view stores a query's result as rows, kept current by a refresh
+-- the counterpart to a [view](/sql/ddl/view), which stores only the query.
+
+<Note>
+There is no `CREATE MATERIALIZED VIEW` statement. Creation is
+[`create_materialized_view`](/management/materialized-view#create) in the SDK,
+since it needs SDK-level source-table validation (stable row ids) that a bare
+SQL statement has nowhere to check. Once created, it is entirely a SQL object:
+queried like a table, refreshed with SQL, listed with SQL.
+</Note>
+
+## SHOW MATERIALIZED VIEWS {#show}
+
+```sql
+SHOW MATERIALIZED VIEWS
+```
+
+<Note>
+Cheaper than the SDK equivalent. `list_materialized_views` finds views by
+reading every table's schema, costing one open per table; this asks the server.
+</Note>
+
+## Refreshing one {#refresh}
+
+```sql
+REFRESH MATERIALIZED VIEW chunks
+```
+
+See [REFRESH](/sql/dml/refresh#refresh-materialized-view) for the full syntax,
+including `full = true` and what `CASCADE` does not yet do.
+
+## Dropping one {#drop}
+
+A materialized view **is** a table, so it is dropped with
+[`DROP TABLE`](/sql/ddl/table#drop) -- which is also why dropping one removes
+stored rows, unlike dropping a [view](/sql/ddl/view#drop).
+
+<Note>
+**Enterprise job type:** `mat_view_refresh` for the refresh; `drop_table` for
+dropping it, same as any table.
+</Note>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Materialized View" icon="table" href="/management/materialized-view">
+    Creating one from the SDK, and the stable-row-ids requirement.
+  </Card>
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
+    Incremental refreshes, and what they cost.
+  </Card>
+</CardGroup>

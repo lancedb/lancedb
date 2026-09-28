@@ -10,7 +10,7 @@ keywords: ["group by", "having", "count", "sum", "avg", "aggregate", "approximat
 
 Aggregation is one of the two main reasons to reach for SQL rather than a query
 builder -- the SDKs project, filter and search, but they do not group. The other
-is [joins](/sql/join).
+is [joins](/sql/dql/join).
 
 ## Grouping {#grouping}
 
@@ -99,7 +99,7 @@ FROM documents
 ## Aggregating a sample {#sampling}
 
 For an estimate over a very large table, aggregate a
-[sample](/sql/sampling) rather than the whole thing:
+[sample](/sql/dql/sampling) rather than the whole thing:
 
 ```sql
 SELECT category, count(*) * 100 AS estimated

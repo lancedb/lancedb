@@ -1,0 +1,136 @@
+---
+title: "Full-Text Search"
+sidebarTitle: "Full-Text Search"
+description: "The fts() table function — match, fuzzy, phrase, boolean, boost and multi-match queries from SQL."
+icon: magnifying-glass
+keywords: ["fts", "sql", "full text search", "fuzzy", "phrase", "boolean", "boost", "multi-match"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+Full-text search is a **table function**, `fts(table, query)`, rather than a
+predicate -- it produces a relevance score alongside the matching rows, and a
+`WHERE` clause has nowhere to put one. The two string-literal arguments are
+the table name and a JSON-encoded query, built with the same query-builder
+classes used from the SDK and serialized with `.to_json()`.
+
+## Setup {#setup}
+
+```sql
+CREATE TABLE my_docs (id INT, text STRING, category STRING, author STRING)
+
+INSERT INTO my_docs VALUES
+    (1, 'The happy puppy runs merrily in the park', 'animals', 'Alice'),
+    (2, 'A curious kitten jumps quickly over the fence', 'animals', 'Bob'),
+    (3, 'The puppy catches a ball with great enthusiasm', 'sports', 'Alice'),
+    (5, 'Puppy training requires patience and dedication', 'training', 'Alice')
+
+CREATE INDEX ON my_docs USING fts (text)
+```
+
+<Warning>
+Phrase queries need position information, which costs extra index size --
+add `WITH (with_position = true)` to `CREATE INDEX`. Without it,
+[phrase queries](#phrase) find nothing. See
+[FTS parameters](/indexing/fts-index#fts-parameters).
+</Warning>
+
+## Basic search {#basic}
+
+```python
+from lancedb.query import MatchQuery
+
+query = MatchQuery("puppy", "text")
+json_query = query.to_json()
+```
+
+```sql
+SELECT id, text, category FROM fts('my_docs', '<json_query>')
+LIMIT 5
+```
+
+By default the top 5 matches come back in **arbitrary order** -- select
+`_score` and order by it for relevance ranking:
+
+```sql
+SELECT id, text, _score FROM fts('my_docs', '<json_query>')
+ORDER BY _score DESC
+LIMIT 5
+```
+
+`_score` is a pseudo-column carrying the query's BM25 relevance for the row;
+it behaves like any other column, but exists only in a relation that came
+from `fts()`. See [Data types](/sql/data-types#pseudo-columns).
+
+## Fuzzy {#fuzzy}
+
+Tolerates typos, up to a character-edit budget:
+
+```python
+MatchQuery("pupy", "text", fuzziness=2)
+```
+
+## Phrase {#phrase}
+
+Exact phrase, or with `slop` to allow words between terms:
+
+```python
+PhraseQuery("happy puppy", "text")
+PhraseQuery("puppy park", "text", slop=2)   # up to 2 words between them
+```
+
+## Boolean {#boolean}
+
+Combine queries with `&` (AND) or `|` (OR):
+
+```python
+MatchQuery("puppy", "text") & MatchQuery("happy", "text")
+MatchQuery("puppy", "text") | MatchQuery("kitten", "text")
+```
+
+## Boost {#boost}
+
+Weight a query up or down relative to another:
+
+```python
+from lancedb.query import BoostQuery
+
+BoostQuery(
+    positive=MatchQuery("puppy", "text"),
+    negative=MatchQuery("kitten", "text"),
+    negative_boost=0.2,
+)
+```
+
+## Multi-match {#multi-match}
+
+Search several columns at once, optionally weighting them differently:
+
+```python
+from lancedb.query import MultiMatchQuery
+
+MultiMatchQuery("puppy", ["text", "category"])
+MultiMatchQuery("puppy", ["text", "category"], boosts=[2.0, 1.0])  # text weighted 2x
+```
+
+## Combining with SQL {#combining}
+
+`fts()` is a relation, so it composes with the rest of the SQL surface --
+filter, join, or aggregate over it same as any table:
+
+```sql
+SELECT id, text, category FROM fts('my_docs', '<json_query>')
+WHERE category = 'animals'
+LIMIT 5
+```
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Full-Text Search" icon="magnifying-glass" href="/search/full-text-search">
+    The query-builder equivalent, and every query form in full.
+  </Card>
+  <Card title="FTS Index" icon="bolt" href="/indexing/fts-index">
+    Tokenizers, and the position information phrase queries need.
+  </Card>
+</CardGroup>

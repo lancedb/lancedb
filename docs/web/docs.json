@@ -162,6 +162,58 @@
     {
       "source": "/enterprise/deployment",
       "destination": "/enterprise/deployment/index"
+    },
+    {
+      "source": "/search/sql/index",
+      "destination": "/sql"
+    },
+    {
+      "source": "/search/sql/fts-sql",
+      "destination": "/sql/dql/fts"
+    },
+    {
+      "source": "/sql/select",
+      "destination": "/sql/dql/select"
+    },
+    {
+      "source": "/sql/subqueries",
+      "destination": "/sql/dql/subqueries"
+    },
+    {
+      "source": "/sql/join",
+      "destination": "/sql/dql/join"
+    },
+    {
+      "source": "/sql/aggregation",
+      "destination": "/sql/dql/aggregation"
+    },
+    {
+      "source": "/sql/window",
+      "destination": "/sql/dql/window"
+    },
+    {
+      "source": "/sql/sampling",
+      "destination": "/sql/dql/sampling"
+    },
+    {
+      "source": "/sql/explain",
+      "destination": "/sql/dql/explain"
+    },
+    {
+      "source": "/sql/ddl",
+      "destination": "/sql/ddl/table"
+    },
+    {
+      "source": "/sql/dml",
+      "destination": "/sql/dml/insert"
+    },
+    {
+      "source": "/sql/refresh",
+      "destination": "/sql/dml/refresh"
+    },
+    {
+      "source": "/sql/show",
+      "destination": "/sql/ddl/job"
     }
   ],
   "navigation": {
@@ -293,24 +345,51 @@
             "group": "SQL Reference",
             "pages": [
               "sql/index",
-              "search/sql/index",
               "sql/data-types",
-              "sql/select",
-              "search/sql/fts-sql",
-              "sql/subqueries",
-              "sql/join",
-              "sql/aggregation",
-              "sql/window",
-              "sql/sampling",
-              "sql/ddl",
-              "sql/dml",
-              "sql/refresh",
-              "sql/show",
-              "sql/explain",
-              "sql/prepared-statements",
-              "sql/operators",
-              "sql/functions",
-              "sql/scalar-functions"
+              {
+                "group": "DDL",
+                "pages": [
+                  "sql/ddl/namespace",
+                  "sql/ddl/table",
+                  "sql/ddl/view",
+                  "sql/ddl/materialized-view",
+                  "sql/ddl/index",
+                  "sql/ddl/function",
+                  "sql/ddl/job"
+                ]
+              },
+              {
+                "group": "DML",
+                "pages": [
+                  "sql/dml/insert",
+                  "sql/dml/update",
+                  "sql/dml/delete",
+                  "sql/dml/copy",
+                  "sql/dml/refresh"
+                ]
+              },
+              {
+                "group": "DQL",
+                "pages": [
+                  "sql/dql/select",
+                  "sql/dql/subqueries",
+                  "sql/dql/join",
+                  "sql/dql/aggregation",
+                  "sql/dql/window",
+                  "sql/dql/sampling",
+                  "sql/dql/fts",
+                  "sql/dql/explain"
+                ]
+              },
+              {
+                "group": "Expressions",
+                "pages": [
+                  "sql/operators",
+                  "sql/functions",
+                  "sql/scalar-functions",
+                  "sql/prepared-statements"
+                ]
+              }
             ]
           },
           {
