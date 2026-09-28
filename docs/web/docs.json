@@ -356,7 +356,8 @@
                   "sql/ddl/index",
                   "sql/ddl/function",
                   "sql/ddl/job"
-                ]
+                ],
+                "icon": "sitemap"
               },
               {
                 "group": "DML",
@@ -366,7 +367,8 @@
                   "sql/dml/delete",
                   "sql/dml/copy",
                   "sql/dml/refresh"
-                ]
+                ],
+                "icon": "database"
               },
               {
                 "group": "DQL",
@@ -379,7 +381,8 @@
                   "sql/dql/sampling",
                   "sql/dql/fts",
                   "sql/dql/explain"
-                ]
+                ],
+                "icon": "filter"
               },
               {
                 "group": "Expressions",
@@ -388,7 +391,8 @@
                   "sql/functions",
                   "sql/scalar-functions",
                   "sql/prepared-statements"
-                ]
+                ],
+                "icon": "code"
               }
             ]
           },
