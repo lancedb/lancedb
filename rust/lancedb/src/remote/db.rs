@@ -979,8 +979,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn create_function_async(
         &self,
         request: FunctionRegistrationRequest,
+        namespace_path: &[String],
     ) -> Result<Job<FunctionVersion>> {
-        let function_id = build_object_identifier("Function name", &request.name, &[])?;
+        let function_id = build_object_identifier("Function name", &request.name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/create"))
@@ -1005,8 +1006,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         ))))
     }
 
-    async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
-        let function_id = build_object_identifier("Function name", name, &[])?;
+    async fn get_function(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<FunctionVersion> {
+        let function_id = build_object_identifier("Function name", name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/describe"))
@@ -1018,8 +1024,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         response.json().await.err_to_http(request_id)
     }
 
-    async fn list_functions(&self) -> Result<Vec<FunctionVersion>> {
-        let namespace_id = build_namespace_identifier(&[])?;
+    async fn list_functions(&self, namespace_path: &[String]) -> Result<Vec<FunctionVersion>> {
+        let namespace_id = build_namespace_identifier(namespace_path)?;
         let path = format!("/v1/namespace/{namespace_id}/function/list");
         let mut functions = Vec::new();
         let mut page_token: Option<String> = None;
@@ -1059,12 +1065,25 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(functions)
     }
 
-    async fn drop_function(&self, name: &str, version: &str) -> Result<bool> {
-        Ok(self.drop_function_async(name, version).await?.0)
+    async fn drop_function(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<bool> {
+        Ok(self
+            .drop_function_async(name, version, namespace_path)
+            .await?
+            .0)
     }
 
-    async fn drop_function_async(&self, name: &str, version: &str) -> Result<(bool, Job)> {
-        let function_id = build_object_identifier("Function name", name, &[])?;
+    async fn drop_function_async(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<(bool, Job)> {
+        let function_id = build_object_identifier("Function name", name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/drop"))
@@ -2004,7 +2023,7 @@ mod tests {
                 .body(serde_json::json!({"dropped": true, "job_id": "j1-fn-drop"}).to_string())
                 .unwrap()
         });
-        let (dropped, job) = db.drop_function_async("embed", "1").await.unwrap();
+        let (dropped, job) = db.drop_function_async("embed", "1", &[]).await.unwrap();
         assert!(dropped);
         assert_eq!(job.id(), Some("j1-fn-drop"));
     }
@@ -2019,7 +2038,7 @@ mod tests {
                 .body(serde_json::json!({"dropped": false}).to_string())
                 .unwrap()
         });
-        let (dropped, job) = db.drop_function_async("embed", "1").await.unwrap();
+        let (dropped, job) = db.drop_function_async("embed", "1", &[]).await.unwrap();
         assert!(!dropped);
         assert_eq!(job.id(), None);
         assert_eq!(job.status().await.unwrap(), "finished");
@@ -2036,7 +2055,11 @@ mod tests {
             let db = super::RemoteDatabase::new_mock(move |_| {
                 http::Response::builder().status(202).body(body).unwrap()
             });
-            let error = db.drop_function_async("embed", "1").await.err().unwrap();
+            let error = db
+                .drop_function_async("embed", "1", &[])
+                .await
+                .err()
+                .unwrap();
             assert!(error.to_string().contains("valid job_id"));
         }
     }
@@ -3905,7 +3928,7 @@ mod tests {
                 http::Response::builder().status(200).body("{}").unwrap()
             });
             let error = conn
-                .drop_function(name, "fv_1")
+                .drop_function(name, "fv_1", &[])
                 .await
                 .expect_err("a dot-only Function name must be refused");
             assert!(
@@ -4307,7 +4330,7 @@ mod tests {
             path => panic!("unexpected path: {path}"),
         });
         let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
-        let job = conn.create_function_async(request).await.unwrap();
+        let job = conn.create_function_async(request, &[]).await.unwrap();
         assert_eq!(job.id(), Some("job-function-1"));
         let version = job.wait().await.unwrap();
         assert_eq!(version.name(), "embed");
@@ -4327,7 +4350,7 @@ mod tests {
             assert_eq!(body, serde_json::json!({"version": "1"}));
             http::Response::builder().status(200).body(VERSION).unwrap()
         });
-        let version = conn.get_function("embed", "1").await.unwrap();
+        let version = conn.get_function("embed", "1", &[]).await.unwrap();
         assert_eq!(version.name(), "embed");
         assert_eq!(version.version(), "1");
     }
@@ -4370,7 +4393,7 @@ mod tests {
                 }
             }
         });
-        let functions = conn.list_functions().await.unwrap();
+        let functions = conn.list_functions(&[]).await.unwrap();
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name(), "embed");
         assert_eq!(functions[0].version(), "1");
@@ -4393,7 +4416,7 @@ mod tests {
                 .unwrap()
         });
 
-        let functions = conn.list_functions().await.unwrap();
+        let functions = conn.list_functions(&[]).await.unwrap();
         assert!(functions.is_empty());
         assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
@@ -4434,7 +4457,7 @@ mod tests {
                 .unwrap()
         });
 
-        let error = conn.list_functions().await.unwrap_err();
+        let error = conn.list_functions(&[]).await.unwrap_err();
         assert!(
             matches!(
                 &error,
@@ -4461,7 +4484,82 @@ mod tests {
                 .body(r#"{"dropped":false}"#)
                 .unwrap()
         });
-        assert!(!conn.drop_function("embed", "1").await.unwrap());
+        assert!(!conn.drop_function("embed", "1", &[]).await.unwrap());
+    }
+
+    /// A Function's namespace is addressed in the path the way a Secret's is:
+    /// every route takes the joined identifier and no body carries the
+    /// namespace, so a namespaced request differs from a root one only in its
+    /// path.
+    #[tokio::test]
+    async fn test_a_function_namespace_path_is_addressed_in_the_path() {
+        const REQUEST: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+        );
+        const VERSION: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let namespace = ["analytics".to_string(), "features".to_string()];
+        let mut expected_create: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        expected_create.as_object_mut().unwrap().remove("name");
+        let conn = Connection::new_with_handler(move |request| {
+            let body = request
+                .body()
+                .and_then(|body| body.as_bytes())
+                .map(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).unwrap());
+            match request.url().path() {
+                "/v1/function/analytics$features$normalize_score/create" => {
+                    assert_eq!(body.unwrap(), expected_create);
+                    http::Response::builder()
+                        .status(202)
+                        .body(r#"{"job_id":"job-function-1"}"#.to_string())
+                        .unwrap()
+                }
+                "/v1/function/analytics$features$embed/describe" => {
+                    assert_eq!(body.unwrap(), serde_json::json!({"version": "1"}));
+                    http::Response::builder()
+                        .status(200)
+                        .body(VERSION.to_string())
+                        .unwrap()
+                }
+                "/v1/function/analytics$features$embed/drop" => {
+                    assert_eq!(body.unwrap(), serde_json::json!({"version": "1"}));
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"dropped":true}"#.to_string())
+                        .unwrap()
+                }
+                // Listing is namespace-scoped, so the namespace is the whole
+                // identifier.
+                "/v1/namespace/analytics$features/function/list" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"functions":[]}"#.to_string())
+                    .unwrap(),
+                path => panic!("unexpected path: {path}"),
+            }
+        });
+        let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        let job = conn
+            .create_function_async(request, &namespace)
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("job-function-1"));
+        conn.get_function("embed", "1", &namespace).await.unwrap();
+        assert!(conn.list_functions(&namespace).await.unwrap().is_empty());
+        assert!(conn.drop_function("embed", "1", &namespace).await.unwrap());
+    }
+
+    /// Each namespace segment is checked before a request is built, so an
+    /// empty segment cannot collapse the identifier onto the parent namespace.
+    #[tokio::test]
+    async fn test_an_unaddressable_function_namespace_segment_is_refused() {
+        let conn = Connection::new_with_handler(|request| -> http::Response<String> {
+            panic!("reached the transport: {}", request.url().path())
+        });
+        let namespace = ["analytics".to_string(), String::new()];
+        assert!(conn.get_function("embed", "1", &namespace).await.is_err());
+        assert!(conn.list_functions(&namespace).await.is_err());
+        assert!(conn.drop_function("embed", "1", &namespace).await.is_err());
     }
 
     #[tokio::test]
