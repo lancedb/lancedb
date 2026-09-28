@@ -1,0 +1,65 @@
+---
+title: "Background jobs"
+sidebarTitle: "Background Jobs"
+description: "Jobs a deployment runs on its own — visible in SHOW JOBS, not started by a call you make."
+icon: gears
+keywords: ["background jobs", "job type", "wal", "spfresh", "prewarm", "archive"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+Every job documented elsewhere in these docs -- [Build & Repair](/indexing/reindexing),
+[Compaction](/maintenance/compaction), [Cleanup](/maintenance/cleanup),
+[Column Refresh](/feature-engineering/refresh-column) -- is one you cause,
+directly or by a schedule you set. This page is the rest: jobs the deployment
+runs to keep itself correct and fast, which you may see named in
+[`SHOW JOBS`](/sql/ddl#job) without having asked for any of them.
+
+There is no action to take on these beyond recognizing the name. None of them
+has a parameter you set or a call you make.
+
+## Write-ahead log maintenance {#wal}
+
+For a table with a [write-ahead log](/sql/ddl#table) enabled, two jobs keep the
+log from growing without bound:
+
+| Job type | What it does |
+| --- | --- |
+| `sstable_compaction` | Folds a WAL bucket's SSTables into the base table by primary key. Distinct from `compact`, which merges base-table fragments -- the two are unrelated. |
+| `wal_index_catchup` | Extends a base-table index over the rows `sstable_compaction` just folded in, and records how far the index has caught up. Nothing else advances that record. |
+
+## Index maintenance {#index}
+
+| Job type | What it does |
+| --- | --- |
+| `index_remap` | Reassigns index entries after row ids shift underneath an index -- the kind of remap a delta compaction can require. |
+| `spfresh_merge` | Merges SPFresh-managed segments for indexes that use it. |
+
+## Cache warming {#cache}
+
+| Job type | What it does |
+| --- | --- |
+| `prewarm_page_cache` | Loads table data into a query node's page cache ahead of a request needing it. |
+| `prewarm_index_cache` | The same, for index structures. |
+| `startup_prewarm_idx` | Runs cache prewarming as part of a query node's own startup, rather than on a schedule. |
+
+## Registry housekeeping {#registry}
+
+| Job type | What it does |
+| --- | --- |
+| `job_registry_archive` | Sweeps terminal jobs out of the active registry and into archival storage, on a per-database schedule. |
+| `job_events_export` | Copies terminal jobs' event histories into a curated system table for metering. Registry-scoped, like the archive sweep. |
+
+These two are why an old job you completed weeks ago no longer shows in
+`SHOW JOBS` -- it was archived, not deleted; its events survive in the exported
+table.
+
+## Object teardown {#teardown}
+
+| Job type | What it does |
+| --- | --- |
+| `drop_object` | Deletes a dropped catalog object's content, then clears it from the database's cleanup backlog. Covers namespaces, views, and functions -- everything [`drop_table`](/management/table#drop) does not, since that one fences a directory with its own marker instead. |
+
+You trigger this indirectly, by dropping a [namespace](/management/namespace),
+[view](/sql/ddl#view), or [function](/management/function#drop) -- the teardown
+itself runs as this job rather than inline with the call.

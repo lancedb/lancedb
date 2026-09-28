@@ -110,6 +110,12 @@ In practice this means a function should be self-contained: take its inputs as
 arguments, import what it needs at module level, and avoid capturing state from
 the surrounding scope.
 
+<Note>
+**Enterprise job type:** `create_function`. Registration returns a job because
+the function is baked into an image before the version becomes usable -- see
+below.
+</Note>
+
 ## Register it {#register}
 
 Registration returns a job; the immutable version exists once the job succeeds.

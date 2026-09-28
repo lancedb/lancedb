@@ -59,6 +59,12 @@ committing to the whole table:
 REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 ```
 
+<Note>
+**Enterprise job type:** `computed_refresh` for a SQL-expression column,
+`function_refresh` for one filled by a registered
+[function](/management/function).
+</Note>
+
 ## As a job {#async}
 
 <Badge color="red">Enterprise</Badge>

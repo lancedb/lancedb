@@ -206,6 +206,13 @@ the clone points at can be pruned. Use a deep clone (`is_shallow=False`) when
 the copy has to outlive the source's history.
 </Warning>
 
+<Note>
+**Enterprise job type:** `drop_table`. Fences the table's directory with a
+marker and deletes its content in the background -- see
+[Background jobs](/maintenance/background-jobs#teardown) for the namespace,
+view, and function equivalent.
+</Note>
+
 ## Dropping {#drop}
 
 <CodeGroup>

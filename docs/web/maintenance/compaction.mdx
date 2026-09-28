@@ -23,53 +23,18 @@ Three operations, in one call:
 | | |
 | --- | --- |
 | **Compaction** | merges small files into larger ones |
-| **Prune** | removes versions older than the retention window |
-| **Index** | folds newly added rows into existing indexes |
+| **Prune** | removes versions older than the retention window -- see [Cleanup](/maintenance/cleanup) |
+| **Index** | folds newly added rows into existing indexes -- see [Build & Repair](/indexing/reindexing) |
 
-The third is the one people miss. An [index](/indexing) does not
-automatically cover rows appended after it was built — those rows are still
-searchable, but by scanning rather than through the index. Running `optimize()`
-is what brings them under it.
+Compaction itself is only the first of the three: merging small fragments back
+into larger ones, which is what keeps a scan from opening more files than it
+needs to.
 
-## Retention {#retention}
-
-```python
-from datetime import timedelta
-
-table.optimize(cleanup_older_than=timedelta(days=30))
-```
-
-`cleanup_older_than` defaults to **7 days**. Versions older than that are
-removed, along with the files only they referenced.
-
-The latest version is never removed, whatever you pass — `timedelta(0)` prunes
-everything except it.
-
-<Warning>
-Pruning is what makes [time travel](/management/table#versioning) finite. A version
-outside the retention window is gone, and a tag or branch pointing at it no
-longer resolves.
-
-If you rely on reading old versions, set the window to cover the range you need
-before running this, not after.
-</Warning>
-
-## Files from failed transactions {#unverified}
-
-A write that fails partway can leave files that look like an operation still in
-progress. `optimize()` will not remove them until they are at least seven days
-old, because it cannot tell them apart from a live write.
-
-```python
-table.optimize(delete_unverified=True)
-```
-
-<Warning>
-`delete_unverified=True` removes them regardless of age. Only set it when you
-can guarantee **no other process is writing to the table** — otherwise it can
-delete files belonging to a write that is genuinely in progress, and corrupt the
-table.
-</Warning>
+<Note>
+**Enterprise job type:** `compact`. Runs automatically as data accumulates,
+separately from [`cleanup`](/maintenance/cleanup) -- the two are distinct jobs
+even though `optimize()` bundles both in one OSS call.
+</Note>
 
 ## Retraining indexes {#retrain}
 
@@ -100,6 +65,10 @@ Compaction rewrites files, which conflicts with a concurrent
 version it replaces. Sequence them rather than running both at once.
 </Note>
 
+See [Cleanup](/maintenance/cleanup) for pruning old versions, and
+[Build & Repair](/indexing/reindexing) for the index-folding half of
+`optimize()`.
+
 ## Performance {#performance}
 
 Two things accumulate on a long-lived table as more and more data gets added to it:
@@ -115,6 +84,4 @@ table.optimize()                                       # 7-day default retention
 table.optimize(cleanup_older_than=timedelta(days=1))   # reclaim space sooner
 ```
 
-The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates — see [Reindexing](/indexing/reindexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed — rebuild the index after large update batches.
-
-LanceDB Enterprise handles both compaction and cleanup automatically.
+The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates — see [Build & Repair](/indexing/reindexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed — rebuild the index after large update batches.

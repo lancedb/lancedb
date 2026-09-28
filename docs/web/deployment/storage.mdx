@@ -1,9 +1,81 @@
 ---
-title: "Configuring Cloud Storage in LanceDB"
-sidebarTitle: "Configuration"
-description: "Configure LanceDB to use S3, GCS, Azure Blob, and S3-compatible object stores with environment variables or storage options."
-icon: "wrench"
+title: "Storage"
+sidebarTitle: "Storage"
+description: "Choosing and configuring where LanceDB stores its data -- how you deploy an embedded database."
+icon: database
+keywords: ["storage", "s3", "gcs", "azure", "object store", "configuration", "deploy"]
 ---
+
+LanceDB's storage layer is built on modular, disk-first components. That design makes it flexible enough to run across local NVMe, EBS, EFS, and any object store that exposes an S3-compatible API. It also supports region-specific backends such as [Tencent COS](/storage/configuration#tencent-cos) and cache-acceleration layers such as [GooseFS](/storage/configuration#goosefs).
+
+Choosing a backend is a balance between latency, scalability, cost, and operational complexity. Use this guide to pick the right fit for your workload.
+
+## Choosing a backend {#choosing}
+
+![](/static/assets/images/storage/lancedb_storage_tradeoffs.png)
+
+When architecting your system, ask yourself:
+
+- **Latency**: How fast do I need results? What do the p50 and p95 look like?
+- **Scalability**: Can I scale data volume and QPS easily?
+- **Cost**: What is the all-in cost of storage plus serving?
+- **Reliability/Availability**: How will replication and disaster recovery work?
+
+### Comparison {#comparison}
+
+Below is a high-level comparison ordered from lowest cost to lowest latency.
+
+### 1\. Object storage (S3, GCS, Azure Blob) {#1-object-storage-s3-gcs-azure-blob}
+- **Latency**: Highest; expect hundreds of milliseconds and higher p95.
+- **Scalability**: Effectively unlimited storage; QPS bound by concurrency limits.
+- **Cost**: Lowest overall.
+- **Reliability/Availability**: Highly available, backed by cloud SLAs.
+
+LanceDB separates storage and compute and writes immutable fragments, making it a strong fit for stateless, horizontally scalable deployments.
+
+<Note>
+**Concurrent writers on S3**
+
+S3 and S3 Express now support atomic writes natively, so LanceDB handles concurrent writers against the same table out-of-the-box — no external commit coordinator is required. Bucket-level [server-side encryption with KMS](/storage/configuration#server-side-encryption-with-kms) and [S3 Express One Zone](/storage/configuration#s3-express) are also supported on this tier.
+</Note>
+
+### 2\. File storage (EFS, GCS Filestore, Azure File) {#2-file-storage-efs-gcs-filestore-azure-file}
+- **Latency**: Better than object storage; p95 under ~&lt;100ms is typical.
+- **Scalability**: High, but limited by provisioned IOPS per volume.
+- **Cost**: More than object storage but cheaper than in-memory options; cold data can tier down automatically.
+- **Reliability/Availability**: Highly available; replication/backup must be managed separately.
+
+Keep a copy of data in object storage for disaster recovery. If zero downtime is required, provision a second network file system with replicated data.
+
+### 3\. Third-party storage (e.g., MinIO, WekaFS) {#3-third-party-storage-e-g--minio-wekafs}
+
+- **Latency**: Similar to EFS; typically under &lt;100ms.
+- **Scalability**: Determined by the chosen vendor’s cluster sizing.
+- **Cost**: Higher than S3; may edge above EFS at larger scales.
+- **Reliability/Availability**: Shareable across many nodes; replication depends on vendor capabilities.
+
+### 4\. Block storage (EBS, GCP Persistent Disk, Azure Managed Disk) {#4-block-storage-ebs-gcp-persistent-disk-azure-managed-disk}
+- **Latency**: Near-local performance; often &lt;30ms.
+- **Scalability**: Not shareable across instances; shard or copy data when scaling.
+- **Cost**: Higher than networked file systems, plus potential I/O charges.
+- **Reliability/Availability**: Persists through instance restarts; backups and sharding must be managed.
+
+### 5\. Local storage (SSD, NVMe) {#5-local-storage-ssd-nvme}
+- **Latency**: Fastest; p95 often under &lt;10ms.
+- **Scalability**: Hard to scale in cloud environments; requires sharding or additional copies for higher QPS.
+- **Cost**: Highest; tightly coupling compute and storage makes horizontal scaling difficult.
+- **Reliability/Availability**: Data is tied to the instance; backups must be rigorous.
+
+Use local disk only when you need extremely low latency and are comfortable owning the operational overhead.
+
+### File-format choices that interact with the backend {#file-format-choices}
+
+A few `storage_options` keys shape new tables in ways that depend on the backend you picked above. They are documented in full on [below](#new-table-configuration); the architecture-level summary is:
+
+- `new_table_enable_v2_manifest_paths` matters most on object stores, where opening a table with many versions is dominated by listing cost. Leave it off for backward compatibility with clients older than LanceDB 0.10.0.
+- `new_table_enable_stable_row_ids` keeps row IDs stable across compaction, delete, and merge. The choice is independent of the backend but affects any system that joins on row ID.
+- `new_table_data_storage_version` selects the on-disk format. The default `stable` is recommended for all new tables; pick `legacy` only when older readers must keep working.
+
 import {
     PyStorageAzureAccount,
     PyStorageAzureSas,
@@ -34,7 +106,7 @@ import {
     TsStorageGoosefsConnect,
 } from '/snippets/storage.mdx';
 
-When using LanceDB OSS, you can choose where to store your data. The tradeoffs between storage options are covered in the [storage architecture guide](/storage). This page shows how to configure each backend.
+### Configuring a backend {#configuring}
 
 <Note>
 **LanceDB Enterprise storage configuration**
@@ -42,7 +114,7 @@ When using LanceDB OSS, you can choose where to store your data. The tradeoffs b
 In LanceDB Enterprise, you connect with `db://...` and the cluster owns the storage credentials, so `storage_options` are not passed at runtime. Cloud auth is set at deployment time. For federated databases, the namespace service vends per-request credentials automatically. See the [quickstart](/quickstart), [Enterprise overview](/enterprise/), and [Azure deployment guide](/enterprise/deployment/azure) for the Enterprise flow.
 </Note>
 
-## Object stores {#object-stores}
+### Object stores {#object-stores}
 
 LanceDB supports AWS S3 (and compatible stores), Azure Blob Storage, and Google Cloud Storage. The URI scheme in your `connect` call selects the backend.
 
@@ -185,7 +257,7 @@ const db = await lancedb.connect("s3://bucket/path", {
 The `data_storage_version` parameter on `create_table()` is deprecated. Use `new_table_data_storage_version` in `storage_options` instead.
 </Warning>
 
-## AWS S3 {#aws-s3}
+### AWS S3 {#aws-s3}
 
 ![](/static/assets/images/storage/aws.jpg)
 
@@ -240,7 +312,7 @@ To encrypt at rest with an AWS KMS key, set `aws_server_side_encryption` to `aws
 
 The IAM principal needs `kms:Encrypt`, `kms:Decrypt`, and `kms:GenerateDataKey` on the configured KMS key.
 
-## Google Cloud Storage {#google-cloud-storage}
+### Google Cloud Storage {#google-cloud-storage}
 
 ![](/static/assets/images/storage/gcp.jpg)
 
@@ -255,7 +327,7 @@ Provide credentials via `GOOGLE_SERVICE_ACCOUNT` (path to JSON) or include the p
     </CodeBlock>
 </CodeGroup>
 
-## Azure Blob Storage {#azure-blob-storage}
+### Azure Blob Storage {#azure-blob-storage}
 
 ![](/static/assets/images/storage/azure.jpg)
 
@@ -283,7 +355,7 @@ For SAS-token auth, set `azure_storage_account_name` and `azure_storage_sas_toke
 
 Other supported keys include service principal credentials (`azure_client_id`, `azure_client_secret`, `azure_tenant_id`), managed identities, and custom endpoints.
 
-## Tigris Object Storage {#tigris-object-storage}
+### Tigris Object Storage {#tigris-object-storage}
 
 ![](/static/assets/images/storage/tigris.jpg)
 
@@ -300,7 +372,7 @@ Tigris exposes an S3-compatible API. Configure the endpoint and region:
 
 Environment variables `AWS_ENDPOINT=https://t3.storage.dev` and `AWS_DEFAULT_REGION=auto` achieve the same configuration.
 
-## Tencent COS {#tencent-cos}
+### Tencent COS {#tencent-cos}
 
 [Tencent Cloud Object Storage (COS)](https://www.tencentcloud.com/products/cos) is the primary object store for workloads running in the China region. Use the `cos://` URI scheme to connect directly to a COS bucket.
 
@@ -318,7 +390,7 @@ Supported keys include `secret_id`, `secret_key`, `region`, and `endpoint`. You 
 COS is bundled in the Python wheel by default. To use it from Rust or the Node binding, build with the `cos` Cargo feature enabled.
 </Note>
 
-## GooseFS {#goosefs}
+### GooseFS {#goosefs}
 
 [GooseFS](https://www.tencentcloud.com/document/product/1424) is Tencent Cloud's distributed cache acceleration layer for COS and S3. It is a common choice when the same hot dataset is read repeatedly, such as vector search and AI training workloads. Connect using the `goosefs://` URI scheme.
 
@@ -338,4 +410,3 @@ GooseFS reads credentials and endpoint configuration from the GooseFS client env
 
 GooseFS is bundled by default in the Python wheel and the Node binding. To use it from Rust, build with the `goosefs` Cargo feature enabled.
 </Note>
-

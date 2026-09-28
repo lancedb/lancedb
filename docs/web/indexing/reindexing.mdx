@@ -19,6 +19,13 @@ As data is being added and a reindex operation is running, LanceDB will combine 
 
 Rather than dropping an existing index entirely and reindexing from scratch, LanceDB supports **incremental indexing**.
 
+<Note>
+**Enterprise job types:** building an index runs as `create_ivf_pq`, `create_btree`,
+`create_fts`, and one more per index algorithm -- the type names the algorithm,
+not a separate feature. Folding new rows into an existing one runs as the
+matching `reindex_*` type instead.
+</Note>
+
 ## Incremental Reindexing {#incremental-reindexing}
 
 You can manually trigger an incremental indexing operation on updated data

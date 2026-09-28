@@ -146,6 +146,22 @@
     {
       "source": "/core/update",
       "destination": "/ingestion/update"
+    },
+    {
+      "source": "/storage",
+      "destination": "/deployment/storage"
+    },
+    {
+      "source": "/storage/configuration",
+      "destination": "/deployment/storage"
+    },
+    {
+      "source": "/storage/monitoring",
+      "destination": "/deployment/monitoring"
+    },
+    {
+      "source": "/enterprise/deployment",
+      "destination": "/enterprise/deployment/index"
     }
   ],
   "navigation": {
@@ -243,25 +259,14 @@
           {
             "group": "Maintenance",
             "pages": [
-              {
-                "group": "Indexing",
-                "pages": [
-                  "indexing/index",
-                  "indexing/vector-index",
-                  "indexing/fts-index",
-                  "indexing/scalar-index",
-                  "indexing/reindexing"
-                ]
-              },
+              "indexing/index",
+              "indexing/vector-index",
+              "indexing/fts-index",
+              "indexing/scalar-index",
+              "indexing/reindexing",
               "maintenance/compaction",
-              {
-                "group": "Storage",
-                "pages": [
-                  "storage/index",
-                  "storage/configuration",
-                  "storage/monitoring"
-                ]
-              }
+              "maintenance/cleanup",
+              "maintenance/background-jobs"
             ]
           },
           {
@@ -277,13 +282,10 @@
             "pages": [
               "enterprise/index",
               "enterprise/architecture",
-              {
-                "group": "Cloud Providers",
-                "pages": [
-                  "enterprise/deployment/index",
-                  "enterprise/deployment/azure"
-                ]
-              },
+              "enterprise/deployment/index",
+              "deployment/storage",
+              "deployment/monitoring",
+              "enterprise/deployment/azure",
               "enterprise/benchmarks"
             ]
           },

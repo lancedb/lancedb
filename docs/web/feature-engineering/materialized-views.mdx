@@ -78,6 +78,10 @@ Concurrent refreshes of one view do not duplicate rows. If two plan the same
 source rows, they conflict on commit and the loser raises rather than writing
 them twice — so a retry loop around `refresh()` is safe.
 
+<Note>
+**Enterprise job type:** `mat_view_refresh`.
+</Note>
+
 ## Against a deployment {#availability}
 
 <Badge color="red">Enterprise</Badge>
