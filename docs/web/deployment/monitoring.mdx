@@ -11,7 +11,7 @@ LanceDB emits internal metrics (currently object store request counts, bytes tra
 The bridge is available in the Python and TypeScript SDKs. It is a thin wrapper over LanceDB's `metrics` recorder; your application supplies and configures the OpenTelemetry SDK.
 
 <Note>
-This page covers LanceDB OSS. LanceDB Enterprise clusters emit their own Prometheus/OpenTelemetry metrics from the server side — see the [Enterprise overview](/enterprise/) for that flow.
+This page covers LanceDB OSS instrumentation. LanceDB Enterprise clusters emit their own metrics from the server side — see [Enterprise monitoring](#enterprise) below.
 </Note>
 
 ## What you get {#what-you-get}
@@ -101,6 +101,20 @@ A few starting points for dashboards and alerts:
 - **Tail latency:** histogram quantiles over `lance_object_store_request_duration_seconds_bucket` catch object store slowdowns before they surface as query timeouts.
 - **Retryable responses:** a rising `lance_object_store_retryable_responses_total` typically means you are being throttled and should back off or shard writes.
 - **In-flight requests:** a growing `lance_object_store_in_flight_requests` gauge without a matching rise in throughput indicates queueing.
+
+## Enterprise monitoring {#enterprise}
+
+<Badge color="red">Enterprise</Badge> A deployment emits its own metrics from
+the server side, using Prometheus for collection and OpenTelemetry (OTel) to
+export them with data enrichment -- no client-side instrumentation needed.
+
+| Component | Metrics |
+| --- | --- |
+| Query node | RPS, query latency, error codes, slow-query count, CPU/memory utilization |
+| Plan executor | SSD cache hit/miss rate, CPU/memory utilization |
+
+[Contact support](/deployment/support) for the comprehensive metric list and
+help integrating them with your monitoring dashboard.
 
 ## Where to go next {#where-to-go-next}
 

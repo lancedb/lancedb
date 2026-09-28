@@ -75,6 +75,16 @@ table = reader.read_all()
 does not wait for the whole query. `execute_query_async` returns a handle
 instead -- see [Queries](/basics/query).
 
+## Python multiprocessing {#multiprocessing}
+
+<Warning>
+Do not use `fork` as the start method with Python's `multiprocessing` module.
+Lance is multi-threaded internally, and `fork` with alive threads is unsafe --
+use `spawn` instead. See
+[this discussion](https://discuss.python.org/t/concerns-regarding-deprecation-of-fork-with-alive-threads/33555)
+for why.
+</Warning>
+
 ## Choosing between them {#choosing}
 
 Reach for **the SDKs** when you are writing data, managing the catalog, running

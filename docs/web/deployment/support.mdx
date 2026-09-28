@@ -1,0 +1,30 @@
+---
+title: "Support"
+sidebarTitle: "Support"
+description: "Where to get help: community Discord for OSS, dedicated support for Enterprise."
+icon: circle-question
+keywords: ["support", "help", "discord", "community"]
+---
+
+## LanceDB OSS {#oss}
+
+The best place to get help is the
+[Discord community](https://discord.gg/AUEWnJ7Txb), under the relevant
+language channel for Python, TypeScript, or Rust. Asking in the
+language-specific channel reaches both the community and the engineering team.
+
+## LanceDB Enterprise {#enterprise}
+
+<Badge color="red">Enterprise</Badge> Contact your support team directly at
+[support@lancedb.com](mailto:support@lancedb.com) for dedicated assistance.
+
+## What to include {#what-to-include}
+
+A faster answer usually depends on the same handful of details:
+
+| | |
+| --- | --- |
+| SDK and version | `lancedb.__version__` (Python), `package.json` (TypeScript), the crate version (Rust) |
+| Connection type | embedded path, or a `db://` deployment |
+| The exact error | full traceback or error message, not a paraphrase |
+| A minimal repro | the smallest table schema and call that reproduces it |

@@ -214,6 +214,22 @@
     {
       "source": "/sql/show",
       "destination": "/sql/ddl/job"
+    },
+    {
+      "source": "/faq",
+      "destination": "/deployment/support"
+    },
+    {
+      "source": "/faq/faq-oss",
+      "destination": "/deployment/support"
+    },
+    {
+      "source": "/faq/faq-enterprise",
+      "destination": "/deployment/support"
+    },
+    {
+      "source": "/troubleshooting",
+      "destination": "/deployment/support"
     }
   ],
   "navigation": {
@@ -338,7 +354,8 @@
               "deployment/storage",
               "deployment/monitoring",
               "enterprise/deployment/azure",
-              "enterprise/benchmarks"
+              "enterprise/benchmarks",
+              "deployment/support"
             ]
           },
           {
@@ -393,20 +410,6 @@
                   "sql/prepared-statements"
                 ],
                 "icon": "code"
-              }
-            ]
-          },
-          {
-            "group": "Support",
-            "pages": [
-              "troubleshooting",
-              {
-                "group": "FAQ",
-                "pages": [
-                  "faq/index",
-                  "faq/faq-oss",
-                  "faq/faq-enterprise"
-                ]
               }
             ]
           }

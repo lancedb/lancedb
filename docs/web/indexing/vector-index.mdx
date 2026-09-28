@@ -29,6 +29,18 @@ import {
 Vector indexes are robust tools in facilitating fast searches across large numeric datasets. 
 LanceDB implements **ANN (Approximate Nearest-Neighbor)** queries with several techniques that provide benefits across a variety of use cases.
 
+## Do you need one? {#do-you-need-one}
+
+Not always. LanceDB's disk-based brute-force kNN search is fast even without an
+index -- computing 100K pairs of 1000-dimension vectors takes under 20ms in
+benchmarks. For datasets around 100K rows or fewer, or applications that can
+accept ~100ms latency, a vector index is usually unnecessary overhead.
+
+Build one once a table passes roughly a million rows, dimensionality is high,
+or query latency matters more than that. See
+[`bypass_vector_index`](#search-time-parameters) to run an exact search
+side-by-side and measure whether an index is worth it for your data.
+
 ## Choosing the Right Index
 
 LanceDB vector indexes are combined with several [quantization](/indexing/vector-index) techniques to admit efficient storage.
@@ -131,7 +143,7 @@ Learn how to configure, build, and search LanceDB vector indexes, including buil
 | `minimum_nprobes` | Minimum number of partitions scanned. |
 | `maximum_nprobes` | Maximum number of partitions scanned. Only scans more than `minimum_nprobes` if an initial pass does not return enough results — useful for narrow filters. Set to `0` to remove the cap. |
 | `ef` | HNSW search-time exploration factor. Start around `1.5 * k` and increase up to `10 * k` for higher recall. |
-| `refine_factor` | Reads and reranks additional candidates in memory to recover recall lost to quantization. |
+| `refine_factor` | Reads and reranks additional candidates in memory to recover recall lost to quantization. Start between `5` and `50` (a factor of `25` reads and reranks the top `25 * k` candidates) and measure the latency cost, typically a few milliseconds, against the recall gained. |
 | `distance_range(lower_bound, upper_bound)` | Return only rows whose distance falls within `[lower_bound, upper_bound)`. Either bound is optional. Useful for near-duplicate detection or "close-enough" matching. |
 | `bypass_vector_index()` | Ignore the ANN index entirely and perform an exact (flat) scan. Can be used to measure ANN `recall@k`, or to query with a metric the index was not built for (e.g., a non-cosine query on a multivector column). |
 
@@ -254,6 +266,7 @@ The snippet below builds and queries an `IVF_HNSW_SQ` index.
 In LanceDB Enterprise, vector indexes are managed **automatically**. The system asynchronously updates and optimizes indexes as a background process:
 - Automatically manages indexing parameters and storage
 - Infers vector columns from the schema
+- GPU-based indexing is available on request -- [contact support](/deployment/support) to enable it for your deployment. A few billion vectors index in under 4 hours on GPU.
 
  <Badge color="gray">Open-Source</Badge> 
  LanceDB OSS users can manually create vector indexes by calling `table.create_index()`. 

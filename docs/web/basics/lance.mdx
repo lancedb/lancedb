@@ -28,6 +28,10 @@ Being a specification rather than a product is the point. Object storage holds
 the bytes, and open engines -- PyTorch, Ray, Spark, Trino, DuckDB, Polars --
 read them without going through LanceDB at all.
 
+Lance exists because columnar formats derived from Parquet were not designed
+for random access on vectors: [benchmarks](https://lancedb.com/blog/benchmarking-random-access-in-lance/)
+show Lance up to 1000x faster than Parquet for that access pattern.
+
 <Card
   title="Lance format documentation"
   icon="/static/assets/logo/lance-logo-gray.svg"
@@ -51,6 +55,9 @@ There is no server, which is what makes it embedded -- and also what bounds it.
 There is nothing to run work on your behalf, so there are no server-side
 [jobs](/basics/jobs), no [SQL endpoint](/basics/apis), and no shared catalog
 beyond what the storage layer itself provides.
+
+LanceDB OSS is Apache 2.0 licensed. LanceDB Enterprise is the commercial,
+deployment-only product that implements the catalog specification below.
 
 ## LanceDB Enterprise implements the catalog specification {#enterprise}
 

@@ -54,7 +54,8 @@ enforces, since there is no other gatekeeper.
 
 **What it is good at.** Development, notebooks, single-node pipelines, embedding
 LanceDB inside an application, and anything where "no service to operate" is
-worth more than elasticity.
+worth more than elasticity. Comfortably handles millions of vectors on one
+node -- disk-based indexes keep it performant without extra infrastructure.
 
 ## Distributed {#distributed}
 
@@ -94,7 +95,8 @@ exists, so do the things that need one: [SQL](/sql),
 
 **What it is good at.** Many concurrent queries, continuous ingestion and
 indexing, multi-team access with real permissions, and workloads too large for
-one machine.
+one machine -- customers regularly operate on billions of rows and tens of
+terabytes.
 
 ## What changes, precisely {#differences}
 

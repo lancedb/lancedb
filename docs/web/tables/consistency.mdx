@@ -60,6 +60,13 @@ of refreshing against storage, which raises per-read latency and cost.
 In <Badge color="red">Enterprise</Badge> deployments, the server-side default freshness is still
 controlled by the cluster-level `weak_read_consistency_interval_seconds` parameter; the client setting
 tightens that bound on a per-connection basis.
+
+<Tip>
+30-60 seconds is a reasonable starting point for
+`weak_read_consistency_interval_seconds`: it cuts unnecessary object-store
+checks while keeping data fresh enough for most applications. This setting
+only affects reads -- writes always remain strongly consistent.
+</Tip>
 </Callout>
 
 ## Configure Consistency Parameters {#configure-consistency-parameters}
