@@ -247,6 +247,8 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        *,
+        vector_source_json: Optional[str] = None,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
@@ -256,6 +258,8 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        *,
+        vector_source_json: Optional[str] = None,
     ) -> Job: ...
     async def list_materialized_views(self) -> List[str]: ...
     async def drop_materialized_view(

@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatchReader;
+use arrow_schema::{DataType, Fields};
 use futures::future::Either;
 use futures::{FutureExt, TryFutureExt};
 use lance::dataset::{
     MergeInsertBuilder as LanceMergeInsertBuilder, WhenMatched, WhenNotMatchedBySource,
 };
+use lance_datafusion::utils::StreamingWriteSource;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -248,6 +251,59 @@ fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<Merge
         .transpose()
 }
 
+// The JSON projection iterates target fields, so reject unknown source fields
+// before it can erase them. Missing and reordered fields remain valid merge
+// inputs; type compatibility is still checked by the cast and Lance writer.
+fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -> Result<()> {
+    let mut names = HashSet::with_capacity(input.len());
+    for field in input {
+        let path = if parent.is_empty() {
+            field.name().clone()
+        } else {
+            format!("{parent}.{}", field.name())
+        };
+        if !names.insert(field.name()) {
+            return Err(Error::InvalidInput {
+                message: format!("merge source field '{path}' is specified more than once"),
+            });
+        }
+        let target_field = target
+            .iter()
+            .find(|candidate| candidate.name() == field.name())
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!("merge source field '{path}' is not present in the table schema"),
+            })?;
+        validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+    }
+    Ok(())
+}
+
+fn validate_merge_source_type(input: &DataType, target: &DataType, path: &str) -> Result<()> {
+    match (input, target) {
+        (DataType::Struct(input), DataType::Struct(target)) => {
+            validate_merge_source_fields(input, target, path)
+        }
+        (
+            DataType::List(input)
+            | DataType::LargeList(input)
+            | DataType::FixedSizeList(input, _)
+            | DataType::ListView(input)
+            | DataType::LargeListView(input),
+            DataType::List(target)
+            | DataType::LargeList(target)
+            | DataType::FixedSizeList(target, _)
+            | DataType::ListView(target)
+            | DataType::LargeListView(target),
+        )
+        | (DataType::Map(input, _), DataType::Map(target, _)) => {
+            validate_merge_source_type(input.data_type(), target.data_type(), path)
+        }
+        (DataType::Dictionary(_, input), _) => validate_merge_source_type(input, target, path),
+        (_, DataType::Dictionary(_, target)) => validate_merge_source_type(input, target, path),
+        _ => Ok(()),
+    }
+}
+
 /// Internal implementation of the merge insert logic
 ///
 /// This logic was moved from NativeTable::merge_insert to keep table.rs clean.
@@ -279,6 +335,27 @@ pub(crate) async fn execute_merge_insert(
     }
 
     let dataset = table.dataset.get().await?;
+    let schema = arrow_schema::Schema::from(dataset.schema());
+    // JSON source fields must carry the stored extension metadata just as on
+    // append. Keep arrow.json text labelled until Lance encodes it as JSONB.
+    let source = if schema
+        .fields()
+        .iter()
+        .any(|field| lance_arrow::json::has_json_fields(field))
+    {
+        validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
+        let plan = Arc::new(super::datafusion::scannable_exec::ScannableExec::new(
+            Box::new(new_data),
+            None,
+        ));
+        let plan = super::datafusion::cast::cast_to_table_schema(plan, &schema)?;
+        datafusion_physical_plan::execute_stream(
+            plan,
+            Arc::new(datafusion_execution::TaskContext::default()),
+        )?
+    } else {
+        new_data.into_stream()
+    };
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -313,10 +390,7 @@ pub(crate) async fn execute_merge_insert(
     builder.use_index(params.use_index);
 
     let future = if let Some(timeout) = params.timeout {
-        let future = builder
-            .retry_timeout(timeout)
-            .try_build()?
-            .execute_reader(new_data);
+        let future = builder.retry_timeout(timeout).try_build()?.execute(source);
         Either::Left(tokio::time::timeout(timeout, future).map(|res| match res {
             Ok(Ok((new_dataset, stats))) => Ok((new_dataset, stats)),
             Ok(Err(e)) => Err(e.into()),
@@ -326,7 +400,7 @@ pub(crate) async fn execute_merge_insert(
         }))
     } else {
         let job = builder.try_build()?;
-        Either::Right(job.execute_reader(new_data).map_err(|e| e.into()))
+        Either::Right(job.execute(source).map_err(|e| e.into()))
     };
     let (new_dataset, stats) = future.await?;
     let version = new_dataset.manifest().version;
@@ -352,6 +426,186 @@ mod tests {
     use std::sync::Arc;
 
     use crate::connect;
+
+    #[rstest::rstest]
+    #[case(None)]
+    #[case(Some("struct"))]
+    #[case(Some("list"))]
+    #[case(Some("large_list"))]
+    #[case(Some("fixed_size_list"))]
+    #[case(Some("map"))]
+    #[tokio::test]
+    async fn merge_json_rejects_ambiguous_source_fields(
+        #[case] nested: Option<&str>,
+        #[values(false, true)] duplicate: bool,
+    ) {
+        let mut target = vec![
+            Field::new("id", DataType::Int32, false),
+            lance_arrow::json::json_field("payload", true),
+        ];
+        let mut input = vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("payload", DataType::Utf8, true),
+        ];
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = vec![
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(StringArray::from(vec![r#"{"x":1}"#])),
+        ];
+        if let Some(nested) = nested {
+            let wrap = |children: Vec<Field>| {
+                let structure = DataType::Struct(children.into());
+                let item = Arc::new(Field::new("item", structure.clone(), true));
+                match nested {
+                    "struct" => structure,
+                    "list" => DataType::List(item),
+                    "large_list" => DataType::LargeList(item),
+                    "fixed_size_list" => DataType::FixedSizeList(item, 2),
+                    "map" => DataType::Map(
+                        Arc::new(Field::new(
+                            "entries",
+                            DataType::Struct(
+                                vec![
+                                    Field::new("key", DataType::Utf8, false),
+                                    Field::new("value", structure, true),
+                                ]
+                                .into(),
+                            ),
+                            false,
+                        )),
+                        false,
+                    ),
+                    _ => unreachable!(),
+                }
+            };
+            let known = Field::new("value", DataType::Int32, true);
+            let unexpected = if duplicate { "value" } else { "extra" };
+            let target_type = wrap(vec![known.clone()]);
+            let input_type = wrap(vec![known, Field::new(unexpected, DataType::Int32, true)]);
+            columns.push(arrow_array::new_null_array(&input_type, 1));
+            target.push(Field::new("details", target_type, true));
+            input.push(Field::new("details", input_type, true));
+        } else {
+            let unexpected = if duplicate { "id" } else { "extra" };
+            input.push(Field::new(unexpected, DataType::Int32, true));
+            columns.push(Arc::new(Int32Array::from(vec![99])));
+        }
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("ambiguous_json", Arc::new(Schema::new(target)))
+            .execute()
+            .await
+            .unwrap();
+        let version = table.version().await.unwrap();
+        let schema = Arc::new(Schema::new(input));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_not_matched_insert_all();
+        let error = merge
+            .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
+            .await
+            .expect_err("JSON alignment must not drop source fields");
+        let expected = if duplicate {
+            "more than once"
+        } else {
+            "not present"
+        };
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(table.version().await.unwrap(), version);
+        assert_eq!(table.count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn merge_json_preserves_empty_extension_metadata() {
+        use crate::query::{ExecutableQuery, QueryBase, Select};
+        use futures::TryStreamExt;
+        let mut stored_json = lance_arrow::json::json_field("payload", true);
+        let mut metadata = stored_json.metadata().clone();
+        metadata.insert(lance_arrow::ARROW_EXT_META_KEY.into(), String::new());
+        stored_json = stored_json.with_metadata(metadata);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            stored_json,
+        ]));
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_merge_metadata", schema)
+            .execute()
+            .await
+            .unwrap();
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("payload", DataType::Utf8, true).with_metadata(
+                std::collections::HashMap::from([(
+                    lance_arrow::ARROW_EXT_NAME_KEY.into(),
+                    lance_arrow::json::ARROW_JSON_EXT_NAME.into(),
+                )]),
+            ),
+        ]));
+        let seed = RecordBatch::try_new(
+            input_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![r#"{"old":true}"#])),
+            ],
+        )
+        .unwrap();
+        table.add(seed).execute().await.unwrap();
+        let batch = RecordBatch::try_new(
+            input_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec![
+                    r#"{"updated":true}"#,
+                    r#"{"inserted":true}"#,
+                ])),
+            ],
+        )
+        .unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let result = merge
+            .execute(Box::new(RecordBatchIterator::new(
+                vec![Ok(batch)],
+                input_schema,
+            )))
+            .await
+            .unwrap();
+        assert_eq!(result.num_updated_rows, 1);
+        assert_eq!(result.num_inserted_rows, 1);
+        let output = table
+            .query()
+            .select(Select::columns(&["payload"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let values = output
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .iter()
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        assert!(
+            values
+                .iter()
+                .any(|v| serde_json::from_str::<serde_json::Value>(v).unwrap()["updated"] == true)
+        );
+        assert!(
+            values
+                .iter()
+                .any(|v| serde_json::from_str::<serde_json::Value>(v).unwrap()["inserted"] == true)
+        );
+    }
 
     fn merge_insert_test_batches(offset: i32, age: i32) -> Box<dyn RecordBatchReader + Send> {
         let schema = Arc::new(Schema::new(vec![
