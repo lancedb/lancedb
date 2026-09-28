@@ -230,6 +230,10 @@
     {
       "source": "/troubleshooting",
       "destination": "/deployment/support"
+    },
+    {
+      "source": "/basics/apis",
+      "destination": "/basics/sdk"
     }
   ],
   "navigation": {
@@ -243,6 +247,8 @@
               "index",
               "quickstart",
               "architecture",
+              "basics/sdk",
+              "basics/sql",
               "basics/agentic-skills"
             ]
           },
@@ -256,8 +262,7 @@
               "basics/jobs",
               "tables/consistency",
               "basics/guarantees",
-              "basics/limits",
-              "basics/apis"
+              "basics/limits"
             ]
           },
           {

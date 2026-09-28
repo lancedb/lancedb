@@ -53,7 +53,7 @@ db = lancedb.connect("s3://bucket/path")
 
 There is no server, which is what makes it embedded -- and also what bounds it.
 There is nothing to run work on your behalf, so there are no server-side
-[jobs](/basics/jobs), no [SQL endpoint](/basics/apis), and no shared catalog
+[jobs](/basics/jobs), no [SQL endpoint](/basics/sql), and no shared catalog
 beyond what the storage layer itself provides.
 
 LanceDB OSS is Apache 2.0 licensed. LanceDB Enterprise is the commercial,
@@ -73,7 +73,7 @@ db = lancedb.connect("db://my-database", api_key="...")
 Implementing the specification rather than inventing an interface is what makes
 the catalog reachable by anything that speaks it, and what makes
 [authorization](/governance/authorization), server-side jobs, and
-[SQL](/basics/apis) possible: there is now a server to enforce and to run them.
+[SQL](/basics/sql) possible: there is now a server to enforce and to run them.
 
 The tables are the same Lance tables either way. What changes is who resolves
 their names and who does the work.

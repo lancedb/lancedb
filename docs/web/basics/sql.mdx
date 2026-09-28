@@ -1,0 +1,119 @@
+---
+title: "SQL"
+sidebarTitle: "SQL"
+description: "The same tables, reached with SQL — the universal access path, and where every operation is formally documented."
+icon: table-list
+keywords: ["sql", "flight sql", "datafusion", "reference", "dialect"]
+---
+
+<Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local
+database has no engine to plan a statement, so `execute_query` raises there.
+
+SQL is a second way to reach the same tables the [SDKs](/basics/sdk) do --
+not a different product, a different interface onto one engine. A table
+written from Python is queried from SQL without an export step, and a table
+created from SQL is visible to every SDK immediately.
+
+## Any language, via Flight SQL {#flight-sql}
+
+SQL is served over an
+[Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint, so any Flight SQL client reaches it -- which makes SQL the way in
+for a language LanceDB has no SDK for. You don't need a LanceDB-specific
+client at all, just a Flight SQL driver for your language.
+
+The TypeScript SDK itself has no SQL method, for the same reason a Go or C#
+application would reach for SQL first: connect a Flight SQL client instead of
+waiting on a native binding. See [SDKs](/basics/sdk) for the officially
+supported and community clients, and reach for Flight SQL whenever yours
+isn't among them.
+
+## Every SDK operation, in SQL {#sdk-parity}
+
+Broadly, a public SDK method has a corresponding SQL statement -- creating a
+table is `CREATE TABLE`, inserting rows is `INSERT INTO`, building an index is
+`CREATE INDEX`. The two describe the same operations, so whichever one your
+code speaks, the other is available too.
+
+| | SDK | SQL |
+| --- | :---: | :---: |
+| Create and manage catalog objects | yes | partly |
+| Insert, merge, update, delete | yes | yes |
+| Filter, project, aggregate, join | yes | yes |
+| Vector search | yes | -- |
+| Full-text search | yes | yes |
+| Feature engineering, jobs | yes | yes |
+| Runs against a local database | yes | **no** |
+
+## Vector search has no SQL form {#no-vector-sql}
+
+The clearest exception to that parity. Similarity search is a query-builder
+operation. A query that needs both vector similarity and SQL analytics runs
+the search in an SDK and the analytics over its result. Full-text search *is*
+available in SQL, as the [`fts()`](/sql/functions#fts) table function and the
+[`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate.
+
+The reverse gap also exists: a [view](/management/view) is a saved SQL query,
+so SQL is the only way to create one -- there's nothing for an SDK method to
+call.
+
+## SQL needs a deployment {#sql-is-remote}
+
+A connection to a directory or a bucket has no server to plan and execute a
+statement, and asking it to raises `NotImplementedError`. This is the largest
+behavioral difference between the embedded and deployed forms, and the reason
+the SDKs are the portable choice: SDK code moves between the two by changing
+the URI, SQL does not.
+
+```python
+db = lancedb.connect("./.lancedb")        # no SQL
+db = lancedb.connect("db://my-database")  # SQL
+```
+
+## Running SQL from Python {#sql-from-python}
+
+```python
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
+table = reader.read_all()
+```
+
+`execute_query` returns a blocking Arrow reader once results start arriving; it
+does not wait for the whole query. `execute_query_async` returns a handle
+instead -- see [Queries](/basics/query).
+
+## Choosing between them {#choosing}
+
+Reach for **the SDKs** when you are writing data, managing the catalog, running
+vector search, or building an application that should work the same embedded and
+deployed.
+
+Reach for **SQL** when the question is analytical -- joins across tables,
+aggregates, window functions -- when the thing asking is a BI tool, a
+notebook, or a person who already thinks in SQL, or when it's the only client
+available for your language.
+
+The two compose. A common shape is SDK code to build and maintain tables, and
+SQL for the analysis on top.
+
+## The complete reference {#reference}
+
+This page is the concept; [SQL Reference](/sql) is the specification. It has
+one page per statement, syntax first -- and since every SDK operation has a
+SQL form, those pages end up defining the precise behavior of the SDK
+operations too, not just the SQL dialect.
+
+<Card title="SQL Reference" icon="table-list" href="/sql">
+  DDL by object, then DML, then DQL -- the detailed technical documentation
+  that defines the behavior of every operation and SDK API.
+</Card>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="SDKs" icon="code-compare" href="/basics/sdk">
+    The language clients, and what stays true across all of them.
+  </Card>
+  <Card title="Agentic Skills" icon="robot" href="/basics/agentic-skills">
+    Give a coding agent a current reference to this same API surface.
+  </Card>
+</CardGroup>
