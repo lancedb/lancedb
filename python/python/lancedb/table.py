@@ -134,6 +134,34 @@ _MODEL_BACKED_TOKENIZER_ERRORS = (
 )
 
 
+def _optimize_cleanup_since_ms(
+    cleanup_older_than: Optional[timedelta], retrain: bool
+) -> Optional[int]:
+    # Called directly by both the sync and async optimize so stacklevel=3
+    # names the user's call site rather than the background event loop.
+    cleanup_since_ms: Optional[int] = None
+    if cleanup_older_than is not None:
+        cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
+        if cleanup_since_ms <= 0:
+            warnings.warn(
+                "optimize(cleanup_older_than=0) removes every version except "
+                "the latest. Any concurrent reader or writer still using an "
+                "older version will fail. Use a longer cleanup_older_than "
+                "unless no other process is working on this table.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    if retrain:
+        warnings.warn(
+            "The 'retrain' parameter is deprecated and will be removed in a "
+            "future version.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    return cleanup_since_ms
+
+
 def _add_unique_note(exception: BaseException, note: str) -> None:
     existing_notes = getattr(exception, "__notes__", ()) or ()
     message = (
@@ -4461,10 +4489,9 @@ class LanceTable(Table):
         modification operations.
         """
         LOOP.run(
-            self._table.optimize(
-                cleanup_older_than=cleanup_older_than,
-                delete_unverified=delete_unverified,
-                retrain=retrain,
+            self._table._do_optimize(
+                _optimize_cleanup_since_ms(cleanup_older_than, retrain),
+                delete_unverified,
             )
         )
 
@@ -7002,27 +7029,14 @@ class AsyncTable:
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
-        cleanup_since_ms: Optional[int] = None
-        if cleanup_older_than is not None:
-            cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
-            if cleanup_since_ms <= 0:
-                warnings.warn(
-                    "optimize(cleanup_older_than=0) removes every version except "
-                    "the latest. Any concurrent reader or writer still using an "
-                    "older version will fail. Use a longer cleanup_older_than "
-                    "unless no other process is working on this table.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+        return await self._do_optimize(
+            _optimize_cleanup_since_ms(cleanup_older_than, retrain),
+            delete_unverified,
+        )
 
-        if retrain:
-            warnings.warn(
-                "The 'retrain' parameter is deprecated and will be removed in a "
-                "future version.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
+    async def _do_optimize(
+        self, cleanup_since_ms: Optional[int], delete_unverified: bool
+    ) -> OptimizeStats:
         return await self._inner.optimize(
             cleanup_since_ms=cleanup_since_ms,
             delete_unverified=delete_unverified,
