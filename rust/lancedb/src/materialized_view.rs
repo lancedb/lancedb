@@ -13,7 +13,7 @@ mod duplicate_pairs;
 mod grouped;
 mod grouped_units;
 mod partitioned;
-mod vector_dedup;
+pub(crate) mod vector_dedup;
 pub use duplicate_pairs::{VectorSource, VectorSourceKind};
 pub use grouped::IVF_PARTITION;
 /// Refreshing a view grouped by [`IVF_PARTITION`] in units, one per index

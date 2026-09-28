@@ -156,7 +156,7 @@ fn edge_schema() -> SchemaRef {
 
 /// Sorting canonical edges makes the first unremoved endpoint the smallest
 /// unassigned representative. The sort spills; only vertex masks stay in RAM.
-async fn select_representatives(
+pub async fn select_representatives(
     stream: SendableRecordBatchStream,
     memory: usize,
 ) -> Result<(RoaringTreemap, RoaringTreemap)> {

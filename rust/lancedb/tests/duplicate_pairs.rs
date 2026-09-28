@@ -76,7 +76,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             .to_str()
             .unwrap()
             .to_string();
-        let n = 1025;
+        let n = 8193;
         let vectors = (0..n * 2)
             .flat_map(|i| {
                 let i = i % n;
@@ -196,6 +196,89 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             );
             let actual = ctx.sql(&sql).await?.collect().await?;
             assert_eq!(pairs(&actual), pairs(&expected));
+            use lancedb::table::datafusion::udtf::{
+                duplicate_pairs::DuplicatePairsOutput,
+                vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
+            };
+            let query_options = VectorQueryOptions {
+                column: "vector".into(),
+                distance_threshold: threshold,
+                selection: PartitionSelection::All,
+                output: DuplicatePairsOutput {
+                    scope: true,
+                    id_column: Some("id".into()),
+                },
+                dedup: false,
+            };
+            let provider = VectorQueryTable::try_new(ds.clone(), query_options.clone()).await?;
+            let extended = ctx.read_table(Arc::new(provider))?.collect().await?;
+            assert_eq!(pairs(&extended), pairs(&expected));
+            for batch in &extended {
+                let rowids = batch
+                    .column_by_name("row_id_a")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .unwrap();
+                let ids = batch
+                    .column_by_name("id_a")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for i in 0..batch.num_rows() {
+                    let expected_id = (rowids.value(i) >> 32) as i64 * n as i64
+                        + (rowids.value(i) & 0xffffffff) as i64;
+                    assert_eq!(ids.value(i), expected_id);
+                }
+            }
+            let mut sampled_options = query_options.clone();
+            sampled_options.selection = PartitionSelection::Random { count: 1, seed: 42 };
+            let sample = ctx
+                .read_table(Arc::new(
+                    VectorQueryTable::try_new(ds.clone(), sampled_options.clone()).await?,
+                ))?
+                .collect()
+                .await?;
+            let replay = ctx
+                .read_table(Arc::new(
+                    VectorQueryTable::try_new(ds.clone(), sampled_options).await?,
+                ))?
+                .collect()
+                .await?;
+            assert_eq!(sample, replay);
+            let scopes = sample
+                .iter()
+                .flat_map(|batch| {
+                    let segments = batch
+                        .column_by_name("segment_id")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .unwrap();
+                    let partitions = batch
+                        .column_by_name("partition_id")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<UInt64Array>()
+                        .unwrap();
+                    (0..batch.num_rows())
+                        .map(|i| (segments.value(i).to_string(), partitions.value(i)))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(scopes.len() <= 1);
+            let mut dedup_options = query_options;
+            dedup_options.dedup = true;
+            dedup_options.output = DuplicatePairsOutput::default();
+            let clean_query = ctx
+                .read_table(Arc::new(
+                    VectorQueryTable::try_new(ds.clone(), dedup_options).await?,
+                ))?
+                .select(vec![datafusion::prelude::col("id")])?
+                .collect()
+                .await?;
+
             assert_eq!(
                 pairs(&actual).len(),
                 match threshold {
@@ -388,6 +471,21 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
                 .collect::<Vec<_>>();
             actual_ids.sort_unstable();
             expected_ids.sort_unstable();
+            let mut query_ids = clean_query
+                .iter()
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .values()
+                        .to_vec()
+                })
+                .collect::<Vec<_>>();
+            query_ids.sort_unstable();
+            assert_eq!(query_ids, expected_ids);
+
             assert_eq!(actual_ids, expected_ids);
             if threshold == 1.0 {
                 assert!(actual_ids.contains(&0) && actual_ids.contains(&2));
@@ -510,6 +608,90 @@ async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() 
         )
         .await?;
         let version = ds.version().version;
+        use lancedb::table::datafusion::udtf::{
+            duplicate_pairs::DuplicatePairsOutput,
+            vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
+        };
+        let options = VectorQueryOptions {
+            column: "vector".into(),
+            distance_threshold: 1.0,
+            selection: PartitionSelection::All,
+            output: DuplicatePairsOutput::default(),
+            dedup: true,
+        };
+        let mapped = VectorQueryTable::try_new(
+            Arc::new(ds.clone()),
+            VectorQueryOptions {
+                dedup: false,
+                output: DuplicatePairsOutput {
+                    scope: true,
+                    id_column: Some("id".into()),
+                },
+                ..options.clone()
+            },
+        )
+        .await?;
+        let mapped = SessionContext::new()
+            .read_table(Arc::new(mapped))?
+            .collect()
+            .await?;
+        let mut mapped_edges = Vec::new();
+        for batch in mapped {
+            let a = batch
+                .column_by_name("id_a")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let b = batch
+                .column_by_name("id_b")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                mapped_edges.push((a.value(i).min(b.value(i)), a.value(i).max(b.value(i))));
+            }
+        }
+        mapped_edges.sort_unstable();
+        assert_eq!(mapped_edges, [(0, 1), (1, 2)]);
+        let provider = VectorQueryTable::try_new(Arc::new(ds.clone()), options).await?;
+        let query_rows = SessionContext::new()
+            .read_table(Arc::new(provider))?
+            .collect()
+            .await?;
+        let mut query_ids = query_rows
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        query_ids.sort_unstable();
+        assert_eq!(query_ids, [0, 2, 3, 4]);
+        for batch in &query_rows {
+            let ids = batch
+                .column_by_name("id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let images = batch
+                .column_by_name("image")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                assert_eq!(images.value(i), vec![ids.value(i) as u8; 4096]);
+            }
+        }
         let definition = MaterializedViewDefinition::from_sql(&format!(
             "SELECT * FROM vector_dedup('source', {version}, 'vector', 1)"
         ))?;
@@ -519,6 +701,13 @@ async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() 
             .await?;
         // A later source delete does not change the declared result snapshot.
         table.delete("id = 0").await?;
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone()).await?;
+        let explicit = adapter.vector_query_snapshot(Some(version)).await?;
+        let latest = adapter.vector_query_snapshot(None).await?;
+        assert_eq!(explicit.version().version, version);
+        assert!(latest.version().version > version);
+        assert_eq!(explicit.count_rows(None).await?, 5);
+        assert_eq!(latest.count_rows(None).await?, 4);
         clean.refresh().execute().await?;
         assert_eq!(clean.table().count_rows(None).await?, 4);
         let output = Dataset::open(&clean.table().uri().await?).await?;
