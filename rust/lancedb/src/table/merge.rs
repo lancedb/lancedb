@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatchReader;
+use arrow_schema::{DataType, Fields};
 use futures::future::Either;
 use futures::{FutureExt, TryFutureExt};
 use lance::dataset::{
@@ -249,6 +250,53 @@ fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<Merge
         .transpose()
 }
 
+// The JSON projection iterates target fields, so reject unknown source fields
+// before it can erase them. Missing and reordered fields remain valid merge
+// inputs; type compatibility is still checked by the cast and Lance writer.
+fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -> Result<()> {
+    for field in input {
+        let path = if parent.is_empty() {
+            field.name().clone()
+        } else {
+            format!("{parent}.{}", field.name())
+        };
+        let target_field = target
+            .iter()
+            .find(|candidate| candidate.name() == field.name())
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!("merge source field '{path}' is not present in the table schema"),
+            })?;
+        validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+    }
+    Ok(())
+}
+
+fn validate_merge_source_type(input: &DataType, target: &DataType, path: &str) -> Result<()> {
+    match (input, target) {
+        (DataType::Struct(input), DataType::Struct(target)) => {
+            validate_merge_source_fields(input, target, path)
+        }
+        (
+            DataType::List(input)
+            | DataType::LargeList(input)
+            | DataType::FixedSizeList(input, _)
+            | DataType::ListView(input)
+            | DataType::LargeListView(input),
+            DataType::List(target)
+            | DataType::LargeList(target)
+            | DataType::FixedSizeList(target, _)
+            | DataType::ListView(target)
+            | DataType::LargeListView(target),
+        )
+        | (DataType::Map(input, _), DataType::Map(target, _)) => {
+            validate_merge_source_type(input.data_type(), target.data_type(), path)
+        }
+        (DataType::Dictionary(_, input), _) => validate_merge_source_type(input, target, path),
+        (_, DataType::Dictionary(_, target)) => validate_merge_source_type(input, target, path),
+        _ => Ok(()),
+    }
+}
+
 /// Internal implementation of the merge insert logic
 ///
 /// This logic was moved from NativeTable::merge_insert to keep table.rs clean.
@@ -288,6 +336,7 @@ pub(crate) async fn execute_merge_insert(
         .iter()
         .any(|field| lance_arrow::json::has_json_fields(field))
     {
+        validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
         let plan = Arc::new(super::datafusion::scannable_exec::ScannableExec::new(
             Box::new(new_data),
             None,
