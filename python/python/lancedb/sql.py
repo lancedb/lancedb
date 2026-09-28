@@ -35,7 +35,14 @@ def _parameter_array(value: Any) -> pa.Array:
     # floats that would come back as float64.
     if isinstance(value, pa.ChunkedArray):
         value = value.combine_chunks()
-    if isinstance(value, np.ndarray) and value.ndim == 1:
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return pa.array(value.reshape(1))
+        if value.ndim != 1:
+            raise ValueError(
+                "a numpy query parameter must be a scalar or a 1-D vector, "
+                f"got {value.ndim} dimensions"
+            )
         value = pa.array(value)
     if isinstance(value, pa.Array):
         return pa.FixedSizeListArray.from_arrays(value, len(value))
@@ -54,16 +61,16 @@ def to_parameter_batch(
     """
     if parameters is None:
         return None
-    if isinstance(parameters, pa.Table):
-        parameters = parameters.combine_chunks()
-        batches = parameters.to_batches()
-        parameters = (
+    batch: pa.RecordBatch
+    if isinstance(parameters, pa.RecordBatch):
+        batch = parameters
+    elif isinstance(parameters, pa.Table):
+        batches = parameters.combine_chunks().to_batches()
+        batch = (
             batches[0]
             if len(batches) == 1
             else pa.RecordBatch.from_pylist([], schema=parameters.schema)
         )
-    if isinstance(parameters, pa.RecordBatch):
-        batch = parameters
     elif isinstance(parameters, Mapping):
         batch = pa.RecordBatch.from_arrays(
             [_parameter_array(value) for value in parameters.values()],
