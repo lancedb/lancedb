@@ -753,6 +753,46 @@ def test_empty_hybrid_result_reranker():
     assert "_rowid" in result.column_names
 
 
+@pytest.mark.parametrize("norm", ["score", "rank"])
+def test_hybrid_return_all_restores_original_scores(norm):
+    from lancedb.query import LanceHybridQueryBuilder
+
+    vector_results = pa.table(
+        {
+            "text": ["a", "b", "c"],
+            "_rowid": pa.array([0, 1, 2], type=pa.uint64()),
+            "_distance": pa.array([0.5, 2.5, 10.0], type=pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "text": ["b", "a"],
+            "_rowid": pa.array([1, 0], type=pa.uint64()),
+            "_score": pa.array([3.25, 1.75], type=pa.float32()),
+        }
+    )
+
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=fts_results,
+        vector_results=vector_results,
+        norm=norm,
+        fts_query="query",
+        reranker=RRFReranker(return_score="all"),
+        limit=10,
+        with_row_ids=True,
+    )
+
+    # The raw distances and scores are returned, not the normalized values
+    # or ranks used for reranking.
+    rows = {row["_rowid"]: row for row in result.to_pylist()}
+    assert rows[0]["_distance"] == 0.5
+    assert rows[1]["_distance"] == 2.5
+    assert rows[2]["_distance"] == 10.0
+    assert rows[0]["_score"] == 1.75
+    assert rows[1]["_score"] == 3.25
+    assert rows[2]["_score"] is None
+
+
 def test_cross_encoder_reranker_return_all(tmp_path):
     pytest.importorskip("sentence_transformers")
     reranker = CrossEncoderReranker(return_score="all")
