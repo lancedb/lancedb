@@ -42,7 +42,7 @@ Returns true after [BlobFile.close](BlobFile.md#close).
 ### read()
 
 ```ts
-read(maxBytes?): Promise<Buffer>
+read(maxBytes?, options?): Promise<Buffer>
 ```
 
 Reads from the cursor and advances the cursor.
@@ -55,6 +55,8 @@ otherwise. Returns an empty buffer at the end of the blob.
 
 * **maxBytes?**: `bigint`
 
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
 #### Returns
 
 `Promise`&lt;`Buffer`&gt;
@@ -64,7 +66,10 @@ otherwise. Returns an empty buffer at the end of the blob.
 ### readRange()
 
 ```ts
-readRange(start, end): Promise<Buffer>
+readRange(
+   start,
+   end,
+   options?): Promise<Buffer>
 ```
 
 Reads the half-open byte range `[start, end)`.
@@ -77,6 +82,8 @@ Fails when `end` is past the blob size. Does not move the cursor.
 
 * **end**: `bigint`
 
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
 #### Returns
 
 `Promise`&lt;`Buffer`&gt;
@@ -86,7 +93,7 @@ Fails when `end` is past the blob size. Does not move the cursor.
 ### readRanges()
 
 ```ts
-readRanges(ranges): Promise<Buffer[]>
+readRanges(ranges, options?): Promise<Buffer[]>
 ```
 
 Reads several half-open byte ranges. Returns one buffer per range, in
@@ -97,6 +104,8 @@ Fails when any `end` is past the blob size. Does not move the cursor.
 #### Parameters
 
 * **ranges**: [`BlobRange`](../type-aliases/BlobRange.md)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
 
 #### Returns
 
