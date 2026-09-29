@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import * as fs from "fs";
+import { getEventListeners } from "node:events";
 import { pathToFileURL } from "node:url";
 import * as path from "path";
 import * as tmp from "tmp";
@@ -2744,6 +2745,80 @@ describe("when dealing with blob columns", () => {
     await expect(handle!.seek(0n)).rejects.toThrow(/already closed/);
     await expect(handle!.tell()).rejects.toThrow(/already closed/);
     expect(handle!.size()).toBe(5n);
+  });
+
+  it("rejects reads with an already aborted signal", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    const signal = AbortSignal.abort();
+    const abortError = { name: "AbortError" };
+    await expect(handle!.read(undefined, { signal })).rejects.toMatchObject(
+      abortError,
+    );
+    await expect(handle!.read(2n, { signal })).rejects.toMatchObject(
+      abortError,
+    );
+    await expect(handle!.readRange(0n, 1n, { signal })).rejects.toMatchObject(
+      abortError,
+    );
+    await expect(
+      handle!.readRanges([{ start: 0n, end: 1n }], { signal }),
+    ).rejects.toMatchObject(abortError);
+    await expect(
+      table.fetchBlobs("image", rowIds, { signal }),
+    ).rejects.toMatchObject(abortError);
+    await expect(
+      table.fetchBlobFiles("image", rowIds, { signal }),
+    ).rejects.toMatchObject(abortError);
+    expect(await handle!.read()).toEqual(alpha);
+  });
+
+  it("rejects with the abort reason", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    const reason = new Error("caller gave up");
+    await expect(
+      handle!.readRange(0n, 1n, { signal: AbortSignal.abort(reason) }),
+    ).rejects.toBe(reason);
+  });
+
+  it("reads with a signal and removes its abort listener", async () => {
+    const { table, rowIds, alpha, beta } = await openBlobTable();
+    const controller = new AbortController();
+    const { signal } = controller;
+    const [handle] = await table.fetchBlobFiles("image", rowIds, { signal });
+    expect((await handle!.readRange(0n, 2n, { signal })).toString()).toBe("al");
+    expect(await table.fetchBlobs("image", rowIds, { signal })).toEqual([
+      alpha,
+      beta,
+      null,
+    ]);
+    expect(getEventListeners(signal, "abort")).toHaveLength(0);
+    controller.abort();
+    expect(await handle!.read()).toEqual(alpha);
+  });
+
+  it("cancels an in-flight read", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("payload", { inlineSizeThreshold: 0, dedicatedSizeThreshold: 1 }),
+    ]);
+    const payload = Buffer.alloc(32 * 1024 * 1024, 7);
+    const table = await db.createTable("large_blobs", [{ id: 1n, payload }], {
+      schema,
+    });
+    const [row] = await table.query().withRowId().toArray();
+    const [handle] = await table.fetchBlobFiles("payload", [
+      row._rowid as bigint,
+    ]);
+    const controller = new AbortController();
+    const pending = handle!.readRange(0n, handle!.size(), {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(await handle!.readRange(0n, 4n)).toEqual(payload.subarray(0, 4));
   });
 
   it("rejects fetchBlobs on a non-blob column", async () => {

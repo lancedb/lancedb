@@ -17,7 +17,7 @@ import {
   tableFromIPC,
 } from "./arrow";
 
-import { BlobFile } from "./blob";
+import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
@@ -545,6 +545,7 @@ export abstract class Table {
   abstract fetchBlobs(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(Buffer | null)[]>;
 
   /**
@@ -557,6 +558,7 @@ export abstract class Table {
   abstract fetchBlobFiles(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(BlobFile | null)[]>;
 
   /**
@@ -1248,8 +1250,11 @@ export class LocalTable extends Table {
   async fetchBlobs(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(Buffer | null)[]> {
-    const values = await this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds));
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds), signal),
+    );
     // N-API Option maps missing values to undefined. Collapse those to null.
     return values.map((value) => value ?? null);
   }
@@ -1257,10 +1262,10 @@ export class LocalTable extends Table {
   async fetchBlobFiles(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(BlobFile | null)[]> {
-    const files = await this.inner.fetchBlobFiles(
-      column,
-      rowIdsToBigInts(rowIds),
+    const files = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobFiles(column, rowIdsToBigInts(rowIds), signal),
     );
     // N-API Option maps missing values to undefined. Collapse those to null.
     return files.map((file) =>
