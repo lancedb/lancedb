@@ -180,6 +180,9 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             .expect("Failed to import namespace");
 
         match self.0 {
+            FtsQuery::CombinedFields(_) => Err(PyValueError::new_err(
+                "Combined-fields queries are not yet supported in Python",
+            )),
             FtsQuery::Match(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boost", query.boost)?;

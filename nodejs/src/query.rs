@@ -658,6 +658,7 @@ impl JsFullTextQuery {
             FtsQuery::Phrase(_) => "phrase".to_string(),
             FtsQuery::Boost(_) => "boost".to_string(),
             FtsQuery::MultiMatch(_) => "multi_match".to_string(),
+            FtsQuery::CombinedFields(_) => "combined_fields".to_string(),
             FtsQuery::Boolean(_) => "boolean".to_string(),
         }
     }
