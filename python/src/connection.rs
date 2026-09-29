@@ -407,7 +407,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, *, vector_source_json=None))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -416,10 +417,17 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        vector_source_json: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
+            if let Some(source) = vector_source_json {
+                builder = builder.vector_source(
+                    serde_json::from_str(&source)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                );
+            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -435,7 +443,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, *, vector_source_json=None))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -444,10 +453,17 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        vector_source_json: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
+            if let Some(source) = vector_source_json {
+                builder = builder.vector_source(
+                    serde_json::from_str(&source)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
+                );
+            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -936,6 +952,23 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_view_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_view_async(name, &namespace_path)
+                .await
+                .infer_error()
+                .map(crate::job::Job::new)
+        })
+    }
+
     #[pyo3(signature = (namespace_path=None))]
     pub fn list_views(
         self_: PyRef<'_, Self>,
@@ -963,6 +996,30 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             inner.cancel_job(&job_id).await.infer_error()
+        })
+    }
+
+    pub fn pause_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let status = inner.pause_job(&job_id).await.infer_error()?;
+            Ok(match status {
+                lancedb::database::PauseJobStatus::Pausing => "pausing",
+                lancedb::database::PauseJobStatus::AlreadyPaused => "already_paused",
+                lancedb::database::PauseJobStatus::Committing => "committing",
+            })
+        })
+    }
+
+    pub fn resume_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let status = inner.resume_job(&job_id).await.infer_error()?;
+            Ok(match status {
+                lancedb::database::ResumeJobStatus::Resumed => "resumed",
+                lancedb::database::ResumeJobStatus::StillPausing => "still_pausing",
+                lancedb::database::ResumeJobStatus::NotPaused => "not_paused",
+            })
         })
     }
 }

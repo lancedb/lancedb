@@ -4,7 +4,8 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
-from typing import Any, Dict, Mapping, Optional
+from itertools import chain
+from typing import Any, Dict, List, Mapping, Optional
 
 import pyarrow as pa
 
@@ -38,7 +39,11 @@ class TypeSafeReranker(Reranker):
     and can vary slightly between identical calls, so results with close scores
     may swap places when the same search is repeated.
 
-    One request is sent per result, up to ``max_concurrency`` at a time.
+    By default, one request is sent per non-null result. Set ``batch_size=40``
+    to score up to 40 documents per request, with at most ``max_concurrency``
+    requests in flight. Each question sees only its own document and the shared
+    query. Null documents keep a score of zero without an API request; empty
+    strings are scored normally. API and response-validation errors propagate.
 
     Parameters
     ----------
@@ -48,8 +53,10 @@ class TypeSafeReranker(Reranker):
         The name of the column holding the document text to score.
     instructions : str, optional
         The yes/no question asked about each query and document pair. The state
-        TypeSafe reads is ``{"query": <query>, "document": <column value>}``.
-        Defaults to a generic relevance question.
+        TypeSafe reads with ``batch_size=1`` is
+        ``{"query": <query>, "document": <column value>}``.
+        Defaults to a generic relevance question. See ``batch_size`` for the
+        different location of the document in batched requests.
     criteria : Mapping[str, str], optional
         What a "yes" and a "no" mean, as a mapping with the keys ``"true"`` and
         ``"false"``. Domain-specific criteria usually rank better than the
@@ -62,6 +69,19 @@ class TypeSafeReranker(Reranker):
         ``TYPESAFE_API_KEY`` environment variable.
     max_concurrency : int, default 8
         The maximum number of TypeSafe requests in flight for one rerank call.
+    batch_size : int, default 1
+        Positive integer limiting non-null documents per request. The default
+        preserves the original request format. With a value greater than one,
+        state is ``{"query": <query>}`` and each question's instructions are
+        ``{"question": <instructions>, "document": <column value>}``.
+        Instructions and criteria are preserved verbatim. Custom prompts that
+        explicitly reference the document in request state (for example,
+        ``state.document``) must be adapted before opting into batching.
+        The TypeSafe SDK handles retries in both modes.
+
+    Examples
+    --------
+    >>> reranker = TypeSafeReranker(batch_size=40, max_concurrency=8)
     """
 
     def __init__(
@@ -73,10 +93,17 @@ class TypeSafeReranker(Reranker):
         return_score: str = "relevance",
         api_key: Optional[str] = None,
         max_concurrency: int = 8,
+        batch_size: int = 1,
     ):
         super().__init__(return_score)
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be at least 1")
+        if (
+            isinstance(batch_size, bool)
+            or not isinstance(batch_size, int)
+            or batch_size < 1
+        ):
+            raise ValueError("batch_size must be a positive integer")
         criteria = DEFAULT_CRITERIA if criteria is None else dict(criteria)
         unknown = set(criteria) - {"true", "false"}
         if unknown:
@@ -89,6 +116,7 @@ class TypeSafeReranker(Reranker):
         self.criteria = criteria
         self.api_key = api_key
         self.max_concurrency = max_concurrency
+        self.batch_size = batch_size
 
     def __str__(self):
         return f"TypeSafeReranker(model_name={self.model_name})"
@@ -105,27 +133,70 @@ class TypeSafeReranker(Reranker):
             question["criteria"] = self.criteria
         return question
 
-    def _score(self, query: str, document: Optional[str]) -> float:
-        if document is None:
-            return 0.0
+    def _score_batch(self, query: str, documents: List[str]) -> List[float]:
+        if self.batch_size == 1:
+            state = {"query": query, "document": documents[0]}
+            questions = {_QUESTION_ID: self._question}
+        else:
+            state = {"query": query}
+            # IDs only need to be unique within this request, even for duplicates.
+            questions = {
+                str(index): {
+                    **self._question,
+                    "instructions": {
+                        "question": self.instructions,
+                        "document": document,
+                    },
+                }
+                for index, document in enumerate(documents)
+            }
         response = self._client.system_one(
-            state={"query": query, "document": document},
-            questions={_QUESTION_ID: self._question},
+            state=state,
+            questions=questions,
             model=self.model_name,
         )
-        return response.answers[_QUESTION_ID].noul
+        expected = set(questions)
+        actual = set(response.answers)
+        if actual != expected:
+            raise ValueError(
+                "TypeSafe returned mismatched answer IDs: "
+                f"missing {sorted(expected - actual)}, "
+                f"unexpected {sorted(actual - expected)}"
+            )
+        scores = []
+        for question_id in questions:
+            score = getattr(response.answers[question_id], "noul", None)
+            if (
+                isinstance(score, bool)
+                or not isinstance(score, (int, float))
+                or not 0 <= score <= 1
+            ):
+                raise ValueError(
+                    "TypeSafe returned an invalid relevance probability "
+                    f"for answer {question_id!r}: {score!r}"
+                )
+            scores.append(float(score))
+        return scores
 
     def _rerank(self, result_set: pa.Table, query: str) -> pa.Table:
         result_set = self._handle_empty_results(result_set)
         if len(result_set) == 0:
             return result_set
         docs = result_set[self.column].to_pylist()
+        documents = [doc for doc in docs if doc is not None]
+        batches = [
+            documents[start : start + self.batch_size]
+            for start in range(0, len(documents), self.batch_size)
+        ]
         # Rerankers are also called synchronously from inside the async query
         # APIs, so the requests run on threads rather than on an event loop.
-        with ThreadPoolExecutor(
-            max_workers=min(self.max_concurrency, len(docs))
-        ) as pool:
-            scores = list(pool.map(lambda doc: self._score(query, doc), docs))
+        with ThreadPoolExecutor(max_workers=self.max_concurrency) as pool:
+            batch_scores = pool.map(
+                lambda batch: self._score_batch(query, batch), batches
+            )
+            # Both map and _score_batch preserve input order.
+            scored_documents = chain.from_iterable(batch_scores)
+            scores = [0.0 if doc is None else next(scored_documents) for doc in docs]
         result_set = result_set.append_column(
             "_relevance_score", pa.array(scores, type=pa.float32())
         )

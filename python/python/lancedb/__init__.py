@@ -46,6 +46,7 @@ from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewDefinition,
+    vector_dedup as vector_dedup,
 )
 from .view import ViewDescription as ViewDescription
 from .table import AsyncTable, CompactionOptions, Table

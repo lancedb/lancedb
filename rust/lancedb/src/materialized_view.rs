@@ -9,8 +9,79 @@
 //! query this version cannot maintain reads back as unrefreshable, not as a
 //! plain table. Queries, indexes and search work on the view unchanged.
 
+mod duplicate_pairs;
 mod grouped;
+mod grouped_units;
+mod partitioned;
+mod vector_dedup;
+pub use duplicate_pairs::{VectorSource, VectorSourceKind};
 pub use grouped::IVF_PARTITION;
+/// Refreshing a view grouped by [`IVF_PARTITION`] in units, one per index
+/// partition, so the work can be spread over several processes. The caller
+/// plans once, computes every unit of that plan wherever it likes, and
+/// commits the whole set; a unit is bound to the view and plan it was
+/// computed for, and the commit publishes all of them or none.
+///
+/// ```no_run
+/// # #![recursion_limit = "256"]
+/// # use lancedb::materialized_view::{
+/// #     commit_grouped_refresh, plan_grouped_refresh, write_grouped_unit, WrittenUnit,
+/// # };
+/// # use lancedb::materialized_view::MaterializedView;
+/// # async fn refresh_in_units(view: &MaterializedView) -> Result<(), Box<dyn std::error::Error>> {
+/// // The view this refresh was requested for. Every path below carries it,
+/// // including the fallbacks: a view dropped and recreated meanwhile is a
+/// // different view, and refreshing it in place of this one is the identity
+/// // crossing the units path refuses.
+/// let incarnation = view.incarnation().map(str::to_string);
+///
+/// async fn in_one_pass(view: &MaterializedView, incarnation: Option<&str>) -> lancedb::Result<()> {
+///     let mut refresh = view.refresh();
+///     if let Some(token) = incarnation {
+///         refresh = refresh.expect_incarnation(token);
+///     }
+///     refresh.execute().await?;
+///     Ok(())
+/// }
+///
+/// // No plan means this view cannot be refreshed in units: it is not
+/// // grouped by the partition of an indexed column, its index no longer
+/// // says which fragments it covers, or it carries no incarnation to bind
+/// // the units to.
+/// let Some(plan) = plan_grouped_refresh(view.table(), None).await? else {
+///     in_one_pass(view, incarnation.as_deref()).await?;
+///     return Ok(());
+/// };
+///
+/// // Each unit is independent; this loop stands in for dispatching them.
+/// // A unit whose view was dropped and recreated, or whose plan is stale,
+/// // fails here rather than producing rows for the wrong view.
+/// let mut units: Vec<WrittenUnit> = Vec::new();
+/// for unit in 0..plan.units {
+///     units.push(write_grouped_unit(view.table(), unit, &plan).await?);
+/// }
+///
+/// match commit_grouped_refresh(view.table(), &plan, units, incarnation.as_deref()).await {
+///     Ok(result) => println!("{} rows at version {}", result.rows_written, result.version),
+///     Err(err) => {
+///         // The refresh is unrecorded, but it is not necessarily inert: a
+///         // commit that raced a concurrent write can have landed without a
+///         // watermark. Refresh from scratch rather than assuming either.
+///         eprintln!("refresh in units unrecorded ({err}); refreshing in one pass");
+///         in_one_pass(view, incarnation.as_deref()).await?;
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub use grouped_units::{
+    GroupedRefreshPlan, WrittenUnit, commit_grouped_refresh, plan_grouped_refresh,
+    write_grouped_unit,
+};
+pub use partitioned::{
+    PartitionedRefreshPlan, WrittenPartition, commit_partitioned_refresh, plan_partitioned_refresh,
+    write_refresh_partition, write_refresh_partition_with_inputs,
+};
 mod query;
 pub mod refresh;
 
@@ -83,18 +154,26 @@ const COLUMN_DEFINITIONS_META_KEY: &str = "lancedb::column_definitions";
 
 /// The newest layout this version reads under [`DEFINITION_META_KEY`]:
 /// `{"format": N, "query": "<SQL>"}`, the query as
-/// [`MaterializedViewDefinition::to_sql`] renders it. Format 2 is a query
-/// with `GROUP BY`; every other query is written as format 1, so a reader
-/// that predates grouping reports a grouped view as unrefreshable rather
-/// than failing to parse it. A reader refuses a newer format rather than
+/// [`MaterializedViewDefinition::to_sql`] renders it. Format 3 identifies a
+/// native duplicate-pair source, format 4 a dedup result source, format 2 a query with `GROUP BY`, and
+/// format 1 an ordinary query. A reader refuses a newer format rather than
 /// guess at it. The layout also carries `"kind": "query"`, which readers
 /// older than the format number report as an unrefreshable view instead of
 /// failing to read the metadata.
-pub const DEFINITION_FORMAT: u64 = 2;
+pub const DEFINITION_FORMAT: u64 = 4;
 
 /// The format `definition` is written in; see [`DEFINITION_FORMAT`].
 fn format_of(definition: &MaterializedViewDefinition) -> u64 {
-    if definition.is_grouped() { 2 } else { 1 }
+    if let Some(source) = &definition.vector_source {
+        match source.kind {
+            VectorSourceKind::Pairs => 3,
+            VectorSourceKind::Dedup => 4,
+        }
+    } else if definition.is_grouped() {
+        2
+    } else {
+        1
+    }
 }
 
 /// Legacy `kind` tag of the structured layout written before
@@ -237,6 +316,8 @@ pub fn read_staging(metadata: &HashMap<String, String>) -> Result<Option<Staging
 /// for the shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedViewDefinition {
+    /// A table-bound native vector source. It is never evaluated per source row.
+    pub vector_source: Option<Box<VectorSource>>,
     /// Name of the source table, in the same database as the view.
     pub source_table: String,
     /// Namespace path holding the source table; empty is the root namespace.
@@ -435,6 +516,7 @@ pub fn read_definition(metadata: &HashMap<String, String>) -> Result<Option<Stor
         )));
     }
     Ok(Some(StoredDefinition::Query(MaterializedViewDefinition {
+        vector_source: None,
         source_table: legacy.source_table,
         source_namespace: legacy.source_namespace,
         lateral: None,
@@ -491,6 +573,9 @@ pub(crate) fn plan(
     definition: &MaterializedViewDefinition,
     staging: Option<&StagingBinding>,
 ) -> Result<Planned> {
+    if definition.vector_source.is_some() {
+        return duplicate_pairs::plan(source_schema, definition);
+    }
     let filter = definition
         .filter
         .as_deref()
@@ -649,6 +734,7 @@ pub(crate) fn plan(
     }
 
     let definition = MaterializedViewDefinition {
+        vector_source: None,
         source_table: definition.source_table.clone(),
         source_namespace: definition.source_namespace.clone(),
         lateral: definition.lateral.clone(),
@@ -1082,6 +1168,11 @@ impl PreparedDeclaration {
     /// read: the column the view projects it to, if any, otherwise an
     /// internal projection added here, named by [`input_column_name`].
     pub fn input_column(&mut self, source_column: &str) -> Result<String> {
+        if self.definition.vector_source.is_some() {
+            return Err(Error::InvalidInput {
+                message: "native vector views have no per-source-row inputs".into(),
+            });
+        }
         // A grouped view's rows are groups; no source row carries a value into one.
         if self.definition.is_grouped() {
             return Err(Error::InvalidInput {
@@ -1182,6 +1273,11 @@ impl PreparedDeclaration {
         columns: Vec<(usize, ArrowField)>,
         bindings: &[FunctionBinding],
     ) -> Result<Self> {
+        if self.definition.vector_source.is_some() {
+            return Err(Error::InvalidInput {
+                message: "computed columns on native vector views are not supported".into(),
+            });
+        }
         let invalid = |message: String| Error::InvalidInput { message };
         if columns.is_empty() {
             return Err(invalid("at least one computed column is needed".into()));
@@ -1388,6 +1484,7 @@ pub async fn prepare_declaration(
     limit: Option<u64>,
 ) -> Result<PreparedDeclaration> {
     let definition = MaterializedViewDefinition {
+        vector_source: None,
         source_table: source.name().to_string(),
         source_namespace: source.namespace().to_vec(),
         lateral: None,
@@ -1446,6 +1543,27 @@ pub async fn prepare_declaration(
 ///     .create("events_by_kind")
 ///     .await?;
 /// view.refresh().execute().await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// An indexed, pinned source can materialize retained original rows using the
+/// default greedy direct-representative policy. A row is removed only when it
+/// directly matches a retained row; an A-B-C chain keeps A and C. The source is
+/// unchanged. Hosts distribute this through [`plan_partitioned_refresh`] and
+/// [`write_refresh_partition_with_inputs`], with a barrier between selection
+/// tasks and source-fragment materialization tasks.
+///
+/// ```
+/// # #![recursion_limit = "256"]
+/// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+/// # async fn dedup(images: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let version = images.version().await?;
+/// let definition = MaterializedViewDefinition::from_sql(&format!(
+///     "SELECT * FROM vector_dedup('images', {version}, 'phash', 4)"
+/// ))?;
+/// let clean = prepare_definition(images, definition).await?.create("images_clean").await?;
+/// clean.refresh().execute().await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -1564,7 +1682,9 @@ async fn prepare_with(
             ),
         });
     }
-    if !native.dataset.get().await?.manifest.uses_stable_row_ids() {
+    if definition.vector_source.is_none()
+        && !native.dataset.get().await?.manifest.uses_stable_row_ids()
+    {
         return Err(Error::InvalidInput {
             message: format!(
                 "materialized views require stable row ids on the source table; \
@@ -1590,7 +1710,22 @@ async fn prepare_with(
             message: format!("view column name '{}' is reserved", reserved.output),
         });
     }
-    let source_schema = resolved.schema().await?;
+    let source_schema = if let Some(pairs) = &definition.vector_source {
+        let ds = native
+            .dataset
+            .get()
+            .await?
+            .checkout_version(pairs.dataset_version)
+            .await?;
+        crate::table::datafusion::udtf::duplicate_pairs::plan_duplicate_pairs(
+            Arc::new(ds.clone()),
+            &pairs.config()?,
+        )
+        .await?;
+        Arc::new(ArrowSchema::from(ds.schema()))
+    } else {
+        resolved.schema().await?
+    };
     let source_metadata = source_schema.metadata().clone();
     let Planned {
         definition,
@@ -1607,11 +1742,13 @@ async fn prepare_with(
         None => source_schema.clone(),
         Some(unnest) => flattened_schema(&source_schema, &unnest)?,
     };
-    fields.push(ArrowField::new(
-        SOURCE_ROW_ID_COLUMN,
-        DataType::UInt64,
-        false,
-    ));
+    if definition.vector_source.is_none() {
+        fields.push(ArrowField::new(
+            SOURCE_ROW_ID_COLUMN,
+            DataType::UInt64,
+            false,
+        ));
+    }
     // Only column-describing metadata comes along: structural declarations
     // describe how a table is written, and a view is written by refresh alone.
     let mut metadata: HashMap<String, String> = HashMap::new();
@@ -1655,6 +1792,7 @@ pub struct CreateMaterializedViewBuilder {
     namespace: Vec<String>,
     source: String,
     source_namespace: Vec<String>,
+    vector_source: Option<VectorSource>,
     projections: Vec<(String, String)>,
     filter: Option<String>,
     limit: Option<u64>,
@@ -1669,6 +1807,7 @@ impl CreateMaterializedViewBuilder {
             namespace: Vec::new(),
             source,
             source_namespace: Vec::new(),
+            vector_source: None,
             projections: Vec::new(),
             filter: None,
             limit: None,
@@ -1687,6 +1826,38 @@ impl CreateMaterializedViewBuilder {
     pub fn source_namespace(mut self, namespace_path: Vec<String>) -> Self {
         self.source_namespace = namespace_path;
         self
+    }
+
+    /// Read native pairs or retained original rows from a fixed indexed snapshot.
+    /// This source selects its full output schema and cannot be combined with
+    /// projections, filters or limits. Remote creation uses the ordinary MV
+    /// endpoint and its registry job; it does not execute a SQL query client-side.
+    pub fn vector_source(mut self, source: VectorSource) -> Self {
+        self.vector_source = Some(source);
+        self
+    }
+
+    fn native_definition(&self) -> Result<Option<MaterializedViewDefinition>> {
+        let Some(source) = &self.vector_source else {
+            return Ok(None);
+        };
+        source.config()?;
+        if !self.projections.is_empty() || self.filter.is_some() || self.limit.is_some() {
+            return Err(Error::InvalidInput {
+                message: "native vector sources cannot be combined with select, where or limit"
+                    .into(),
+            });
+        }
+        Ok(Some(MaterializedViewDefinition {
+            vector_source: Some(Box::new(source.clone())),
+            source_table: self.source.clone(),
+            source_namespace: self.source_namespace.clone(),
+            projections: vec![ViewProjection::star()],
+            filter: None,
+            lateral: None,
+            group_by: Vec::new(),
+            limit: None,
+        }))
     }
 
     /// The view's columns, as `(name, SQL expression)` pairs. Not calling
@@ -1721,7 +1892,10 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    fn query(&self) -> String {
+    fn query(&self) -> Result<String> {
+        if let Some(definition) = self.native_definition()? {
+            return Ok(definition.to_sql());
+        }
         fn quote(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
         }
@@ -1750,12 +1924,13 @@ impl CreateMaterializedViewBuilder {
         if let Some(limit) = self.limit {
             query.push_str(&format!(" LIMIT {limit}"));
         }
-        query
+        Ok(query)
     }
 
     /// Submit creation and initial population, returning a [`Job`] that
-    /// settles when the view is ready. The source must keep stable row ids --
-    /// they hold provenance across compaction, and cannot be enabled later.
+    /// settles when the view is ready. Ordinary sources must keep stable row
+    /// ids for provenance across compaction. Native vector sources also support
+    /// physical row IDs because their definitions pin the dataset version.
     pub async fn execute_async(self) -> Result<Job> {
         if self.connection.uri().starts_with("db://") {
             return self
@@ -1764,7 +1939,7 @@ impl CreateMaterializedViewBuilder {
                 .create_materialized_view_async(CreateMaterializedViewRequest {
                     name: self.name.clone(),
                     namespace_path: self.namespace.clone(),
-                    query: self.query(),
+                    query: self.query()?,
                     with_no_data: self.with_no_data,
                 })
                 .await;
@@ -1792,19 +1967,24 @@ impl CreateMaterializedViewBuilder {
     }
 
     async fn execute_native(self) -> Result<MaterializedView> {
+        let native_definition = self.native_definition()?;
         let source = self
             .connection
             .open_table(&self.source)
             .namespace(self.source_namespace.clone())
             .execute()
             .await?;
-        let prepared = prepare_declaration(
-            &source,
-            (!self.projections.is_empty()).then_some(self.projections.as_slice()),
-            self.filter.as_deref(),
-            self.limit,
-        )
-        .await?;
+        let prepared = if let Some(definition) = native_definition {
+            prepare_definition(&source, definition).await?
+        } else {
+            prepare_declaration(
+                &source,
+                (!self.projections.is_empty()).then_some(self.projections.as_slice()),
+                self.filter.as_deref(),
+                self.limit,
+            )
+            .await?
+        };
         let view = prepared.create_in(&self.namespace, &self.name).await?;
         if !self.with_no_data {
             view.refresh().execute().await?;
@@ -2123,6 +2303,7 @@ mod tests {
         assert_eq!(
             view.definition(),
             &MaterializedViewDefinition {
+                vector_source: None,
                 source_table: "people".into(),
                 source_namespace: Vec::new(),
                 projections: vec![
@@ -2246,10 +2427,46 @@ mod tests {
             .select([("double\"age", "age * 2")])
             .only_if("age >= 18")
             .limit(10)
-            .query();
+            .query()
+            .unwrap();
         assert_eq!(
             query,
             "SELECT age * 2 AS \"double\"\"age\" FROM \"raw data\".\"odd\"\"source\" WHERE age >= 18 LIMIT 10"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_vector_builder_preserves_source_and_rejects_extra_clauses() {
+        let conn = people_db().await;
+        let source = VectorSource {
+            kind: VectorSourceKind::Dedup,
+            dataset_version: 7,
+            column: "vector'field".into(),
+            distance_threshold: "4.0".into(),
+        };
+        let builder = || {
+            conn.create_materialized_view("clean", "odd.source'name")
+                .source_namespace(vec!["raw space".into()])
+                .vector_source(source.clone())
+        };
+        let query = builder().query().unwrap();
+        let definition = MaterializedViewDefinition::from_sql(&query).unwrap();
+        assert_eq!(definition.source_table, "odd.source'name");
+        assert_eq!(definition.source_namespace, ["raw space"]);
+        assert_eq!(definition.vector_source.as_deref(), Some(&source));
+        assert!(definition.selects_star());
+        assert!(builder().select([("id", "id")]).query().is_err());
+        assert!(builder().only_if("true").query().is_err());
+        assert!(builder().limit(1).query().is_err());
+        let invalid_source = VectorSource {
+            dataset_version: 0,
+            ..source
+        };
+        assert!(
+            conn.create_materialized_view("bad", "people")
+                .vector_source(invalid_source)
+                .query()
+                .is_err()
         );
     }
 
@@ -3172,6 +3389,7 @@ mod tests {
 
     fn definition(source_namespace: Vec<String>) -> MaterializedViewDefinition {
         MaterializedViewDefinition {
+            vector_source: None,
             source_table: "people".to_string(),
             source_namespace,
             lateral: None,
@@ -3258,8 +3476,8 @@ mod tests {
     #[test]
     fn a_newer_format_is_reported_not_guessed() {
         assert_eq!(
-            read(r#"{"format":3,"query":"SELECT name FROM people"}"#).unwrap(),
-            Some(StoredDefinition::Newer { format: "3".into() })
+            read(r#"{"format":5,"query":"SELECT name FROM people"}"#).unwrap(),
+            Some(StoredDefinition::Newer { format: "5".into() })
         );
         assert_eq!(
             read(r#"{"kind":"join"}"#).unwrap(),
