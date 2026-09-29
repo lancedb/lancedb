@@ -10,16 +10,50 @@ A lazy handle to blob bytes. Create one with [Table.fetchBlobFiles](Table.md#fet
 
 ## Methods
 
+### close()
+
+```ts
+close(): Promise<void>
+```
+
+Releases the handle. Reads after `close()` fail. Calling it again does
+nothing.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### isClosed()
+
+```ts
+isClosed(): boolean
+```
+
+Returns true after [BlobFile.close](BlobFile.md#close).
+
+#### Returns
+
+`boolean`
+
+***
+
 ### read()
 
 ```ts
-read(): Promise<Buffer>
+read(maxBytes?): Promise<Buffer>
 ```
 
-Reads from the cursor to the end and advances the cursor.
+Reads from the cursor and advances the cursor.
 
-A second call returns an empty buffer. [BlobFile.readRange](BlobFile.md#readrange) does
-not move the cursor.
+Reads to the end when `maxBytes` is omitted, or at most `maxBytes` bytes
+otherwise. Returns an empty buffer at the end of the blob.
+[BlobFile.readRange](BlobFile.md#readrange) does not move the cursor.
+
+#### Parameters
+
+* **maxBytes?**: `bigint`
 
 #### Returns
 
@@ -49,6 +83,45 @@ Fails when `end` is past the blob size. Does not move the cursor.
 
 ***
 
+### readRanges()
+
+```ts
+readRanges(ranges): Promise<Buffer[]>
+```
+
+Reads several half-open byte ranges. Returns one buffer per range, in
+the order given.
+
+Fails when any `end` is past the blob size. Does not move the cursor.
+
+#### Parameters
+
+* **ranges**: [`BlobRange`](../type-aliases/BlobRange.md)[]
+
+#### Returns
+
+`Promise`&lt;`Buffer`[]&gt;
+
+***
+
+### seek()
+
+```ts
+seek(position): Promise<void>
+```
+
+Moves the cursor to `position`, in bytes from the start of the blob.
+
+#### Parameters
+
+* **position**: `bigint`
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### size()
 
 ```ts
@@ -60,3 +133,17 @@ Returns the blob size in bytes.
 #### Returns
 
 `bigint`
+
+***
+
+### tell()
+
+```ts
+tell(): Promise<bigint>
+```
+
+Returns the cursor position in bytes.
+
+#### Returns
+
+`Promise`&lt;`bigint`&gt;
