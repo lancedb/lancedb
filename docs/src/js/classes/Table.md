@@ -551,6 +551,11 @@ compaction unless stable row ids are enabled. Results keep input order and
 duplicates. Null blobs are `null`. Empty blobs are empty buffers.
 Blobs inside lists cannot be fetched by row ID.
 
+Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+The client splits requests automatically and reads an individual larger
+blob through the Range route. This method still materializes all bytes in
+memory; use [Table.fetchBlobFiles](Table.md#fetchblobfiles) for large values.
+
 #### Parameters
 
 * **column**: `string`

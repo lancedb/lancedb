@@ -404,11 +404,21 @@ export abstract class Connection {
   ): Promise<ViewDescription>;
 
   /**
-   * Drop the view named `name`.
+   * Drop the view named `name` and wait for its definition to be deleted.
    *
-   * The tables it reads are untouched: a view holds no rows of its own.
+   * The tables it reads are untouched: a view holds no rows of its own. Use
+   * {@link dropViewAsync} to retain the cleanup job instead of waiting on it.
    */
   abstract dropView(name: string, namespacePath?: string[]): Promise<void>;
+
+  /**
+   * Start dropping the view named `name` and return the job deleting its
+   * definition, without waiting for completion.
+   *
+   * The name is free before this resolves. When nothing was bound to it, the
+   * returned job is already finished and has no id.
+   */
+  abstract dropViewAsync(name: string, namespacePath?: string[]): Promise<Job>;
 
   /**
    * The names of the views in one namespace.
@@ -640,6 +650,24 @@ export abstract class Connection {
    * such job exists. Cancelling an already-terminal job is a no-op success.
    */
   abstract cancelJob(jobId: string): Promise<boolean>;
+
+  /**
+   * Pause a server-side job by id.
+   *
+   * The job's workers drain and it stays parked until resumed. Resolves to
+   * "pausing", "already_paused", or "committing" -- a job finalizing its
+   * results cannot be parked; retry shortly.
+   */
+  abstract pauseJob(jobId: string): Promise<string>;
+
+  /**
+   * Resume a paused server-side job by id.
+   *
+   * Its workers pick their work back up from checkpoints. Resolves to
+   * "resumed", "still_pausing" -- the pause's worker drain is not confirmed
+   * yet; retry shortly -- or "not_paused".
+   */
+  abstract resumeJob(jobId: string): Promise<string>;
 }
 
 /** @hideconstructor */
@@ -757,6 +785,10 @@ export class LocalConnection extends Connection {
 
   async dropView(name: string, namespacePath?: string[]): Promise<void> {
     return this.inner.dropView(name, namespacePath ?? []);
+  }
+
+  async dropViewAsync(name: string, namespacePath?: string[]): Promise<Job> {
+    return new Job(await this.inner.dropViewAsync(name, namespacePath ?? []));
   }
 
   async listViews(namespacePath?: string[]): Promise<string[]> {
@@ -1034,6 +1066,14 @@ export class LocalConnection extends Connection {
 
   async cancelJob(jobId: string): Promise<boolean> {
     return this.inner.cancelJob(jobId);
+  }
+
+  async pauseJob(jobId: string): Promise<string> {
+    return this.inner.pauseJob(jobId);
+  }
+
+  async resumeJob(jobId: string): Promise<string> {
+    return this.inner.resumeJob(jobId);
   }
 }
 

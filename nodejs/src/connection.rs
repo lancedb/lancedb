@@ -427,7 +427,8 @@ impl Connection {
         ViewDescription::from_inner(view)
     }
 
-    /// Drop a view. The tables it reads are untouched.
+    /// Drop a view and wait for its definition to be deleted. The tables it
+    /// reads are untouched.
     #[napi(catch_unwind)]
     pub async fn drop_view(
         &self,
@@ -439,6 +440,22 @@ impl Connection {
             .drop_view(&name, &ns)
             .await
             .default_error()
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    #[napi(catch_unwind)]
+    pub async fn drop_view_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_view_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
     }
 
     /// The names of the views in one namespace.
@@ -581,6 +598,34 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn cancel_job(&self, job_id: String) -> napi::Result<bool> {
         self.get_inner()?.cancel_job(&job_id).await.default_error()
+    }
+
+    /// Pause a server-side job by id: its workers drain and it stays parked
+    /// until resumed. Returns "pausing", "already_paused", or "committing".
+    #[napi(catch_unwind)]
+    pub async fn pause_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self.get_inner()?.pause_job(&job_id).await.default_error()?;
+        Ok(match status {
+            lancedb::database::PauseJobStatus::Pausing => "pausing".to_string(),
+            lancedb::database::PauseJobStatus::AlreadyPaused => "already_paused".to_string(),
+            lancedb::database::PauseJobStatus::Committing => "committing".to_string(),
+        })
+    }
+
+    /// Resume a paused server-side job by id. Returns "resumed",
+    /// "still_pausing", or "not_paused".
+    #[napi(catch_unwind)]
+    pub async fn resume_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self
+            .get_inner()?
+            .resume_job(&job_id)
+            .await
+            .default_error()?;
+        Ok(match status {
+            lancedb::database::ResumeJobStatus::Resumed => "resumed".to_string(),
+            lancedb::database::ResumeJobStatus::StillPausing => "still_pausing".to_string(),
+            lancedb::database::ResumeJobStatus::NotPaused => "not_paused".to_string(),
+        })
     }
 
     #[napi(catch_unwind)]

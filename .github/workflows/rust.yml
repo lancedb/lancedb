@@ -180,7 +180,8 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
-      GH_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v6
         with:

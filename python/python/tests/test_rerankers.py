@@ -395,6 +395,38 @@ def test_mrr_multivector_rewards_consensus():
     assert result["_rowid"].to_pylist()[0] == 2
 
 
+def test_rrf_multivector_ranks_each_result_list():
+    # RRF scores a document by its rank *within each* result list. The top hit
+    # of the second list must score the same as the top hit of the first list,
+    # not as if it were ranked after every row of the first list.
+    reranker = RRFReranker(K=60)
+
+    def ranking(row_ids):
+        return pa.table({"_rowid": pa.array(row_ids, type=pa.int64())})
+
+    rs1 = ranking([1, 2, 3])
+    rs2 = ranking([4, 5, 6])
+
+    result = reranker.rerank_multivector([rs1, rs2])
+    scores = dict(
+        zip(result["_rowid"].to_pylist(), result["_relevance_score"].to_pylist())
+    )
+
+    assert scores[1] == pytest.approx(1 / 61)
+    assert scores[4] == pytest.approx(1 / 61)
+    assert scores[5] == pytest.approx(1 / 62)
+    # the second-ranked hit of the second list beats the third hit of the first
+    assert scores[5] > scores[3]
+
+    # A document found by both lists sums its reciprocal ranks from each list.
+    result = reranker.rerank_multivector([ranking([1, 2]), ranking([2, 3])])
+    scores = dict(
+        zip(result["_rowid"].to_pylist(), result["_relevance_score"].to_pylist())
+    )
+    assert scores[2] == pytest.approx(1 / 62 + 1 / 61)
+    assert result["_rowid"].to_pylist() == [2, 1, 3]
+
+
 def test_rrf_reranker_distance():
     data = pa.table(
         {
@@ -481,6 +513,14 @@ def test_cross_encoder_reranker(tmp_path):
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
+def test_cross_encoder_reranker_kwargs(tmp_path):
+    pytest.importorskip("sentence_transformers")
+    reranker = CrossEncoderReranker(batch_size=4, max_length=64)
+    assert reranker.model.max_length == 64
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
 def test_colbert_reranker(tmp_path):
     pytest.importorskip("rerankers")
     reranker = ColbertReranker()
@@ -536,28 +576,43 @@ class _FakeTypeSafeClient:
     def system_one(self, state, questions, model):
         self.requests.append((state, questions, model))
         query_words = set(state["query"].lower().split())
-        doc_words = set(state["document"].lower().split())
-        noul = len(query_words & doc_words) / len(query_words)
-        answers = {key: type("NoulAnswer", (), {"noul": noul})() for key in questions}
+        answers = {}
+        for key, question in questions.items():
+            document = (
+                state["document"]
+                if "document" in state
+                else question["instructions"]["document"]
+            )
+            doc_words = set(document.lower().split())
+            noul = len(query_words & doc_words) / len(query_words)
+            answers[key] = type("NoulAnswer", (), {"noul": noul})()
         return type("SystemOneResponse", (), {"answers": answers})()
 
 
-def test_typesafe_reranker_with_fake_client(tmp_path):
-    reranker = TypeSafeReranker(max_concurrency=4)
+@pytest.mark.parametrize("batch_size", [1, 40])
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_typesafe_reranker_with_fake_client(tmp_path, batch_size, return_score):
+    reranker = TypeSafeReranker(
+        max_concurrency=4, batch_size=batch_size, return_score=return_score
+    )
     reranker._client = _FakeTypeSafeClient()
     table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
     state, questions, model = reranker._client.requests[0]
     assert model == "jev-latest"
-    assert set(state) == {"query", "document"}
-    assert questions == {
-        "relevance": {
-            "type": "noul",
-            "instructions": reranker.instructions,
-            "criteria": reranker.criteria,
+    if batch_size == 1:
+        assert set(state) == {"query", "document"}
+        assert questions == {
+            "relevance": {
+                "type": "noul",
+                "instructions": reranker.instructions,
+                "criteria": reranker.criteria,
+            }
         }
-    }
+    else:
+        assert set(state) == {"query"}
+        assert 1 <= len(questions) <= batch_size
 
 
 def test_typesafe_reranker_scores_each_row():

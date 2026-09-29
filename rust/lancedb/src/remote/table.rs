@@ -20,6 +20,7 @@ use crate::job::Job;
 use crate::materialized_view::{
     MaterializedViewDefinition, MaterializedViewInfo, RefreshMaterializedViewResult, ViewProjection,
 };
+use crate::query::wal_fusion::PkFusionMemory; // WAL-PK-FUSION: delete.
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::remote::job::RemoteJob;
 use crate::table::AddColumnsResult;
@@ -497,6 +498,8 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     version: Arc<RwLock<Option<u64>>>,
     location: RwLock<Option<String>>,
     schema_cache: BackgroundCache<SchemaRef, Error>,
+    // WAL-PK-FUSION: delete, with its initializers below.
+    wal_pk_fusion: PkFusionMemory,
     freshness: Arc<Mutex<FreshnessState>>,
     /// The branch this handle is scoped to, or `None` for the main branch.
     /// Stamped onto every branch-accepting request so reads and writes resolve
@@ -665,6 +668,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+            wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
         }
@@ -698,6 +702,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+            wal_pk_fusion: PkFusionMemory::default(),
             freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
         }
@@ -1615,6 +1620,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -1639,6 +1645,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -1672,6 +1679,7 @@ mod test_utils {
                 version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
+                wal_pk_fusion: PkFusionMemory::default(),
                 freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
@@ -2132,6 +2140,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let definition = match response.query {
             Some(query) => MaterializedViewDefinition::from_sql(&query)?,
             None => MaterializedViewDefinition {
+                vector_source: None,
                 source_table: response.source_table,
                 source_namespace: response.source_namespace,
                 lateral: None,
@@ -3233,6 +3242,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         ));
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
+        self.wal_pk_fusion.forget(); // WAL-PK-FUSION: delete.
         Ok(())
     }
 
@@ -3297,6 +3307,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         .with_writer_config_defaults(body.writer_config_defaults);
 
         Ok(Some(spec))
+    }
+
+    // WAL-PK-FUSION: delete both.
+    fn hybrid_pk_fusion_learned(&self) -> bool {
+        self.wal_pk_fusion.learned()
+    }
+
+    fn note_hybrid_pk_fusion(&self) {
+        self.wal_pk_fusion.note();
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -5212,6 +5231,206 @@ mod tests {
         assert_eq!(blobs.value(0), b"alpha");
         assert!(blobs.is_null(1));
         assert_eq!(blobs.value(2), b"gamma");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_splits_row_ids_at_one_version_and_preserves_order() {
+        let request_sizes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = request_sizes.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                if request.url().path() == "/v1/table/my_table/describe/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(br#"{"version":7,"schema":{"fields":[]}}"#.to_vec())
+                        .unwrap();
+                }
+                assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
+                let body = request_body_json(&request);
+                assert_eq!(body["version"], 7);
+                let ids = body["row_ids"].as_array().unwrap();
+                seen.lock().unwrap().push(ids.len());
+                if ids.len() > 1024 {
+                    return http::Response::builder()
+                        .status(400)
+                        .body(b"fetch_blobs accepts at most 1024 row IDs".to_vec())
+                        .unwrap();
+                }
+                let mut builder = LargeBinaryBuilder::new();
+                for id in ids {
+                    let id = id.as_u64().unwrap();
+                    if id == 1023 {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(id.to_string().as_bytes());
+                    }
+                }
+                let batch = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new(
+                        "image",
+                        DataType::LargeBinary,
+                        true,
+                    )])),
+                    vec![Arc::new(builder.finish())],
+                )
+                .unwrap();
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .body(write_ipc_stream_uncompressed(&batch))
+                    .unwrap()
+            },
+        );
+
+        let ids: Vec<u64> = (0..1024).chain([42]).collect();
+        let blobs = table.fetch_blobs("image", &ids).await.unwrap();
+        assert_eq!(blobs.len(), 1025);
+        assert_eq!(blobs.value(0), b"0");
+        assert_eq!(blobs.value(1022), b"1022");
+        assert!(blobs.is_null(1023));
+        assert_eq!(blobs.value(1024), b"42");
+        assert_eq!(request_sizes.lock().unwrap().as_slice(), &[1024, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_splits_byte_limited_requests_and_reads_large_blob_by_range() {
+        // Simulate a lower byte cap so this test exercises the same 400 response
+        // without allocating 64 MiB of blob data.
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                let path = request.url().path();
+                if path == "/v1/table/my_table/describe/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(br#"{"version":42,"schema":{"fields":[]}}"#.to_vec())
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/fetch_blobs/" {
+                    let body = request_body_json(&request);
+                    let ids = body["row_ids"].as_array().unwrap();
+                    if body["version"].is_null() {
+                        // Only the initial failed request may read live latest.
+                        assert_eq!(ids.len(), 5);
+                    } else {
+                        assert_eq!(body["version"], 42);
+                    }
+                    seen.lock().unwrap().push(format!("POST {}", ids.len()));
+                    let mut builder = LargeBinaryBuilder::new();
+                    let mut total_bytes = 0;
+                    for id in ids {
+                        let value: Option<&[u8]> = match id.as_u64().unwrap() {
+                            10 => Some(b"aaaa"),
+                            20 => Some(b"bbb"),
+                            30 => None,
+                            40 => Some(b"0123456789"),
+                            id => panic!("unexpected row id {id}"),
+                        };
+                        if let Some(value) = value {
+                            total_bytes += value.len();
+                            builder.append_value(value);
+                        } else {
+                            builder.append_null();
+                        }
+                    }
+                    if total_bytes > 6 {
+                        return http::Response::builder()
+                            .status(400)
+                            .body(br#"{"error":"Bad request: fetch_blobs accepts at most 67108864 total blob bytes"}"#.to_vec())
+                            .unwrap();
+                    }
+                    let batch = RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![Field::new(
+                            "image",
+                            DataType::LargeBinary,
+                            true,
+                        )])),
+                        vec![Arc::new(builder.finish())],
+                    )
+                    .unwrap();
+                    return http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(write_ipc_stream_uncompressed(&batch))
+                        .unwrap();
+                }
+                assert_eq!(path, "/v1/table/my_table/blob/image/40/bytes");
+                assert!(request.url().query().unwrap().contains("version=42"));
+                let range = request
+                    .headers()
+                    .get(reqwest::header::RANGE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                seen.lock().unwrap().push(format!("GET {range}"));
+                match range {
+                    "bytes=0-0" => http::Response::builder()
+                        .status(206)
+                        .header(reqwest::header::CONTENT_RANGE, "bytes 0-0/10")
+                        .body(b"0".to_vec())
+                        .unwrap(),
+                    "bytes=0-" => http::Response::builder()
+                        .status(206)
+                        .header(reqwest::header::CONTENT_RANGE, "bytes 0-9/10")
+                        .body(b"0123456789".to_vec())
+                        .unwrap(),
+                    _ => panic!("unexpected range: {range}"),
+                }
+            },
+        );
+
+        let blobs = table
+            .fetch_blobs("image", &[10, 20, 30, 40, 20])
+            .await
+            .unwrap();
+        assert_eq!(blobs.len(), 5);
+        assert_eq!(blobs.value(0), b"aaaa");
+        assert_eq!(blobs.value(1), b"bbb");
+        assert!(blobs.is_null(2));
+        assert_eq!(blobs.value(3), b"0123456789");
+        assert_eq!(blobs.value(4), b"bbb");
+        let requests = requests.lock().unwrap();
+        assert!(requests.contains(&"GET bytes=0-0".to_string()));
+        assert!(requests.contains(&"GET bytes=0-".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_does_not_split_unrelated_bad_requests() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = requests.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&Schema::new(vec![Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    )]))
+                    .map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/fetch_blobs/" => {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(400)
+                        .body(b"unknown blob column".to_vec())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        assert_fetch_blobs_http_error(
+            table.fetch_blobs("missing", &[10, 20]).await.unwrap_err(),
+            "unknown blob column",
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     fn table_with_fetch_blobs_response(body: Vec<u8>) -> Table {
@@ -13638,5 +13857,279 @@ mod tests {
             .await
             .unwrap();
         branch.stats().await.unwrap();
+    }
+
+    // WAL-PK-FUSION: delete everything from here to the end of `mod tests`.
+
+    /// Verbatim from sophon's `LSM_WITH_ROW_ID_UNSUPPORTED`; the fallback keys
+    /// off this sentence, so a test that paraphrased it would prove nothing.
+    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: the MemWAL LSM scanner does not support with_row_id (the LSM scanner exposes _rowaddr, not a stable _rowid); set use_lsm(false) to read the base table only (results will exclude un-compacted MemWAL data)"}"#;
+
+    use lance::dataset::ROW_ID;
+
+    fn pk_schema() -> Schema {
+        use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
+        Schema::new(vec![
+            Field::new("id", DataType::Utf8, false).with_metadata(
+                [(
+                    LANCE_UNENFORCED_PRIMARY_KEY_POSITION.to_string(),
+                    "1".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            Field::new("text", DataType::Utf8, true),
+        ])
+    }
+
+    /// One leg's worth of results, keyed so the two legs share a row.
+    /// `row_ids` mirrors a server answering a query that asked for `_rowid`.
+    fn leg(score_column: &str, ids: Vec<&str>, row_ids: bool) -> RecordBatch {
+        use arrow_array::{Float32Array, UInt64Array};
+        let mut fields = vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("text", DataType::Utf8, true),
+            Field::new(score_column, DataType::Float32, false),
+        ];
+        let scores = Float32Array::from(vec![1.0_f32; ids.len()]);
+        let texts = StringArray::from(ids.clone());
+        let mut columns: Vec<arrow_array::ArrayRef> = vec![
+            Arc::new(StringArray::from(ids.clone())),
+            Arc::new(texts),
+            Arc::new(scores),
+        ];
+        if row_ids {
+            fields.push(Field::new(ROW_ID, DataType::UInt64, false));
+            columns.push(Arc::new(UInt64Array::from_iter_values(
+                ids.iter().map(|id| id.as_bytes()[0] as u64),
+            )));
+        }
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+    }
+
+    /// A server that refuses `_rowid` the way a MemWAL table does, recording
+    /// every query body so a test can see which key each attempt asked for.
+    fn wal_refusing_table(bodies: Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> Table {
+        Table::new_with_handler("my_table", move |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(describe_response(&pk_schema()).into_bytes())
+                .unwrap(),
+            "/v1/table/my_table/query/" => {
+                let body = request_body_json(&request);
+                let asked_for_row_id = body["with_row_id"] == serde_json::Value::Bool(true);
+                let is_fts = body.get("full_text_query").is_some_and(|v| !v.is_null());
+                bodies.lock().unwrap().push(body);
+                if asked_for_row_id {
+                    return http::Response::builder()
+                        .status(400)
+                        .body(WAL_ROW_ID_REFUSAL_BODY.as_bytes().to_vec())
+                        .unwrap();
+                }
+                let batch = if is_fts {
+                    leg("_score", vec!["a", "b"], false)
+                } else {
+                    leg("_distance", vec!["a"], false)
+                };
+                http::Response::builder()
+                    .status(200)
+                    .body(write_ipc_file(&batch))
+                    .unwrap()
+            }
+            path => panic!("unexpected request path: {path}"),
+        })
+    }
+
+    fn hybrid(table: &Table) -> crate::query::VectorQuery {
+        table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("a".to_string()))
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+    }
+
+    /// The optimistic path: ask for `_rowid`, and when a MemWAL table refuses,
+    /// fall back to the primary key rather than failing.
+    #[tokio::test]
+    async fn test_hybrid_falls_back_to_the_primary_key_when_row_id_is_refused() {
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let table = wal_refusing_table(bodies.clone());
+
+        let results = hybrid(&table)
+            .select(Select::columns(&["text"]))
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let bodies = bodies.lock().unwrap();
+        let (asked_row_id, asked_pk): (Vec<_>, Vec<_>) = bodies
+            .iter()
+            .partition(|b| b["with_row_id"] == serde_json::Value::Bool(true));
+        // The legs run concurrently under `try_join!`, which abandons the
+        // sibling as soon as one errors — so the refused attempt is one or two
+        // requests, never zero, and the retry always sends both.
+        assert!(
+            !asked_row_id.is_empty(),
+            "`_rowid` has to be tried before the fallback means anything"
+        );
+        assert_eq!(asked_pk.len(), 2, "both legs are retried on the key");
+        for body in asked_pk {
+            let columns = body["columns"].as_array().expect("a column projection");
+            assert!(
+                columns.iter().any(|c| c == "id"),
+                "the retry has to project the key: {body}"
+            );
+        }
+
+        let batch = &results[0];
+        assert!(batch.column_by_name(ROW_ID).is_none());
+        assert!(batch.column_by_name("id").is_none(), "injected key leaked");
+        assert_eq!(batch.num_rows(), 2, "`a` is in both legs and fuses");
+    }
+
+    /// A hybrid query that matches nothing must return nothing, not fail.
+    /// When both legs come back empty, `query_schemas` synthesizes a schema
+    /// that already carries `_rowid`, which the stamping has to tolerate.
+    #[tokio::test]
+    async fn test_hybrid_with_no_matches_returns_an_empty_result() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&pk_schema()).into_bytes())
+                    .unwrap(),
+                "/v1/table/my_table/query/" => {
+                    let body = request_body_json(&request);
+                    if body["with_row_id"] == serde_json::Value::Bool(true) {
+                        return http::Response::builder()
+                            .status(400)
+                            .body(WAL_ROW_ID_REFUSAL_BODY.as_bytes().to_vec())
+                            .unwrap();
+                    }
+                    // A leg that matched nothing: schema, no batches.
+                    let schema =
+                        Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+                    let mut body = Vec::new();
+                    {
+                        let mut writer =
+                            arrow_ipc::writer::FileWriter::try_new(&mut body, &schema).unwrap();
+                        writer.finish().unwrap();
+                    }
+                    http::Response::builder().status(200).body(body).unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            }
+        });
+
+        let results = hybrid(&table)
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.iter().map(|b| b.num_rows()).sum::<usize>(), 0);
+    }
+
+    /// The refusal is paid once: the second query goes straight to the key.
+    #[tokio::test]
+    async fn test_hybrid_remembers_the_refusal() {
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let table = wal_refusing_table(bodies.clone());
+
+        for _ in 0..2 {
+            hybrid(&table)
+                .limit(10)
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+        }
+
+        let refused = bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| b["with_row_id"] == serde_json::Value::Bool(true))
+            .count();
+        assert!(
+            (1..=2).contains(&refused),
+            "only the first query should pay the refusal, saw {refused} attempts"
+        );
+    }
+
+    /// A table that never refuses must never pay for the fallback existing.
+    #[tokio::test]
+    async fn test_hybrid_on_a_base_table_sends_no_extra_requests() {
+        let paths = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = paths.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            seen.lock().unwrap().push(request.url().path().to_string());
+            let batch = if request_body_json(&request)
+                .get("full_text_query")
+                .is_some_and(|v| !v.is_null())
+            {
+                leg("_score", vec!["a", "b"], true)
+            } else {
+                leg("_distance", vec!["a"], true)
+            };
+            http::Response::builder()
+                .status(200)
+                .body(write_ipc_file(&batch))
+                .unwrap()
+        });
+
+        hybrid(&table)
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let paths = paths.lock().unwrap();
+        assert!(
+            paths.iter().all(|p| p.ends_with("/query/")),
+            "a table that never refuses must not be probed, got {paths:?}"
+        );
+        assert_eq!(paths.len(), 2, "one request per leg, got {paths:?}");
+    }
+
+    /// A caller who asked for `_rowid` gets the server's refusal, not a
+    /// surrogate dressed up as one.
+    #[tokio::test]
+    async fn test_hybrid_does_not_fall_back_when_the_caller_asked_for_row_id() {
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let table = wal_refusing_table(bodies.clone());
+
+        let err = hybrid(&table)
+            .with_row_id()
+            .limit(10)
+            .execute()
+            .await
+            .err()
+            .expect("the refusal must reach the caller");
+
+        // Translated, not passed through: the caller gets the reason and the
+        // way out, which a bare 400 does not carry.
+        assert!(matches!(err, Error::NotSupported { .. }), "{err:?}");
+        assert!(err.to_string().contains("use_lsm(false)"), "{err}");
+        assert!(
+            bodies
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|b| b["with_row_id"] == serde_json::Value::Bool(true)),
+            "no retry should have been attempted"
+        );
     }
 }
