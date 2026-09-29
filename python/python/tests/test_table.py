@@ -738,8 +738,8 @@ def test_add_nullability(mem_db: DBConnection):
     assert table.to_arrow() == expected
 
 
-def test_add_pydantic_model(mem_db: DBConnection):
-    pytest.importorskip("pandas")
+@pytest.fixture
+def pydantic_model_table(mem_db: DBConnection):
     # https://github.com/lancedb/lancedb/issues/562
 
     class Metadata(BaseModel):
@@ -757,9 +757,6 @@ def test_add_pydantic_model(mem_db: DBConnection):
         payload: Document
 
     tbl = mem_db.create_table("mytable", schema=LanceSchema, mode="overwrite")
-    assert tbl.schema == LanceSchema.to_arrow_schema()
-
-    # add works
     expected = LanceSchema(
         id="id",
         vector=[0.0, 0.0],
@@ -769,11 +766,21 @@ def test_add_pydantic_model(mem_db: DBConnection):
         ),
     )
     add_res = tbl.add([expected])
+    return tbl, LanceSchema, expected, add_res
+
+
+def test_add_pydantic_model(pydantic_model_table):
+    tbl, LanceSchema, expected, add_res = pydantic_model_table
+    assert tbl.schema == LanceSchema.to_arrow_schema()
     assert add_res.version == 2
 
     result = tbl.search([0.0, 0.0]).limit(1).to_pydantic(LanceSchema)[0]
     assert result == expected
 
+
+def test_add_pydantic_model_pandas(pydantic_model_table):
+    pytest.importorskip("pandas")
+    tbl, _, _, _ = pydantic_model_table
     flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=1)
     assert len(flattened.columns) == 6  # _distance is automatically added
 

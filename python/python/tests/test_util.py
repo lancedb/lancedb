@@ -4,10 +4,9 @@
 
 import os
 import pathlib
+import sys
 from typing import Optional
 
-import lance
-from lance.blob import BlobType as LanceBlobType
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings.base import EmbeddingFunctionConfig
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
@@ -23,7 +22,6 @@ from lancedb.table import (
     sanitize_create_table,
 )
 import pyarrow as pa
-import pandas as pd
 import polars as pl
 import pytest
 import lancedb
@@ -154,7 +152,8 @@ def test_value_to_sql_string(tmp_path):
     )
     for value in values:
         table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
-        assert table.to_pandas().query("search == @value")["replace"].item() == value
+        rows = table.to_arrow().to_pylist()
+        assert next(row["replace"] for row in rows if row["search"] == value) == value
 
 
 def test_value_to_sql_dict():
@@ -565,15 +564,19 @@ class TestModel(lancedb.pydantic.LanceModel):
         lambda: pa.table({"a": [1], "b": [2]}),
         lambda: pa.table({"a": [1], "b": [2]}).to_reader(),
         lambda: iter(pa.table({"a": [1], "b": [2]}).to_batches()),
-        lambda: lance.write_dataset(
+        lambda: pytest.importorskip("lance").write_dataset(
             pa.table({"a": [1], "b": [2]}),
             "memory://test",
         ),
-        lambda: lance.write_dataset(
-            pa.table({"a": [1], "b": [2]}),
-            "memory://test",
-        ).scanner(),
-        lambda: pd.DataFrame({"a": [1], "b": [2]}),
+        lambda: (
+            pytest.importorskip("lance")
+            .write_dataset(
+                pa.table({"a": [1], "b": [2]}),
+                "memory://test",
+            )
+            .scanner()
+        ),
+        lambda: pytest.importorskip("pandas").DataFrame({"a": [1], "b": [2]}),
         lambda: pl.DataFrame({"a": [1], "b": [2]}),
         lambda: pl.LazyFrame({"a": [1], "b": [2]}),
         lambda: [TestModel(a=1, b=2)],
@@ -743,10 +746,10 @@ def test_infer_target_schema_with_vector_embedding_names():
 @pytest.mark.parametrize(
     "data",
     [
-        [{"id": 1, "text": "hello"}],
-        pa.RecordBatch.from_pylist([{"id": 1, "text": "hello"}]),
-        pd.DataFrame({"id": [1], "text": ["hello"]}),
-        pl.DataFrame({"id": [1], "text": ["hello"]}),
+        lambda: [{"id": 1, "text": "hello"}],
+        lambda: pa.RecordBatch.from_pylist([{"id": 1, "text": "hello"}]),
+        lambda: pytest.importorskip("pandas").DataFrame({"id": [1], "text": ["hello"]}),
+        lambda: pl.DataFrame({"id": [1], "text": ["hello"]}),
     ],
     ids=["rows", "pa.RecordBatch", "pd.DataFrame", "pl.DataFrame"],
 )
@@ -778,6 +781,7 @@ def test_sanitize_data(
     schema: Optional[pa.Schema],
     with_embedding: bool,
 ):
+    data = data()
     if with_embedding:
         registry = EmbeddingFunctionRegistry.get_instance()
         registry.register("test")(MockTextEmbeddingFunction)
@@ -802,7 +806,9 @@ def test_sanitize_data(
         # polars uses large_string, pandas 3.0+ uses large_string, others use string
         if isinstance(data, pl.DataFrame):
             text_type = pa.large_utf8()
-        elif isinstance(data, pd.DataFrame):
+        elif (pd := sys.modules.get("pandas")) is not None and isinstance(
+            data, pd.DataFrame
+        ):
             text_type = pandas_string_type()
         else:
             text_type = pa.string()
@@ -1104,6 +1110,8 @@ def test_fixed_size_list_blob_coercion_keeps_null_rows():
 
 
 def test_cast_to_target_schema_accepts_pylance_blob_v2():
+    lance = pytest.importorskip("lance")
+    LanceBlobType = pytest.importorskip("lance.blob").BlobType
     target_type = lancedb.BlobType()
     source = lance.blob_array([b"hello", None])
     assert type(source.type) is LanceBlobType
@@ -1123,6 +1131,8 @@ def test_cast_to_target_schema_accepts_pylance_blob_v2():
 
 
 def test_cast_to_target_schema_rejects_different_blob_v2_class():
+    lance = pytest.importorskip("lance")
+
     class OtherBlobType(pa.ExtensionType):
         def __init__(self):
             super().__init__(lancedb.BlobType().storage_type, "lance.blob.v2")
