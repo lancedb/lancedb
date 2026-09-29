@@ -608,16 +608,25 @@ impl<S: HttpSend> RemoteTable<S> {
 
         let mut sizes = HashMap::with_capacity(unique_row_ids.len());
         for chunk in unique_row_ids.chunks(MAX_FETCH_BLOBS_ROW_IDS) {
-            let response_version = self
-                .take_blob_descriptor_chunk(column, chunk, *read_snapshot, &mut sizes)
+            let (mut chunk_sizes, response_version) = self
+                .take_blob_descriptor_chunk(column, chunk, *read_snapshot)
                 .await?;
             if read_snapshot.version.is_none() {
-                read_snapshot.version = Some(match response_version {
-                    Some(version) => version,
-                    // A server that does not report its read version is asked once.
-                    None => self.describe_read_snapshot(*read_snapshot).await?.version,
-                });
+                match response_version {
+                    Some(version) => read_snapshot.version = Some(version),
+                    None => {
+                        // A server that does not report its read version may have read
+                        // an older version than a describe now returns, so the take is
+                        // repeated at the described version.
+                        read_snapshot.version =
+                            Some(self.describe_read_snapshot(*read_snapshot).await?.version);
+                        (chunk_sizes, _) = self
+                            .take_blob_descriptor_chunk(column, chunk, *read_snapshot)
+                            .await?;
+                    }
+                }
             }
+            sizes.extend(chunk_sizes);
         }
         let found = unique_row_ids
             .iter()
@@ -635,20 +644,22 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(sizes)
     }
 
-    /// Take one chunk of descriptors, returning the version the server read.
+    /// Take one chunk of descriptors, also returning the version the server
+    /// reported reading.
     async fn take_blob_descriptor_chunk(
         &self,
         column: &str,
         row_ids: &[u64],
         read_snapshot: ReadSnapshot,
-        sizes: &mut HashMap<u64, DescriptorSize>,
-    ) -> Result<Option<u64>> {
+    ) -> Result<(HashMap<u64, DescriptorSize>, Option<u64>)> {
         let query = AnyQuery::Query(QueryRequest {
             filter: Some(QueryFilter::Datafusion(
                 col(ROW_ID).in_list(row_ids.iter().map(|id| lit(*id)).collect(), false),
             )),
             select: Select::columns(&[column]),
             with_row_id: true,
+            // Row ids name base-table rows, and the MemWAL scanner has no stable `_rowid`.
+            use_lsm: Some(false),
             ..Default::default()
         });
         let body = self
@@ -669,6 +680,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .and_then(|value| value.parse().ok());
         let mut stream = self.read_arrow_response(&request_id, response).await?;
 
+        let mut sizes = HashMap::with_capacity(row_ids.len());
         let invalid_response = |message: String| Error::Http {
             source: message.into(),
             request_id: request_id.clone(),
@@ -696,7 +708,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 sizes.insert(*row_id, descriptors.size(index)?);
             }
         }
-        Ok(response_version)
+        Ok((sizes, response_version))
     }
 
     fn ensure_blob_files_supported(&self) -> Result<()> {
@@ -1070,6 +1082,7 @@ mod tests {
                             .unwrap();
                     assert_eq!(body["columns"], serde_json::json!(["image"]));
                     assert_eq!(body["with_row_id"], serde_json::json!(true));
+                    assert_eq!(body["use_lsm"], serde_json::json!(false));
                     let requested = filter_row_ids(body["filter"].as_str().unwrap());
                     captured.lock().unwrap().push(TakeMockRequest::Query {
                         row_ids: requested.clone(),
@@ -1235,7 +1248,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_blob_files_describe_the_version_when_a_take_does_not_report_it() {
+    async fn remote_blob_files_retake_at_the_described_version_when_a_take_does_not_report_it() {
         let payload_size = PAYLOAD.len() as u64;
         let (table, requests) =
             mock_take_blob_table(vec![(10, Some((BlobKind::Inline, payload_size)))], None);
@@ -1249,6 +1262,7 @@ mod tests {
             .unwrap();
         file.read_range(0..4).await.unwrap();
 
+        // The unversioned take is repeated at the described version.
         assert_eq!(
             requests.lock().unwrap().as_slice(),
             [
@@ -1257,6 +1271,10 @@ mod tests {
                     version: None,
                 },
                 TakeMockRequest::Describe,
+                TakeMockRequest::Query {
+                    row_ids: vec![10],
+                    version: Some(9),
+                },
                 TakeMockRequest::Range {
                     row_id: 10,
                     range: "bytes=0-3".into(),
