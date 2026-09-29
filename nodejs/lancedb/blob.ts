@@ -145,8 +145,7 @@ export class BlobFile {
    *
    * Reads to the end when `maxBytes` is omitted, or at most `maxBytes` bytes
    * otherwise. Returns an empty buffer at the end of the blob.
-   * {@link BlobFile.readRange} does not move the cursor. An aborted read
-   * leaves the cursor where it was.
+   * {@link BlobFile.readRange} does not move the cursor.
    */
   read(maxBytes?: bigint, options?: BlobReadOptions): Promise<Buffer> {
     return runWithSignal(options?.signal, (signal) =>
