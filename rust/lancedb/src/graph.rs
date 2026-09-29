@@ -34,6 +34,34 @@ fn to_json(value: &impl Serialize) -> Result<String> {
     })
 }
 
+/// `schema` in the JSON Arrow form a graph definition carries.
+///
+/// The form spells no timestamp or duration unit, no time zone and no
+/// dictionary, and cannot spell a time or an interval at all, so a schema that
+/// would not read back as itself is refused here rather than reaching the
+/// server as another schema.
+pub fn schema_to_json(schema: &Schema) -> Result<JsonArrowSchema> {
+    let json = lance_namespace::schema::arrow_schema_to_json(schema)?;
+    for (field, encoded) in schema.fields().iter().zip(&json.fields) {
+        let read_back = lance_namespace::schema::convert_json_arrow_field(encoded).ok();
+        if read_back.as_ref() != Some(field.as_ref()) {
+            let as_read = match read_back {
+                Some(read_back) => format!("it would be read as {}", read_back.data_type()),
+                None => "it cannot be read back".to_string(),
+            };
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "property '{}' of type {} cannot be carried by a property graph \
+                     definition: {as_read}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+    }
+    Ok(json)
+}
+
 /// A property graph's node and edge types.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PropertyGraphDefinition {
@@ -86,7 +114,7 @@ impl NodeType {
         Ok(Self {
             label: label.into(),
             key: key.into(),
-            schema: lance_namespace::schema::arrow_schema_to_json(schema)?,
+            schema: schema_to_json(schema)?,
         })
     }
 
@@ -125,9 +153,7 @@ impl EdgeType {
             label: label.into(),
             source,
             destination,
-            schema: schema
-                .map(lance_namespace::schema::arrow_schema_to_json)
-                .transpose()?,
+            schema: schema.map(schema_to_json).transpose()?,
         })
     }
 
@@ -297,7 +323,7 @@ impl MaterializedVirtualPropertyGraphDescription {
 
 #[cfg(test)]
 mod tests {
-    use arrow_schema::{DataType, Field};
+    use arrow_schema::{DataType, Field, TimeUnit};
 
     use super::*;
 
@@ -415,6 +441,49 @@ mod tests {
         let decoded: MaterializedVirtualPropertyGraphDescription =
             serde_json::from_value(json).unwrap();
         assert_eq!(decoded, description);
+    }
+
+    /// A type the JSON form would read back as another type, or not at all,
+    /// is refused before any request carries it, in node and edge schemas.
+    #[test]
+    fn test_a_schema_the_definition_cannot_carry_is_refused() {
+        let endpoint = |column: &str| EndpointType {
+            label: "Person".to_string(),
+            column: column.to_string(),
+        };
+        for data_type in [
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Second, None),
+            DataType::Duration(TimeUnit::Nanosecond),
+            DataType::Time32(TimeUnit::Second),
+            DataType::Time64(TimeUnit::Microsecond),
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            DataType::new_list(DataType::Timestamp(TimeUnit::Millisecond, None), true),
+        ] {
+            let schema = Schema::new(vec![
+                Field::new("person_id", DataType::Int64, false),
+                Field::new("at", data_type.clone(), true),
+            ]);
+            let error = NodeType::new("Person", "person_id", &schema)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("property 'at'"), "{data_type}: {error}");
+            let error = EdgeType::new("KNOWS", endpoint("src"), endpoint("dst"), Some(&schema))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("property 'at'"), "{data_type}: {error}");
+        }
+
+        // What the form spells exactly still round-trips.
+        let schema = Schema::new(vec![
+            Field::new("person_id", DataType::Int64, false),
+            Field::new("at", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+            Field::new("took", DataType::Duration(TimeUnit::Microsecond), true),
+            Field::new("price", DataType::Decimal128(18, 4), true),
+        ]);
+        let person = NodeType::new("Person", "person_id", &schema).unwrap();
+        assert_eq!(person.arrow_schema().unwrap(), schema);
     }
 
     #[tokio::test]

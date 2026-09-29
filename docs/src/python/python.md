@@ -478,6 +478,17 @@ Table hold your actual data as a collection of records / rows.
 
 ::: lancedb.materialized_view.AsyncMaterializedView
 
+## Property Graphs (Asynchronous)
+
+`AsyncConnection` returns these handles from its `create_*` and `open_*`
+property graph methods.
+
+::: lancedb.graph.AsyncPropertyGraph
+
+::: lancedb.graph.AsyncVirtualPropertyGraph
+
+::: lancedb.graph.AsyncMaterializedVirtualPropertyGraph
+
 ## Indices (Asynchronous)
 
 Indices can be created on a table to speed up queries. This section

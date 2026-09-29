@@ -8,7 +8,9 @@ import json
 import multiprocessing as mp
 import pickle
 import re
+import subprocess
 import sys
+import textwrap
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -3077,6 +3079,92 @@ def test_a_property_graph_carries_schemas_and_takes_arrow_rows():
     assert rollback[:2] == ("POST", "/v1/property_graph/people/rollback")
     assert listed[:2] == ("GET", "/v1/namespace/$/property_graph/list")
     assert drop[:2] == ("POST", "/v1/property_graph/people/drop")
+
+
+def test_a_graph_refuses_a_schema_its_definition_cannot_carry():
+    # A type the definition's JSON form would read back as another type is
+    # refused before any request carries it, in node and edge schemas.
+    calls = []
+    person = NodeType(
+        "Person",
+        key="person_id",
+        schema=pa.schema(
+            [
+                pa.field("person_id", pa.int64(), nullable=False),
+                ("at", pa.timestamp("ns", tz="UTC")),
+            ]
+        ),
+    )
+    plain = NodeType(
+        "Person",
+        key="person_id",
+        schema=pa.schema([pa.field("person_id", pa.int64(), nullable=False)]),
+    )
+    knows = EdgeType(
+        "KNOWS",
+        source=("Person", "src_id"),
+        destination=("Person", "dst_id"),
+        schema=pa.schema([("took", pa.duration("ns"))]),
+    )
+    with mock_lancedb_connection(_graph_handler(calls, lambda path, body: {})) as db:
+        with pytest.raises(ValueError, match="property 'at'"):
+            db.create_property_graph("people", [person], [])
+        with pytest.raises(ValueError, match="property 'took'"):
+            db.create_property_graph("people", [plain], [knows])
+    assert calls == []
+
+
+def test_a_property_graph_inserts_a_dataframe_imported_after_lancedb():
+    # A DataFrame library imported after lancedb has its converter registered
+    # at the insert boundary, as Table.add does. A fresh interpreter makes the
+    # import order the test's own.
+    pytest.importorskip("polars")
+    script = textwrap.dedent(
+        """\
+        import asyncio
+        import json
+
+        import lancedb
+        import polars as pl
+        from lancedb.graph import AsyncPropertyGraph
+        from lancedb.scannable import Scannable
+
+
+        class Inner:
+            async def insert_into_property_graph(self, name, label, data, namespace):
+                names = data.schema.names if isinstance(data, Scannable) else None
+                if names != ["person_id"]:
+                    raise SystemExit(f"unexpected rows: {data!r}")
+                return json.dumps(
+                    {
+                        "name": name,
+                        "namespace": namespace,
+                        "nodes": [],
+                        "edges": [],
+                        "commit": "c1",
+                        "committed_at": "2026-09-29T00:00:00Z",
+                        "vertex_count": 1,
+                        "edge_count": 0,
+                    }
+                )
+
+
+        described = asyncio.run(
+            AsyncPropertyGraph(Inner(), "people", []).insert(
+                "Person", pl.DataFrame({"person_id": [1]})
+            )
+        )
+        if described.vertex_count != 1:
+            raise SystemExit(f"unexpected description: {described}")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_a_graph_takes_only_its_own_kind_of_definition():

@@ -33,7 +33,7 @@ import pyarrow as pa
 
 from ._lancedb import graph_schema_from_json, graph_schema_to_json
 from .background_loop import LOOP
-from .scannable import to_scannable
+from .scannable import _register_optional_converters, to_scannable
 
 if TYPE_CHECKING:
     from .common import DATA
@@ -409,6 +409,9 @@ class AsyncPropertyGraph(_AsyncGraph):
         the edge type names; an edge whose endpoint is not a node of the graph
         refuses the whole insert.
         """
+        # A DataFrame library imported after lancedb registers its converter
+        # here, as it does for Table.add.
+        _register_optional_converters()
         return _property_description(
             await self._inner.insert_into_property_graph(
                 self._name, label, to_scannable(data), self._namespace_path

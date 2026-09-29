@@ -29,10 +29,11 @@ impl GraphKind {
     }
 }
 
-/// A pyarrow schema as the JSON Arrow schema of a node or edge type.
+/// A pyarrow schema as the JSON Arrow schema of a node or edge type, refused
+/// when that form would not read back as the same schema.
 #[pyfunction]
 pub fn graph_schema_to_json(schema: PyArrowType<Schema>) -> PyResult<String> {
-    let json = lance_namespace::schema::arrow_schema_to_json(&schema.0)
+    let json = lancedb::graph::schema_to_json(&schema.0)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     serde_json::to_string(&json).map_err(|error| PyValueError::new_err(error.to_string()))
 }
