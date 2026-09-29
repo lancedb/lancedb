@@ -213,6 +213,35 @@ def test_value_to_sql_numpy_scalars():
     assert value_to_sql(np.bool_(False)) == "FALSE"
 
 
+def test_value_to_sql_nan_and_infinity(tmp_path):
+    # str(float("nan")) is "nan", which SQL reads as a column named nan, so
+    # table.update(values={"x": float("nan")}) failed with "No field named nan".
+    import math
+
+    import numpy as np
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2, 3, 4],
+                "f64": [1.0, 2.0, 3.0, 4.0],
+                "f32": pa.array([1.0, 2.0, 3.0, 4.0], pa.float32()),
+            }
+        ),
+    )
+    table.update(where="id = 1", values={"f64": float("nan"), "f32": np.nan})
+    table.update(where="id = 2", values={"f64": math.inf, "f32": np.float32("inf")})
+    table.update(where="id = 3", values={"f64": -math.inf, "f32": -math.inf})
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert math.isnan(rows[1]["f64"]) and math.isnan(rows[1]["f32"])
+    assert rows[2]["f64"] == math.inf and rows[2]["f32"] == math.inf
+    assert rows[3]["f64"] == -math.inf and rows[3]["f32"] == -math.inf
+    assert rows[4]["f64"] == 4.0 and rows[4]["f32"] == 4.0
+
+
 def test_append_vector_columns():
     registry = EmbeddingFunctionRegistry.get_instance()
     registry.register("test")(MockTextEmbeddingFunction)

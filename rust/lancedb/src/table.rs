@@ -1251,7 +1251,10 @@ impl Table {
     /// Materialize blob bytes for the given row ids.
     ///
     /// Output matches `row_ids` in length and order. Null blobs are null;
-    /// valid empty blobs contain empty byte strings. Prefer
+    /// valid empty blobs contain empty byte strings. Cloud limits individual
+    /// requests to 1024 row ids and 64 MiB of blob bytes; the remote client
+    /// splits requests and reads a single larger blob through the Range route.
+    /// This method still materializes all bytes in memory, so prefer
     /// [`Self::fetch_blob_files`] for large selections.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
@@ -3788,7 +3791,20 @@ impl BaseTable for NativeTable {
             let Some(segment) = segments.first() else {
                 continue;
             };
-            let params = load_segment_params(&dataset, segment).await?;
+            // The listing itself only needs the manifest. Missing index files must
+            // not hide every other index, or callers cannot find the one to repair.
+            let params = match load_segment_params(&dataset, segment).await {
+                Ok(params) => params,
+                Err(err) => {
+                    log::warn!(
+                        "Failed to read full text search configuration for index '{}': {}",
+                        index.name,
+                        err
+                    );
+                    index.index_details = None;
+                    continue;
+                }
+            };
             let details = serde_json::to_string(&params).map_err(|source| Error::Other {
                 message: format!(
                     "Failed to serialize full text search configuration for index '{}'",
