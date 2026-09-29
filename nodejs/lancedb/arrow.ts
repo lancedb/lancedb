@@ -41,10 +41,10 @@ import {
 import { Buffers } from "apache-arrow/data";
 import { typedArrayToArrowType } from "./arrow_type";
 import {
+  blobToRead,
   coerceBlobValue,
   isBlobField,
-  needsBlobResolution,
-  resolveBlobInput,
+  withBlobBytes,
 } from "./blob";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import {
@@ -622,24 +622,33 @@ export async function resolveBlobInputs(
     return data;
   }
   const sanitized = sanitizeSchema(schema);
-  const pending = new Map<unknown, Promise<unknown>>();
+  // Keyed by the Blob itself, so rows sharing one Blob (bare or as
+  // `{ data }`) read it once and share the bytes.
+  const reads = new Map<Blob, Promise<Uint8Array>>();
   mapBlobInputs(data, sanitized, (value) => {
-    if (needsBlobResolution(value) && !pending.has(value)) {
-      pending.set(value, resolveBlobInput(value));
+    const source = blobToRead(value);
+    if (source !== undefined && !reads.has(source)) {
+      reads.set(
+        source,
+        source.arrayBuffer().then((buffer) => new Uint8Array(buffer)),
+      );
     }
     return value;
   });
-  if (pending.size === 0) {
+  if (reads.size === 0) {
     return data;
   }
-  const resolved = new Map(
+  const bytes = new Map(
     await Promise.all(
-      [...pending].map(async ([value, bytes]) => [value, await bytes] as const),
+      [...reads].map(async ([source, read]) => [source, await read] as const),
     ),
   );
-  return mapBlobInputs(data, sanitized, (value) =>
-    resolved.has(value) ? resolved.get(value) : value,
-  );
+  return mapBlobInputs(data, sanitized, (value) => {
+    const source = blobToRead(value);
+    return source === undefined
+      ? value
+      : withBlobBytes(value, bytes.get(source) as Uint8Array);
+  });
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
