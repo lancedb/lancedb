@@ -292,10 +292,10 @@ export type BlobRange = {
  * `URL`) into `Uint8Array` and URI strings, keeping the value's shape. Other
  * values are returned unchanged and validated later by {@link coerceBlobValue}.
  *
- * Throws on `Blob` / `File`, which need {@link resolveBlobInput} first.
+ * Throws on `Blob` / `File`, which must be read into bytes first.
  */
 export function normalizeBlobInput(value: unknown): unknown {
-  if (needsBlobResolution(value)) {
+  if (blobToRead(value) !== undefined) {
     throw new Error(
       "Blob and File values must be read asynchronously. Pass them to " +
         "createTable, add, or mergeInsert, or convert them with " +
@@ -324,26 +324,28 @@ export function normalizeBlobInput(value: unknown): unknown {
   return value;
 }
 
-/** Whether {@link resolveBlobInput} has anything to read for this value. */
-export function needsBlobResolution(value: unknown): boolean {
-  return isBlobLike(value) || (isBlobStruct(value) && isBlobLike(value.data));
+/**
+ * Returns the `Blob` / `File` a blob value needs read, either the value itself
+ * or its `data` field, or `undefined` when there is nothing to read.
+ */
+export function blobToRead(value: unknown): Blob | undefined {
+  if (isBlobLike(value)) {
+    return value;
+  }
+  if (isBlobStruct(value) && isBlobLike(value.data)) {
+    return value.data;
+  }
+  return undefined;
 }
 
 /**
- * Reads `Blob` / `File` values, at the top level or in `data`, into
- * `Uint8Array`. Other values are returned unchanged.
+ * Replaces the `Blob` that {@link blobToRead} found in `value` with `bytes`,
+ * keeping the value's shape.
  */
-export async function resolveBlobInput(value: unknown): Promise<unknown> {
-  if (isBlobLike(value)) {
-    return new Uint8Array(await value.arrayBuffer());
-  }
-  if (isBlobStruct(value) && isBlobLike(value.data)) {
-    return {
-      ...value,
-      data: new Uint8Array(await value.data.arrayBuffer()),
-    };
-  }
-  return value;
+export function withBlobBytes(value: unknown, bytes: Uint8Array): unknown {
+  return isBlobLike(value)
+    ? bytes
+    : { ...(value as Record<string, unknown>), data: bytes };
 }
 
 export function coerceBlobValue(input: unknown): BlobValue | null {

@@ -146,6 +146,31 @@ describe("resolveBlobInputs", () => {
     expect(data[0].images?.[0]).toBe(shared);
   });
 
+  it("reads each distinct Blob once, bare or inside data structs", async () => {
+    class CountingBlob extends Blob {
+      calls = 0;
+      async arrayBuffer(): Promise<ArrayBuffer> {
+        this.calls++;
+        return super.arrayBuffer();
+      }
+    }
+    const shared = new CountingBlob(["same"]);
+    const schema = new Schema([blob("image")]);
+    const resolved = await resolveBlobInputs(
+      [
+        { image: { data: shared } },
+        { image: { data: shared } },
+        { image: shared },
+      ],
+      schema,
+    );
+    expect(shared.calls).toBe(1);
+    const first = (resolved[0].image as { data: Uint8Array }).data;
+    expect(Buffer.from(first).toString()).toBe("same");
+    expect((resolved[1].image as { data: Uint8Array }).data).toBe(first);
+    expect(resolved[2].image).toBe(first);
+  });
+
   it("returns the input when there is nothing to read", async () => {
     const data = [{ image: Buffer.from("x") }];
     const schema = new Schema([blob("image")]);
