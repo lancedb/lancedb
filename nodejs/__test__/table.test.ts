@@ -92,6 +92,38 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(3);
     });
 
+    it("creates and adds Arrow tables with large string and binary columns", async () => {
+      const data = new arrow.Table({
+        text: arrow.vectorFromArray(["alpha", "beta"], new arrow.LargeUtf8()),
+        bytes: arrow.vectorFromArray(
+          [Buffer.from("one"), Buffer.from("two")],
+          new arrow.LargeBinary(),
+        ),
+      });
+      const conn = await connect(tmpDir.name);
+      const largeTable = await conn.createTable("large_columns", data);
+      await largeTable.add(data);
+
+      const rows = await largeTable.query().toArray();
+      expect(rows.map((row) => row.text)).toEqual([
+        "alpha",
+        "beta",
+        "alpha",
+        "beta",
+      ]);
+      expect(rows.map((row) => Buffer.from(row.bytes).toString())).toEqual([
+        "one",
+        "two",
+        "one",
+        "two",
+      ]);
+      const fields = (await largeTable.schema()).fields;
+      expect(fields.map((field) => field.type.typeId)).toEqual([
+        arrow.Type.LargeUtf8,
+        arrow.Type.LargeBinary,
+      ]);
+    });
+
     it("should support a foreign Float64 vector schema end to end", async () => {
       const conn = await connect(tmpDir.name);
       const schema = new arrow.Schema([
@@ -2613,6 +2645,27 @@ describe("when dealing with blob columns", () => {
     );
   });
 
+  it("adds a LargeBinary Arrow column to a blob table", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([new Field("id", new Int64()), blob("image")]);
+    const table = await db.createTable(
+      "blobs",
+      [{ id: 1n, image: Buffer.from("alpha") }],
+      { schema },
+    );
+    const payload = Buffer.from("beta");
+    const data = new arrow18.Table({
+      id: arrow18.vectorFromArray([2n], new arrow18.Int64()),
+      image: arrow18.vectorFromArray([payload], new arrow18.LargeBinary()),
+    });
+    await table.add(data);
+
+    const rows = await table.query().withRowId().toArray();
+    const rowId = rows.find((row) => row.id === 2n)!._rowid as bigint;
+    const [actual] = await table.fetchBlobs("image", [rowId]);
+    expect(actual).toEqual(payload);
+  });
+
   it("reads a half-open range", async () => {
     const { table, rowIds } = await openBlobTable();
     const files = await table.fetchBlobFiles("image", rowIds);
@@ -2635,6 +2688,74 @@ describe("when dealing with blob columns", () => {
     await expect(
       files[0]!.readRange(0n, BigInt(alpha.length + 1)),
     ).rejects.toThrow(/exceeds blob size/);
+  });
+
+  it("reads at most maxBytes and advances the cursor", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    expect((await handle!.read(2n)).toString()).toBe("al");
+    expect(await handle!.tell()).toBe(2n);
+    expect((await handle!.read(2n)).toString()).toBe("ph");
+    expect((await handle!.read(10n)).toString()).toBe("a");
+    expect(await handle!.tell()).toBe(5n);
+    expect(await handle!.read(1n)).toEqual(Buffer.alloc(0));
+  });
+
+  it("seeks the cursor", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    await handle!.seek(3n);
+    expect(await handle!.tell()).toBe(3n);
+    expect((await handle!.read()).toString()).toBe("ha");
+    await handle!.seek(0n);
+    expect(await handle!.read()).toEqual(alpha);
+  });
+
+  it("rejects a negative seek position", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    await expect(handle!.seek(-1n)).rejects.toThrow(/cannot be negative/);
+  });
+
+  it("readRanges returns one buffer per range in order", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    const buffers = await handle!.readRanges([
+      { start: 3n, end: 5n },
+      { start: 0n, end: 2n },
+      { start: 3n, end: 5n },
+    ]);
+    expect(buffers.map((b) => b.toString())).toEqual(["ha", "al", "ha"]);
+    expect(await handle!.tell()).toBe(0n);
+  });
+
+  it("fails when a readRanges end is past the blob size", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    await expect(
+      handle!.readRanges([
+        { start: 0n, end: 1n },
+        { start: 0n, end: BigInt(alpha.length + 1) },
+      ]),
+    ).rejects.toThrow(/exceeds blob size/);
+  });
+
+  it("fails reads after close and closes once", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    expect(handle!.isClosed()).toBe(false);
+    await handle!.close();
+    expect(handle!.isClosed()).toBe(true);
+    await expect(handle!.close()).resolves.toBeUndefined();
+    await expect(handle!.read()).rejects.toThrow(/already closed/);
+    await expect(handle!.read(1n)).rejects.toThrow(/already closed/);
+    await expect(handle!.readRange(0n, 1n)).rejects.toThrow(/already closed/);
+    await expect(handle!.readRanges([{ start: 0n, end: 1n }])).rejects.toThrow(
+      /already closed/,
+    );
+    await expect(handle!.seek(0n)).rejects.toThrow(/already closed/);
+    await expect(handle!.tell()).rejects.toThrow(/already closed/);
+    expect(handle!.size()).toBe(5n);
   });
 
   it("rejects fetchBlobs on a non-blob column", async () => {

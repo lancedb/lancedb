@@ -6,3 +6,5 @@
 pub mod fts;
 
 pub mod duplicate_pairs;
+
+pub mod vector_query;

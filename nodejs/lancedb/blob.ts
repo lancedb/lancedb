@@ -141,13 +141,14 @@ export class BlobFile {
   }
 
   /**
-   * Reads from the cursor to the end and advances the cursor.
+   * Reads from the cursor and advances the cursor.
    *
-   * A second call returns an empty buffer. {@link BlobFile.readRange} does
-   * not move the cursor.
+   * Reads to the end when `maxBytes` is omitted, or at most `maxBytes` bytes
+   * otherwise. Returns an empty buffer at the end of the blob.
+   * {@link BlobFile.readRange} does not move the cursor.
    */
-  read(): Promise<Buffer> {
-    return this.inner.read();
+  read(maxBytes?: bigint): Promise<Buffer> {
+    return this.inner.read(maxBytes);
   }
 
   /**
@@ -158,7 +159,46 @@ export class BlobFile {
   readRange(start: bigint, end: bigint): Promise<Buffer> {
     return this.inner.readRange(start, end);
   }
+
+  /**
+   * Reads several half-open byte ranges. Returns one buffer per range, in
+   * the order given.
+   *
+   * Fails when any `end` is past the blob size. Does not move the cursor.
+   */
+  readRanges(ranges: BlobRange[]): Promise<Buffer[]> {
+    return this.inner.readRanges(ranges);
+  }
+
+  /** Moves the cursor to `position`, in bytes from the start of the blob. */
+  seek(position: bigint): Promise<void> {
+    return this.inner.seek(position);
+  }
+
+  /** Returns the cursor position in bytes. */
+  tell(): Promise<bigint> {
+    return this.inner.tell();
+  }
+
+  /**
+   * Releases the handle. Reads after `close()` fail. Calling it again does
+   * nothing.
+   */
+  close(): Promise<void> {
+    return this.inner.close();
+  }
+
+  /** Returns true after {@link BlobFile.close}. */
+  isClosed(): boolean {
+    return this.inner.isClosed();
+  }
 }
+
+/** A half-open byte range `[start, end)` for {@link BlobFile.readRanges}. */
+export type BlobRange = {
+  start: bigint;
+  end: bigint;
+};
 
 export function coerceBlobValue(value: unknown): BlobInput | null {
   if (value == null) {

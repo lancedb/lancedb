@@ -43,6 +43,8 @@ import {
   Interval,
   IntervalDayTime,
   IntervalYearMonth,
+  LargeBinary,
+  LargeUtf8,
   List,
   Map_,
   Null,
@@ -465,8 +467,12 @@ function sanitizeTypeById(
       return sanitizeFloat(typeLike);
     case Type.Binary:
       return new Binary();
+    case Type.LargeBinary:
+      return new LargeBinary();
     case Type.Utf8:
       return new Utf8();
+    case Type.LargeUtf8:
+      return new LargeUtf8();
     case Type.Bool:
       return new Bool();
     case Type.Decimal:
