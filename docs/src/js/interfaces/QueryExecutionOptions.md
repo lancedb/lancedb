@@ -27,6 +27,19 @@ How to return blob v2 columns. Applies to `toArrow()` and `toArray()`.
 
 Blobs nested in a struct or a list keep their descriptors.
 
+The rows and the bytes come from the same table version. If the table
+changes while the query runs, the query runs again, up to three times.
+
+#### Example
+
+```ts
+const rows = await table
+  .query()
+  .select(["id", "image"])
+  .toArray({ blobMode: "bytes" });
+const image: Uint8Array | null = rows[0].image;
+```
+
 ***
 
 ### maxBatchLength?
