@@ -7,10 +7,11 @@ import sys
 import textwrap
 
 import lance
+import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
-from lance.blob import BlobType as LanceBlobType
+from lance.blob import Blob, BlobType as LanceBlobType
 
 import lancedb
 from lancedb._blob import (
@@ -921,6 +922,70 @@ def test_fetch_blob_files_lazy_read():
     handles = table.fetch_blob_files("image", [by_id[1]])
     assert len(handles) == 1
     assert handles[0].read() == payload
+    handles[0].close()
+    assert handles[0].closed
+    with pytest.raises(RuntimeError, match="already closed"):
+        handles[0].read()
+
+
+def test_blob_file_finalizer_and_close_on_runtime_worker():
+    # A tokio panic in IOBase.__del__ is printed but does not fail the add call.
+    # Run in a child process so the assertion catches that panic on stderr.
+    script = textwrap.dedent(
+        """\
+        import gc
+        import threading
+
+        import lancedb
+        import pyarrow as pa
+
+        db = lancedb.connect("memory:///")
+        schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+        table = db.create_table("finalize", schema=schema)
+        table.add([{"id": 1, "image": b"first"}])
+        hits = table.search().with_row_id(True).limit(1).to_arrow()
+        row_id = hits["_rowid"][0].as_py()
+        gc_handle, explicit_handle = table.fetch_blob_files("image", [row_id, row_id])
+
+        gc.disable()
+        cycle = [gc_handle]
+        cycle.append(cycle)
+        del gc_handle, cycle
+
+        observed = []
+        def on_progress(_):
+            if not observed:
+                observed.append((
+                    threading.current_thread() is not threading.main_thread(),
+                    explicit_handle.closed,
+                    gc.collect(),
+                ))
+                explicit_handle.close()
+
+        table.add([{"id": 2, "image": b"second"}], progress=on_progress)
+        gc.enable()
+
+        assert len(observed) == 1, observed
+        assert observed[0][0] is True, observed
+        assert observed[0][1] is False, observed
+        assert observed[0][2] > 0, observed
+        assert explicit_handle.closed
+        explicit_handle.close()  # Close remains idempotent after the worker call.
+        try:
+            explicit_handle.read()
+        except RuntimeError as error:
+            assert "already closed" in str(error)
+        else:
+            raise AssertionError("a closed blob file was readable")
+        print("worker close completed")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Cannot start a runtime from within a runtime" not in result.stderr
+    assert "worker close completed" in result.stdout
 
 
 def test_fetch_blob_files_null_alignment():
@@ -1368,3 +1433,129 @@ def test_add_external_uri_string_round_trips_with_flag(tmp_path):
     hits = table.search().to_arrow()
     blobs = table.fetch_blobs("image", hits)
     assert blobs[0].as_py() == payload
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_add_bytes_and_uri_in_one_batch_preserves_external_uri(tmp_path, as_pandas):
+    payload = b"external-payload"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+    rows = [
+        {"id": 1, "image": b"inline"},
+        {"id": 2, "image": blob_path.as_uri()},
+    ]
+    db = lancedb.connect(tmp_path / "db")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("mixed", schema=schema)
+
+    table.add(
+        pd.DataFrame(rows) if as_pandas else rows,
+        allow_external_blob_outside_bases=True,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[1], by_id[2]]).to_pylist() == [
+        b"inline",
+        payload,
+    ]
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_add_mixed_python_blob_values_preserves_external_uris(tmp_path, as_pandas):
+    payload = b"external-payload"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+    uri = blob_path.as_uri()
+    rows = [
+        {"id": 1, "image": b"inline"},
+        {"id": 2, "image": uri},
+        {"id": 3, "image": {"data": b"from-dict"}},
+        {"id": 4, "image": Blob.from_bytes(b"from-blob")},
+        {"id": 5, "image": Blob.from_uri(uri)},
+        {"id": 6, "image": {"uri": uri}},
+        {"id": 7, "image": None},
+    ]
+    db = lancedb.connect(tmp_path / "db")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("mixed", schema=schema)
+
+    table.add(
+        pd.DataFrame(rows) if as_pandas else rows,
+        allow_external_blob_outside_bases=True,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[i] for i in range(1, 8)]).to_pylist() == [
+        b"inline",
+        payload,
+        b"from-dict",
+        b"from-blob",
+        payload,
+        payload,
+        None,
+    ]
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_merge_insert_mixed_python_blobs_validates_external_uri(tmp_path, as_pandas):
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(b"external-payload")
+    table = _blob_table("merge_mixed_uri", [{"id": 1, "image": b"before"}])
+    rows = [
+        {"id": 1, "image": b"updated"},
+        {"id": 2, "image": blob_path.as_uri()},
+    ]
+
+    with pytest.raises(ValueError, match="allow_external_blob_outside_bases"):
+        (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(pd.DataFrame(rows) if as_pandas else rows)
+        )
+    assert table.count_rows() == 1
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_merge_insert_python_blob_dicts_and_objects(as_pandas):
+    table = _blob_table("merge_python_blobs", [{"id": 1, "image": b"before"}])
+    rows = [
+        {"id": 1, "image": b"updated"},
+        {"id": 2, "image": {"data": b"from-dict"}},
+        {"id": 3, "image": Blob.from_bytes(b"from-blob")},
+    ]
+
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(pd.DataFrame(rows) if as_pandas else rows)
+    )
+
+    assert result.num_updated_rows == 1
+    assert result.num_inserted_rows == 2
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[i] for i in range(1, 4)]).to_pylist() == [
+        b"updated",
+        b"from-dict",
+        b"from-blob",
+    ]
+
+
+def test_create_table_with_python_blob_dict_and_object():
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table(
+        "create_python_blobs",
+        data=[
+            {"id": 1, "image": {"data": b"from-dict"}},
+            {"id": 2, "image": Blob.from_bytes(b"from-blob")},
+        ],
+        schema=schema,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[1], by_id[2]]).to_pylist() == [
+        b"from-dict",
+        b"from-blob",
+    ]

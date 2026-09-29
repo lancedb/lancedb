@@ -557,9 +557,10 @@ on the returned job to know when cleanup has finished.
 abstract dropView(name, namespacePath?): Promise<void>
 ```
 
-Drop the view named `name`.
+Drop the view named `name` and wait for its definition to be deleted.
 
-The tables it reads are untouched: a view holds no rows of its own.
+The tables it reads are untouched: a view holds no rows of its own. Use
+[dropViewAsync](Connection.md#dropviewasync) to retain the cleanup job instead of waiting on it.
 
 #### Parameters
 
@@ -570,6 +571,30 @@ The tables it reads are untouched: a view holds no rows of its own.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### dropViewAsync()
+
+```ts
+abstract dropViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping the view named `name` and return the job deleting its
+definition, without waiting for completion.
+
+The name is free before this resolves. When nothing was bound to it, the
+returned job is already finished and has no id.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 
@@ -798,6 +823,28 @@ abstract openTable(
 
 ***
 
+### pauseJob()
+
+```ts
+abstract pauseJob(jobId): Promise<string>
+```
+
+Pause a server-side job by id.
+
+The job's workers drain and it stays parked until resumed. Resolves to
+"pausing", "already_paused", or "committing" -- a job finalizing its
+results cannot be parked; retry shortly.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+***
+
 ### renameTable()
 
 ```ts
@@ -828,6 +875,28 @@ a "not supported" error.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### resumeJob()
+
+```ts
+abstract resumeJob(jobId): Promise<string>
+```
+
+Resume a paused server-side job by id.
+
+Its workers pick their work back up from checkpoints. Resolves to
+"resumed", "still_pausing" -- the pause's worker drain is not confirmed
+yet; retry shortly -- or "not_paused".
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
 
 ***
 

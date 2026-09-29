@@ -85,6 +85,69 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it("rejects the external blob opt-in without blocking regular adds", async () => {
+    let insertRequests = 0;
+    const describeRequests: string[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const requestPath = req.url ?? "";
+        if (requestPath.endsWith("/describe/")) {
+          describeRequests.push(requestPath);
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "items",
+              version: 1,
+              schema: {
+                fields: [
+                  {
+                    name: "id",
+                    type: { type: "int64" },
+                    nullable: true,
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        if (requestPath.endsWith("/insert/")) {
+          insertRequests++;
+          req.resume();
+          req.on("end", () => {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: insertRequests + 1 }));
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+
+        await expect(
+          table.add([{ id: 1n }], {
+            allowExternalBlobOutsideBases: true,
+          }),
+        ).rejects.toThrow("only supported on local tables");
+        expect(insertRequests).toBe(0);
+
+        await expect(table.add([{ id: 2n }])).resolves.toMatchObject({
+          version: 2,
+        });
+        await expect(
+          table.add([{ id: 3n }], {
+            allowExternalBlobOutsideBases: false,
+          }),
+        ).resolves.toMatchObject({ version: 3 });
+      },
+    );
+
+    expect(describeRequests.length).toBeGreaterThan(0);
+    expect(insertRequests).toBe(2);
+  });
+
   it("lists materialized views through the namespace route", async () => {
     await withMockDatabase(
       (req, res) => {
@@ -157,6 +220,37 @@ describe("remote connection", () => {
       },
       async (db) => {
         await db.dropView("adults");
+      },
+    );
+  });
+
+  it("reports the cleanup job when a view drop is accepted", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res
+          .writeHead(202, { "content-type": "application/json" })
+          .end('{"job_id": "j1-do-abc"}');
+      },
+      async (db) => {
+        const job = await db.dropViewAsync("adults");
+        expect(job.id).toBe("j1-do-abc");
+      },
+    );
+  });
+
+  it("reports a finished job when a view drop had nothing to delete", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+      },
+      async (db) => {
+        // A 200 means the name was not bound, so there is no cleanup to wait on.
+        const job = await db.dropViewAsync("adults");
+        expect(job.id).toBeNull();
+        await job.wait();
       },
     );
   });
@@ -1161,6 +1255,24 @@ describe("remote connection jobs surface", () => {
             res
               .writeHead(200, { "Content-Type": "application/json" })
               .end('{"job_id": "job-1"}');
+          } else if (req.url === "/v1/jobs/pause") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end('{"job_id": "job-1", "paused": true}');
+          } else if (req.url === "/v1/jobs/resume") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(
+                '{"job_id": "job-1", "resumed": false, "still_pausing": true}',
+              );
           } else if (req.url === "/v1/jobs/query_events") {
             queryEventsPayloads.push(payload);
             res
@@ -1181,6 +1293,9 @@ describe("remote connection jobs surface", () => {
 
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
+
+        expect(await db.pauseJob("job-1")).toEqual("pausing");
+        expect(await db.resumeJob("job-1")).toEqual("still_pausing");
 
         // Opening a job hands back a populated handle; a missing one rejects.
         await expect(db.openJob("missing")).rejects.toThrow("not found");

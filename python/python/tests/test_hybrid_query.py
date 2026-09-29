@@ -315,6 +315,33 @@ def test_hybrid_query_offset(sync_table: Table):
     assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
 
 
+def test_hybrid_query_default_limit(sync_table: Table):
+    # The vector and FTS legs match disjoint rows, so fusing their results
+    # yields more rows than the default limit.
+    new_rows = []
+    for i in range(20):
+        new_rows.append({"text": "close_vec", "vector": [0.1, 0.1]})
+        new_rows.append({"text": "dog", "vector": [50.0 + i, 50.0 + i]})
+    sync_table.add(new_rows)
+
+    def query():
+        return (
+            sync_table.search(query_type="hybrid")
+            .vector([0.1, 0.1])
+            .text("dog")
+            .with_row_id(True)
+        )
+
+    # Like the async hybrid query, the default limit is 10.
+    result = query().to_arrow()
+    assert len(result) == 10
+
+    # The offset window is taken after the default limit is applied.
+    full = query().limit(15).to_arrow()
+    offset_result = query().offset(5).to_arrow()
+    assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[5:]
+
+
 def test_hybrid_query_minimum_nprobes_zero_raises(sync_table: Table):
     # minimum_nprobes(0) must raise the same validation error a plain vector
     # query raises, not silently no-op because 0 is falsy.

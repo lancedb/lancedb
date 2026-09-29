@@ -68,6 +68,7 @@ from lance_namespace import (
 from lancedb.materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
+    MaterializedViewSource,
     SelectArg,
 )
 from lancedb.table import AsyncTable, LanceTable, Table
@@ -632,7 +633,7 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
@@ -662,7 +663,7 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
@@ -1242,7 +1243,7 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
@@ -1265,7 +1266,7 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,

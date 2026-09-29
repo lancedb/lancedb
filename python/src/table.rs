@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use crate::runtime::{block_on, future_into_py};
+use crate::runtime::{block_on, future_into_py, spawn_background};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
@@ -680,11 +686,23 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
 #[pyclass(name = "BlobFile")]
 pub struct PyBlobFile {
     inner: Arc<BlobFile>,
+    closed: AtomicBool,
+}
+
+impl PyBlobFile {
+    fn ensure_open(&self) -> PyResult<()> {
+        if self.closed.load(Ordering::Acquire) {
+            Err(PyRuntimeError::new_err("blob file is already closed"))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[pymethods]
 impl PyBlobFile {
     fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         let py = self_.py();
         let bytes = py
@@ -694,6 +712,7 @@ impl PyBlobFile {
     }
 
     pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let bytes = inner
@@ -705,7 +724,20 @@ impl PyBlobFile {
     }
 
     fn close(self_: PyRef<'_, Self>) -> PyResult<()> {
+        if self_.closed.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
         let inner = self_.inner.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // IOBase.__del__ can call close while cyclic GC runs on a worker.
+            // The status changes immediately; release Lance's async state there.
+            spawn_background(async move {
+                if let Err(error) = inner.close().await {
+                    log::warn!("blob close failed: {error}");
+                }
+            });
+            return Ok(());
+        }
         self_
             .py()
             .detach(move || block_on(async move { inner.close().await }))
@@ -713,13 +745,11 @@ impl PyBlobFile {
     }
 
     fn is_closed(self_: PyRef<'_, Self>) -> bool {
-        let inner = self_.inner.clone();
-        self_
-            .py()
-            .detach(move || block_on(async move { inner.is_closed().await }))
+        self_.closed.load(Ordering::Acquire)
     }
 
     fn seek(self_: PyRef<'_, Self>, position: u64) -> PyResult<()> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         self_
             .py()
@@ -728,6 +758,7 @@ impl PyBlobFile {
     }
 
     fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         self_
             .py()
@@ -741,6 +772,7 @@ impl PyBlobFile {
 
     /// Read a blob-local byte range without moving the cursor.
     fn read_range(self_: PyRef<'_, Self>, offset: u64, length: usize) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let end = offset
             .checked_add(length as u64)
             .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))?;
@@ -753,6 +785,7 @@ impl PyBlobFile {
     }
 
     fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         let py = self_.py();
         let bytes = py
@@ -1455,6 +1488,7 @@ impl Table {
                 .map(|handle| {
                     handle.map(|file| PyBlobFile {
                         inner: Arc::new(file),
+                        closed: AtomicBool::new(false),
                     })
                 })
                 .collect::<Vec<_>>())
@@ -1601,6 +1635,21 @@ impl Table {
             let spec = inner.get_lsm_write_spec().await.infer_error()?;
             Ok(spec.map(LsmWriteSpec::from))
         })
+    }
+
+    /// Whether a hybrid query on this table has already been refused `_rowid`.
+    /// Learned from a previous refusal, never probed, so this is free.
+    ///
+    /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
+    pub fn hybrid_pk_fusion_learned(self_: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(self_.inner_ref()?.base_table().hybrid_pk_fusion_learned())
+    }
+
+    /// Remember that this table refused `_rowid`, so later hybrid queries skip
+    /// straight to the primary-key fusion.
+    pub fn note_hybrid_pk_fusion(self_: PyRef<'_, Self>) -> PyResult<()> {
+        self_.inner_ref()?.base_table().note_hybrid_pk_fusion();
+        Ok(())
     }
 
     /// Converge the table's LSM write path into its base table.
