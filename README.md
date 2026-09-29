@@ -3,6 +3,7 @@
 </a>
 <div align="center">
 
+[![Reverie](docs/src/assets/reverie-banner.png)](https://www.reveriesummit.com)
 [![LanceDB](docs/src/assets/hero-header.png)](https://lancedb.com)
 [![Website](https://img.shields.io/badge/-Website-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://lancedb.com/)
 [![Blog](https://img.shields.io/badge/Blog-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://blog.lancedb.com/)
@@ -13,7 +14,7 @@
 
 <img src="docs/src/assets/lancedb.png" alt="LanceDB" width="50%">
 
-# **The Multimodal AI Lakehouse**
+# **The Multimodal Lakehouse for AI**
 
 [**How to Install** ](#how-to-install) ✦ [**Detailed Documentation**](https://docs.lancedb.com) ✦ [**Tutorials and Recipes**](https://github.com/lancedb/vectordb-recipes/tree/main) ✦  [**Contributors**](#contributors) 
 
