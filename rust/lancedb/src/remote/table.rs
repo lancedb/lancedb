@@ -5326,6 +5326,7 @@ mod tests {
                     "bytes=0-0" => http::Response::builder()
                         .status(206)
                         .header(reqwest::header::CONTENT_RANGE, "bytes 0-0/10")
+                        .header(VERSION_HEADER, "42")
                         .body(b"0".to_vec())
                         .unwrap(),
                     "bytes=0-" => http::Response::builder()
