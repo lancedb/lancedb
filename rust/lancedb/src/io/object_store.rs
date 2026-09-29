@@ -348,11 +348,6 @@ mod test {
         ));
     }
 
-    // This test is ignored because lance 3.0 introduced LocalWriter optimization
-    // that bypasses the object store wrapper for local writes. The mirroring feature
-    // still works for remote/cloud storage, but can't be tested with local storage.
-    // See lance commit c878af433 "perf: create local writer for efficient local writes"
-    #[ignore]
     #[tokio::test]
     async fn test_e2e() {
         let dir1 = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
@@ -363,7 +358,13 @@ mod test {
             secondary: Arc::new(secondary_store),
         });
 
-        let db = connect(dir1.to_str().unwrap()).execute().await.unwrap();
+        // Lance writes `file://` tables through LocalWriter, which skips object store
+        // wrappers. `file-object-store://` writes the same local files through the
+        // wrapped store.
+        let db = connect(&format!("file-object-store://{}", dir1.display()))
+            .execute()
+            .await
+            .unwrap();
 
         let mut param = WriteParams::default();
         let store_params = ObjectStoreParams {
