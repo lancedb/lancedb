@@ -161,6 +161,7 @@
 - [BlobInput](type-aliases/BlobInput.md)
 - [BlobOptions](type-aliases/BlobOptions.md)
 - [BlobRange](type-aliases/BlobRange.md)
+- [BlobReadOptions](type-aliases/BlobReadOptions.md)
 - [BlobUri](type-aliases/BlobUri.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
