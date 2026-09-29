@@ -124,6 +124,17 @@ export interface AddDataOptions {
    * ```
    */
   progress: (progress: WriteProgress) => void;
+
+  /**
+   * Whether blob URIs outside registered external bases may be written.
+   *
+   * Defaults to `false`. This option is supported only for local/native
+   * tables; remote tables return an error when it is enabled. An enabled write
+   * stores the absolute URI reference without registering a base or copying
+   * the external object into the database. The object must remain accessible
+   * when the blob is read later.
+   */
+  allowExternalBlobOutsideBases?: boolean;
 }
 
 export interface UpdateOptions {
@@ -528,6 +539,10 @@ export abstract class Table {
    * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
    * One missing or deleted row ID rejects the entire batch, including on remote
    * tables; no partial results are returned.
+   * Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+   * The client splits requests automatically and reads an individual larger
+   * blob through the Range route. This method still materializes all bytes in
+   * memory; use {@link Table.fetchBlobFiles} for large values.
    */
   abstract fetchBlobs(
     column: string,
@@ -1095,7 +1110,12 @@ export class LocalTable extends Table {
           }
         }
       : undefined;
-    return await this.inner.add(buffer, mode, progress);
+    return await this.inner.add(
+      buffer,
+      mode,
+      progress,
+      options?.allowExternalBlobOutsideBases,
+    );
   }
 
   async update(

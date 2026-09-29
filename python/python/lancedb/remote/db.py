@@ -39,7 +39,7 @@ from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription
-from ..materialized_view import MaterializedView, SelectArg
+from ..materialized_view import MaterializedView, MaterializedViewSource, SelectArg
 from ..secrets import EnvVarSecret, SecretInfo
 from ..view import ViewDescription
 
@@ -713,7 +713,7 @@ class RemoteDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: SelectArg = None,
         where: Optional[str] = None,
@@ -745,7 +745,7 @@ class RemoteDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: SelectArg = None,
         where: Optional[str] = None,
