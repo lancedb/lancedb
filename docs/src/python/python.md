@@ -204,18 +204,19 @@ listing a storage directory.
 
 ## Property Graphs
 
-A property graph is read as nodes and edges, in one of two modes. An
-independent graph holds its own rows: define it with node and edge types, and
-write it with
-[insert_into_property_graph][lancedb.DBConnection.insert_into_property_graph].
-A materialized view graph reads tables: define it with node and edge tables,
-and bring it up to them with
-[refresh_property_graph][lancedb.DBConnection.refresh_property_graph]. Manage
-either with [create_property_graph][lancedb.DBConnection.create_property_graph],
-[describe_property_graph][lancedb.DBConnection.describe_property_graph],
-[rollback_property_graph][lancedb.DBConnection.rollback_property_graph],
-[list_property_graphs][lancedb.DBConnection.list_property_graphs] and
-[drop_property_graph][lancedb.DBConnection.drop_property_graph].
+A property graph is read as nodes and edges with SQL/PGQ `GRAPH_TABLE`, and
+comes in three kinds that share one namespace of names:
+
+- A property graph holds its own rows. Define it with node and edge types, and
+  write it with [PropertyGraph.insert][lancedb.graph.PropertyGraph.insert].
+- A virtual property graph reads tables as they are. Define it with node and
+  edge tables.
+- A materialized virtual property graph has a virtual graph's definition, and
+  is read as its last refresh built it: bring it up to its tables with
+  [MaterializedVirtualPropertyGraph.refresh][lancedb.graph.MaterializedVirtualPropertyGraph.refresh].
+
+Each kind has its own create, open, describe, list and drop, such as
+[create_virtual_property_graph][lancedb.DBConnection.create_virtual_property_graph].
 
 ::: lancedb.graph.NodeType
 
@@ -227,7 +228,17 @@ either with [create_property_graph][lancedb.DBConnection.create_property_graph],
 
 ::: lancedb.graph.Endpoint
 
+::: lancedb.graph.PropertyGraph
+
+::: lancedb.graph.VirtualPropertyGraph
+
+::: lancedb.graph.MaterializedVirtualPropertyGraph
+
 ::: lancedb.graph.PropertyGraphDescription
+
+::: lancedb.graph.VirtualPropertyGraphDescription
+
+::: lancedb.graph.MaterializedVirtualPropertyGraphDescription
 
 ## Expressions
 

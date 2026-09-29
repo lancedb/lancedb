@@ -8,6 +8,27 @@ use arrow::{datatypes::Schema, pyarrow::PyArrowType};
 use lance_namespace::models::JsonArrowSchema;
 use pyo3::{PyResult, exceptions::PyValueError, pyfunction};
 
+/// A kind of graph, spelled as its routes and catalog objects are.
+#[derive(Debug, Clone, Copy)]
+pub enum GraphKind {
+    Property,
+    Virtual,
+    MaterializedVirtual,
+}
+
+impl GraphKind {
+    pub fn parse(kind: &str) -> PyResult<Self> {
+        match kind {
+            "property_graph" => Ok(Self::Property),
+            "virtual_property_graph" => Ok(Self::Virtual),
+            "materialized_virtual_property_graph" => Ok(Self::MaterializedVirtual),
+            other => Err(PyValueError::new_err(format!(
+                "'{other}' is not a kind of property graph"
+            ))),
+        }
+    }
+}
+
 /// A pyarrow schema as the JSON Arrow schema of a node or edge type.
 #[pyfunction]
 pub fn graph_schema_to_json(schema: PyArrowType<Schema>) -> PyResult<String> {

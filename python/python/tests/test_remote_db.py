@@ -21,9 +21,13 @@ from lancedb.graph import (
     EdgeTable,
     EdgeType,
     Endpoint,
+    MaterializedVirtualPropertyGraph,
+    MaterializedVirtualPropertyGraphDescription,
     NodeTable,
     NodeType,
-    PropertyGraphDescription,
+    PropertyGraph,
+    VirtualPropertyGraph,
+    VirtualPropertyGraphDescription,
 )
 from lancedb.query import ColumnOrdering
 from lancedb.remote import ClientConfig
@@ -2838,35 +2842,68 @@ def test_view_crud_addresses_its_own_routes():
     ]
 
 
-def test_property_graph_crud_addresses_its_own_routes():
-    # The graph verbs are their own routes: the definition is the create body,
-    # and a description adds the graph's commits, its size and the table
-    # versions it was refreshed from.
+def _graph_handler(calls, respond):
+    """A mock route handler recording `(method, path, body)` and answering
+    with `respond(path, body)` as JSON."""
+
+    def handler(request):
+        length = int(request.headers.get("Content-Length") or 0)
+        raw = request.rfile.read(length) if length else b""
+        if request.path.split("?")[0].endswith("/insert"):
+            body = pa.ipc.open_stream(raw).read_all().to_pylist()
+        else:
+            body = json.loads(raw) if raw else None
+        calls.append((request.command, request.path, body))
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(respond(request.path, body)).encode())
+
+    return handler
+
+
+SOCIAL_NODES = [
+    NodeTable("person", key="person_id", label="Person", properties=["name"])
+]
+SOCIAL_EDGES = [
+    EdgeTable(
+        "knows",
+        label="KNOWS",
+        source=Endpoint("src_id", references=("person", "person_id")),
+        destination=Endpoint("dst_id", references=("person", "person_id")),
+    )
+]
+SOCIAL_DEFINITION = {
+    "nodes": [
+        {
+            "table": "person",
+            "key": "person_id",
+            "label": "Person",
+            "properties": ["name"],
+        }
+    ],
+    "edges": [
+        {
+            "table": "knows",
+            "label": "KNOWS",
+            "source": {
+                "column": "src_id",
+                "references": {"table": "person", "column": "person_id"},
+            },
+            "destination": {
+                "column": "dst_id",
+                "references": {"table": "person", "column": "person_id"},
+            },
+        }
+    ],
+}
+
+
+def test_virtual_and_materialized_graphs_address_their_own_routes():
+    # Each kind of graph has its own routes; the definition is the create
+    # body, and a materialized graph's description adds its last refresh.
     calls = []
-    person = {"table": "person", "column": "person_id"}
-    definition = {
-        "mode": "materialized_view",
-        "nodes": [
-            {
-                "table": "person",
-                "key": "person_id",
-                "label": "Person",
-                "properties": ["name"],
-            }
-        ],
-        "edges": [
-            {
-                "table": "knows",
-                "label": "KNOWS",
-                "source": {"column": "src_id", "references": person},
-                "destination": {"column": "dst_id", "references": person},
-            }
-        ],
-    }
-    described = {
-        "name": "social",
-        "namespace": ["analytics"],
-        **definition,
+    refreshed = {
         "commit": "6f1c2d3e-0000-4000-8000-000000000000",
         "committed_at": "2026-09-26T17:00:00Z",
         "vertex_count": 4,
@@ -2877,62 +2914,106 @@ def test_property_graph_crud_addresses_its_own_routes():
         ],
     }
 
-    def handler(request):
-        length = int(request.headers.get("Content-Length") or 0)
-        body = json.loads(request.rfile.read(length)) if length else None
-        calls.append((request.command, request.path, body))
-        if request.path.endswith("/property_graph/list"):
-            response = {"property_graphs": ["social"], "page_token": None}
-        elif request.path.endswith("/drop"):
-            response = {}
-        else:
-            response = described
-        request.send_response(200)
-        request.send_header("Content-Type", "application/json")
-        request.end_headers()
-        request.wfile.write(json.dumps(response).encode())
+    def respond(path, body):
+        if path.endswith("/virtual_property_graph/list"):
+            return {"virtual_property_graphs": ["social"], "page_token": None}
+        if path.endswith("/materialized_virtual_property_graph/list"):
+            return {"materialized_virtual_property_graphs": ["social_mv"]}
+        if path.endswith("/drop"):
+            return {}
+        name = path.split("$")[1].split("/")[0]
+        described = {"name": name, "namespace": ["analytics"], **SOCIAL_DEFINITION}
+        if "/materialized_virtual_property_graph/" in path:
+            described.update(refreshed)
+        return described
 
-    nodes = [NodeTable("person", key="person_id", label="Person", properties=["name"])]
-    edges = [
-        EdgeTable(
-            "knows",
-            label="KNOWS",
-            source=Endpoint("src_id", references=("person", "person_id")),
-            destination=Endpoint("dst_id", references=("person", "person_id")),
+    with mock_lancedb_connection(_graph_handler(calls, respond)) as db:
+        graph = db.create_virtual_property_graph(
+            "social", SOCIAL_NODES, SOCIAL_EDGES, namespace_path=["analytics"]
         )
-    ]
-    with mock_lancedb_connection(handler) as db:
-        graph = db.create_property_graph(
-            "social", nodes, edges, namespace_path=["analytics"]
-        )
-        assert graph == PropertyGraphDescription(
+        assert isinstance(graph, VirtualPropertyGraph)
+        assert (graph.name, graph.namespace_path) == ("social", ["analytics"])
+        assert graph.describe() == VirtualPropertyGraphDescription(
             name="social",
             namespace_path=["analytics"],
-            mode="materialized_view",
-            nodes=nodes,
-            edges=edges,
+            nodes=SOCIAL_NODES,
+            edges=SOCIAL_EDGES,
+        )
+        assert db.list_virtual_property_graphs(namespace_path=["analytics"]) == [
+            "social"
+        ]
+        db.drop_virtual_property_graph("social", namespace_path=["analytics"])
+
+        mvpg = db.create_materialized_virtual_property_graph(
+            "social_mv", SOCIAL_NODES, SOCIAL_EDGES, namespace_path=["analytics"]
+        )
+        assert isinstance(mvpg, MaterializedVirtualPropertyGraph)
+        expected = MaterializedVirtualPropertyGraphDescription(
+            name="social_mv",
+            namespace_path=["analytics"],
+            nodes=SOCIAL_NODES,
+            edges=SOCIAL_EDGES,
             commit="6f1c2d3e-0000-4000-8000-000000000000",
             committed_at="2026-09-26T17:00:00Z",
-            previous_commit=None,
             vertex_count=4,
             edge_count=5,
             sources={"person": 3, "knows": 2},
         )
-        assert db.describe_property_graph("social", namespace_path=["analytics"]) == (
-            graph
+        assert mvpg.refresh() == expected
+        opened = db.open_materialized_virtual_property_graph(
+            "social_mv", namespace_path=["analytics"]
         )
-        assert db.list_property_graphs(namespace_path=["analytics"]) == ["social"]
-        db.drop_property_graph("social", namespace_path=["analytics"])
+        assert opened.describe() == expected
+        assert db.list_materialized_virtual_property_graphs(
+            namespace_path=["analytics"]
+        ) == ["social_mv"]
+        db.drop_materialized_virtual_property_graph(
+            "social_mv", namespace_path=["analytics"]
+        )
 
     assert calls == [
-        ("POST", "/v1/property_graph/analytics$social/create", definition),
-        ("POST", "/v1/property_graph/analytics$social/describe", None),
-        ("GET", "/v1/namespace/analytics/property_graph/list", None),
-        ("POST", "/v1/property_graph/analytics$social/drop", None),
+        (
+            "POST",
+            "/v1/virtual_property_graph/analytics$social/create",
+            SOCIAL_DEFINITION,
+        ),
+        ("POST", "/v1/virtual_property_graph/analytics$social/describe", None),
+        ("GET", "/v1/namespace/analytics/virtual_property_graph/list", None),
+        ("POST", "/v1/virtual_property_graph/analytics$social/drop", None),
+        (
+            "POST",
+            "/v1/materialized_virtual_property_graph/analytics$social_mv/create",
+            SOCIAL_DEFINITION,
+        ),
+        (
+            "POST",
+            "/v1/materialized_virtual_property_graph/analytics$social_mv/refresh",
+            None,
+        ),
+        (
+            "POST",
+            "/v1/materialized_virtual_property_graph/analytics$social_mv/describe",
+            None,
+        ),
+        (
+            "POST",
+            "/v1/materialized_virtual_property_graph/analytics$social_mv/describe",
+            None,
+        ),
+        (
+            "GET",
+            "/v1/namespace/analytics/materialized_virtual_property_graph/list",
+            None,
+        ),
+        (
+            "POST",
+            "/v1/materialized_virtual_property_graph/analytics$social_mv/drop",
+            None,
+        ),
     ]
 
 
-def test_an_independent_graph_carries_schemas_and_takes_arrow_rows():
+def test_a_property_graph_carries_schemas_and_takes_arrow_rows():
     # Node and edge types go up as JSON Arrow schemas and come back as pyarrow
     # schemas; inserted rows go up as an Arrow IPC stream.
     calls = []
@@ -2954,17 +3035,12 @@ def test_an_independent_graph_carries_schemas_and_takes_arrow_rows():
     )
     created = {}
 
-    def handler(request):
-        length = int(request.headers.get("Content-Length") or 0)
-        raw = request.rfile.read(length) if length else b""
-        if request.path.split("?")[0].endswith("/insert"):
-            body = pa.ipc.open_stream(raw).read_all().to_pylist()
-        else:
-            body = json.loads(raw) if raw else None
-        calls.append((request.command, request.path, body))
-        if request.path.endswith("/create"):
+    def respond(path, body):
+        if path.endswith("/create"):
             created.update(body)
-        response = {
+        if path.endswith("/property_graph/list"):
+            return {"property_graphs": ["people"]}
+        return {
             "name": "people",
             "namespace": [],
             **created,
@@ -2974,52 +3050,46 @@ def test_an_independent_graph_carries_schemas_and_takes_arrow_rows():
             "vertex_count": 1,
             "edge_count": 0,
         }
-        request.send_response(200)
-        request.send_header("Content-Type", "application/json")
-        request.end_headers()
-        request.wfile.write(json.dumps(response).encode())
 
-    with mock_lancedb_connection(handler) as db:
+    with mock_lancedb_connection(_graph_handler(calls, respond)) as db:
         graph = db.create_property_graph("people", [person], [knows])
-        assert graph.mode == "independent"
-        assert graph.nodes == [person] and graph.edges == [knows]
-        assert graph.previous_commit == "c1"
-        inserted = db.insert_into_property_graph(
-            "people", "Person", [{"person_id": 1, "tags": ["a"]}]
-        )
+        assert isinstance(graph, PropertyGraph)
+        described = graph.describe()
+        assert described.nodes == [person] and described.edges == [knows]
+        assert described.previous_commit == "c1"
+        inserted = graph.insert("Person", [{"person_id": 1, "tags": ["a"]}])
         assert inserted.vertex_count == 1
-        db.refresh_property_graph("people")
-        db.rollback_property_graph("people")
+        graph.rollback()
+        assert db.list_property_graphs() == ["people"]
+        db.drop_property_graph("people")
 
-    create, insert, refresh, rollback = calls
+    create, describe, insert, rollback, listed, drop = calls
     assert create[:2] == ("POST", "/v1/property_graph/people/create")
-    assert create[2]["mode"] == "independent"
+    assert "mode" not in create[2]
     assert create[2]["nodes"][0]["schema"]["fields"][0]["name"] == "person_id"
     assert create[2]["edges"][0]["source"] == {"label": "Person", "column": "src_id"}
+    assert describe[:2] == ("POST", "/v1/property_graph/people/describe")
     assert insert == (
         "POST",
         "/v1/property_graph/people/insert?label=Person",
         [{"person_id": 1, "tags": ["a"]}],
     )
-    assert refresh[:2] == ("POST", "/v1/property_graph/people/refresh")
     assert rollback[:2] == ("POST", "/v1/property_graph/people/rollback")
+    assert listed[:2] == ("GET", "/v1/namespace/$/property_graph/list")
+    assert drop[:2] == ("POST", "/v1/property_graph/people/drop")
 
-    with pytest.raises(ValueError, match="either all tables"):
-        with mock_lancedb_connection(handler) as db:
-            db.create_property_graph(
-                "mixed",
-                [person],
-                [
-                    EdgeTable(
-                        "knows",
-                        label="KNOWS",
-                        source=Endpoint("src_id", references=("person", "person_id")),
-                        destination=Endpoint(
-                            "dst_id", references=("person", "person_id")
-                        ),
-                    )
-                ],
-            )
+
+def test_a_graph_takes_only_its_own_kind_of_definition():
+    person = NodeType(
+        "Person",
+        key="person_id",
+        schema=pa.schema([pa.field("person_id", pa.int64(), nullable=False)]),
+    )
+    with mock_lancedb_connection(_graph_handler([], lambda path, body: {})) as db:
+        with pytest.raises(TypeError, match="are NodeTable and its edges EdgeTable"):
+            db.create_virtual_property_graph("mixed", [person], SOCIAL_EDGES)
+        with pytest.raises(TypeError, match="NodeType"):
+            db.create_property_graph("mixed", SOCIAL_NODES, [])
 
 
 def test_local_connections_refuse_property_graphs(tmp_path):
@@ -3027,4 +3097,6 @@ def test_local_connections_refuse_property_graphs(tmp_path):
     with pytest.raises(NotImplementedError, match="Property graph operations"):
         db.list_property_graphs()
     with pytest.raises(NotImplementedError, match="Property graph operations"):
-        db.describe_property_graph("social")
+        db.describe_virtual_property_graph("social")
+    with pytest.raises(NotImplementedError, match="Property graph operations"):
+        db.open_materialized_virtual_property_graph("social")

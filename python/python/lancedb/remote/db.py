@@ -36,7 +36,18 @@ import pyarrow as pa
 from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
-from ..graph import EdgeTable, EdgeType, NodeTable, NodeType, PropertyGraphDescription
+from ..graph import (
+    EdgeTable,
+    EdgeType,
+    MaterializedVirtualPropertyGraph,
+    MaterializedVirtualPropertyGraphDescription,
+    NodeTable,
+    NodeType,
+    PropertyGraph,
+    PropertyGraphDescription,
+    VirtualPropertyGraph,
+    VirtualPropertyGraphDescription,
+)
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription
@@ -947,14 +958,26 @@ class RemoteDBConnection(DBConnection):
     def create_property_graph(
         self,
         name: str,
-        nodes: List[Union[NodeTable, NodeType]],
-        edges: List[Union[EdgeTable, EdgeType]],
+        nodes: List[NodeType],
+        edges: List[EdgeType],
         *,
         namespace_path: Optional[List[str]] = None,
-    ) -> PropertyGraphDescription:
-        return LOOP.run(
-            self._conn.create_property_graph(
-                name, nodes, edges, namespace_path=namespace_path
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.create_property_graph(
+                    name, nodes, edges, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.open_property_graph(name, namespace_path=namespace_path)
             )
         )
 
@@ -967,35 +990,10 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def insert_into_property_graph(
-        self,
-        name: str,
-        label: str,
-        data: DATA,
-        *,
-        namespace_path: Optional[List[str]] = None,
-    ) -> PropertyGraphDescription:
-        return LOOP.run(
-            self._conn.insert_into_property_graph(
-                name, label, data, namespace_path=namespace_path
-            )
-        )
-
-    @override
-    def refresh_property_graph(
-        self, name: str, *, namespace_path: Optional[List[str]] = None
-    ) -> PropertyGraphDescription:
-        return LOOP.run(
-            self._conn.refresh_property_graph(name, namespace_path=namespace_path)
-        )
-
-    @override
-    def rollback_property_graph(
-        self, name: str, *, namespace_path: Optional[List[str]] = None
-    ) -> PropertyGraphDescription:
-        return LOOP.run(
-            self._conn.rollback_property_graph(name, namespace_path=namespace_path)
-        )
+    def list_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        return LOOP.run(self._conn.list_property_graphs(namespace_path=namespace_path))
 
     @override
     def drop_property_graph(
@@ -1004,10 +1002,118 @@ class RemoteDBConnection(DBConnection):
         LOOP.run(self._conn.drop_property_graph(name, namespace_path=namespace_path))
 
     @override
-    def list_property_graphs(
+    def create_virtual_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> VirtualPropertyGraph:
+        return VirtualPropertyGraph(
+            LOOP.run(
+                self._conn.create_virtual_property_graph(
+                    name, nodes, edges, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def open_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> VirtualPropertyGraph:
+        return VirtualPropertyGraph(
+            LOOP.run(
+                self._conn.open_virtual_property_graph(
+                    name, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def describe_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> VirtualPropertyGraphDescription:
+        return LOOP.run(
+            self._conn.describe_virtual_property_graph(
+                name, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def list_virtual_property_graphs(
         self, *, namespace_path: Optional[List[str]] = None
     ) -> List[str]:
-        return LOOP.run(self._conn.list_property_graphs(namespace_path=namespace_path))
+        return LOOP.run(
+            self._conn.list_virtual_property_graphs(namespace_path=namespace_path)
+        )
+
+    @override
+    def drop_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_virtual_property_graph(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def create_materialized_virtual_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> MaterializedVirtualPropertyGraph:
+        return MaterializedVirtualPropertyGraph(
+            LOOP.run(
+                self._conn.create_materialized_virtual_property_graph(
+                    name, nodes, edges, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def open_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> MaterializedVirtualPropertyGraph:
+        return MaterializedVirtualPropertyGraph(
+            LOOP.run(
+                self._conn.open_materialized_virtual_property_graph(
+                    name, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def describe_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> MaterializedVirtualPropertyGraphDescription:
+        return LOOP.run(
+            self._conn.describe_materialized_virtual_property_graph(
+                name, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def list_materialized_virtual_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        return LOOP.run(
+            self._conn.list_materialized_virtual_property_graphs(
+                namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def drop_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_materialized_virtual_property_graph(
+                name, namespace_path=namespace_path
+            )
+        )
 
     @override
     def list_jobs(self) -> List["JobInfo"]:

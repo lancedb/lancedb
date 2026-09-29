@@ -188,20 +188,21 @@ class Connection(object):
     async def list_views(
         self, namespace_path: Optional[List[str]] = None
     ) -> List[str]: ...
-    async def create_property_graph(
+    async def create_graph(
         self,
+        kind: str,
         name: str,
         definition_json: str,
         namespace_path: Optional[List[str]] = None,
     ) -> str: ...
-    async def describe_property_graph(
-        self, name: str, namespace_path: Optional[List[str]] = None
+    async def describe_graph(
+        self, kind: str, name: str, namespace_path: Optional[List[str]] = None
     ) -> str: ...
-    async def drop_property_graph(
-        self, name: str, namespace_path: Optional[List[str]] = None
+    async def drop_graph(
+        self, kind: str, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
-    async def list_property_graphs(
-        self, namespace_path: Optional[List[str]] = None
+    async def list_graphs(
+        self, kind: str, namespace_path: Optional[List[str]] = None
     ) -> List[str]: ...
     async def insert_into_property_graph(
         self,
@@ -210,10 +211,10 @@ class Connection(object):
         data: Any,
         namespace_path: Optional[List[str]] = None,
     ) -> str: ...
-    async def refresh_property_graph(
+    async def rollback_property_graph(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> str: ...
-    async def rollback_property_graph(
+    async def refresh_materialized_virtual_property_graph(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> str: ...
     async def list_jobs(self) -> List[JobInfo]: ...

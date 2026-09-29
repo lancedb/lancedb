@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Property graphs: catalog objects read as graphs, in one of two modes.
+//! Property graphs: catalog objects read as graphs, in three kinds that share
+//! one namespace of names.
 //!
-//! - Independent: the graph holds its own rows. Its node and edge types have
+//! - A property graph holds its own rows. Its node and edge types have
 //!   schemas, and rows are inserted into the graph itself.
-//! - Materialized view: the graph reads tables in its namespace -- which hold
+//! - A virtual property graph reads tables in its namespace -- which hold
 //!   nodes and which hold edges, each node table's key and label, each edge
 //!   table's label and how its source and destination columns reference node
-//!   keys, the shape of SQL/PGQ's `CREATE PROPERTY GRAPH` -- and is refreshed
-//!   from them. The tables stay ordinary tables.
+//!   keys, the shape of SQL/PGQ's `CREATE PROPERTY GRAPH` -- as they are when
+//!   a query reads them.
+//! - A materialized virtual property graph has a virtual graph's definition,
+//!   and is read as its last refresh from the tables built it.
 //!
 //! The verbs live on [`crate::connection::Connection`].
 
@@ -19,38 +22,54 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-/// A graph's definition, tagged with its mode.
+fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T> {
+    serde_json::from_str(json).map_err(|source| Error::InvalidInput {
+        message: format!("invalid property graph definition: {source}"),
+    })
+}
+
+fn to_json(value: &impl Serialize) -> Result<String> {
+    serde_json::to_string(value).map_err(|source| Error::Runtime {
+        message: format!("could not encode a property graph description: {source}"),
+    })
+}
+
+/// A property graph's node and edge types.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum PropertyGraphDefinition {
-    /// The graph holds its own rows, inserted into it.
-    Independent {
-        /// The node types, one per label.
-        nodes: Vec<NodeType>,
-        /// The edge types, one per label.
-        #[serde(default)]
-        edges: Vec<EdgeType>,
-    },
-    /// The graph reads tables and is refreshed from them.
-    MaterializedView {
-        /// The node tables, one per label.
-        nodes: Vec<NodeTable>,
-        /// The edge tables, one per label.
-        #[serde(default)]
-        edges: Vec<EdgeTable>,
-    },
+pub struct PropertyGraphDefinition {
+    /// The node types, one per label.
+    pub nodes: Vec<NodeType>,
+    /// The edge types, one per label.
+    #[serde(default)]
+    pub edges: Vec<EdgeType>,
 }
 
 impl PropertyGraphDefinition {
     /// Parse a definition from its JSON form.
     pub fn from_json(json: &str) -> Result<Self> {
-        serde_json::from_str(json).map_err(|source| Error::InvalidInput {
-            message: format!("invalid property graph definition: {source}"),
-        })
+        from_json(json)
     }
 }
 
-/// The nodes of one label of an independent graph.
+/// The node and edge tables of a virtual property graph, which a materialized
+/// virtual property graph shares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualPropertyGraphDefinition {
+    /// The node tables, one per label.
+    pub nodes: Vec<NodeTable>,
+    /// The edge tables, one per label.
+    #[serde(default)]
+    pub edges: Vec<EdgeTable>,
+}
+
+impl VirtualPropertyGraphDefinition {
+    /// Parse a definition from its JSON form.
+    pub fn from_json(json: &str) -> Result<Self> {
+        from_json(json)
+    }
+}
+
+/// The nodes of one label of a property graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeType {
     /// The label its nodes carry.
@@ -79,7 +98,7 @@ impl NodeType {
     }
 }
 
-/// The edges of one label of an independent graph.
+/// The edges of one label of a property graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeType {
     /// The label its edges carry.
@@ -180,7 +199,7 @@ pub struct EndpointReference {
     pub column: String,
 }
 
-/// The version of one table a graph's current commit was refreshed from.
+/// The version of one table a materialized graph's last refresh read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphSourceVersion {
     /// The table.
@@ -192,7 +211,7 @@ pub struct GraphSourceVersion {
 /// What a database records about one property graph.
 ///
 /// Returned by [`crate::connection::Connection::describe_property_graph`], and
-/// by every call that writes a graph.
+/// by every call that writes one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PropertyGraphDescription {
     /// The graph's name within its namespace.
@@ -200,7 +219,7 @@ pub struct PropertyGraphDescription {
     /// The namespace holding the graph; empty is the root namespace.
     #[serde(rename = "namespace", default)]
     pub namespace_path: Vec<String>,
-    /// The graph's mode and definition.
+    /// The graph's node and edge types.
     #[serde(flatten)]
     pub definition: PropertyGraphDefinition,
     /// The graph's current commit.
@@ -214,18 +233,65 @@ pub struct PropertyGraphDescription {
     pub vertex_count: u64,
     /// How many edges the current commit holds.
     pub edge_count: u64,
-    /// The table versions a materialized view's current commit was refreshed
-    /// from; empty for an independent graph.
-    #[serde(default)]
-    pub sources: Vec<GraphSourceVersion>,
 }
 
 impl PropertyGraphDescription {
     /// The description in its JSON form.
     pub fn to_json(&self) -> Result<String> {
-        serde_json::to_string(self).map_err(|source| Error::Runtime {
-            message: format!("could not encode a property graph description: {source}"),
-        })
+        to_json(self)
+    }
+}
+
+/// What a database records about one virtual property graph: its node and
+/// edge tables, with each table's properties as create resolved them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualPropertyGraphDescription {
+    /// The graph's name within its namespace.
+    pub name: String,
+    /// The namespace holding the graph; empty is the root namespace.
+    #[serde(rename = "namespace", default)]
+    pub namespace_path: Vec<String>,
+    /// The graph's node and edge tables.
+    #[serde(flatten)]
+    pub definition: VirtualPropertyGraphDefinition,
+}
+
+impl VirtualPropertyGraphDescription {
+    /// The description in its JSON form.
+    pub fn to_json(&self) -> Result<String> {
+        to_json(self)
+    }
+}
+
+/// What a database records about one materialized virtual property graph:
+/// its node and edge tables, and what its last refresh built from them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializedVirtualPropertyGraphDescription {
+    /// The graph's name within its namespace.
+    pub name: String,
+    /// The namespace holding the graph; empty is the root namespace.
+    #[serde(rename = "namespace", default)]
+    pub namespace_path: Vec<String>,
+    /// The graph's node and edge tables.
+    #[serde(flatten)]
+    pub definition: VirtualPropertyGraphDefinition,
+    /// The last refresh's commit.
+    pub commit: String,
+    /// When the last refresh landed, as RFC 3339.
+    pub committed_at: String,
+    /// How many nodes the last refresh built.
+    pub vertex_count: u64,
+    /// How many edges the last refresh built.
+    pub edge_count: u64,
+    /// The version of each table the last refresh read.
+    #[serde(default)]
+    pub sources: Vec<GraphSourceVersion>,
+}
+
+impl MaterializedVirtualPropertyGraphDescription {
+    /// The description in its JSON form.
+    pub fn to_json(&self) -> Result<String> {
+        to_json(self)
     }
 }
 
@@ -235,12 +301,12 @@ mod tests {
 
     use super::*;
 
-    fn social() -> PropertyGraphDefinition {
+    fn social() -> VirtualPropertyGraphDefinition {
         let person = EndpointReference {
             table: "person".to_string(),
             column: "person_id".to_string(),
         };
-        PropertyGraphDefinition::MaterializedView {
+        VirtualPropertyGraphDefinition {
             nodes: vec![NodeTable {
                 table: "person".to_string(),
                 key: "person_id".to_string(),
@@ -264,12 +330,11 @@ mod tests {
     }
 
     #[test]
-    fn test_definition_json_is_the_sql_pgq_shape() {
+    fn test_a_virtual_definition_is_the_sql_pgq_shape() {
         let json = serde_json::to_value(social()).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
-                "mode": "materialized_view",
                 "nodes": [{"table": "person", "key": "person_id", "label": "Person",
                            "properties": ["name"]}],
                 "edges": [{"table": "knows", "label": "KNOWS",
@@ -281,14 +346,14 @@ mod tests {
             })
         );
         assert_eq!(
-            PropertyGraphDefinition::from_json(&json.to_string()).unwrap(),
+            VirtualPropertyGraphDefinition::from_json(&json.to_string()).unwrap(),
             social()
         );
-        assert!(PropertyGraphDefinition::from_json(r#"{"nodes": []}"#).is_err());
+        assert!(VirtualPropertyGraphDefinition::from_json(r#"{"edges": []}"#).is_err());
     }
 
     #[test]
-    fn test_an_independent_definition_carries_its_schemas() {
+    fn test_a_property_graph_definition_carries_its_schemas() {
         let person = NodeType::new(
             "Person",
             "person_id",
@@ -311,12 +376,12 @@ mod tests {
             None,
         )
         .unwrap();
-        let definition = PropertyGraphDefinition::Independent {
+        let definition = PropertyGraphDefinition {
             nodes: vec![person.clone()],
             edges: vec![knows],
         };
         let json = serde_json::to_value(&definition).unwrap();
-        assert_eq!(json["mode"], "independent");
+        assert!(json.get("mode").is_none());
         assert_eq!(json["nodes"][0]["schema"]["fields"][0]["name"], "person_id");
         assert!(json["edges"][0].get("schema").is_none());
         assert_eq!(
@@ -327,6 +392,29 @@ mod tests {
             person.arrow_schema().unwrap().field(1).data_type(),
             &DataType::new_list(DataType::Utf8, true)
         );
+    }
+
+    #[test]
+    fn test_a_materialized_description_carries_its_definition_at_the_top_level() {
+        let description = MaterializedVirtualPropertyGraphDescription {
+            name: "social".to_string(),
+            namespace_path: vec!["analytics".to_string()],
+            definition: social(),
+            commit: "c1".to_string(),
+            committed_at: "2026-09-26T17:00:00Z".to_string(),
+            vertex_count: 4,
+            edge_count: 5,
+            sources: vec![GraphSourceVersion {
+                table: "person".to_string(),
+                version: 3,
+            }],
+        };
+        let json = serde_json::to_value(&description).unwrap();
+        assert_eq!(json["namespace"], serde_json::json!(["analytics"]));
+        assert_eq!(json["nodes"][0]["table"], "person");
+        let decoded: MaterializedVirtualPropertyGraphDescription =
+            serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, description);
     }
 
     #[tokio::test]
@@ -343,27 +431,45 @@ mod tests {
                 "{error}"
             );
         };
+        let people = PropertyGraphDefinition {
+            nodes: vec![],
+            edges: vec![],
+        };
         refused(
-            conn.create_property_graph("social", &social(), &[])
+            conn.create_property_graph("people", &people, &[])
                 .await
                 .unwrap_err(),
         );
         refused(
-            conn.describe_property_graph("social", &[])
+            conn.create_virtual_property_graph("social", &social(), &[])
                 .await
                 .unwrap_err(),
         );
         refused(
-            conn.refresh_property_graph("social", &[])
+            conn.create_materialized_virtual_property_graph("social", &social(), &[])
                 .await
                 .unwrap_err(),
         );
         refused(
-            conn.rollback_property_graph("social", &[])
+            conn.describe_virtual_property_graph("social", &[])
                 .await
                 .unwrap_err(),
         );
-        refused(conn.drop_property_graph("social", &[]).await.unwrap_err());
-        refused(conn.list_property_graphs(&[]).await.unwrap_err());
+        refused(
+            conn.refresh_materialized_virtual_property_graph("social", &[])
+                .await
+                .unwrap_err(),
+        );
+        refused(
+            conn.rollback_property_graph("people", &[])
+                .await
+                .unwrap_err(),
+        );
+        refused(conn.drop_property_graph("people", &[]).await.unwrap_err());
+        refused(
+            conn.list_materialized_virtual_property_graphs(&[])
+                .await
+                .unwrap_err(),
+        );
     }
 }
