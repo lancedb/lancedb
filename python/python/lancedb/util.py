@@ -5,6 +5,7 @@
 import binascii
 import functools
 import importlib
+import math
 import os
 import pathlib
 import warnings
@@ -351,6 +352,13 @@ def _(value: int):
 
 @value_to_sql.register(float)
 def _(value: float):
+    # str() gives "nan" / "inf", which SQL would read as column names.
+    if math.isnan(value):
+        return "CAST('NaN' AS DOUBLE)"
+    if math.isinf(value):
+        return (
+            "CAST('Infinity' AS DOUBLE)" if value > 0 else "CAST('-Infinity' AS DOUBLE)"
+        )
     return str(value)
 
 
