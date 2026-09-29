@@ -94,15 +94,24 @@ export interface QueryBlobContext {
   projection?: [string, string][];
 }
 
-type BlobBytesPlan = {
-  table: NativeTable;
-  sources: Map<string, string>;
-  addRowId: boolean;
-};
+const BLOB_BYTES_ATTEMPTS = 3;
+
+function blobSources(
+  blobColumns: string[],
+  projection: [string, string][] | undefined,
+): Map<string, string> {
+  const columns = new Set(blobColumns);
+  const pairs =
+    projection ??
+    blobColumns.map((column): [string, string] => [column, column]);
+  return new Map(pairs.filter(([, source]) => columns.has(source)));
+}
 
 async function readBlobBytes(
   table: ArrowTable,
-  plan: BlobBytesPlan,
+  sources: Map<string, string>,
+  snapshot: NativeTable,
+  dropRowId: boolean,
 ): Promise<ArrowTable> {
   const rowIdColumn = table.getChild("_rowid");
   if (table.numRows > 0 && rowIdColumn === null) {
@@ -113,7 +122,7 @@ async function readBlobBytes(
       ? []
       : Array.from(rowIdColumn.toArray() as BigUint64Array);
   const replacements = new Map<number, (Buffer | null)[]>();
-  for (const [output, source] of plan.sources) {
+  for (const [output, source] of sources) {
     const index = table.schema.fields.findIndex(
       (field) => field.name === output,
     );
@@ -121,14 +130,14 @@ async function readBlobBytes(
       continue;
     }
     const values =
-      rowIds.length === 0 ? [] : await plan.table.fetchBlobs(source, rowIds);
+      rowIds.length === 0 ? [] : await snapshot.fetchBlobs(source, rowIds);
     replacements.set(
       index,
       values.map((value) => value ?? null),
     );
   }
   const result = withBinaryColumns(table, replacements);
-  if (!plan.addRowId) {
+  if (!dropRowId) {
     return result;
   }
   return result.select(
@@ -202,6 +211,18 @@ export interface QueryExecutionOptions {
    *   called. All the bytes are held in memory.
    *
    * Blobs nested in a struct or a list keep their descriptors.
+   *
+   * The rows and the bytes come from the same table version. If the table
+   * changes while the query runs, the query runs again, up to three times.
+   *
+   * @example
+   * ```ts
+   * const rows = await table
+   *   .query()
+   *   .select(["id", "image"])
+   *   .toArray({ blobMode: "bytes" });
+   * const image: Uint8Array | null = rows[0].image;
+   * ```
    */
   blobMode?: BlobMode;
 }
@@ -420,23 +441,59 @@ export class QueryBase<
 
   /** Collect the results as an Arrow @see {@link ArrowTable}. */
   async toArrow(options?: Partial<QueryExecutionOptions>): Promise<ArrowTable> {
-    const plan = await this.blobBytesPlan(options?.blobMode);
+    const context = this.blobBytesContext(options?.blobMode);
+    if (context === undefined) {
+      return new ArrowTable(await this.collectBatches(options, false));
+    }
+    for (let attempt = 1; ; attempt++) {
+      // The snapshot pins the bytes. The query runs on the live table, so an
+      // unchanged version afterwards proves it read the snapshot's version.
+      const snapshot = await context.table.querySnapshot();
+      const version = await snapshot.version();
+      const sources = blobSources(
+        await snapshot.blobColumns(),
+        context.projection,
+      );
+      if (sources.size === 0) {
+        return new ArrowTable(await this.collectBatches(options, false));
+      }
+      const addRowId = !context.withRowId;
+      const batches = await this.collectBatches(options, addRowId);
+      if ((await context.table.version()) === version) {
+        return readBlobBytes(
+          new ArrowTable(batches),
+          sources,
+          snapshot,
+          addRowId,
+        );
+      }
+      if (attempt === BLOB_BYTES_ATTEMPTS) {
+        throw new Error(
+          `blobMode "bytes": the table changed during each of ${BLOB_BYTES_ATTEMPTS} attempts to read it`,
+        );
+      }
+    }
+  }
+
+  private async collectBatches(
+    options: Partial<QueryExecutionOptions> | undefined,
+    withRowId: boolean,
+  ): Promise<RecordBatch[]> {
     const batches = [];
     const inner = await this.getInner();
     for await (const batch of new RecordBatchIterable(
       inner,
       options,
-      plan?.addRowId ?? false,
+      withRowId,
     )) {
       batches.push(batch);
     }
-    const table = new ArrowTable(batches);
-    return plan === undefined ? table : readBlobBytes(table, plan);
+    return batches;
   }
 
-  private async blobBytesPlan(
+  private blobBytesContext(
     mode: BlobMode | undefined,
-  ): Promise<BlobBytesPlan | undefined> {
+  ): QueryBlobContext | undefined {
     if (mode === undefined || mode === "descriptions") {
       return undefined;
     }
@@ -445,21 +502,10 @@ export class QueryBase<
         `blobMode must be "descriptions" or "bytes", got "${String(mode)}"`,
       );
     }
-    const context = this.blobContext;
-    if (context === undefined) {
+    if (this.blobContext === undefined) {
       throw new Error('blobMode "bytes" is not supported for this query');
     }
-    const blobColumns = new Set(await context.table.blobColumns());
-    const projection =
-      context.projection ??
-      Array.from(blobColumns, (column): [string, string] => [column, column]);
-    const sources = new Map(
-      projection.filter(([, source]) => blobColumns.has(source)),
-    );
-    if (sources.size === 0) {
-      return undefined;
-    }
-    return { table: context.table, sources, addRowId: !context.withRowId };
+    return this.blobContext;
   }
 
   /** Collect the results as an array of objects. */
