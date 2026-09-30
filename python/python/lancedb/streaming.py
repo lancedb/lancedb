@@ -137,6 +137,7 @@ class _TwoPhaseSplitReader:
         seed: int,
         read_block_fn: Callable[[int], pa.Table],
         columns: Optional[list[str]],
+        skip: int = 0,
     ):
         self._block_ids = block_ids
         self._read_block_fn = read_block_fn
@@ -145,8 +146,10 @@ class _TwoPhaseSplitReader:
         self._loaded: dict[int, pa.Table] = {}
 
         counts = np.asarray(block_live_counts, dtype=np.int64)
-        self.num_rows = int(counts.sum())
+        total_rows = int(counts.sum())
         num_blocks = len(block_ids)
+        if not 0 <= skip <= total_rows:
+            raise ValueError(f"skip ({skip}) out of range for {total_rows} row(s)")
 
         # Natural (block, then row) order: block_pos[k]/local_offset[k]
         # describe the row whose dense natural rank is exactly k.
@@ -157,19 +160,22 @@ class _TwoPhaseSplitReader:
             else np.array([], dtype=np.int64)
         )
 
-        if shuffle and self.num_rows:
-            sigma = _build_bounded_permutation(
-                self.num_rows, max_shuffle_distance, seed
-            )
+        if shuffle and total_rows:
+            sigma = _build_bounded_permutation(total_rows, max_shuffle_distance, seed)
         else:
-            sigma = np.arange(self.num_rows, dtype=np.int64)
+            sigma = np.arange(total_rows, dtype=np.int64)
 
         # sigma is itself a permutation of dense ranks, so inverting it
         # (argsort) directly gives, for each output position, which
         # natural rank -- and thus which (block, local offset) -- to draw.
-        order = np.argsort(sigma, kind="stable")
+        # Slicing off the first `skip` entries resumes at a saved absolute
+        # position: those rows were already consumed in an earlier run, so
+        # blocks that only appear before `skip` are simply never
+        # referenced and never loaded.
+        order = np.argsort(sigma, kind="stable")[skip:]
         self._plan_block_pos = block_pos[order]
         self._plan_local_offset = local_offset[order]
+        self.num_rows = total_rows - skip
 
         # Last plan position (inclusive) at which each block is still
         # needed, so it can be evicted as soon as we've read past it.
@@ -940,7 +946,11 @@ class StreamingDataset(IterableDataset):
         return lance_ds.take(offsets.tolist(), columns=columns)
 
     def _make_two_phase_reader(
-        self, split_idx: int, lance_ds, columns: Optional[list[str]]
+        self,
+        split_idx: int,
+        lance_ds,
+        columns: Optional[list[str]],
+        skip: int = 0,
     ) -> "_TwoPhaseSplitReader":
         """Build the 2-phase reader for one split's assigned blocks.
 
@@ -948,6 +958,8 @@ class StreamingDataset(IterableDataset):
         ``_estimate_blocks_per_epoch`` (which samples token lengths through
         the same interface, so its estimate reflects 2-phase's actual block
         assignment and shuffle bound rather than a separate approximation).
+        ``skip`` resumes from a saved absolute position within the split's
+        own deterministic read order (see ``_TwoPhaseSplitReader``).
         """
         blocks_per_split = self._num_blocks // self._num_splits
         start = split_idx * blocks_per_split
@@ -970,6 +982,7 @@ class StreamingDataset(IterableDataset):
                 lance_ds, block_id, columns
             ),
             columns=columns,
+            skip=skip,
         )
 
     def _estimate_blocks_per_epoch(self) -> int:
@@ -1170,13 +1183,20 @@ class StreamingDataset(IterableDataset):
             initial_samples = []
             initial_positions = []
             for split_idx in my_splits:
+                # Same absolute-position resume convention as 1-phase: a
+                # loaded checkpoint's positions_consumed_per_split (falling
+                # back to the sample count, then to the global offset) is
+                # this split's saved absolute position in its own
+                # deterministic read order.
+                sample_count = self._resume_samples.get(split_idx, self._resume_offset)
+                start_pos = self._resume_positions.get(split_idx, sample_count)
                 permutations.append(
-                    self._make_two_phase_reader(split_idx, lance_ds, self._columns)
+                    self._make_two_phase_reader(
+                        split_idx, lance_ds, self._columns, skip=start_pos
+                    )
                 )
-                # No resume/skip support yet in 2-phase: every split starts
-                # fresh regardless of any loaded checkpoint.
-                initial_samples.append(0)
-                initial_positions.append(0)
+                initial_samples.append(sample_count)
+                initial_positions.append(start_pos)
 
             n = len(permutations)
             split_sizes = [reader.num_rows for reader in permutations]
