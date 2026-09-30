@@ -733,3 +733,52 @@ def test_enum_types():
     assert schema.field("priority").type == pa.int64()
     assert schema.field("opt_status").type == pa.dictionary(pa.int32(), pa.utf8())
     assert schema.field("opt_status").nullable
+
+
+def test_plain_enum_values_are_written(mem_db):
+    """Members of an Enum without a str/int mixin are written as their values."""
+
+    class Color(Enum):
+        RED = "red"
+        BLUE = "blue"
+
+    class Priority(Enum):
+        LOW = 1
+        HIGH = 2
+
+    class Tag(LanceModel):
+        color: Color
+
+    class TestModel(LanceModel):
+        color: Color
+        priority: Priority
+        opt_color: Optional[Color] = None
+        colors: List[Color]
+        tag: Tag
+        vector: Vector(2)
+
+    rows = [
+        TestModel(
+            color=Color.RED,
+            priority=Priority.HIGH,
+            opt_color=Color.BLUE,
+            colors=[Color.BLUE, Color.RED],
+            tag=Tag(color=Color.BLUE),
+            vector=[1.0, 2.0],
+        ),
+        TestModel(
+            color=Color.BLUE,
+            priority=Priority.LOW,
+            colors=[],
+            tag=Tag(color=Color.RED),
+            vector=[3.0, 4.0],
+        ),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
+    assert tbl.to_arrow().select(["color", "priority", "opt_color"]).to_pylist() == [
+        {"color": "red", "priority": 2, "opt_color": "blue"},
+        {"color": "blue", "priority": 1, "opt_color": None},
+    ]
+    assert tbl.search().to_pydantic(TestModel) == rows

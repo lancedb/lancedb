@@ -524,4 +524,20 @@ def get_extras(field_info: FieldInfo, key: str) -> Any:
 
 def model_to_dict(model: pydantic.BaseModel) -> dict[str, Any]:
     """Convert a Pydantic model to a dictionary."""
-    return model.model_dump()
+    return _enum_members_to_values(model.model_dump())
+
+
+def _enum_members_to_values(value: Any) -> Any:
+    # model_dump() keeps Enum members, and Arrow cannot convert a member of a
+    # plain Enum (one without a str or int mixin). Write its value instead,
+    # which is what the Arrow type of the field is derived from.
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {k: _enum_members_to_values(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)) and value:
+        # Skip lists of plain scalars, such as vectors, without walking them.
+        if isinstance(value[0], (int, float, str, bytes)):
+            return value
+        return [_enum_members_to_values(v) for v in value]
+    return value
