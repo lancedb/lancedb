@@ -704,9 +704,7 @@ class StreamingDataset(IterableDataset):
             if window_blocks is not None:
                 raise ValueError("window_blocks requires block_size to be set")
             if max_shuffle_distance is not None:
-                raise ValueError(
-                    "max_shuffle_distance requires block_size to be set"
-                )
+                raise ValueError("max_shuffle_distance requires block_size to be set")
             if reshuffle_blocks_per_epoch is not None:
                 raise ValueError(
                     "reshuffle_blocks_per_epoch requires block_size to be set"
@@ -877,9 +875,31 @@ class StreamingDataset(IterableDataset):
             #
             # block_size counts LIVE rows (rows passing `filter`), not raw
             # rows.
+            #
+            # Pin the exact version/branch the block plan below is computed
+            # against, so a write to the table between construction and a
+            # later iteration (or between epochs) cannot shift which rows a
+            # block refers to.  Read paths in _read_block always reopen a
+            # private handle checked out to this pin (see
+            # _open_pinned_table) rather than reading the table's live,
+            # possibly-since-mutated state.  Branch pinning isn't
+            # implemented yet -- the reopened handle always lands on the
+            # default branch (see _table_from_pickle_state) -- so a table
+            # checked out to a non-default branch is rejected below rather
+            # than silently pinning the wrong branch.
+            self._pinned_branch = table.current_branch()
+            if self._pinned_branch is not None:
+                raise ValueError(
+                    "block_size does not yet support a table checked out to "
+                    f"a non-default branch ({self._pinned_branch!r}); check "
+                    "out the default branch before constructing StreamingDataset"
+                )
+            self._pinned_version = table.version
+
             block_live_offsets: Optional[list[np.ndarray]] = None
+            self._all_columns: Optional[list[str]] = None
             if filter is None:
-                total_rows = table.count_rows()
+                total_rows = self._open_pinned_table().count_rows()
                 # Discard the trailing runt block (the remainder rows left
                 # over when block_size doesn't evenly divide the row count)
                 # rather than reading it as an undersized final block.
@@ -891,10 +911,9 @@ class StreamingDataset(IterableDataset):
                 num_rows = num_blocks * block_size
             else:
                 # One pass, computed once here and never repeated at read
-                # time: a single filtered scan over the whole table asks
-                # Lance to evaluate `filter` natively (pushed down against
-                # each fragment's own data, using its usual page/zone-map
-                # skipping) and hand back only each live row's
+                # time: a filtered scan over the whole table asks Lance to
+                # evaluate `filter` natively (pushed down against each
+                # fragment's own data) and hand back only each live row's
                 # "_rowoffset" -- a system column giving its 0-indexed
                 # dataset-wide position -- without materializing any real
                 # column data.  Blocks are then just contiguous chunks of
@@ -902,11 +921,26 @@ class StreamingDataset(IterableDataset):
                 # each; no more approximating by snapping to fragment
                 # edges), and at read time each block's exact live offsets
                 # are already known, so a sparse take() can fetch just
-                # those rows -- see _read_block in _iter_owned.
+                # those rows -- see _read_block in _iter_owned.  Goes
+                # through the table's own query builder (search/select),
+                # not pylance's to_lance(), so this also works against a
+                # remote (Cloud) table.
+                pinned_for_setup = self._open_pinned_table()
+                # take_offsets doesn't guarantee its output order, so
+                # filtered block reads always additionally select
+                # "_rowoffset" and sort locally by it (see _read_block);
+                # when the caller didn't narrow columns, that means
+                # explicitly listing every column instead of relying on an
+                # implicit "everything", hence caching the full list once
+                # here rather than re-querying the schema per block.
+                self._all_columns: Optional[list[str]] = (
+                    pinned_for_setup.schema.names if columns is None else None
+                )
                 live_offsets = (
-                    table.to_lance()
-                    .scanner(filter=filter, columns=["_rowoffset"])
-                    .to_table()
+                    pinned_for_setup.search()
+                    .where(filter)
+                    .select(["_rowoffset"])
+                    .to_arrow()
                     .column("_rowoffset")
                     .to_numpy()
                 )
@@ -979,7 +1013,7 @@ class StreamingDataset(IterableDataset):
                 if max_shuffle_distance is not None
                 else self._window_blocks * block_size
             )
-        else: #1-phase shuffled read
+        else:  # 1-phase shuffled read
             # Build the permutation table once, deterministically.
             builder = permutation_builder(table)
             if filter is not None:
@@ -1002,31 +1036,59 @@ class StreamingDataset(IterableDataset):
             range(rank_start, rank_start + splits_per_rank)
         )
 
+    def _open_pinned_table(self):
+        """Open a private table handle checked out to this dataset's pin.
+
+        A fresh handle (via ``connection_factory`` if one was supplied,
+        otherwise the same reopen-by-name state ``__setstate__`` uses for
+        worker reconnects) so checking it out to the pinned version never
+        mutates ``self._table``, which the caller may still be using
+        elsewhere.  Goes through ``Table.checkout``/``take_offsets``/
+        ``search`` -- the same backend-agnostic interface ``RemoteTable``
+        implements -- instead of pylance's ``to_lance()``, which only
+        works against a local table.
+        """
+        if self._connection_factory is not None:
+            pinned = self._connection_factory(self._table.name)
+        else:
+            pinned = _table_from_pickle_state(_table_to_pickle_state(self._table))
+        pinned.checkout(self._pinned_version)
+        return pinned
+
     def _read_block(
-        self, lance_ds, block_id: int, columns: Optional[list[str]]
+        self, pinned_table, block_id: int, columns: Optional[list[str]]
     ) -> pa.Table:
         """Read one 2-phase block's live rows, in natural (ascending) order."""
         if self._filter is None:
-            # Plain offset/limit: unambiguous raw-position scan that Lance
-            # can seek to directly.
+            # offset/limit is a positional, sequential read, so its output
+            # order is exactly storage order -- no restoration needed.
             row_start, row_end = self._block_ranges[block_id]
-            return lance_ds.scanner(
-                offset=row_start,
-                limit=row_end - row_start,
-                columns=columns,
-            ).to_table()
+            q = pinned_table.search().offset(row_start).limit(row_end - row_start)
+            if columns is not None:
+                q = q.select(columns)
+            return q.to_arrow()
 
         # Filtered: this block's exact live-row dataset offsets were
         # already computed once, up front (from the "_rowoffset" system
-        # column -- see __init__), so a sparse take() fetches just the
-        # live rows themselves, skipping any dead-row gaps entirely.
+        # column -- see __init__), so take_offsets fetches just the live
+        # rows themselves, skipping any dead-row gaps entirely.  Unlike
+        # offset/limit, take_offsets makes no ordering guarantee for an
+        # arbitrary index list, so "_rowoffset" is always also selected
+        # and used to restore the request's ascending order locally.
         offsets = self._block_live_offsets[block_id]
-        return lance_ds.take(offsets.tolist(), columns=columns)
+        select_cols = (columns if columns is not None else self._all_columns) + [
+            "_rowoffset"
+        ]
+        block = (
+            pinned_table.take_offsets(offsets.tolist()).select(select_cols).to_arrow()
+        )
+        order = pc.sort_indices(block.column("_rowoffset"))
+        return block.take(order).drop_columns(["_rowoffset"])
 
     def _make_two_phase_reader(
         self,
         split_idx: int,
-        lance_ds,
+        pinned_table,
         columns: Optional[list[str]],
         skip: int = 0,
     ) -> "_TwoPhaseSplitReader":
@@ -1057,7 +1119,7 @@ class StreamingDataset(IterableDataset):
             max_shuffle_distance=self._max_shuffle_distance,
             seed=sigma_seed,
             read_block_fn=lambda block_id: self._read_block(
-                lance_ds, block_id, columns
+                pinned_table, block_id, columns
             ),
             columns=columns,
             skip=skip,
@@ -1086,7 +1148,9 @@ class StreamingDataset(IterableDataset):
             "pass an explicit value for exact epoch sizing",
         )
 
-        lance_ds = self._table.to_lance() if self._block_size is not None else None
+        pinned_table = (
+            self._open_pinned_table() if self._block_size is not None else None
+        )
         for split in range(self._num_splits):
             if self._block_size is not None:
                 # Sample through the same 2-phase reader used at read time,
@@ -1094,7 +1158,7 @@ class StreamingDataset(IterableDataset):
                 # assignment and shuffle bound rather than a separate,
                 # unrelated approximation.
                 permutation = self._make_two_phase_reader(
-                    split, lance_ds, [token_column]
+                    split, pinned_table, [token_column]
                 )
             else:
                 permutation = Permutation.from_tables(
@@ -1259,7 +1323,7 @@ class StreamingDataset(IterableDataset):
             # 2-phase flows through the exact same stage-1 I/O machinery
             # (_fill_io/_submit_io/_drain_io, io_queue_depth prefetch) as
             # 1-phase.  No 2-phase-specific code exists past this point.
-            lance_ds = self._table.to_lance()
+            pinned_table = self._open_pinned_table()
 
             permutations: list[_TwoPhaseSplitReader] = []
             initial_samples = []
@@ -1269,12 +1333,20 @@ class StreamingDataset(IterableDataset):
                 # loaded checkpoint's positions_consumed_per_split (falling
                 # back to the sample count, then to the global offset) is
                 # this split's saved absolute position in its own
-                # deterministic read order.
+                # deterministic read order.  Packing stores its own cursor
+                # separately (it also checkpoints partial blocks), so it
+                # must be consulted here too, exactly as the 1-phase branch
+                # above does -- otherwise a packed resume silently ignores
+                # _pack_consumed and replays already-consumed documents.
                 sample_count = self._resume_samples.get(split_idx, self._resume_offset)
-                start_pos = self._resume_positions.get(split_idx, sample_count)
+                start_pos = (
+                    self._pack_consumed[split_idx]
+                    if self._pack_sequences is not None
+                    else self._resume_positions.get(split_idx, sample_count)
+                )
                 permutations.append(
                     self._make_two_phase_reader(
-                        split_idx, lance_ds, self._columns, skip=start_pos
+                        split_idx, pinned_table, self._columns, skip=start_pos
                     )
                 )
                 initial_samples.append(sample_count)

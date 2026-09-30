@@ -3197,6 +3197,42 @@ def test_streaming_dataset_over_remote_table():
     assert_server_safe_row_id_requests(server)
 
 
+def test_two_phase_over_remote_table():
+    """2-phase (block_size) reads a remote table via offset/limit scans,
+    not pylance's to_lance() (which only works locally)."""
+    server = MockPermutationServer(num_rows=16)
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(table, num_splits=2, block_size=4, shuffle=False)
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == list(range(server.num_rows)), (
+        "Every row of the remote table must be yielded exactly once"
+    )
+
+
+def test_two_phase_over_remote_table_filtered_and_shuffled():
+    """2-phase's filtered live-offset precompute and take_offsets-based
+    block reads both work against a remote table, including restoring
+    take_offsets' unspecified order via the _rowoffset it also selects."""
+    server = MockPermutationServer(num_rows=20)
+    live_ids = list(range(16))  # 16 live rows -> 4 blocks, divides num_splits=2
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(
+            table,
+            num_splits=2,
+            block_size=4,
+            shuffle=True,
+            shuffle_seed=SHUFFLE_SEED,
+            filter="id IN (" + ",".join(str(i) for i in live_ids) + ")",
+            columns=["id"],
+        )
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == live_ids, "only live rows, each exactly once"
+
+
 # ---------------------------------------------------------------------------
 # 2-phase shuffled reads (block_size)
 # ---------------------------------------------------------------------------
@@ -3363,6 +3399,22 @@ def test_two_phase_resume_checkpoint_round_trip(lance_table):
     )
     assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
         "Consumed + remaining must cover every row exactly once"
+    )
+
+
+def test_two_phase_pinned_version_survives_concurrent_write(tmp_path):
+    """The block plan is pinned to the table version at construction; a
+    write between construction and iteration must not change what an
+    in-progress epoch reads."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(8))}))
+
+    ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+    table.delete("id = 0")  # mutate after construction, before iteration
+
+    ids = [s["id"] for s in ds]
+    assert ids == list(range(8)), (
+        "must read the version pinned at construction, not the live, since-mutated one"
     )
 
 
