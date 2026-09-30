@@ -178,11 +178,14 @@ class _TwoPhaseSplitReader:
             self._block_last_pos[bp] = pos
 
     def __getitems__(self, indices) -> pa.RecordBatch:
-        start = indices[0]
-        fetch = len(indices)
+        # Fancy-indexed (not sliced) so this also supports non-contiguous
+        # index lists, e.g. the sparse random sampling used by
+        # _estimate_blocks_per_epoch, not just the contiguous
+        # range(start, start + fetch) that the main I/O pipeline requests.
+        idx_arr = np.asarray(indices, dtype=np.int64)
         with self._lock:
-            block_pos_slice = self._plan_block_pos[start : start + fetch]
-            local_off_slice = self._plan_local_offset[start : start + fetch]
+            block_pos_slice = self._plan_block_pos[idx_arr]
+            local_off_slice = self._plan_local_offset[idx_arr]
             needed = sorted(set(block_pos_slice.tolist()))
             for bp in needed:
                 if bp not in self._loaded:
@@ -215,7 +218,7 @@ class _TwoPhaseSplitReader:
             inverse = np.argsort(group_order)
             result = combined.take(pa.array(inverse, type=pa.int64()))
 
-            watermark = start + fetch - 1
+            watermark = int(idx_arr.max())
             for bp in list(self._loaded):
                 if self._block_last_pos.get(bp, -1) <= watermark:
                     del self._loaded[bp]
@@ -441,8 +444,9 @@ class StreamingDataset(IterableDataset):
         When set, rows are shuffled in contiguous groups of this size rather
         than individually.  Larger clumps improve I/O locality (important on
         object storage) at the cost of reduced randomness.  ``None`` (the
-        default) shuffles rows individually.  Ignored when ``block_size`` is
-        set (2-phase mode has its own locality/randomness knobs, below).
+        default) shuffles rows individually.  Cannot be combined with
+        ``block_size`` (2-phase mode has its own locality/randomness knobs,
+        below).
     block_size:
         Enables 2-phase shuffled reads: rows are shuffled at the granularity
         of contiguous blocks of exactly this many live rows, and each split
@@ -468,7 +472,9 @@ class StreamingDataset(IterableDataset):
         ``block_size``.  Smaller values shuffle less but let a block's RAM
         be reclaimed and refilled with the next block sooner; larger values
         shuffle more but hold blocks in RAM longer.  Defaults to
-        ``block_size // 4`` (at least 1).
+        ``window_blocks * block_size``, so the default window actually
+        holds ``window_blocks`` blocks in RAM at once; pass this explicitly
+        to decouple the shuffle bound from ``window_blocks``.
     filter:
         Optional SQL filter expression (e.g. ``"label = 'dog'"``).  Only rows
         that satisfy the predicate are included in the permutation.  The filter
@@ -640,6 +646,12 @@ class StreamingDataset(IterableDataset):
                 raise ValueError("window_blocks must be at least 1")
             if max_shuffle_distance is not None and max_shuffle_distance <= 0:
                 raise ValueError("max_shuffle_distance must be greater than 0")
+            if shuffle_clump_size is not None:
+                raise ValueError(
+                    "shuffle_clump_size is ignored when block_size is set "
+                    "(2-phase mode uses window_blocks/max_shuffle_distance "
+                    "instead); remove one of them"
+                )
         if transform_parallelism is not None and transform_parallelism <= 0:
             raise ValueError("transform_parallelism must be greater than 0")
         if pack_sequences is not None:
@@ -864,22 +876,24 @@ class StreamingDataset(IterableDataset):
             if shuffle:
                 block_seed = shuffle_seed + epoch * _EPOCH_PRIME
                 random.Random(block_seed).shuffle(block_order)
-            # A block permutation is tiny (one int per block, not per row),
-            # so it is kept in RAM rather than round-tripped through an
-            # Arrow-backed permutation table like the 1-phase row mapping.
+            # Kept as a plain Python list for simplicity, unlike the
+            # 1-phase row mapping below, which is Arrow-backed because it
+            # is built and consumed through the Arrow-based permutation
+            # table machinery; a block permutation has no such need.
             self._block_perm: list[int] = block_order
             self._perm_table = None
 
-            # window_blocks currently only sets an expectation for how many
-            # blocks are resident at once; peak residency is actually
-            # driven by max_shuffle_distance relative to block_size (see
-            # _TwoPhaseSplitReader), a known gap between this knob and
-            # actual behavior.
+            # window_blocks is the primary residency knob: by default,
+            # max_shuffle_distance (the displacement bound that actually
+            # drives which blocks stay resident -- see
+            # _TwoPhaseSplitReader) is derived from it so that a split
+            # holds roughly window_blocks blocks in RAM at once. Passing
+            # max_shuffle_distance explicitly overrides that derivation.
             self._window_blocks = window_blocks if window_blocks is not None else 4
             self._max_shuffle_distance = (
                 max_shuffle_distance
                 if max_shuffle_distance is not None
-                else max(1, block_size // 4)
+                else self._window_blocks * block_size
             )
         else: #1-phase shuffled read
             # Build the permutation table once, deterministically.
@@ -904,6 +918,60 @@ class StreamingDataset(IterableDataset):
             range(rank_start, rank_start + splits_per_rank)
         )
 
+    def _read_block(
+        self, lance_ds, block_id: int, columns: Optional[list[str]]
+    ) -> pa.Table:
+        """Read one 2-phase block's live rows, in natural (ascending) order."""
+        if self._filter is None:
+            # Plain offset/limit: unambiguous raw-position scan that Lance
+            # can seek to directly.
+            row_start, row_end = self._block_ranges[block_id]
+            return lance_ds.scanner(
+                offset=row_start,
+                limit=row_end - row_start,
+                columns=columns,
+            ).to_table()
+
+        # Filtered: this block's exact live-row dataset offsets were
+        # already computed once, up front (from the "_rowoffset" system
+        # column -- see __init__), so a sparse take() fetches just the
+        # live rows themselves, skipping any dead-row gaps entirely.
+        offsets = self._block_live_offsets[block_id]
+        return lance_ds.take(offsets.tolist(), columns=columns)
+
+    def _make_two_phase_reader(
+        self, split_idx: int, lance_ds, columns: Optional[list[str]]
+    ) -> "_TwoPhaseSplitReader":
+        """Build the 2-phase reader for one split's assigned blocks.
+
+        Shared by ``_iter_owned`` (the real read path) and
+        ``_estimate_blocks_per_epoch`` (which samples token lengths through
+        the same interface, so its estimate reflects 2-phase's actual block
+        assignment and shuffle bound rather than a separate approximation).
+        """
+        blocks_per_split = self._num_blocks // self._num_splits
+        start = split_idx * blocks_per_split
+        end = start + blocks_per_split
+        block_ids = self._block_perm[start:end]
+        live_counts = [self._block_live_counts[bid] for bid in block_ids]
+        sigma_seed = (
+            self._shuffle_seed
+            + self._epoch * _EPOCH_PRIME
+            + _SIGMA_PRIME
+            + split_idx * _SIGMA_SPLIT_PRIME
+        )
+        return _TwoPhaseSplitReader(
+            block_ids=block_ids,
+            block_live_counts=live_counts,
+            shuffle=self._shuffle,
+            max_shuffle_distance=self._max_shuffle_distance,
+            seed=sigma_seed,
+            read_block_fn=lambda block_id: self._read_block(
+                lance_ds, block_id, columns
+            ),
+            columns=columns,
+        )
+
     def _estimate_blocks_per_epoch(self) -> int:
         """Estimate a fixed packed-block budget from a bounded token sample."""
         # TODO: Replace this fallback with Lance's dedicated exact token-count
@@ -926,12 +994,22 @@ class StreamingDataset(IterableDataset):
             "pass an explicit value for exact epoch sizing",
         )
 
+        lance_ds = self._table.to_lance() if self._block_size is not None else None
         for split in range(self._num_splits):
-            permutation = Permutation.from_tables(
-                self._table, self._perm_table, split=split
-            )
-            permutation = permutation.select_columns([token_column])
-            permutation = permutation.with_transform(Transforms.arrow2arrow)
+            if self._block_size is not None:
+                # Sample through the same 2-phase reader used at read time,
+                # so the estimate reflects 2-phase's actual block
+                # assignment and shuffle bound rather than a separate,
+                # unrelated approximation.
+                permutation = self._make_two_phase_reader(
+                    split, lance_ds, [token_column]
+                )
+            else:
+                permutation = Permutation.from_tables(
+                    self._table, self._perm_table, split=split
+                )
+                permutation = permutation.select_columns([token_column])
+                permutation = permutation.with_transform(Transforms.arrow2arrow)
             split_rows = permutation.num_rows
             if split_rows == 0:
                 raise ValueError(
@@ -1086,54 +1164,14 @@ class StreamingDataset(IterableDataset):
             # 2-phase flows through the exact same stage-1 I/O machinery
             # (_fill_io/_submit_io/_drain_io, io_queue_depth prefetch) as
             # 1-phase.  No 2-phase-specific code exists past this point.
-            blocks_per_split = self._num_blocks // self._num_splits
             lance_ds = self._table.to_lance()
-
-            def _read_block(block_id: int) -> pa.Table:
-                if self._filter is None:
-                    # Plain offset/limit: unambiguous raw-position scan
-                    # that Lance can seek to directly.  Bytes/time
-                    # accounting happens generically in _io_call, below,
-                    # not here.
-                    row_start, row_end = self._block_ranges[block_id]
-                    return lance_ds.scanner(
-                        offset=row_start,
-                        limit=row_end - row_start,
-                    ).to_table()
-
-                # Filtered: this block's exact live-row dataset offsets
-                # were already computed once, up front (from the
-                # "_rowoffset" system column -- see __init__), so a
-                # sparse take() fetches just the live rows themselves,
-                # skipping any dead-row gaps entirely, in the requested
-                # (already-ascending, already-natural) order.
-                offsets = self._block_live_offsets[block_id]
-                return lance_ds.take(offsets.tolist())
 
             permutations: list[_TwoPhaseSplitReader] = []
             initial_samples = []
             initial_positions = []
             for split_idx in my_splits:
-                start = split_idx * blocks_per_split
-                end = start + blocks_per_split
-                block_ids = self._block_perm[start:end]
-                live_counts = [self._block_live_counts[bid] for bid in block_ids]
-                sigma_seed = (
-                    self._shuffle_seed
-                    + self._epoch * _EPOCH_PRIME
-                    + _SIGMA_PRIME
-                    + split_idx * _SIGMA_SPLIT_PRIME
-                )
                 permutations.append(
-                    _TwoPhaseSplitReader(
-                        block_ids=block_ids,
-                        block_live_counts=live_counts,
-                        shuffle=self._shuffle,
-                        max_shuffle_distance=self._max_shuffle_distance,
-                        seed=sigma_seed,
-                        read_block_fn=_read_block,
-                        columns=self._columns,
-                    )
+                    self._make_two_phase_reader(split_idx, lance_ds, self._columns)
                 )
                 # No resume/skip support yet in 2-phase: every split starts
                 # fresh regardless of any loaded checkpoint.
