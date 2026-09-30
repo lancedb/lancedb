@@ -27,7 +27,7 @@ import threading
 import time
 import warnings
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from multiprocessing import RawArray
 from typing import Any, Callable, cast, Iterator, Literal, NamedTuple, Optional, Union
@@ -116,16 +116,21 @@ class _TwoPhaseSplitReader:
     in the output order -- which happens naturally once ``sigma`` has been
     applied, without any extra bookkeeping about "generations" or "slots".
 
-    Only one ``__getitems__`` call executes at a time (serialized by
-    ``_lock``): the block cache and read plan are shared, mutable state,
-    and letting ``io_queue_depth`` submit multiple concurrent calls for the
-    same split would race on them.  ``io_queue_depth`` therefore does not
-    add fetch parallelism within a single 2-phase split (a known
-    limitation) -- only across splits, which each get their own reader and
-    lock.  Blocks are also still loaded strictly on demand (the first time
-    a gather references them), not eagerly prefetched ahead of
-    ``window_blocks``, so a single split's own I/O does not yet overlap
-    with itself either -- a separate follow-up from this pass.
+    Only one ``__getitems__`` call executes its own gather/evict logic at a
+    time (serialized by ``_lock``): the block cache and read plan are
+    shared, mutable state, and letting ``io_queue_depth`` submit multiple
+    concurrent calls for the same split would race on them.  The actual
+    block *fetches* do run concurrently with each other and with whichever
+    call holds ``_lock``, though: each call, after satisfying its own rows,
+    schedules background prefetches (on a small private executor, sized by
+    ``prefetch_depth``) for the next few not-yet-loaded blocks the read
+    plan is about to need, up to ``prefetch_depth`` blocks in flight or
+    already fetched but not yet consumed at once.  By the time a later call
+    actually needs one of those blocks, its fetch has often already
+    completed, so the call just picks up the finished result instead of
+    blocking on storage -- overlapping this split's own I/O with whatever
+    is consuming its previous blocks, the same way ``io_queue_depth``
+    overlaps I/O for 1-phase.
     """
 
     def __init__(
@@ -138,12 +143,25 @@ class _TwoPhaseSplitReader:
         read_block_fn: Callable[[int], pa.Table],
         columns: Optional[list[str]],
         skip: int = 0,
+        prefetch_depth: int = 1,
     ):
         self._block_ids = block_ids
         self._read_block_fn = read_block_fn
         self._columns = columns
         self._lock = threading.Lock()
         self._loaded: dict[int, pa.Table] = {}
+        self._pending: dict[int, Future] = {}
+        self._prefetch_depth = max(1, prefetch_depth)
+        self._executor = ThreadPoolExecutor(max_workers=self._prefetch_depth)
+        # How far ahead in the plan to look for new blocks to prefetch.
+        # _build_bounded_permutation shuffles within fixed, non-overlapping
+        # chunks of max_shuffle_distance dense ranks, so scanning two such
+        # chunks ahead is always enough to find prefetch_depth distinct new
+        # blocks (barring an unusually large prefetch_depth relative to
+        # block_size); it's just a search bound, not a correctness
+        # requirement, so an occasional miss just skips prefetching that
+        # block this round.
+        self._prefetch_scan_cap = max(1, 2 * max_shuffle_distance)
 
         counts = np.asarray(block_live_counts, dtype=np.int64)
         total_rows = int(counts.sum())
@@ -195,11 +213,16 @@ class _TwoPhaseSplitReader:
             needed = sorted(set(block_pos_slice.tolist()))
             for bp in needed:
                 if bp not in self._loaded:
-                    block_id = self._block_ids[bp]
-                    # read_block_fn already returns only this block's live
-                    # rows, in natural (ascending) order -- no further
-                    # filtering or reordering needed here.
-                    self._loaded[bp] = self._read_block_fn(block_id)
+                    if bp in self._pending:
+                        # Prefetched by an earlier call: block on it only if
+                        # it hasn't finished yet -- often it already has.
+                        self._loaded[bp] = self._pending.pop(bp).result()
+                    else:
+                        block_id = self._block_ids[bp]
+                        # read_block_fn already returns only this block's
+                        # live rows, in natural (ascending) order -- no
+                        # further filtering or reordering needed here.
+                        self._loaded[bp] = self._read_block_fn(block_id)
 
             # Group by source block (stable, so each block's rows keep
             # their relative order), gather from each, then invert the
@@ -229,9 +252,33 @@ class _TwoPhaseSplitReader:
                 if self._block_last_pos.get(bp, -1) <= watermark:
                     del self._loaded[bp]
 
+            # Top up the prefetch queue: scan forward from this call's end
+            # for blocks the plan is about to need that aren't already
+            # loaded or already being fetched, and hand them to the
+            # background executor so a later call can often just pick up
+            # the (by then finished) result above instead of blocking.
+            room = self._prefetch_depth - len(self._pending)
+            if room > 0:
+                scan_pos = watermark + 1
+                scan_end = min(
+                    scan_pos + self._prefetch_scan_cap, len(self._plan_block_pos)
+                )
+                while scan_pos < scan_end and room > 0:
+                    bp = int(self._plan_block_pos[scan_pos])
+                    if bp not in self._loaded and bp not in self._pending:
+                        self._pending[bp] = self._executor.submit(
+                            self._read_block_fn, self._block_ids[bp]
+                        )
+                        room -= 1
+                    scan_pos += 1
+
         if self._columns is not None:
             result = result.select(self._columns)
         return result.combine_chunks().to_batches()[0]
+
+    def close(self) -> None:
+        """Release this reader's background prefetch executor."""
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 class _WorkerSample(NamedTuple):
@@ -441,7 +488,10 @@ class StreamingDataset(IterableDataset):
         Number of I/O batches to keep in flight per split.  Higher values
         overlap storage latency with transform and training compute at the cost
         of more memory and threads.  Must be greater than zero.  Defaults to
-        ``DEFAULT_PREFETCH_BATCHES`` (4).
+        ``DEFAULT_PREFETCH_BATCHES`` (4).  In 2-phase mode (``block_size``
+        set) this also sizes each split's background block-prefetch depth:
+        up to this many upcoming blocks may be fetched in the background
+        ahead of actually being needed.
     columns:
         Optional list of column names to read.  When set, only those columns
         are fetched from storage; all others are omitted.  ``None`` (the
@@ -983,6 +1033,7 @@ class StreamingDataset(IterableDataset):
             ),
             columns=columns,
             skip=skip,
+            prefetch_depth=self._io_queue_depth,
         )
 
     def _estimate_blocks_per_epoch(self) -> int:
@@ -1045,6 +1096,9 @@ class StreamingDataset(IterableDataset):
                 if lengths.null_count:
                     raise ValueError("pack_sequences does not support null token lists")
                 sampled_tokens += int(pc.sum(lengths).as_py())
+
+            if self._block_size is not None:
+                permutation.close()
 
             total_sampled += sample_rows
             total_rows += split_rows
@@ -1616,6 +1670,13 @@ class StreamingDataset(IterableDataset):
                     self._fetch_head_ref = None
                     self._split_sizes_ref = None
                     self._local_consumed_ref = None
+                    if self._block_size is not None:
+                        # Each _TwoPhaseSplitReader owns a private prefetch
+                        # executor; a fresh set is built on every
+                        # _iter_owned call, so these must be shut down here
+                        # or their threads leak across epochs/iterations.
+                        for reader in permutations:
+                            reader.close()
 
     @property
     def bytes_loaded(self) -> int:
