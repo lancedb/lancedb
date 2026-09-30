@@ -3366,6 +3366,30 @@ def test_two_phase_resume_checkpoint_round_trip(lance_table):
     )
 
 
+def test_two_phase_reshuffle_blocks_per_epoch_toggle(lance_table):
+    """reshuffle_blocks_per_epoch=False keeps each split's blocks fixed
+    across epochs; the default (True) reassigns them every epoch."""
+    block_size = 10  # NUM_ROWS=120 -> 12 blocks
+
+    def block_perm_for(epoch, reshuffle):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=1,
+            shuffle_seed=SHUFFLE_SEED,
+            block_size=block_size,
+            epoch=epoch,
+            reshuffle_blocks_per_epoch=reshuffle,
+        )
+        return list(ds._block_perm)
+
+    assert block_perm_for(0, False) == block_perm_for(1, False), (
+        "blocks must stay pinned to the same split across epochs when disabled"
+    )
+    assert block_perm_for(0, True) != block_perm_for(1, True), (
+        "blocks should be reassigned across epochs by default"
+    )
+
+
 def test_two_phase_too_few_blocks_for_num_splits_raises(tmp_path):
     """Fewer blocks than num_splits would leave some splits with no data."""
     db = lancedb.connect(tmp_path)
@@ -3385,6 +3409,10 @@ def test_two_phase_too_few_blocks_for_num_splits_raises(tmp_path):
         pytest.param({"window_blocks": 2}, id="window_blocks_without_block_size"),
         pytest.param(
             {"max_shuffle_distance": 5}, id="max_shuffle_distance_without_block_size"
+        ),
+        pytest.param(
+            {"reshuffle_blocks_per_epoch": True},
+            id="reshuffle_blocks_per_epoch_without_block_size",
         ),
     ],
 )

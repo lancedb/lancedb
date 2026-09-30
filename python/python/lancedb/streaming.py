@@ -531,6 +531,15 @@ class StreamingDataset(IterableDataset):
         ``window_blocks * block_size``, so the default window actually
         holds ``window_blocks`` blocks in RAM at once; pass this explicitly
         to decouple the shuffle bound from ``window_blocks``.
+    reshuffle_blocks_per_epoch:
+        Whether ``epoch`` feeds into which blocks are assigned to which
+        split, in addition to the row-level shuffle within each split's
+        blocks (which always varies by epoch).  Requires ``block_size``.
+        ``True`` (the default) reassigns blocks every epoch, matching
+        1-phase's per-epoch row reassignment.  ``False`` keeps each
+        split's blocks fixed across epochs -- only the row order within
+        them changes -- which keeps a block's on-disk location, and thus
+        its read locality, stable across an entire training run.
     filter:
         Optional SQL filter expression (e.g. ``"label = 'dog'"``).  Only rows
         that satisfy the predicate are included in the permutation.  The filter
@@ -656,6 +665,7 @@ class StreamingDataset(IterableDataset):
         block_size: Optional[int] = None,
         window_blocks: Optional[int] = None,
         max_shuffle_distance: Optional[int] = None,
+        reshuffle_blocks_per_epoch: Optional[bool] = None,
         filter: Optional[str] = None,
         transform: Optional[Callable] = None,
         transform_parallelism: Optional[int] = None,
@@ -696,6 +706,10 @@ class StreamingDataset(IterableDataset):
             if max_shuffle_distance is not None:
                 raise ValueError(
                     "max_shuffle_distance requires block_size to be set"
+                )
+            if reshuffle_blocks_per_epoch is not None:
+                raise ValueError(
+                    "reshuffle_blocks_per_epoch requires block_size to be set"
                 )
         else:
             if window_blocks is not None and window_blocks < 1:
@@ -928,9 +942,23 @@ class StreamingDataset(IterableDataset):
                     f"block(s) from {num_rows} row(s), fewer than num_splits "
                     f"({num_splits}); use a smaller block_size or fewer splits"
                 )
+            # Whether the epoch feeds into the block shuffle (so which
+            # blocks a split owns changes every epoch, same as 1-phase's
+            # row assignment) or only into the row-level shuffle within
+            # each split's fixed blocks (so blocks stay pinned to the same
+            # split/location across epochs, and only their row order
+            # varies).  Defaults to True: matches the pre-existing
+            # behavior of using epoch for both.
+            self._reshuffle_blocks_per_epoch = (
+                reshuffle_blocks_per_epoch
+                if reshuffle_blocks_per_epoch is not None
+                else True
+            )
             block_order = list(range(self._num_blocks))
             if shuffle:
-                block_seed = shuffle_seed + epoch * _EPOCH_PRIME
+                block_seed = shuffle_seed
+                if self._reshuffle_blocks_per_epoch:
+                    block_seed += epoch * _EPOCH_PRIME
                 random.Random(block_seed).shuffle(block_order)
             # Kept as a plain Python list for simplicity, unlike the
             # 1-phase row mapping below, which is Arrow-backed because it
