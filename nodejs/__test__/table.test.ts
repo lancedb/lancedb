@@ -3869,6 +3869,28 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       );
     });
 
+    test.each(["Klingon", "english"])(
+      "rejects unsupported full text language %s with a catchable error",
+      (language) => {
+        expect(() => Index.fts({ language })).toThrow(
+          new Error(
+            `LanceDB does not support the requested language: '${language}'`,
+          ),
+        );
+      },
+    );
+
+    test("full text search with a supported language", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("test", [{ text: "running" }]);
+      await table.createIndex("text", {
+        config: Index.fts({ language: "English", stem: true }),
+      });
+
+      const results = await table.search("run").toArray();
+      expect(results.map((row) => row.text)).toEqual(["running"]);
+    });
+
     test("full text search without lowercase", async () => {
       const db = await connect(tmpDir.name);
       const data = [
