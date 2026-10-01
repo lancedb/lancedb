@@ -138,3 +138,45 @@ async def test_catalog_async_and_errors(catalog_server):
 def test_catalog_requires_remote_endpoint(endpoint):
     with pytest.raises(ValueError, match="endpoint"):
         lancedb.connect_catalog(endpoint)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_catalog_rejects_invalid_database_names_before_io(
+    catalog_server, asynchronous
+):
+    endpoint, requests, _ = catalog_server
+    catalog = (
+        await lancedb.connect_catalog_async(endpoint)
+        if asynchronous
+        else lancedb.connect_catalog(endpoint)
+    )
+    for name in [
+        "",
+        ".",
+        "..",
+        "/db",
+        "db/",
+        "a//b",
+        "a/./b",
+        "a/../b",
+        "a b",
+        "a:b",
+        "a$b",
+        "a%b",
+        "a?b",
+        "a#b",
+        "a\\b",
+        "café",
+        "a\nb",
+    ]:
+        for method in [
+            catalog.create_database,
+            catalog.connect_database,
+            catalog.drop_database,
+        ]:
+            with pytest.raises(ValueError, match="invalid database name"):
+                result = method(name)
+                if asynchronous:
+                    await result
+    assert requests == []

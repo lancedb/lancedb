@@ -136,6 +136,28 @@ fn check_object_name(name: &str) -> std::result::Result<(), &'static str> {
     Ok(())
 }
 
+/// Validate a database name as slash-separated components.
+///
+/// Each component must contain only ASCII letters, digits, underscores, hyphens,
+/// or periods, and cannot be empty, `.` or `..`.
+///
+/// ```
+/// use lancedb::utils::validate_database_name;
+///
+/// assert!(validate_database_name("team/analytics").is_ok());
+/// assert!(validate_database_name("team/../analytics").is_err());
+/// ```
+pub fn validate_database_name(name: &str) -> Result<()> {
+    for component in name.split('/') {
+        check_object_name(component).map_err(|reason| Error::InvalidInput {
+            message: format!(
+                "invalid database name {name:?}: invalid component {component:?}: {reason}"
+            ),
+        })?;
+    }
+    Ok(())
+}
+
 /// Validate a table name.
 pub fn validate_table_name(name: &str) -> Result<()> {
     check_object_name(name).map_err(|reason| Error::InvalidTableName {
@@ -868,6 +890,25 @@ mod tests {
             .to_string();
         assert!(err.contains("image.embedding"));
         assert!(err.contains("text.embedding"));
+    }
+
+    #[test]
+    fn test_validate_database_name() {
+        for name in ["db", "org/db", "a/b/c", "A_1-b.c", "_/-/.db", "..."] {
+            assert!(validate_database_name(name).is_ok(), "{name}");
+        }
+        for name in [
+            "", ".", "..", "/db", "db/", "a//b", "a/./b", "a/../b", "a b", "a:b", "a$b", "a%b",
+            "a?b", "a#b", "a\\b", "café", "a\nb",
+        ] {
+            assert!(
+                matches!(
+                    validate_database_name(name),
+                    Err(Error::InvalidInput { .. })
+                ),
+                "{name}"
+            );
+        }
     }
 
     #[test]
