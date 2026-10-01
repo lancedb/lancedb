@@ -11,6 +11,9 @@ import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
+import * as arrow19 from "apache-arrow-19";
+import * as arrow20 from "apache-arrow-20";
+import * as arrow21 from "apache-arrow-21";
 
 import {
   AutoQuery,
@@ -57,7 +60,7 @@ import {
 } from "../lancedb/query";
 import { LocalTable } from "../lancedb/table";
 
-describe.each([arrow15, arrow16, arrow17, arrow18])(
+describe.each([arrow15, arrow16, arrow17, arrow18, arrow19, arrow20, arrow21])(
   "Given a table",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
@@ -68,7 +71,10 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       | import("apache-arrow-15").Schema
       | import("apache-arrow-16").Schema
       | import("apache-arrow-17").Schema
-      | import("apache-arrow-18").Schema = new arrow.Schema([
+      | import("apache-arrow-18").Schema
+      | import("apache-arrow-19").Schema
+      | import("apache-arrow-20").Schema
+      | import("apache-arrow-21").Schema = new arrow.Schema([
       new arrow.Field("id", new arrow.Float64(), true),
     ]);
 
@@ -3203,7 +3209,7 @@ it("passes cleanupOlderThan to the native binding as an absolute timestamp", asy
   expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true);
 });
 
-describe.each([arrow15, arrow16, arrow17, arrow18])(
+describe.each([arrow15, arrow16, arrow17, arrow18, arrow19, arrow20, arrow21])(
   "when optimizing a dataset",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {

@@ -6,6 +6,9 @@ import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
+import * as arrow19 from "apache-arrow-19";
+import * as arrow20 from "apache-arrow-20";
+import * as arrow21 from "apache-arrow-21";
 
 import {
   Field as CurrentField,
@@ -110,16 +113,26 @@ it("preserves field metadata from a provided schema", async function () {
   expect(roundTripped.schema.fields[0].metadata).toEqual(jsonMetadata);
 });
 
-describe.each([arrow15, arrow16, arrow17, arrow18])(
+describe.each([arrow15, arrow16, arrow17, arrow18, arrow19, arrow20, arrow21])(
   "Arrow",
   (
-    arrow: typeof arrow15 | typeof arrow16 | typeof arrow17 | typeof arrow18,
+    arrow:
+      | typeof arrow15
+      | typeof arrow16
+      | typeof arrow17
+      | typeof arrow18
+      | typeof arrow19
+      | typeof arrow20
+      | typeof arrow21,
   ) => {
     type ApacheArrow =
       | typeof arrow15
       | typeof arrow16
       | typeof arrow17
-      | typeof arrow18;
+      | typeof arrow18
+      | typeof arrow19
+      | typeof arrow20
+      | typeof arrow21;
     const {
       Schema,
       Field,
