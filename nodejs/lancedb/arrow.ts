@@ -79,7 +79,7 @@ export type FieldLike =
  * type of this one even though it is structurally identical. Inputs that only
  * need to be sanitized accept this looser shape instead.
  */
-export type DataTypeLike = DataType | { readonly typeId: unknown };
+export type DataTypeLike = DataType | { readonly typeId: number };
 
 /**
  * Create an Arrow field backed by LanceDB's JSON extension type.
