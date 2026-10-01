@@ -806,6 +806,43 @@ const hostArrowSupportsViewTypes =
       );
       expect(Array.from(r.bytes)).toEqual(Array(20).fill(7));
     }
+
+    // Regression: a field with an integer-like name. JavaScript enumerates
+    // such keys first, so a key-ordered rebuild would pair "1" with the text
+    // column's values. The batches are built explicitly to pin field order.
+    const numericSchema = new latestArrow.Schema([
+      new latestArrow.Field("text", new latestArrow.Utf8View(), true),
+      new latestArrow.Field("1", new latestArrow.Utf8View(), true),
+      new latestArrow.Field("n", new latestArrow.Int32(), true),
+    ]);
+    const column = (
+      values: unknown[],
+      type: InstanceType<typeof latestArrow.DataType>,
+    ) => latestArrow.vectorFromArray(values, type).data[0];
+    const numericBatch = new latestArrow.RecordBatch(
+      numericSchema,
+      latestArrow.makeData({
+        type: new latestArrow.Struct(numericSchema.fields),
+        length: 3,
+        nullCount: 0,
+        children: [
+          column(["t0", "t1", "t2"], new latestArrow.Utf8View()),
+          column(["one0", "one1", "one2"], new latestArrow.Utf8View()),
+          column([0, 1, 2], new latestArrow.Int32()),
+        ],
+      }),
+    );
+    const numericData = new latestArrow.Table(numericSchema, [numericBatch]);
+    const numericTable = await db.createTable("views_numeric", numericData);
+    await numericTable.add(numericData.slice(1));
+    const numericRows = (await numericTable.query().toArrow()).toArray();
+    expect(numericRows.map((r) => r.toJSON())).toEqual([
+      { text: "t0", "1": "one0", n: 0 },
+      { text: "t1", "1": "one1", n: 1 },
+      { text: "t2", "1": "one2", n: 2 },
+      { text: "t1", "1": "one1", n: 1 },
+      { text: "t2", "1": "one2", n: 2 },
+    ]);
     tmpDir.removeCallback();
   },
 );

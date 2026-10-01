@@ -1074,6 +1074,17 @@ const UTF8_VIEW_TYPE_ID = 24;
 const BINARY_VIEW_TYPE_ID = 23;
 
 /**
+ * Copy a Utf8View / BinaryView `Data` into a single `Data` of `type`.
+ */
+function materializeViewData(child: ArrowData, type: DataType): ArrowData {
+  const builder = makeBuilder({ type, nullValues: [null] });
+  for (const value of new Vector([child])) {
+    builder.append(value);
+  }
+  return builder.finish().flush();
+}
+
+/**
  * Rebuild any top-level Utf8View / BinaryView column as Utf8 / Binary.
  *
  * Lance stores the view types as their offset-based equivalents anyway, so
@@ -1081,34 +1092,45 @@ const BINARY_VIEW_TYPE_ID = 23;
  * writer emits a truncated views buffer for a *sliced* view array, which the
  * Rust reader rejects with "Need at least N bytes in buffers[0]".
  *
+ * The record batches are rebuilt positionally rather than through a
+ * `Record<string, Vector>`: JavaScript enumerates integer-like keys first, so
+ * a field named e.g. `"1"` would otherwise be paired with the wrong column.
+ *
  * Tables without view columns are returned as-is.
  */
 function materializeViewColumns(table: ArrowTable): ArrowTable {
-  const hasViewColumn = table.schema.fields.some(
-    (field) =>
-      field.type.typeId === UTF8_VIEW_TYPE_ID ||
-      field.type.typeId === BINARY_VIEW_TYPE_ID,
-  );
-  if (!hasViewColumn) {
+  const replacements = new Map<number, DataType>();
+  table.schema.fields.forEach((field, i) => {
+    if (field.type.typeId === UTF8_VIEW_TYPE_ID) {
+      replacements.set(i, new Utf8());
+    } else if (field.type.typeId === BINARY_VIEW_TYPE_ID) {
+      replacements.set(i, new Binary());
+    }
+  });
+  if (replacements.size === 0) {
     return table;
   }
-  const columns: Record<string, Vector> = {};
-  const fields = table.schema.fields.map((field) => {
-    const column = table.getChild(field.name)!;
-    let type: DataType | undefined;
-    if (field.type.typeId === UTF8_VIEW_TYPE_ID) {
-      type = new Utf8();
-    } else if (field.type.typeId === BINARY_VIEW_TYPE_ID) {
-      type = new Binary();
-    }
-    if (type === undefined) {
-      columns[field.name] = column;
-      return field;
-    }
-    columns[field.name] = badVectorFromArray(column.toArray(), type);
-    return new Field(field.name, type, field.nullable, field.metadata);
+  const fields = table.schema.fields.map((field, i) => {
+    const type = replacements.get(i);
+    return type === undefined
+      ? field
+      : new Field(field.name, type, field.nullable, field.metadata);
   });
-  return new ArrowTable(new Schema(fields, table.schema.metadata), columns);
+  const schema = new Schema(fields, table.schema.metadata);
+  const batches = table.batches.map((batch) => {
+    const children = batch.data.children.map((child, i) => {
+      const type = replacements.get(i);
+      return type === undefined ? child : materializeViewData(child, type);
+    });
+    const data = makeData({
+      type: new Struct(fields),
+      length: batch.numRows,
+      nullCount: 0,
+      children,
+    });
+    return new RecordBatch(schema, data);
+  });
+  return new ArrowTable(schema, batches);
 }
 
 /**
