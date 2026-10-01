@@ -207,8 +207,16 @@ jobs:
         pnpm build:debug --profile ci
     - name: Resolve apache-arrow to ${{ matrix.arrow-version }}
       run: |
-        npm pkg set devDependencies.apache-arrow=${{ matrix.arrow-version }}
-        pnpm install --no-frozen-lockfile
+        # The older releases are already installed as the `apache-arrow-NN`
+        # test aliases. With pnpm's hoisted linker each alias is a complete,
+        # self-contained directory, so swap it in for the library's own
+        # `apache-arrow` instead of running a second install, which has been
+        # seen to hang after printing "Done" in CI. A copy, not a symlink: the
+        # cross-version tests rely on the alias being a separate module
+        # instance from the one the library loads.
+        major="$(echo '${{ matrix.arrow-version }}' | cut -d. -f1)"
+        mv node_modules/apache-arrow node_modules/apache-arrow.pinned
+        cp -R "node_modules/apache-arrow-${major}" node_modules/apache-arrow
         # `require("apache-arrow/package.json")` is blocked by the package's exports map.
         node -p "'apache-arrow resolved to ' + JSON.parse(require('fs').readFileSync('node_modules/apache-arrow/package.json')).version"
         pnpm tsc
