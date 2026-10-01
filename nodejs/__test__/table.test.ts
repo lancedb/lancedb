@@ -771,12 +771,14 @@ const hostArrowSupportsViewTypes =
     await table.add(makeData());
 
     const schema = await table.schema();
+    // Take the enum from the Arrow 21 copy: the host Arrow may predate
+    // `Type.LargeList`, and this file still has to type-check there.
     expect(schema.fields.map((f) => f.type.typeId)).toEqual([
-      arrow.Type.Int,
-      arrow.Type.LargeList,
+      latestArrow.Type.Int,
+      latestArrow.Type.LargeList,
       // Lance stores the view types as their offset-based equivalents.
-      arrow.Type.Utf8,
-      arrow.Type.Binary,
+      latestArrow.Type.Utf8,
+      latestArrow.Type.Binary,
     ]);
     const rows = await table.query().toArrow();
     expect(rows.numRows).toBe(4);
@@ -787,6 +789,23 @@ const hostArrowSupportsViewTypes =
       "a string that is longer than the twelve inline bytes",
     );
     expect(Array.from(row.bytes)).toEqual(Array(20).fill(7));
+
+    // Arrow JS 21 serializes a *sliced* view column with a truncated views
+    // buffer; the library rebuilds view columns as Utf8/Binary so this works.
+    const sliced = makeData().slice(1, 2);
+    expect(sliced.getChild("text")!.data[0].offset).toBe(1);
+    const slicedTable = await db.createTable("views_sliced", sliced);
+    await slicedTable.add(sliced);
+    const slicedRows = await slicedTable.query().toArrow();
+    expect(slicedRows.numRows).toBe(2);
+    for (const i of [0, 1]) {
+      const r = slicedRows.get(i)!.toJSON();
+      expect(r.id).toBe(2);
+      expect(r.text).toBe(
+        "a string that is longer than the twelve inline bytes",
+      );
+      expect(Array.from(r.bytes)).toEqual(Array(20).fill(7));
+    }
     tmpDir.removeCallback();
   },
 );

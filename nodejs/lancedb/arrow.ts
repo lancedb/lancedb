@@ -1068,6 +1068,49 @@ export async function fromRecordsToStreamBuffer(
   return Buffer.from(await writer.toUint8Array());
 }
 
+// `Type.Utf8View` / `Type.BinaryView` as numbers: the enum members only exist
+// in Arrow 21+, and this module compiles against every supported release.
+const UTF8_VIEW_TYPE_ID = 24;
+const BINARY_VIEW_TYPE_ID = 23;
+
+/**
+ * Rebuild any top-level Utf8View / BinaryView column as Utf8 / Binary.
+ *
+ * Lance stores the view types as their offset-based equivalents anyway, so
+ * nothing is lost. Doing it here also sidesteps an Arrow JS 21 bug: its IPC
+ * writer emits a truncated views buffer for a *sliced* view array, which the
+ * Rust reader rejects with "Need at least N bytes in buffers[0]".
+ *
+ * Tables without view columns are returned as-is.
+ */
+function materializeViewColumns(table: ArrowTable): ArrowTable {
+  const hasViewColumn = table.schema.fields.some(
+    (field) =>
+      field.type.typeId === UTF8_VIEW_TYPE_ID ||
+      field.type.typeId === BINARY_VIEW_TYPE_ID,
+  );
+  if (!hasViewColumn) {
+    return table;
+  }
+  const columns: Record<string, Vector> = {};
+  const fields = table.schema.fields.map((field) => {
+    const column = table.getChild(field.name)!;
+    let type: DataType | undefined;
+    if (field.type.typeId === UTF8_VIEW_TYPE_ID) {
+      type = new Utf8();
+    } else if (field.type.typeId === BINARY_VIEW_TYPE_ID) {
+      type = new Binary();
+    }
+    if (type === undefined) {
+      columns[field.name] = column;
+      return field;
+    }
+    columns[field.name] = badVectorFromArray(column.toArray(), type);
+    return new Field(field.name, type, field.nullable, field.metadata);
+  });
+  return new ArrowTable(new Schema(fields, table.schema.metadata), columns);
+}
+
 /**
  * Serialize an Arrow Table into a buffer using the Arrow IPC File serialization
  *
@@ -1084,7 +1127,9 @@ export async function fromTableToBuffer(
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
   }
-  const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  const tableWithEmbeddings = materializeViewColumns(
+    await applyEmbeddings(table, embeddings, schema),
+  );
   validateBlobSchema(tableWithEmbeddings.schema);
   const writer = RecordBatchFileWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
@@ -1155,7 +1200,8 @@ export async function fromRecordBatchToBuffer(
 export async function fromRecordBatchToStreamBuffer(
   batch: RecordBatch,
 ): Promise<Buffer> {
-  const writer = RecordBatchStreamWriter.writeAll([batch]);
+  const table = materializeViewColumns(new ArrowTable([batch]));
+  const writer = RecordBatchStreamWriter.writeAll(table);
   return Buffer.from(await writer.toUint8Array());
 }
 
@@ -1172,7 +1218,9 @@ export async function fromTableToStreamBuffer(
   embeddings?: EmbeddingFunctionConfig,
   schema?: SchemaLike,
 ): Promise<Buffer> {
-  const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  const tableWithEmbeddings = materializeViewColumns(
+    await applyEmbeddings(table, embeddings, schema),
+  );
   const writer = RecordBatchStreamWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
 }
