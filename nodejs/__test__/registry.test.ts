@@ -7,6 +7,9 @@ import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
+import * as arrow19 from "apache-arrow-19";
+import * as arrow20 from "apache-arrow-20";
+import * as arrow21 from "apache-arrow-21";
 
 import * as tmp from "tmp";
 
@@ -18,7 +21,17 @@ import {
 } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
-describe.each([arrow15, arrow16, arrow17, arrow18])("LanceSchema", (arrow) => {
+const arrowVersions = [
+  arrow15,
+  arrow16,
+  arrow17,
+  arrow18,
+  arrow19,
+  arrow20,
+  arrow21,
+];
+
+describe.each(arrowVersions)("LanceSchema", (arrow) => {
   test("should preserve input order", async () => {
     const schema = LanceSchema({
       id: new arrow.Int32(),
@@ -29,7 +42,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("LanceSchema", (arrow) => {
   });
 });
 
-describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
+describe.each(arrowVersions)("Registry", (arrow) => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
