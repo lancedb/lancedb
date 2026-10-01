@@ -136,6 +136,7 @@ def namespace_admin_ops_example():
     # --8<-- [end:namespace_admin_ops]
     return child_namespaces, metadata
 
+
 async def connect_object_storage_config_async():
     # --8<-- [start:connect_object_storage_async]
     import lancedb

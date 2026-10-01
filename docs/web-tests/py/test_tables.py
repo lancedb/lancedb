@@ -355,6 +355,7 @@ def test_table_creation_from_iterator(tmp_db):
     db.create_table("batched_table", make_batches(), schema=schema, mode="overwrite")
     # --8<-- [end:create_table_from_iterator]
 
+
 def test_open_existing_table(tmp_db):
     # --8<-- [start:open_existing_table]
     db = tmp_db
@@ -1425,9 +1426,7 @@ def test_branches(tmp_db):
     # Setup: a branch with row results that we want to apply to main.
     candidate = table.branches.create("candidate")
     candidate.update(where="id = 1", values={"quote": "Revised on the branch"})
-    candidate.add(
-        [{"id": 4, "author": "Galahad", "quote": "The grail awaits."}]
-    )
+    candidate.add([{"id": 4, "author": "Galahad", "quote": "The grail awaits."}])
 
     # --8<-- [start:branch_upsert_to_main]
     # This is a row-level upsert, not a merge of branch histories.
@@ -1442,9 +1441,7 @@ def test_branches(tmp_db):
     )
     # --8<-- [end:branch_upsert_to_main]
 
-    main_rows = {
-        row["id"]: row["quote"] for row in table.to_arrow().to_pylist()
-    }
+    main_rows = {row["id"]: row["quote"] for row in table.to_arrow().to_pylist()}
     assert table.count_rows() == 4
     assert main_rows[1] == "Revised on the branch"
     assert 4 in main_rows

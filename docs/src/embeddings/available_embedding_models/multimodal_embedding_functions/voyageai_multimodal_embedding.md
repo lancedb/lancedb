@@ -36,7 +36,7 @@ from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 import pandas as pd
 
-os.environ['VOYAGE_API_KEY'] = 'YOUR_VOYAGE_API_KEY'
+os.environ["VOYAGE_API_KEY"] = "YOUR_VOYAGE_API_KEY"
 
 db = lancedb.connect(".lancedb")
 func = get_registry().get("voyageai").create(name="voyage-multimodal-3")
@@ -76,10 +76,11 @@ table.add(
 ```
 Now we can search using text from both the default vector column and the custom vector column
 ```python
-
 # text search
-actual = table.search("man's best friend", "vec_from_bytes").limit(1).to_pydantic(Images)[0]
-print(actual.label) # prints "dog"
+actual = (
+    table.search("man's best friend", "vec_from_bytes").limit(1).to_pydantic(Images)[0]
+)
+print(actual.label)  # prints "dog"
 
 frombytes = (
     table.search("man's best friend", vector_column_name="vec_from_bytes")
@@ -87,7 +88,6 @@ frombytes = (
     .to_pydantic(Images)[0]
 )
 print(frombytes.label)
-
 ```
 
 Because we're using a multi-modal embedding function, we can also search using images
@@ -107,5 +107,4 @@ other = (
     .to_pydantic(Images)[0]
 )
 print(actual.label)
-
 ```

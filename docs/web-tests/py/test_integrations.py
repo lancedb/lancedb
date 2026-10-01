@@ -723,7 +723,9 @@ def test_embedding_voyageai_multimodal() -> None:
     # Add images using URLs
     tbl.add(
         [
-            {"image_uri": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"},
+            {
+                "image_uri": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/300px-PNG_transparency_demonstration_1.png"
+            },
         ]
     )
 

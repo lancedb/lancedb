@@ -338,9 +338,7 @@ async def test_fts_native_async():
 
 def _vectors(n, dim, seed=0, column="vector"):
     rng = np.random.default_rng(seed)
-    return [
-        {column: rng.random(dim).astype("float32"), "id": i} for i in range(n)
-    ]
+    return [{column: rng.random(dim).astype("float32"), "id": i} for i in range(n)]
 
 
 def _build_indexed_table(db, name, dim=128, n=512):
@@ -367,13 +365,15 @@ def test_vs_select_vector_column(tmp_db):
     # --8<-- [start:select_vector_column]
     import pyarrow as pa
 
-    schema = pa.schema([
-        pa.field("id", pa.int32()),
-        pa.field(
-            "image",
-            pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
-        ),
-    ])
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
     table = db.create_table(
         "nested",
         data=[{"id": 0, "image": {"embedding": [0.0, 1.0]}}],
@@ -421,26 +421,16 @@ def test_vs_indexed_queries(tmp_db):
 
     # --8<-- [start:exact_vs_approximate_distances]
     # Indexed ANN search without refinement (fast, approximate `_distance`)
-    fast_results = (
-        table.search(embedding)
-        .limit(10)
-        .to_pandas()
-    )
+    fast_results = table.search(embedding).limit(10).to_pandas()
 
     # Recompute distances on full vectors for reranked candidates
     exact_distance_results = (
-        table.search(embedding)
-        .limit(10)
-        .refine_factor(1)
-        .to_pandas()
+        table.search(embedding).limit(10).refine_factor(1).to_pandas()
     )
 
     # Rerank a larger candidate set for better recall (higher latency)
     higher_recall_results = (
-        table.search(embedding)
-        .limit(10)
-        .refine_factor(20)
-        .to_pandas()
+        table.search(embedding).limit(10).refine_factor(20).to_pandas()
     )
     # --8<-- [end:exact_vs_approximate_distances]
 
@@ -584,7 +574,9 @@ def test_vs_enterprise_filtering(tmp_db, monkeypatch):
     from datasets import load_dataset
 
     # Load query vector from dataset
-    query_dataset = load_dataset("sunhaozhepy/ag_news_sbert_keywords_embeddings", split="test[5000:5001]")
+    query_dataset = load_dataset(
+        "sunhaozhepy/ag_news_sbert_keywords_embeddings", split="test[5000:5001]"
+    )
     print(f"Query keywords: {query_dataset[0]['keywords']}")
     query_embed = query_dataset["keywords_embeddings"][0]
 

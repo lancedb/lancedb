@@ -176,6 +176,10 @@ impl RemoteCatalog {
 
 #[async_trait]
 impl Catalog for RemoteCatalog {
+    fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
+        Ok(self.root.authz())
+    }
+
     fn uri(&self) -> &str {
         &self.endpoint
     }
