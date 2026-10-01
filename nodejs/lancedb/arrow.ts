@@ -66,11 +66,20 @@ export type SchemaLike =
 export type FieldLike =
   | Field
   | {
-      type: string;
+      type: string | DataTypeLike;
       name: string;
       nullable: boolean;
       metadata?: Map<string, string>;
     };
+/**
+ * A `DataType` from any copy or version of apache-arrow.
+ *
+ * Arrow 21 brands its classes with `unique symbol` properties, so a type
+ * object from a second copy of the library no longer satisfies the `DataType`
+ * type of this one even though it is structurally identical. Inputs that only
+ * need to be sanitized accept this looser shape instead.
+ */
+export type DataTypeLike = DataType | { readonly typeId: unknown };
 
 /**
  * Create an Arrow field backed by LanceDB's JSON extension type.

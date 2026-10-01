@@ -49,6 +49,7 @@
     "@types/jest": "^29.1.2",
     "@types/node": "22.7.4",
     "@types/tmp": "^0.2.6",
+    "apache-arrow": "21.2.0",
     "apache-arrow-15": "npm:apache-arrow@15.0.0",
     "apache-arrow-16": "npm:apache-arrow@16.0.0",
     "apache-arrow-17": "npm:apache-arrow@17.0.0",
@@ -105,7 +106,7 @@
   },
   "peerDependencies": {
     "@types/node": ">=22",
-    "apache-arrow": ">=15.0.0 <=21.2.0"
+    "apache-arrow": ">=15.0.0 <22.0.0"
   },
   "peerDependenciesMeta": {
     "@types/node": {

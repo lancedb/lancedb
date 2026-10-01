@@ -7,14 +7,6 @@ import { pathToFileURL } from "node:url";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import * as arrow15 from "apache-arrow-15";
-import * as arrow16 from "apache-arrow-16";
-import * as arrow17 from "apache-arrow-17";
-import * as arrow18 from "apache-arrow-18";
-import * as arrow19 from "apache-arrow-19";
-import * as arrow20 from "apache-arrow-20";
-import * as arrow21 from "apache-arrow-21";
-
 import {
   AutoQuery,
   Connection,
@@ -59,22 +51,21 @@ import {
   instanceOfFullTextQuery,
 } from "../lancedb/query";
 import { LocalTable } from "../lancedb/table";
+import {
+  type ApacheArrow,
+  arrow18,
+  arrowVersions,
+  latestArrow,
+} from "./arrow_versions";
 
-describe.each([arrow15, arrow16, arrow17, arrow18, arrow19, arrow20, arrow21])(
+describe.each(arrowVersions)(
   "Given a table",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
     let tmpDir: tmp.DirResult;
     let table: Table;
 
-    const schema:
-      | import("apache-arrow-15").Schema
-      | import("apache-arrow-16").Schema
-      | import("apache-arrow-17").Schema
-      | import("apache-arrow-18").Schema
-      | import("apache-arrow-19").Schema
-      | import("apache-arrow-20").Schema
-      | import("apache-arrow-21").Schema = new arrow.Schema([
+    const schema: InstanceType<ApacheArrow["Schema"]> = new arrow.Schema([
       new arrow.Field("id", new arrow.Float64(), true),
     ]);
 
@@ -748,6 +739,58 @@ describe.each([arrow15, arrow16, arrow17, arrow18, arrow19, arrow20, arrow21])(
 );
 
 // https://github.com/lancedb/lancedb/issues/1963
+// These types were added in Arrow 21, so they are built with a second copy of
+// that release rather than the per-version matrix above, and reading them back
+// needs the library's own Arrow to know them too.
+const hostArrowSupportsViewTypes =
+  typeof (arrow as unknown as Record<string, unknown>).Utf8View === "function";
+(hostArrowSupportsViewTypes ? it : it.skip)(
+  "creates and adds tables with LargeList, Utf8View and BinaryView columns",
+  async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    const makeData = () =>
+      new latestArrow.Table({
+        id: latestArrow.vectorFromArray([1, 2], new latestArrow.Int32()),
+        tags: latestArrow.vectorFromArray(
+          [["a", "b"], ["c"]],
+          new latestArrow.LargeList(
+            new latestArrow.Field("item", new latestArrow.Utf8(), true),
+          ),
+        ),
+        text: latestArrow.vectorFromArray(
+          ["short", "a string that is longer than the twelve inline bytes"],
+          new latestArrow.Utf8View(),
+        ),
+        bytes: latestArrow.vectorFromArray(
+          [new Uint8Array([1, 2, 3]), new Uint8Array(20).fill(7)],
+          new latestArrow.BinaryView(),
+        ),
+      });
+    const table = await db.createTable("views", makeData());
+    await table.add(makeData());
+
+    const schema = await table.schema();
+    expect(schema.fields.map((f) => f.type.typeId)).toEqual([
+      arrow.Type.Int,
+      arrow.Type.LargeList,
+      // Lance stores the view types as their offset-based equivalents.
+      arrow.Type.Utf8,
+      arrow.Type.Binary,
+    ]);
+    const rows = await table.query().toArrow();
+    expect(rows.numRows).toBe(4);
+    const row = rows.get(1)!.toJSON();
+    expect(row.id).toBe(2);
+    expect(row.tags.toJSON()).toEqual(["c"]);
+    expect(row.text).toBe(
+      "a string that is longer than the twelve inline bytes",
+    );
+    expect(Array.from(row.bytes)).toEqual(Array(20).fill(7));
+    tmpDir.removeCallback();
+  },
+);
+
 it("should query documents with LangChain PDF metadata", async () => {
   const tmpDir = tmp.dirSync({ unsafeCleanup: true });
   try {
@@ -3209,7 +3252,7 @@ it("passes cleanupOlderThan to the native binding as an absolute timestamp", asy
   expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true);
 });
 
-describe.each([arrow15, arrow16, arrow17, arrow18, arrow19, arrow20, arrow21])(
+describe.each(arrowVersions)(
   "when optimizing a dataset",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {

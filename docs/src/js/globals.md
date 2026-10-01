@@ -162,6 +162,7 @@
 - [BlobReadOptions](type-aliases/BlobReadOptions.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
+- [DataTypeLike](type-aliases/DataTypeLike.md)
 - [FieldLike](type-aliases/FieldLike.md)
 - [IntoSql](type-aliases/IntoSql.md)
 - [IntoVector](type-aliases/IntoVector.md)

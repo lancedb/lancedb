@@ -14,9 +14,6 @@ importers:
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.1
-      apache-arrow:
-        specifier: '>=15.0.0 <=21.2.0'
-        version: 18.1.0
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -54,6 +51,9 @@ importers:
       '@types/tmp':
         specifier: ^0.2.6
         version: 0.2.6
+      apache-arrow:
+        specifier: 21.2.0
+        version: 21.2.0
       apache-arrow-15:
         specifier: npm:apache-arrow@15.0.0
         version: apache-arrow@15.0.0
@@ -1850,10 +1850,6 @@ packages:
 
   apache-arrow@18.0.0:
     resolution: {integrity: sha512-gFlPaqN9osetbB83zC29AbbZqGiCuFH1vyyPseJ+B7SIbfBtESV62mMT/CkiIt77W6ykC/nTWFzTXFs0Uldg4g==}
-    hasBin: true
-
-  apache-arrow@18.1.0:
-    resolution: {integrity: sha512-v/ShMp57iBnBp4lDgV8Jx3d3Q5/Hac25FWmQ98eMahUiHPXcvwIMKJD0hBIgclm/FCG+LwPkAKtkRO1O/W0YGg==}
     hasBin: true
 
   apache-arrow@19.0.1:
@@ -5735,18 +5731,6 @@ snapshots:
       tslib: 2.8.1
 
   apache-arrow@18.0.0:
-    dependencies:
-      '@swc/helpers': 0.5.21
-      '@types/command-line-args': 5.2.3
-      '@types/command-line-usage': 5.0.4
-      '@types/node': 20.19.41
-      command-line-args: 5.2.1
-      command-line-usage: 7.0.4
-      flatbuffers: 24.12.23
-      json-bignum: 0.0.3
-      tslib: 2.8.1
-
-  apache-arrow@18.1.0:
     dependencies:
       '@swc/helpers': 0.5.21
       '@types/command-line-args': 5.2.3

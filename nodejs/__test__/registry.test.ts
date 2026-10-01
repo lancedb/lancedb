@@ -3,15 +3,9 @@
 
 import * as apiArrow from "apache-arrow";
 
-import * as arrow15 from "apache-arrow-15";
-import * as arrow16 from "apache-arrow-16";
-import * as arrow17 from "apache-arrow-17";
-import * as arrow18 from "apache-arrow-18";
-import * as arrow19 from "apache-arrow-19";
-import * as arrow20 from "apache-arrow-20";
-import * as arrow21 from "apache-arrow-21";
-
 import * as tmp from "tmp";
+
+import { arrowVersions } from "./arrow_versions";
 
 import { connect } from "../lancedb";
 import {
@@ -20,16 +14,6 @@ import {
   LanceSchema,
 } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
-
-const arrowVersions = [
-  arrow15,
-  arrow16,
-  arrow17,
-  arrow18,
-  arrow19,
-  arrow20,
-  arrow21,
-];
 
 describe.each(arrowVersions)("LanceSchema", (arrow) => {
   test("should preserve input order", async () => {
@@ -253,7 +237,7 @@ describe("Registry.setVar", () => {
         return data.map(() => [1, 2, 3]);
       }
       embeddingDataType() {
-        return new arrow18.Float32() as apiArrow.Float;
+        return new apiArrow.Float32();
       }
       protected getSensitiveKeys() {
         return ["secretKey"];

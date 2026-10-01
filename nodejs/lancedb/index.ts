@@ -195,6 +195,7 @@ export * as rerankers from "./rerankers";
 export {
   SchemaLike,
   TableLike,
+  DataTypeLike,
   FieldLike,
   RecordBatchLike,
   DataLike,
