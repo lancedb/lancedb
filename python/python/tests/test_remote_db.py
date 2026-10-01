@@ -845,6 +845,77 @@ def test_table_create_indices():
         table.drop_index("custom_fts_idx")
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    ("base_tokenizer", "options", "expected_filters"),
+    [
+        ("code", {}, (False, False)),
+        ("code", {"stem": None, "remove_stop_words": None}, (False, False)),
+        ("code", {"stem": True}, (True, False)),
+        ("code", {"remove_stop_words": True}, (False, True)),
+        ("code", {"stem": True, "remove_stop_words": True}, (True, True)),
+        ("simple", {}, (True, True)),
+        ("simple", {"stem": False, "remove_stop_words": False}, (False, False)),
+    ],
+)
+def test_remote_fts_tokenizer_filter_defaults(
+    legacy, base_tokenizer, options, expected_filters
+):
+    from lancedb.index import FTS
+
+    received_requests = []
+
+    def handler(request):
+        if request.path == "/v1/table/test/create_index/":
+            content_len = int(request.headers["Content-Length"])
+            received_requests.append(json.loads(request.rfile.read(content_len)))
+            request.send_response(200)
+            request.end_headers()
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "schema": {
+                            "fields": [
+                                {
+                                    "name": "text",
+                                    "type": {"type": "string"},
+                                    "nullable": False,
+                                }
+                            ]
+                        },
+                    }
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"text": "Running in cafes"}])
+        if legacy:
+            with pytest.warns(DeprecationWarning, match="create_fts_index"):
+                table.create_fts_index("text", base_tokenizer=base_tokenizer, **options)
+        else:
+            table.create_index(
+                "text", config=FTS(base_tokenizer=base_tokenizer, **options)
+            )
+
+    assert len(received_requests) == 1
+    params = received_requests[0]
+    assert params["base_tokenizer"] == base_tokenizer
+    assert (params["stem"], params["remove_stop_words"]) == expected_filters
+
+
 def test_remote_create_index_async_returns_job():
     from lancedb.index import BTree
 

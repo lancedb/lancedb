@@ -894,6 +894,78 @@ def test_tokenize_uses_simple_index_tokenizer(mem_db: DBConnection):
     ]
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    ("base_tokenizer", "options", "expected_filters", "expected_tokens"),
+    [
+        (
+            "code",
+            {},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": None, "remove_stop_words": None},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": True},
+            (True, False),
+            [("run", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"remove_stop_words": True},
+            (False, True),
+            [("running", 0), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": True, "remove_stop_words": True},
+            (True, True),
+            [("run", 0), ("cafe", 2)],
+        ),
+        (
+            "simple",
+            {},
+            (True, True),
+            [("run", 0), ("cafe", 2)],
+        ),
+        (
+            "simple",
+            {"stem": False, "remove_stop_words": False},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+    ],
+)
+def test_fts_tokenizer_filter_defaults(
+    mem_db, legacy, base_tokenizer, options, expected_filters, expected_tokens
+):
+    text = "Running in café"
+    table = mem_db.create_table("test_filter_defaults", data=[{"text": text}])
+    if legacy:
+        with pytest.warns(DeprecationWarning, match="create_fts_index"):
+            table.create_fts_index("text", base_tokenizer=base_tokenizer, **options)
+    else:
+        table.create_index("text", config=FTS(base_tokenizer=base_tokenizer, **options))
+
+    details = table.list_indices()[0].index_details
+    assert (details["stem"], details["remove_stop_words"]) == expected_filters
+    assert [
+        (token.text, token.position) for token in table.tokenize(text, column="text")
+    ] == expected_tokens
+    assert [
+        (token.text, token.position)
+        for token in ldb.tokenize(text, base_tokenizer=base_tokenizer, **options)
+    ] == expected_tokens
+    if base_tokenizer == "code" and not expected_filters[1]:
+        assert table.search("in", query_type="fts").to_list()[0]["text"] == text
+
+
 def test_tokenize_uses_icu_index_tokenizer_by_name(mem_db: DBConnection):
     data = pa.table({"text": ["Hello, こんにちは世界!"]})
     table = mem_db.create_table("test_tokenize_icu", data=data)
