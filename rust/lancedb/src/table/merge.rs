@@ -1596,13 +1596,13 @@ mod lsm_tests {
         assert_eq!(found, 1, "the row written after create_index must be found");
     }
 
-    /// Changing the set on a live table reaches the writer already open on it.
+    /// A spec is replaced by unsetting it and setting the new one.
     ///
-    /// Without that, the commit would land and the writer would keep building
-    /// MemTables from the old set, so a query needing the newly maintained
-    /// index would stay refused until something reopened the writer.
+    /// `unset_lsm_write_spec` drains the open writer, so the rows it held
+    /// survive the replacement, and the writer the next write opens builds its
+    /// MemTables from the new set.
     #[tokio::test]
-    async fn lsm_set_change_reaches_an_already_open_writer() {
+    async fn lsm_spec_is_replaced_by_unsetting_it_first() {
         use crate::index::Index;
         use lance_index::scalar::FullTextSearchQuery;
 
@@ -1623,14 +1623,25 @@ mod lsm_tests {
             .unwrap();
         upsert_text(&table, vec![(99, "zebra")]).await;
 
-        // Change the set in place on the live table.
+        // Setting over an installed spec is refused; unset, then set.
+        let err = table
+            .set_lsm_write_spec(
+                LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index.clone()]),
+            )
+            .await
+            .expect_err("an installed spec cannot be set over");
+        assert!(
+            err.to_string().contains("already set"),
+            "unexpected error: {err}"
+        );
+        table.unset_lsm_write_spec().await.unwrap();
         table
             .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
-        // A row written after the change is answered by the index the writer
-        // picked up.
+        // A row written after the replacement is answered by the index the new
+        // writer maintains.
         upsert_text(&table, vec![(100, "zebra stripes")]).await;
 
         let query = FullTextSearchQuery::new("stripes".to_string())
@@ -1641,12 +1652,15 @@ mod lsm_tests {
             .full_text_search(query)
             .execute()
             .await
-            .expect("the set change reached the open writer")
+            .expect("the replaced spec maintains the index")
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
         let found: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(found, 1, "the row written after the change must be found");
+        assert_eq!(
+            found, 1,
+            "the row written after the replacement must be found"
+        );
     }
 
     /// A writer opened before the index existed keeps a MemTable without it, so

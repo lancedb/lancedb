@@ -73,6 +73,17 @@ const SHARD_NAMESPACE: Uuid = Uuid::from_u128(0x4c53_4d57_5249_5445_5f53_4841_52
 pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) -> Result<()> {
     table.dataset.ensure_mutable()?;
 
+    {
+        let dataset = table.dataset.get().await?;
+        if dataset.mem_wal_index_details().await?.is_some() {
+            return Err(Error::InvalidInput {
+                message: "set_lsm_write_spec: an LSM write spec is already set on this \
+                          table and cannot be changed"
+                    .into(),
+            });
+        }
+    }
+
     // A named set is checked against the table here, where the caller can still
     // be told which names exist. An unnamed set is not resolved at all: it is an
     // intent lance re-reads whenever it builds a MemTable, so an index created
@@ -91,46 +102,12 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
                     });
                 }
             }
-            // Before the builder borrows the dataset clone.
             let dataset = table.dataset.get().await?;
             validate_maintained_indexes(&dataset, requested).await?;
             Some(requested.to_vec())
         }
         None => None,
     };
-
-    // A table that already has a spec accepts one kind of repeat: the same
-    // sharding with a different maintained set. The rest of a spec describes
-    // how the generations already written were homed, so it cannot move.
-    {
-        let dataset = table.dataset.get().await?;
-        if let Some(details) = dataset.mem_wal_index_details().await? {
-            let installed = lsm_write_spec_from_details(&details, dataset.schema())?;
-            if !same_except_maintained_indexes(&installed, &spec) {
-                return Err(Error::InvalidInput {
-                    message: "set_lsm_write_spec: an LSM write spec is already set on this \
-                              table; only its maintained index set can be changed"
-                        .into(),
-                });
-            }
-            drop(dataset);
-            table.checkout_latest().await?;
-            let mut dataset = (*table.dataset.get().await?).clone();
-            dataset
-                .update_mem_wal_maintained_indexes(maintained_indexes)
-                .await?;
-            // The writer this session may already hold was opened with the old
-            // set, so the change has to be installed on it here to reach a
-            // table that is being written to.
-            table
-                .dataset
-                .shard_writer()
-                .refresh_maintained_indexes(&dataset)
-                .await;
-            table.dataset.update(dataset);
-            return Ok(());
-        }
-    }
 
     table.checkout_latest().await?;
     let mut dataset = (*table.dataset.get().await?).clone();
@@ -302,11 +279,6 @@ fn lsm_write_spec_from_details(
         .with_writer_config_defaults(details.writer_config_defaults.clone()))
 }
 
-/// Whether two specs agree on everything an installed spec cannot change.
-fn same_except_maintained_indexes(a: &LsmWriteSpec, b: &LsmWriteSpec) -> bool {
-    a.clone().with_maintained_indexes(None) == b.clone().with_maintained_indexes(None)
-}
-
 /// Resolve the single routing column name from a sharding field's source id.
 ///
 /// `set_lsm_write_spec` records the shard column by its Lance field id, so the
@@ -468,10 +440,10 @@ impl ShardWriterCache {
     /// Install `dataset`'s maintained index set on the cached writer, if one is
     /// open, so a change reaches a table that is already being written to.
     ///
-    /// Reported rather than propagated: both callers have already committed the
-    /// change durably, and the writer this process happens to hold may be
-    /// fenced or poisoned -- which is not a reason to fail creating an index.
-    /// Any writer opened afterwards reads the committed set.
+    /// Reported rather than propagated: the index is committed durably by the
+    /// time this runs, and the writer this process happens to hold may be fenced
+    /// or poisoned -- which is not a reason to fail creating an index. Any
+    /// writer opened afterwards reads the committed set.
     ///
     /// Holds the entry's read lock across the refresh, so a concurrent close
     /// waits rather than retiring the writer mid-seal. Writes take the same

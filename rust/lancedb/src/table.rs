@@ -1987,9 +1987,9 @@ impl Table {
     /// - [`LsmWriteSpec::identity`] — shard by the raw value of a scalar column.
     /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
     ///
-    /// Calling this again on a table that already has a spec is how the
-    /// maintained index set is changed; the sharding cannot move, because the
+    /// A table carries one spec: this fails while one is installed, since the
     /// generations already written were homed under it.
+    /// [`Table::unset_lsm_write_spec`] removes one.
     ///
     /// # Example
     ///
@@ -5753,7 +5753,9 @@ mod tests {
             "an unnamed set is stored as the intent to maintain everything"
         );
 
-        // Naming the maintainable subset narrows it, with no unset in between.
+        // Narrowing to a named subset: unset first, since an installed spec
+        // cannot be set over.
+        table.unset_lsm_write_spec().await.unwrap();
         table
             .set_lsm_write_spec(
                 LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
@@ -5771,6 +5773,7 @@ mod tests {
         );
 
         // Opting out entirely is distinct from the default.
+        table.unset_lsm_write_spec().await.unwrap();
         table
             .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
             .await
@@ -5785,16 +5788,16 @@ mod tests {
             Some([].as_slice())
         );
 
-        // The sharding cannot move, so the repeat that changes it is refused
-        // and the installed spec is left alone.
+        // An installed spec is never set over, whatever the new one asks for,
+        // and the refused call leaves it alone.
         let err = table
             .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
             .await
             .unwrap_err();
         assert!(
             matches!(err, Error::InvalidInput { ref message }
-                if message.contains("only its maintained index set can be changed")),
-            "expected the sharding change to be refused, got {err:?}"
+                if message.contains("already set")),
+            "expected the repeat to be refused, got {err:?}"
         );
         assert_eq!(
             table

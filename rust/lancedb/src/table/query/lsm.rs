@@ -468,9 +468,11 @@ async fn fts_plan(
             .to_string(),
     })?;
 
-    // Without a maintained in-memory FTS index for this column, the active memtable
-    // arm produces an empty plan (`active_source_can_execute_fts` returns false), so
-    // the search silently omits un-compacted documents. Reject rather than mislead.
+    // Two ways the fresh tier cannot answer: the spec maintains no FTS index for
+    // this column, or a resident MemTable was built before the index joined the
+    // set. Either leaves the memtable arm an empty plan
+    // (`active_source_can_execute_fts` returns false), so the search silently
+    // omits un-compacted documents. Reject rather than mislead.
     if !index_maintained(dataset, column, details, "InvertedIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
             memtable.index_store.get_fts_by_column(column).is_some()
@@ -704,10 +706,11 @@ async fn vector_plan(
         None => default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?,
     };
 
-    // The base arm relies on the column's vector index (`fast_search`). Unless it is
-    // maintained, its catch-up is untracked and exclusion falls back to the
-    // compaction watermark — dropping compacted SSTables the (lagging) base index has
-    // not re-indexed. Reject rather than silently omit rows, mirroring the FTS arm.
+    // The base arm relies on the column's vector index (`fast_search`). Unmaintained,
+    // its catch-up is untracked and exclusion falls back to the compaction watermark,
+    // dropping compacted SSTables the lagging base index has not re-indexed; and a
+    // resident MemTable built before the index joined the set carries none either.
+    // Reject rather than silently omit rows, mirroring the FTS arm.
     if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
             memtable.index_store.get_hnsw_by_column(&column).is_some()
