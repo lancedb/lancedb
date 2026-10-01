@@ -3999,6 +3999,20 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(mustNotResults.length).toBe(1);
     });
 
+    test("full text search code tokenizer", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("test", [
+        { id: 1, text: "def getUserName(user_id): return user_id" },
+        { id: 2, text: "def parseFile(file_path): return file_path" },
+      ]);
+      await table.createIndex("text", {
+        config: Index.fts({ baseTokenizer: "code" }),
+      });
+
+      const results = await table.search("getUserName", "fts").toArray();
+      expect(results.map((row) => row.id)).toEqual([1]);
+    });
+
     test("full text search ngram", async () => {
       const db = await connect(tmpDir.name);
       const data = [
