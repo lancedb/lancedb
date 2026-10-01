@@ -194,6 +194,10 @@ jobs:
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
       with:
+        # Same crate, profile and target as the `linux` job above, so reuse
+        # its cache: rust-cache keys on the job id by default, and this job
+        # would otherwise start cold on every run until it had saved its own.
+        shared-key: linux
         save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Install dependencies
       run: |
