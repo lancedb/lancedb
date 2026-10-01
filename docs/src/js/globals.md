@@ -158,6 +158,8 @@
 - [AnalyzePlanDistributedMetrics](type-aliases/AnalyzePlanDistributedMetrics.md)
 - [BaseTokenizer](type-aliases/BaseTokenizer.md)
 - [BlobOptions](type-aliases/BlobOptions.md)
+- [BlobRange](type-aliases/BlobRange.md)
+- [BlobReadOptions](type-aliases/BlobReadOptions.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
 - [FieldLike](type-aliases/FieldLike.md)
