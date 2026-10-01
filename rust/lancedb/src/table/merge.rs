@@ -1663,14 +1663,13 @@ mod lsm_tests {
         );
     }
 
-    /// A writer opened before the index existed keeps a MemTable without it, so
-    /// an indexed read is refused rather than served without those rows.
+    /// A row written before the index exists is searchable once it does.
     ///
-    /// The default set maintains every index the table has, which the spec
-    /// records as intent. That intent alone would let the read through while
-    /// the live MemTable still cannot answer it.
+    /// The MemTable holding it was built without the index. Creating the index
+    /// replaces the writer's configs, which seals that MemTable and waits for
+    /// its flush, so no resident MemTable is left that cannot answer the read.
     #[tokio::test]
-    async fn lsm_read_refuses_when_a_resident_memtable_predates_the_index() {
+    async fn lsm_a_row_written_before_the_index_is_searchable_after_it() {
         use crate::index::Index;
         use lance_index::scalar::FullTextSearchQuery;
 
@@ -1695,13 +1694,17 @@ mod lsm_tests {
         let query = FullTextSearchQuery::new("zebra".to_string())
             .with_column("text".to_string())
             .unwrap();
-        let Err(error) = table.query().full_text_search(query).execute().await else {
-            panic!("an indexed read the resident MemTable cannot answer must be refused");
-        };
-        assert!(
-            error.to_string().contains("resident MemTable"),
-            "unexpected error: {error}"
-        );
+        let batches = table
+            .query()
+            .full_text_search(query)
+            .execute()
+            .await
+            .expect("no resident MemTable is left that cannot answer")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let found: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(found, 1, "the row written before the index must be found");
     }
 
     #[tokio::test]

@@ -460,10 +460,28 @@ impl ShardWriterCache {
         let Some(writer) = guard.as_ref() else {
             return;
         };
-        if let Err(error) = dataset.refresh_mem_wal_index_configs(writer).await {
+        // Replacing the configs seals the active memtable so the next one carries
+        // the new indexes. The outgoing one keeps the set it was built with, so
+        // its flush has to land before a read: while it is still frozen, an
+        // indexed read sees a resident memtable that cannot answer and is
+        // refused.
+        let sealed = match dataset.refresh_mem_wal_index_configs(writer).await {
+            Ok(sealed) => sealed,
+            Err(error) => {
+                log::warn!(
+                    "the maintained index set changed but the open shard writer could \
+                     not be refreshed, so it keeps the set it opened with: {error}"
+                );
+                return;
+            }
+        };
+        if let Some(fence) = sealed
+            && let Err(error) = fence.wait().await
+        {
             log::warn!(
-                "the maintained index set changed but the open shard writer could \
-                 not be refreshed, so it keeps the set it opened with: {error}"
+                "the shard writer took the new maintained index set, but the memtable \
+                 it sealed was not flushed, so an indexed read stays refused until \
+                 it is: {error}"
             );
         }
     }
