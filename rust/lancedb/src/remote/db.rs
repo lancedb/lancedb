@@ -1952,7 +1952,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_materialized_view_requires_sql_client() {
-        let db = super::RemoteDatabase::new_mock(|request| {
+        let db = super::RemoteDatabase::new_mock(|request| -> http::Response<String> {
             panic!("unexpected REST request: {}", request.url().path())
         });
         let error = db

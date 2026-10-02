@@ -459,7 +459,6 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
             true,
         )
         .await?;
-        let version = ds.version().version;
         use lancedb::table::datafusion::udtf::{
             duplicate_pairs::DuplicatePairsOutput,
             vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
