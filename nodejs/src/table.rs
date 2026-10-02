@@ -491,11 +491,9 @@ impl Table {
         let view = lancedb::MaterializedView::from_table(inner)
             .await
             .default_error()?;
-        view.definition().to_json().map_err(|err| {
-            napi::Error::from_reason(format!(
-                "failed to serialize materialized-view definition: {err}"
-            ))
-        })
+        Ok(lancedb::materialized_view::definition_metadata_from_sql(
+            view.definition_sql(),
+        ))
     }
 
     #[napi(catch_unwind)]

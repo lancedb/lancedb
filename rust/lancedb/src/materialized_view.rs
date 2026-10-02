@@ -267,8 +267,10 @@ pub enum StoredDefinition {
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedViewInfo {
-    /// The parsed view definition.
-    pub definition: MaterializedViewDefinition,
+    /// The defining SQL as stored.
+    pub definition_sql: String,
+    /// The definition parsed into the local refresh grammar, when supported.
+    pub parsed_definition: Option<MaterializedViewDefinition>,
 }
 
 /// The backend-independent request used to create a remote materialized view.
@@ -454,7 +456,10 @@ pub(crate) fn materialized_view_info_from_metadata(
     metadata: &HashMap<String, String>,
 ) -> Result<MaterializedViewInfo> {
     match read_definition(metadata)? {
-        Some(StoredDefinition::Query(definition)) => Ok(MaterializedViewInfo { definition }),
+        Some(StoredDefinition::Query(definition)) => Ok(MaterializedViewInfo {
+            definition_sql: definition.to_sql(),
+            parsed_definition: Some(definition),
+        }),
         Some(StoredDefinition::Newer { format }) => Err(Error::NotSupported {
             message: format!(
                 "materialized view '{name}' is stored in format {format}, which this version \
@@ -1651,22 +1656,24 @@ impl CreateMaterializedViewBuilder {
     }
 }
 
-/// A handle on a materialized view: the view table plus its parsed definition.
+/// A handle on a materialized view: the view table plus its defining SQL.
 #[derive(Debug, Clone)]
 pub struct MaterializedView {
     table: Table,
-    definition: MaterializedViewDefinition,
+    definition_sql: String,
+    parsed_definition: Option<MaterializedViewDefinition>,
 }
 
 impl MaterializedView {
     /// Interpret `table` as a materialized view: [`Error::NotAMaterializedView`]
-    /// for a plain table, [`Error::NotSupported`] for a query this version
-    /// cannot refresh.
+    /// for a plain table. A remote definition broader than the local refresh
+    /// grammar remains available through [`Self::definition_sql`].
     pub async fn from_table(table: Table) -> Result<Self> {
         let info = table.base_table().materialized_view_info().await?;
         Ok(Self {
             table,
-            definition: info.definition,
+            definition_sql: info.definition_sql,
+            parsed_definition: info.parsed_definition,
         })
     }
 
@@ -1680,9 +1687,23 @@ impl MaterializedView {
         self.table.name()
     }
 
-    /// The query that defines the view.
-    pub fn definition(&self) -> &MaterializedViewDefinition {
-        &self.definition
+    /// The query parsed into the local refresh grammar.
+    ///
+    /// Sophon may store SQL broader than the local grammar; use
+    /// [`Self::definition_sql`] when the original SQL is sufficient.
+    pub fn definition(&self) -> Result<&MaterializedViewDefinition> {
+        self.parsed_definition
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message:
+                    "this materialized-view definition is supported only by the remote SQL engine"
+                        .to_string(),
+            })
+    }
+
+    /// The complete SQL query that defines the view.
+    pub fn definition_sql(&self) -> &str {
+        &self.definition_sql
     }
 
     /// Recompute the view from its source.

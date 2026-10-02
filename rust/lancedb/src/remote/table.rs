@@ -2125,8 +2125,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let response: DescribeMaterializedViewResponse =
             response.json().await.err_to_http(request_id)?;
-        let definition = MaterializedViewDefinition::from_sql(&response.query)?;
-        Ok(MaterializedViewInfo { definition })
+        let parsed_definition = MaterializedViewDefinition::from_sql(&response.query).ok();
+        Ok(MaterializedViewInfo {
+            definition_sql: response.query,
+            parsed_definition,
+        })
     }
 
     async fn refresh_materialized_view_async(
@@ -12730,24 +12733,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_materialized_view_describe_and_refresh_requires_sql() {
-        let table = Table::new_with_handler("my_table", |request| {
-            match request.url().path() {
+        const QUERY: &str =
+            "SELECT s.x, d.label FROM analytics.source s JOIN analytics.dim d ON s.id = d.id";
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
             "/v1/materialized_view/my_table/describe" => http::Response::builder()
                 .status(200)
                 .body(
                     json!({
                         "name": "my_table",
-                        "query": "SELECT x * 2 AS double_x FROM analytics.source WHERE x > 0 LIMIT 10"
+                        "query": QUERY
                     })
                     .to_string(),
                 )
                 .unwrap(),
             path => panic!("unexpected request: {path}"),
-        }
         });
         let view = crate::MaterializedView::from_table(table).await.unwrap();
-        assert_eq!(view.definition().source_table, "source");
-        assert_eq!(view.definition().source_namespace, ["analytics"]);
+        assert_eq!(view.definition_sql(), QUERY);
+        assert!(view.definition().is_err());
         let error = view.refresh().execute().await.unwrap_err();
         assert!(error.to_string().contains("SQL is unavailable"));
     }
