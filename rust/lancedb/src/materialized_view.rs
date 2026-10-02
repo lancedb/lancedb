@@ -326,6 +326,23 @@ pub fn definition_metadata_from_sql(sql: &str) -> String {
     definition_metadata_from_sql_with_format(sql, 1)
 }
 
+/// Serialize an arbitrary SQL definition together with the resolution
+/// defaults needed to plan unqualified identifiers on a later refresh.
+pub fn definition_metadata_from_sql_with_defaults(
+    sql: &str,
+    default_database: &str,
+    default_namespace_path: &[String],
+) -> String {
+    serde_json::json!({
+        "kind": "query",
+        "format": 1,
+        "query": sql,
+        "default_database": default_database,
+        "default_namespace_path": default_namespace_path,
+    })
+    .to_string()
+}
+
 fn definition_metadata_from_sql_with_format(sql: &str, format: u64) -> String {
     serde_json::json!({
         "kind": "query",
@@ -338,20 +355,36 @@ fn definition_metadata_from_sql_with_format(sql: &str, format: u64) -> String {
 /// Return the defining SQL stored in [`DEFINITION_META_KEY`], without
 /// requiring the local refresh parser to understand it.
 pub fn read_definition_sql(metadata: &HashMap<String, String>) -> Result<Option<String>> {
+    Ok(read_definition_sql_with_defaults(metadata)?.map(|definition| definition.query))
+}
+
+/// A stored SQL definition and the optional name-resolution defaults recorded
+/// by a remote SQL engine.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct MaterializedViewSqlDefinition {
+    /// The SQL query that defines the materialized view.
+    pub query: String,
+    /// The database used to resolve unqualified references when the view was created.
+    #[serde(default)]
+    pub default_database: Option<String>,
+    /// The namespace used to resolve unqualified references when the view was created.
+    #[serde(default)]
+    pub default_namespace_path: Option<Vec<String>>,
+}
+
+/// Read the SQL definition and its optional resolution defaults from
+/// [`DEFINITION_META_KEY`].
+pub fn read_definition_sql_with_defaults(
+    metadata: &HashMap<String, String>,
+) -> Result<Option<MaterializedViewSqlDefinition>> {
     let Some(raw) = metadata.get(DEFINITION_META_KEY) else {
         return Ok(None);
     };
-    let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| Error::Runtime {
-        message: format!("unreadable materialized view definition: {e}"),
-    })?;
-    value
-        .get("query")
-        .and_then(|query| query.as_str())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| Error::Runtime {
-            message: "unreadable materialized view definition: missing query".into(),
-        })
+    serde_json::from_str(raw)
         .map(Some)
+        .map_err(|e| Error::Runtime {
+            message: format!("unreadable materialized view definition: {e}"),
+        })
 }
 
 /// Read a view definition off a schema metadata map, if it carries one.
@@ -1834,6 +1867,28 @@ mod tests {
         assert_eq!(
             source_sql_identifier(&namespace, "source", false),
             "\"analytics\".\"daily\".\"source\""
+        );
+    }
+
+    #[test]
+    fn sql_definition_defaults_share_one_metadata_value() {
+        let metadata = HashMap::from([(
+            DEFINITION_META_KEY.to_string(),
+            definition_metadata_from_sql_with_defaults(
+                "SELECT * FROM source",
+                "db",
+                &["analytics".to_string()],
+            ),
+        )]);
+
+        let definition = read_definition_sql_with_defaults(&metadata)
+            .unwrap()
+            .unwrap();
+        assert_eq!(definition.query, "SELECT * FROM source");
+        assert_eq!(definition.default_database.as_deref(), Some("db"));
+        assert_eq!(
+            definition.default_namespace_path,
+            Some(vec!["analytics".to_string()])
         );
     }
 
