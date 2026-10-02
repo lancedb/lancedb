@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{MaterializedViewDefinition, StoredDefinition};
 use crate::database::OpenTableRequest;
-use crate::table::Table;
 use crate::table::computed_columns::{computed_column_from_field, ensure_declarations_are_planned};
+use crate::table::{NativeTableExt, Table};
 use crate::{Error, Result};
 
 /// How a refresh brought the view up to date.
@@ -351,7 +351,7 @@ async fn compute_stream(
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, mapped)))
 }
 
-fn to_view_batch(
+pub(super) fn to_view_batch(
     batch: &RecordBatch,
     output_schema: &SchemaRef,
 ) -> datafusion::common::Result<RecordBatch> {

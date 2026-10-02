@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, FixedSizeListArray, UInt32Array};
 use arrow_buffer::NullBuffer;
-use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use datafusion::catalog::default_table_source::provider_as_source;
 use datafusion::datasource::empty::EmptyTable;
 use datafusion::execution::FunctionRegistry;

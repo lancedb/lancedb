@@ -25,11 +25,11 @@ use datafusion_physical_plan::{
     projection::ProjectionExec,
     stream::RecordBatchStreamAdapter,
 };
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{TryStreamExt, stream};
 use lance::dataset::scanner::{RowAddrMask, RowAddrTreeMap};
 use lance::{Dataset, index::DatasetIndexInternalExt};
 use lance_core::datatypes::BlobHandling;
-use lance_datafusion::exec::{OneShotExec, SessionContextExt};
+use lance_datafusion::exec::SessionContextExt;
 use lance_index::metrics::NoOpMetricsCollector;
 use roaring::RoaringTreemap;
 

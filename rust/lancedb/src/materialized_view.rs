@@ -1450,6 +1450,25 @@ pub struct CreateMaterializedViewBuilder {
     with_no_data: bool,
 }
 
+fn source_sql_identifier(
+    namespace_path: &[String],
+    source: &str,
+    namespace_in_schema_position: bool,
+) -> String {
+    fn quote(name: &str) -> String {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+
+    let namespace = if namespace_in_schema_position && !namespace_path.is_empty() {
+        vec![namespace_path.join("$")]
+    } else {
+        namespace_path.to_vec()
+    };
+    let mut parts = namespace.iter().map(|part| quote(part)).collect::<Vec<_>>();
+    parts.push(quote(source));
+    parts.join(".")
+}
+
 impl CreateMaterializedViewBuilder {
     pub(crate) fn new(connection: Connection, name: String, source: String) -> Self {
         Self {
@@ -1524,13 +1543,11 @@ impl CreateMaterializedViewBuilder {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let source = self
-            .source_namespace
-            .iter()
-            .chain(std::iter::once(&self.source))
-            .map(|part| quote(part))
-            .collect::<Vec<_>>()
-            .join(".");
+        let source = source_sql_identifier(
+            &self.source_namespace,
+            &self.source,
+            self.connection.uri().starts_with("db://"),
+        );
         let mut query = format!("SELECT {projection} FROM {source}");
         if let Some(filter) = &self.filter {
             query.push_str(" WHERE ");
@@ -1806,6 +1823,19 @@ mod tests {
 
     use super::*;
     use crate::connect;
+
+    #[test]
+    fn remote_source_namespace_uses_one_sql_schema_position() {
+        let namespace = vec!["analytics".to_string(), "daily".to_string()];
+        assert_eq!(
+            source_sql_identifier(&namespace, "source", true),
+            "\"analytics$daily\".\"source\""
+        );
+        assert_eq!(
+            source_sql_identifier(&namespace, "source", false),
+            "\"analytics\".\"daily\".\"source\""
+        );
+    }
 
     #[tokio::test]
     async fn refresh_always_rebuilds_without_source_row_ids() {
