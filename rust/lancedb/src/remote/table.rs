@@ -2162,7 +2162,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             let mut reader = query.reader().await?;
             while reader.try_next().await?.is_some() {}
 
-            let table = RemoteTable::new_with_sql_client(
+            let table = Self::new_with_sql_client(
                 client,
                 name,
                 namespace,
