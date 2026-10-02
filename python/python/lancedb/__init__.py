@@ -49,6 +49,14 @@ from .materialized_view import (
     vector_dedup as vector_dedup,
 )
 from .view import ViewDescription as ViewDescription
+from .graph import (
+    MaterializedVirtualPropertyGraph,
+    MaterializedVirtualPropertyGraphDescription,
+    PropertyGraph,
+    PropertyGraphDescription,
+    VirtualPropertyGraph,
+    VirtualPropertyGraphDescription,
+)
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -585,6 +593,12 @@ __all__ = [
     "MaterializedView",
     "MaterializedViewDefinition",
     "ViewDescription",
+    "PropertyGraph",
+    "PropertyGraphDescription",
+    "VirtualPropertyGraph",
+    "VirtualPropertyGraphDescription",
+    "MaterializedVirtualPropertyGraph",
+    "MaterializedVirtualPropertyGraphDescription",
     "connect",
     "connect_async",
     "tokenize",

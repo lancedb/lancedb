@@ -229,6 +229,44 @@ pairs are covered, using the index's distance representation.
 
 ::: lancedb.view.ViewDescription
 
+## Property Graphs
+
+A property graph is read as nodes and edges with SQL/PGQ `GRAPH_TABLE`, and
+comes in three kinds that share one namespace of names:
+
+- A property graph holds its own rows. Define it with node and edge types, and
+  write it with [PropertyGraph.insert][lancedb.graph.PropertyGraph.insert].
+- A virtual property graph reads tables as they are. Define it with node and
+  edge tables.
+- A materialized virtual property graph has a virtual graph's definition, and
+  is read as its last refresh built it: bring it up to its tables with
+  [MaterializedVirtualPropertyGraph.refresh][lancedb.graph.MaterializedVirtualPropertyGraph.refresh].
+
+Each kind has its own create, open, describe, list and drop, such as
+[create_virtual_property_graph][lancedb.DBConnection.create_virtual_property_graph].
+
+::: lancedb.graph.NodeType
+
+::: lancedb.graph.EdgeType
+
+::: lancedb.graph.NodeTable
+
+::: lancedb.graph.EdgeTable
+
+::: lancedb.graph.Endpoint
+
+::: lancedb.graph.PropertyGraph
+
+::: lancedb.graph.VirtualPropertyGraph
+
+::: lancedb.graph.MaterializedVirtualPropertyGraph
+
+::: lancedb.graph.PropertyGraphDescription
+
+::: lancedb.graph.VirtualPropertyGraphDescription
+
+::: lancedb.graph.MaterializedVirtualPropertyGraphDescription
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead
@@ -466,6 +504,17 @@ Table hold your actual data as a collection of records / rows.
 ## Materialized Views (Asynchronous)
 
 ::: lancedb.materialized_view.AsyncMaterializedView
+
+## Property Graphs (Asynchronous)
+
+`AsyncConnection` returns these handles from its `create_*` and `open_*`
+property graph methods.
+
+::: lancedb.graph.AsyncPropertyGraph
+
+::: lancedb.graph.AsyncVirtualPropertyGraph
+
+::: lancedb.graph.AsyncMaterializedVirtualPropertyGraph
 
 ## Indices (Asynchronous)
 

@@ -28,6 +28,10 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::graph::{
+    MaterializedVirtualPropertyGraphDescription, PropertyGraphDefinition, PropertyGraphDescription,
+    VirtualPropertyGraphDefinition, VirtualPropertyGraphDescription,
+};
 use crate::job::Job;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::secrets::SecretInfo;
@@ -288,6 +292,12 @@ fn view_ops_not_supported<T>() -> Result<T> {
     })
 }
 
+fn property_graph_ops_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Property graph operations are not supported by this database".to_string(),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -519,6 +529,157 @@ pub trait Database:
     /// The names of the views in one namespace.
     async fn list_views(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
         view_ops_not_supported()
+    }
+    /// Create a property graph, empty.
+    async fn create_property_graph(
+        &self,
+        _name: &str,
+        _definition: &PropertyGraphDefinition,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// What the database records about one property graph.
+    async fn describe_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a property graph and wait for its data to be deleted.
+    async fn drop_property_graph(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a property graph and return the job deleting its data, without
+    /// waiting.
+    #[doc(hidden)]
+    async fn drop_property_graph_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        property_graph_ops_not_supported()
+    }
+    /// The names of the property graphs in one namespace.
+    async fn list_property_graphs(&self, _namespace_path: &[String]) -> Result<Vec<String>> {
+        property_graph_ops_not_supported()
+    }
+    /// Insert rows of one node label or edge label into a property graph, as
+    /// one commit.
+    async fn insert_into_property_graph(
+        &self,
+        _name: &str,
+        _label: &str,
+        _data: Box<dyn Scannable>,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Make a property graph's previous commit current again.
+    async fn rollback_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Create a virtual property graph over tables in its namespace.
+    async fn create_virtual_property_graph(
+        &self,
+        _name: &str,
+        _definition: &VirtualPropertyGraphDefinition,
+        _namespace_path: &[String],
+    ) -> Result<VirtualPropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// What the database records about one virtual property graph.
+    async fn describe_virtual_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<VirtualPropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a virtual property graph and wait for its definition to be
+    /// deleted. The tables it reads are untouched.
+    async fn drop_virtual_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a virtual property graph and return the job deleting its
+    /// definition, without waiting.
+    #[doc(hidden)]
+    async fn drop_virtual_property_graph_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        property_graph_ops_not_supported()
+    }
+    /// The names of the virtual property graphs in one namespace.
+    async fn list_virtual_property_graphs(
+        &self,
+        _namespace_path: &[String],
+    ) -> Result<Vec<String>> {
+        property_graph_ops_not_supported()
+    }
+    /// Create a materialized virtual property graph over tables in its
+    /// namespace, built from them now.
+    async fn create_materialized_virtual_property_graph(
+        &self,
+        _name: &str,
+        _definition: &VirtualPropertyGraphDefinition,
+        _namespace_path: &[String],
+    ) -> Result<MaterializedVirtualPropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// What the database records about one materialized virtual property
+    /// graph.
+    async fn describe_materialized_virtual_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<MaterializedVirtualPropertyGraphDescription> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a materialized virtual property graph and wait for its data to be
+    /// deleted. The tables it reads are untouched.
+    async fn drop_materialized_virtual_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        property_graph_ops_not_supported()
+    }
+    /// Drop a materialized virtual property graph and return the job deleting
+    /// its data, without waiting.
+    #[doc(hidden)]
+    async fn drop_materialized_virtual_property_graph_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        property_graph_ops_not_supported()
+    }
+    /// The names of the materialized virtual property graphs in one namespace.
+    async fn list_materialized_virtual_property_graphs(
+        &self,
+        _namespace_path: &[String],
+    ) -> Result<Vec<String>> {
+        property_graph_ops_not_supported()
+    }
+    /// Rebuild a materialized virtual property graph from its tables' latest
+    /// versions.
+    async fn refresh_materialized_virtual_property_graph(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<MaterializedVirtualPropertyGraphDescription> {
+        property_graph_ops_not_supported()
     }
     /// Open a job by id, returning a handle with its record already
     /// populated. Fails with [`crate::Error::JobNotFound`] when the server has

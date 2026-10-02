@@ -28,6 +28,10 @@ use crate::database::{
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::graph::{
+    MaterializedVirtualPropertyGraphDescription, PropertyGraphDefinition, PropertyGraphDescription,
+    VirtualPropertyGraphDefinition, VirtualPropertyGraphDescription,
+};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
@@ -38,8 +42,8 @@ use crate::remote::{
 };
 use crate::secrets::SecretInfo;
 use crate::utils::{
-    validate_namespace, validate_secret_component, validate_secret_reference,
-    validate_view_reference,
+    validate_namespace, validate_property_graph_reference, validate_secret_component,
+    validate_secret_reference, validate_view_reference,
 };
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
@@ -875,6 +879,277 @@ impl Connection {
     pub async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
         validate_namespace(namespace_path)?;
         self.internal.list_views(namespace_path).await
+    }
+
+    /// Create a property graph: a graph that holds its own rows, typed by its
+    /// node and edge types, and starts empty. A name held by a graph of any
+    /// kind is taken. Local databases return [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use arrow_schema::{DataType, Field, Schema};
+    /// # use lancedb::graph::{EdgeType, EndpointType, NodeType, PropertyGraphDefinition};
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let person = NodeType::new(
+    ///     "Person",
+    ///     "person_id",
+    ///     &Schema::new(vec![Field::new("person_id", DataType::Int64, false)]),
+    /// )?;
+    /// let endpoint = |column: &str| EndpointType {
+    ///     label: "Person".to_string(),
+    ///     column: column.to_string(),
+    /// };
+    /// let knows = EdgeType::new("KNOWS", endpoint("src_id"), endpoint("dst_id"), None)?;
+    /// let definition = PropertyGraphDefinition { nodes: vec![person], edges: vec![knows] };
+    /// connection.create_property_graph("people", &definition, &[]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        definition: &PropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_property_graph(name.as_ref(), definition, namespace_path)
+            .await
+    }
+
+    /// What this database records about one property graph: its node and edge
+    /// types, its current and previous commits, and its size. Local databases
+    /// return [`Error::NotSupported`].
+    pub async fn describe_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a property graph and wait for its data to be deleted. Local
+    /// databases return [`Error::NotSupported`].
+    pub async fn drop_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of the property graphs in one namespace.
+    ///
+    /// The client walks all server pages before returning. Local databases
+    /// return [`Error::NotSupported`].
+    pub async fn list_property_graphs(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        validate_namespace(namespace_path)?;
+        self.internal.list_property_graphs(namespace_path).await
+    }
+
+    /// Insert rows into a property graph, as one commit.
+    ///
+    /// The rows are one node label's or one edge label's. Nodes upsert by key:
+    /// a key the graph holds replaces that node's properties. Edges append,
+    /// carrying their endpoints' keys in the columns the edge type names; an
+    /// edge whose endpoint is not a node of the graph refuses the whole
+    /// insert. Local databases return [`Error::NotSupported`].
+    pub async fn insert_into_property_graph<T: Scannable + 'static>(
+        &self,
+        name: impl AsRef<str>,
+        label: impl AsRef<str>,
+        data: T,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .insert_into_property_graph(
+                name.as_ref(),
+                label.as_ref(),
+                Box::new(data),
+                namespace_path,
+            )
+            .await
+    }
+
+    /// Return a property graph to its previous commit.
+    ///
+    /// The commit rolled back from is discarded, so a second rollback in a row
+    /// is an error. Local databases return [`Error::NotSupported`].
+    pub async fn rollback_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .rollback_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Create a virtual property graph over tables in its namespace.
+    ///
+    /// The definition names the tables that hold its nodes, with their keys
+    /// and labels, and its edges, with the node keys their source and
+    /// destination columns reference. The graph stores nothing else: a query
+    /// reads the tables as they are then. A name held by a graph of any kind
+    /// is taken. Local databases return [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::graph::{EdgeTable, Endpoint, EndpointReference, NodeTable,
+    /// #     VirtualPropertyGraphDefinition};
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let person = EndpointReference {
+    ///     table: "person".to_string(),
+    ///     column: "person_id".to_string(),
+    /// };
+    /// let definition = VirtualPropertyGraphDefinition {
+    ///     nodes: vec![NodeTable {
+    ///         table: "person".to_string(),
+    ///         key: "person_id".to_string(),
+    ///         label: "Person".to_string(),
+    ///         properties: None,
+    ///     }],
+    ///     edges: vec![EdgeTable {
+    ///         table: "knows".to_string(),
+    ///         label: "KNOWS".to_string(),
+    ///         source: Endpoint { column: "src_id".to_string(), references: person.clone() },
+    ///         destination: Endpoint { column: "dst_id".to_string(), references: person },
+    ///         properties: None,
+    ///     }],
+    /// };
+    /// connection.create_virtual_property_graph("social", &definition, &[]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_virtual_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        definition: &VirtualPropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<VirtualPropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_virtual_property_graph(name.as_ref(), definition, namespace_path)
+            .await
+    }
+
+    /// What this database records about one virtual property graph: its node
+    /// and edge tables. Local databases return [`Error::NotSupported`].
+    pub async fn describe_virtual_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<VirtualPropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_virtual_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a virtual property graph and wait for its definition to be
+    /// deleted. The tables it reads are untouched. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn drop_virtual_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_virtual_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of the virtual property graphs in one namespace. Local
+    /// databases return [`Error::NotSupported`].
+    pub async fn list_virtual_property_graphs(
+        &self,
+        namespace_path: &[String],
+    ) -> Result<Vec<String>> {
+        validate_namespace(namespace_path)?;
+        self.internal
+            .list_virtual_property_graphs(namespace_path)
+            .await
+    }
+
+    /// Create a materialized virtual property graph: a virtual property
+    /// graph's definition, built now from the tables' latest versions and
+    /// read as that build until
+    /// [refreshed](Self::refresh_materialized_virtual_property_graph). Local
+    /// databases return [`Error::NotSupported`].
+    pub async fn create_materialized_virtual_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        definition: &VirtualPropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<MaterializedVirtualPropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_materialized_virtual_property_graph(name.as_ref(), definition, namespace_path)
+            .await
+    }
+
+    /// What this database records about one materialized virtual property
+    /// graph: its node and edge tables, and what its last refresh built from
+    /// them. Local databases return [`Error::NotSupported`].
+    pub async fn describe_materialized_virtual_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<MaterializedVirtualPropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_materialized_virtual_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a materialized virtual property graph and wait for its data to be
+    /// deleted. The tables it reads are untouched. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn drop_materialized_virtual_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_materialized_virtual_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of the materialized virtual property graphs in one
+    /// namespace. Local databases return [`Error::NotSupported`].
+    pub async fn list_materialized_virtual_property_graphs(
+        &self,
+        namespace_path: &[String],
+    ) -> Result<Vec<String>> {
+        validate_namespace(namespace_path)?;
+        self.internal
+            .list_materialized_virtual_property_graphs(namespace_path)
+            .await
+    }
+
+    /// Rebuild a materialized virtual property graph from its tables' latest
+    /// versions.
+    ///
+    /// When every table's commits since the last refresh left its rows as
+    /// they were, only the recorded versions advance. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn refresh_materialized_virtual_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<MaterializedVirtualPropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .refresh_materialized_virtual_property_graph(name.as_ref(), namespace_path)
+            .await
     }
 
     /// Rename a table in the database.

@@ -49,6 +49,26 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
+from .graph import (
+    MATERIALIZED_VIRTUAL_PROPERTY_GRAPH,
+    PROPERTY_GRAPH,
+    VIRTUAL_PROPERTY_GRAPH,
+    AsyncMaterializedVirtualPropertyGraph,
+    AsyncPropertyGraph,
+    AsyncVirtualPropertyGraph,
+    EdgeTable,
+    EdgeType,
+    MaterializedVirtualPropertyGraph,
+    MaterializedVirtualPropertyGraphDescription,
+    NodeTable,
+    NodeType,
+    PropertyGraph,
+    PropertyGraphDescription,
+    VirtualPropertyGraph,
+    VirtualPropertyGraphDescription,
+    _tables_json,
+    _types_json,
+)
 from .job import AsyncJob, Job, _typed_job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -1050,6 +1070,266 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError(
             "View operations are not supported for this connection type"
+        )
+
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeType],
+        edges: List[EdgeType],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraph:
+        """Create a property graph: a graph that holds its own rows.
+
+        Each [NodeType][lancedb.graph.NodeType] and
+        [EdgeType][lancedb.graph.EdgeType] gives one label's schema. The graph
+        starts empty and takes rows from
+        [PropertyGraph.insert][lancedb.graph.PropertyGraph.insert]. A name held
+        by a graph of any kind is taken. Local connections raise
+        ``NotImplementedError``.
+
+        >>> import lancedb
+        >>> import pyarrow as pa
+        >>> from lancedb.graph import EdgeType, NodeType
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> people = db.create_property_graph(
+        ...     "people",
+        ...     nodes=[
+        ...         NodeType(
+        ...             "Person",
+        ...             key="person_id",
+        ...             schema=pa.schema(
+        ...                 [
+        ...                     pa.field("person_id", pa.int64(), False),
+        ...                     ("name", pa.string()),
+        ...                 ]
+        ...             ),
+        ...         )
+        ...     ],
+        ...     edges=[
+        ...         EdgeType(
+        ...             "KNOWS",
+        ...             source=("Person", "src_id"),
+        ...             destination=("Person", "dst_id"),
+        ...         )
+        ...     ],
+        ... )  # doctest: +SKIP
+        >>> people.insert(
+        ...     "Person", [{"person_id": 1, "name": "Alice"}]
+        ... )  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        """Open the property graph named ``name``; an error if there is none.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def describe_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        """What this database records about a property graph: its node and edge
+        types, its current and previous commits, and its size.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def list_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the property graphs in one namespace.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a property graph and wait for its data to be deleted.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def create_virtual_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> VirtualPropertyGraph:
+        """Create a virtual property graph over tables in its namespace.
+
+        Each [NodeTable][lancedb.graph.NodeTable] names the table holding one
+        label's nodes and its key column, and each
+        [EdgeTable][lancedb.graph.EdgeTable] the table holding one label's edges
+        and the node keys its source and destination columns reference. The
+        graph stores nothing else: a query reads the tables as they are then. A
+        name held by a graph of any kind is taken. Local connections raise
+        ``NotImplementedError``.
+
+        >>> import lancedb
+        >>> from lancedb.graph import EdgeTable, Endpoint, NodeTable
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> graph = db.create_virtual_property_graph(
+        ...     "social",
+        ...     nodes=[NodeTable("person", key="person_id", label="Person")],
+        ...     edges=[
+        ...         EdgeTable(
+        ...             "knows",
+        ...             label="KNOWS",
+        ...             source=Endpoint("src_id", references=("person", "person_id")),
+        ...             destination=Endpoint(
+        ...                 "dst_id", references=("person", "person_id")
+        ...             ),
+        ...         )
+        ...     ],
+        ... )  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def open_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> VirtualPropertyGraph:
+        """Open the virtual property graph named ``name``; an error if there is
+        none.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def describe_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> VirtualPropertyGraphDescription:
+        """What this database records about a virtual property graph: its node
+        and edge tables, with the properties create resolved.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def list_virtual_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the virtual property graphs in one namespace.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def drop_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a virtual property graph and wait for its definition to be
+        deleted. The tables it reads are untouched.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def create_materialized_virtual_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> MaterializedVirtualPropertyGraph:
+        """Create a materialized virtual property graph over tables in its
+        namespace.
+
+        The definition is a virtual property graph's (see
+        [create_virtual_property_graph][lancedb.db.DBConnection.create_virtual_property_graph]).
+        The graph is built from the tables now, and read as that build until
+        [refreshed][lancedb.graph.MaterializedVirtualPropertyGraph.refresh]. A
+        name held by a graph of any kind is taken. Local connections raise
+        ``NotImplementedError``.
+
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> mvpg = db.create_materialized_virtual_property_graph(
+        ...     "social_mv", nodes, edges
+        ... )  # doctest: +SKIP
+        >>> mvpg.refresh()  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def open_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> MaterializedVirtualPropertyGraph:
+        """Open the materialized virtual property graph named ``name``; an error
+        if there is none.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def describe_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> MaterializedVirtualPropertyGraphDescription:
+        """What this database records about a materialized virtual property
+        graph: its node and edge tables, and what its last refresh built from
+        them.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def list_materialized_virtual_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the materialized virtual property graphs in one
+        namespace.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def drop_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized virtual property graph and wait for its data to
+        be deleted. The tables it reads are untouched.
+
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
         )
 
     def open_job(self, job_id: str) -> Job:
@@ -3036,6 +3316,166 @@ class AsyncConnection(object):
     ) -> List[str]:
         """The names of the views in one namespace."""
         return await self._inner.list_views(list(namespace_path or []))
+
+    async def create_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeType],
+        edges: List[EdgeType],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncPropertyGraph:
+        """Create a property graph: a graph that holds its own rows.
+
+        See
+        [DBConnection.create_property_graph][lancedb.DBConnection.create_property_graph].
+        """
+        graph = AsyncPropertyGraph(self._inner, name, namespace_path)
+        await self._inner.create_graph(
+            PROPERTY_GRAPH, name, _types_json(nodes, edges), graph.namespace_path
+        )
+        return graph
+
+    async def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> AsyncPropertyGraph:
+        """Open the property graph named ``name``; an error if there is none."""
+        graph = AsyncPropertyGraph(self._inner, name, namespace_path)
+        await graph.describe()
+        return graph
+
+    async def describe_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraphDescription:
+        """What this database records about a property graph."""
+        return await AsyncPropertyGraph(self._inner, name, namespace_path).describe()
+
+    async def list_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the property graphs in one namespace."""
+        return await self._inner.list_graphs(PROPERTY_GRAPH, list(namespace_path or []))
+
+    async def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a property graph and wait for its data to be deleted."""
+        await self._inner.drop_graph(PROPERTY_GRAPH, name, list(namespace_path or []))
+
+    async def create_virtual_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncVirtualPropertyGraph:
+        """Create a virtual property graph over tables in its namespace.
+
+        See
+        [DBConnection.create_virtual_property_graph][lancedb.DBConnection.create_virtual_property_graph].
+        """
+        graph = AsyncVirtualPropertyGraph(self._inner, name, namespace_path)
+        await self._inner.create_graph(
+            VIRTUAL_PROPERTY_GRAPH,
+            name,
+            _tables_json(nodes, edges),
+            graph.namespace_path,
+        )
+        return graph
+
+    async def open_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> AsyncVirtualPropertyGraph:
+        """Open the virtual property graph named ``name``; an error if there is
+        none."""
+        graph = AsyncVirtualPropertyGraph(self._inner, name, namespace_path)
+        await graph.describe()
+        return graph
+
+    async def describe_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> VirtualPropertyGraphDescription:
+        """What this database records about a virtual property graph."""
+        return await AsyncVirtualPropertyGraph(
+            self._inner, name, namespace_path
+        ).describe()
+
+    async def list_virtual_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the virtual property graphs in one namespace."""
+        return await self._inner.list_graphs(
+            VIRTUAL_PROPERTY_GRAPH, list(namespace_path or [])
+        )
+
+    async def drop_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a virtual property graph and wait for its definition to be
+        deleted."""
+        await self._inner.drop_graph(
+            VIRTUAL_PROPERTY_GRAPH, name, list(namespace_path or [])
+        )
+
+    async def create_materialized_virtual_property_graph(
+        self,
+        name: str,
+        nodes: List[NodeTable],
+        edges: List[EdgeTable],
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncMaterializedVirtualPropertyGraph:
+        """Create a materialized virtual property graph, built from its tables
+        now.
+
+        See
+        [DBConnection.create_materialized_virtual_property_graph][lancedb.DBConnection.create_materialized_virtual_property_graph].
+        """
+        graph = AsyncMaterializedVirtualPropertyGraph(self._inner, name, namespace_path)
+        await self._inner.create_graph(
+            MATERIALIZED_VIRTUAL_PROPERTY_GRAPH,
+            name,
+            _tables_json(nodes, edges),
+            graph.namespace_path,
+        )
+        return graph
+
+    async def open_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> AsyncMaterializedVirtualPropertyGraph:
+        """Open the materialized virtual property graph named ``name``; an error
+        if there is none."""
+        graph = AsyncMaterializedVirtualPropertyGraph(self._inner, name, namespace_path)
+        await graph.describe()
+        return graph
+
+    async def describe_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> MaterializedVirtualPropertyGraphDescription:
+        """What this database records about a materialized virtual property
+        graph."""
+        return await AsyncMaterializedVirtualPropertyGraph(
+            self._inner, name, namespace_path
+        ).describe()
+
+    async def list_materialized_virtual_property_graphs(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the materialized virtual property graphs in one
+        namespace."""
+        return await self._inner.list_graphs(
+            MATERIALIZED_VIRTUAL_PROPERTY_GRAPH, list(namespace_path or [])
+        )
+
+    async def drop_materialized_virtual_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized virtual property graph and wait for its data to
+        be deleted."""
+        await self._inner.drop_graph(
+            MATERIALIZED_VIRTUAL_PROPERTY_GRAPH, name, list(namespace_path or [])
+        )
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""

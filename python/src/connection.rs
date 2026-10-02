@@ -9,9 +9,10 @@ use std::{
 
 use crate::{
     error::PythonErrorExt,
+    graph::GraphKind,
     namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
     runtime::future_into_py,
-    table::Table,
+    table::{Table, scannable::PyScannable},
 };
 use arrow::{
     datatypes::Schema,
@@ -998,6 +999,203 @@ impl Connection {
         let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner.list_views(&namespace_path).await.infer_error()
+        })
+    }
+
+    /// Create a graph of `kind` from its definition's JSON, and return its
+    /// description's JSON.
+    #[pyo3(signature = (kind, name, definition_json, namespace_path=None))]
+    pub fn create_graph(
+        self_: PyRef<'_, Self>,
+        kind: String,
+        name: String,
+        definition_json: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        let kind = GraphKind::parse(&kind)?;
+        future_into_py(self_.py(), async move {
+            match kind {
+                GraphKind::Property => {
+                    let definition =
+                        lancedb::graph::PropertyGraphDefinition::from_json(&definition_json)
+                            .infer_error()?;
+                    inner
+                        .create_property_graph(name, &definition, &namespace_path)
+                        .await
+                        .infer_error()?
+                        .to_json()
+                }
+                GraphKind::Virtual => {
+                    let definition =
+                        lancedb::graph::VirtualPropertyGraphDefinition::from_json(&definition_json)
+                            .infer_error()?;
+                    inner
+                        .create_virtual_property_graph(name, &definition, &namespace_path)
+                        .await
+                        .infer_error()?
+                        .to_json()
+                }
+                GraphKind::MaterializedVirtual => {
+                    let definition =
+                        lancedb::graph::VirtualPropertyGraphDefinition::from_json(&definition_json)
+                            .infer_error()?;
+                    inner
+                        .create_materialized_virtual_property_graph(
+                            name,
+                            &definition,
+                            &namespace_path,
+                        )
+                        .await
+                        .infer_error()?
+                        .to_json()
+                }
+            }
+            .infer_error()
+        })
+    }
+
+    /// The JSON description of the graph of `kind` named `name`.
+    #[pyo3(signature = (kind, name, namespace_path=None))]
+    pub fn describe_graph(
+        self_: PyRef<'_, Self>,
+        kind: String,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        let kind = GraphKind::parse(&kind)?;
+        future_into_py(self_.py(), async move {
+            match kind {
+                GraphKind::Property => inner
+                    .describe_property_graph(name, &namespace_path)
+                    .await
+                    .infer_error()?
+                    .to_json(),
+                GraphKind::Virtual => inner
+                    .describe_virtual_property_graph(name, &namespace_path)
+                    .await
+                    .infer_error()?
+                    .to_json(),
+                GraphKind::MaterializedVirtual => inner
+                    .describe_materialized_virtual_property_graph(name, &namespace_path)
+                    .await
+                    .infer_error()?
+                    .to_json(),
+            }
+            .infer_error()
+        })
+    }
+
+    /// Drop the graph of `kind` named `name`, waiting for its storage to be
+    /// deleted.
+    #[pyo3(signature = (kind, name, namespace_path=None))]
+    pub fn drop_graph(
+        self_: PyRef<'_, Self>,
+        kind: String,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        let kind = GraphKind::parse(&kind)?;
+        future_into_py(self_.py(), async move {
+            match kind {
+                GraphKind::Property => inner.drop_property_graph(name, &namespace_path).await,
+                GraphKind::Virtual => {
+                    inner
+                        .drop_virtual_property_graph(name, &namespace_path)
+                        .await
+                }
+                GraphKind::MaterializedVirtual => {
+                    inner
+                        .drop_materialized_virtual_property_graph(name, &namespace_path)
+                        .await
+                }
+            }
+            .infer_error()
+        })
+    }
+
+    /// The names of the graphs of `kind` in one namespace.
+    #[pyo3(signature = (kind, namespace_path=None))]
+    pub fn list_graphs(
+        self_: PyRef<'_, Self>,
+        kind: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        let kind = GraphKind::parse(&kind)?;
+        future_into_py(self_.py(), async move {
+            match kind {
+                GraphKind::Property => inner.list_property_graphs(&namespace_path).await,
+                GraphKind::Virtual => inner.list_virtual_property_graphs(&namespace_path).await,
+                GraphKind::MaterializedVirtual => {
+                    inner
+                        .list_materialized_virtual_property_graphs(&namespace_path)
+                        .await
+                }
+            }
+            .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, label, data, namespace_path=None))]
+    pub fn insert_into_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        label: String,
+        data: PyScannable,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .insert_into_property_graph(name, label, data, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn rollback_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .rollback_property_graph(name, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn refresh_materialized_virtual_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .refresh_materialized_virtual_property_graph(name, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
         })
     }
 
