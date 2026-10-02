@@ -36,7 +36,6 @@ use datafusion_sql::sqlparser::parser::Parser;
 use futures::StreamExt;
 use lance::Dataset;
 use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
-use lance_core::ROW_ID;
 use lance_datafusion::exec::SessionContextExt;
 use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::vector::VectorIndex;
@@ -48,8 +47,7 @@ use uuid::Uuid;
 
 use super::refresh::to_view_batch;
 use super::{
-    MaterializedViewDefinition, Planned, SOURCE_ROW_ID_COLUMN, ViewProjection, ensure_immutable,
-    plan_filter, query, without_declarations,
+    MaterializedViewDefinition, Planned, ViewProjection, plan_filter, query, without_declarations,
 };
 use crate::{Error, Result};
 
@@ -384,17 +382,12 @@ pub(super) async fn bind_column_with_segments(
 }
 
 pub(super) fn empty_source(source_schema: &SchemaRef) -> Arc<dyn TableSource> {
-    let mut fields = source_schema.fields().to_vec();
-    fields.push(Arc::new(ArrowField::new(ROW_ID, DataType::UInt64, false)));
-    provider_as_source(Arc::new(EmptyTable::new(Arc::new(ArrowSchema::new(
-        fields,
-    )))))
+    provider_as_source(Arc::new(EmptyTable::new(source_schema.clone())))
 }
 
-/// The query DataFusion runs: the view's projections plus the group's
-/// smallest source row id, which stands as the row's provenance. `filtered`
-/// puts the view's predicate in the query, for a caller whose rows did not
-/// come from a lance scan that already applied it.
+/// The query DataFusion runs. `filtered` puts the view's predicate in the
+/// query for a caller whose rows did not come from a Lance scan that already
+/// applied it.
 fn sql(definition: &MaterializedViewDefinition, filtered: bool) -> String {
     let items: Vec<String> = definition
         .projections
@@ -406,7 +399,7 @@ fn sql(definition: &MaterializedViewDefinition, filtered: bool) -> String {
         _ => String::new(),
     };
     format!(
-        "SELECT {}, min({ROW_ID}) AS {ROW_ID} FROM {SOURCE}{predicate} GROUP BY {}",
+        "SELECT {} FROM {SOURCE}{predicate} GROUP BY {}",
         items.join(", "),
         definition.group_by.join(", ")
     )
@@ -499,11 +492,6 @@ pub(super) fn plan(
     };
     let mut projections: Vec<ViewProjection> = Vec::with_capacity(definition.projections.len());
     for p in &definition.projections {
-        if p.output == SOURCE_ROW_ID_COLUMN || p.output == ROW_ID {
-            return Err(Error::InvalidInput {
-                message: format!("view column name '{}' is reserved", p.output),
-            });
-        }
         if projections.iter().any(|seen| seen.output == p.output) {
             return Err(Error::ColumnAlreadyExists {
                 name: p.output.clone(),
@@ -549,14 +537,11 @@ pub(super) fn plan(
             message: format!("invalid grouped view: {e}"),
         })?;
     for expr in &exprs {
-        ensure_immutable(expr, |message| Error::InvalidInput {
-            message: format!("invalid grouped view: {message}"),
-        })?;
         inputs.extend(
             expr.column_refs()
                 .into_iter()
                 .map(|c| c.name.clone())
-                .filter(|name| name != ROW_ID && source_schema.field_with_name(name).is_ok()),
+                .filter(|name| source_schema.field_with_name(name).is_ok()),
         );
     }
     inputs.sort();
@@ -566,7 +551,6 @@ pub(super) fn plan(
         .schema()
         .fields()
         .iter()
-        .filter(|f| f.name() != ROW_ID)
         .map(|f| without_declarations(f))
         .collect();
     Ok(Planned {
@@ -586,7 +570,6 @@ pub(super) async fn stream(
     rows_written: Arc<AtomicU64>,
 ) -> Result<SendableRecordBatchStream> {
     let mut scanner = source.scan();
-    scanner.with_row_id();
     if let Some(filter) = &definition.filter {
         scanner.filter(filter)?;
     }

@@ -198,33 +198,6 @@ listing a storage directory.
 
 ::: lancedb.materialized_view.MaterializedViewDefinition
 
-::: lancedb.vector_dedup
-
-::: lancedb.materialized_view.VectorDedupSource
-
-For an existing indexed source, declare and materialize a dedup result without
-writing SQL. Creation captures the source version once and waits for the complete
-result; remote connections use the service's MV jobs.
-
-```python
-from lancedb import vector_dedup
-
-view = db.create_materialized_view(
-    "images_clean",
-    vector_dedup("images", column="phash", distance_threshold=4),
-)
-cleaned = view.table
-```
-
-To submit without waiting, call `db.create_materialized_view_async(...)` with the
-same source expression and wait on the returned job. To declare only, pass
-`with_no_data=True`, then use `view.refresh_async().wait()` when ready. Pass
-`dataset_version=...` to `vector_dedup` for an explicit snapshot. The default
-policy retains direct representatives (A-B-C without A-C keeps A and C), preserves
-the source, and materializes its original columns. Only within-segment/partition
-pairs are covered, using the index's distance representation.
-
-
 ## Views
 
 ::: lancedb.view.ViewDescription

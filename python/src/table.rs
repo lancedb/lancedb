@@ -592,8 +592,6 @@ impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewRes
     fn from(result: lancedb::RefreshMaterializedViewResult) -> Self {
         let mode = match result.mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-            lancedb::RefreshMode::Incremental => "incremental",
-            lancedb::RefreshMode::NoOp => "no_op",
         };
         Self {
             mode: mode.to_string(),
@@ -1817,10 +1815,9 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (source_version=None))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
-        full: bool,
         source_version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -1828,7 +1825,7 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh();
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -1837,10 +1834,9 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (source_version=None))]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
-        full: bool,
         source_version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -1848,7 +1844,7 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh();
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }

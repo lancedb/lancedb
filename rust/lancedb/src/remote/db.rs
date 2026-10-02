@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::TryStreamExt;
 use http::StatusCode;
 use lance_io::object_store::StorageOptions;
 use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
@@ -46,6 +47,10 @@ use super::sql::SqlClient;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
+
+fn quote_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -860,42 +865,27 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         &self,
         request: CreateMaterializedViewRequest,
     ) -> Result<Job> {
-        let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/materialized_view/{identifier}/create"))
-            .json(&serde_json::json!({
-                "query": request.query,
-                "with_no_data": request.with_no_data,
-            }));
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        let job_id = extract_job_id(&body);
-
         if request.with_no_data {
-            return Ok(match job_id {
-                Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
-                None => Job::new_done(),
+            return Err(Error::NotSupported {
+                message: "remote materialized views are always populated by their SQL job"
+                    .to_string(),
             });
         }
-        if status != StatusCode::ACCEPTED {
-            return Err(Error::Http {
-                source: "materialized-view creation with data must return 202 Accepted".into(),
-                request_id,
-                status_code: Some(status),
-            });
-        }
-        let job_id = job_id.ok_or_else(|| Error::Http {
-            source: "materialized-view creation response did not contain a valid job_id".into(),
-            request_id,
-            status_code: Some(status),
+        let client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
+            message: "SQL is unavailable for this remote database client".to_string(),
         })?;
-        Ok(Job::new(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+        let namespace = request.namespace_path;
+        let statement = format!(
+            "CREATE MATERIALIZED VIEW {} AS {}",
+            quote_sql_identifier(&request.name),
+            request.query
+        );
+        Ok(Job::spawned(tokio::spawn(async move {
+            let query = client.submit(&statement, &namespace).await?;
+            let mut reader = query.reader().await?;
+            while reader.try_next().await?.is_some() {}
+            Ok(())
+        })))
     }
 
     async fn drop_materialized_view_async(
@@ -1547,12 +1537,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let version = parse_server_version(&request_id, &rsp)?;
         let table_identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
-        let table = Arc::new(RemoteTable::new(
+        let table = Arc::new(RemoteTable::new_with_sql_client(
             self.client.clone(),
             request.name.clone(),
             request.namespace_path.clone(),
             table_identifier,
             version.clone(),
+            self.sql_client.clone(),
         ));
         self.table_cache.insert(cache_key, version).await;
 
@@ -1589,12 +1580,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         let version = parse_server_version(&request_id, &rsp)?;
         let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace_path);
-        let table = Arc::new(RemoteTable::new(
+        let table = Arc::new(RemoteTable::new_with_sql_client(
             self.client.clone(),
             request.target_table_name.clone(),
             request.target_namespace_path.clone(),
             table_identifier,
             version.clone(),
+            self.sql_client.clone(),
         ));
         self.table_cache.insert(cache_key, version).await;
 
@@ -1607,12 +1599,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         // Every open gets its own checkout, schema cache, and freshness state.
         if let Some(version) = self.table_cache.get(&cache_key).await {
-            Ok(Arc::new(RemoteTable::new(
+            Ok(Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
                 request.name,
                 request.namespace_path,
                 identifier,
                 version,
+                self.sql_client.clone(),
             )))
         } else {
             // Describe the table to confirm it exists before moving on.
@@ -1625,12 +1618,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
             let describe_body = rsp.text().await.ok();
-            let table = Arc::new(RemoteTable::new(
+            let table = Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
                 request.name.clone(),
                 request.namespace_path.clone(),
                 identifier,
                 version.clone(),
+                self.sql_client.clone(),
             ));
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
@@ -1957,29 +1951,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_materialized_view_uses_item_route_and_job() {
+    async fn test_create_materialized_view_requires_sql_client() {
         let db = super::RemoteDatabase::new_mock(|request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/materialized_view/analytics$adults/create"
-            );
-            let body = request
-                .body()
-                .and_then(reqwest::Body::as_bytes)
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
-                .unwrap();
-            assert_eq!(
-                body["query"],
-                "SELECT age AS \"age\" FROM \"raw\".\"people\" WHERE age >= 18 LIMIT 10"
-            );
-            assert_eq!(body["with_no_data"], false);
-            http::Response::builder()
-                .status(202)
-                .body(serde_json::json!({"job_id": "j1-mv-create"}).to_string())
-                .unwrap()
+            panic!("unexpected REST request: {}", request.url().path())
         });
-        let job = db
+        let error = db
             .create_materialized_view_async(CreateMaterializedViewRequest {
                 name: "adults".into(),
                 namespace_path: vec!["analytics".into()],
@@ -1988,8 +1964,8 @@ mod tests {
                 with_no_data: false,
             })
             .await
-            .unwrap();
-        assert_eq!(job.id(), Some("j1-mv-create"));
+            .unwrap_err();
+        assert!(error.to_string().contains("SQL is unavailable"));
     }
 
     #[tokio::test]

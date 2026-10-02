@@ -6,11 +6,15 @@
 
 use std::sync::Arc;
 
-use arrow_schema::SchemaRef;
+use arrow_array::{RecordBatch, UInt64Array};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
+use datafusion::prelude::{SessionConfig, SessionContext, col};
 use datafusion_catalog::{Session, TableProvider};
-use datafusion_common::{Result, plan_err};
-use datafusion_execution::{SendableRecordBatchStream, TaskContext};
+use datafusion_common::{DataFusionError, Result, plan_err};
+use datafusion_execution::{
+    SendableRecordBatchStream, TaskContext, runtime_env::RuntimeEnvBuilder,
+};
 use datafusion_expr::{Expr, TableType};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::{
@@ -21,11 +25,13 @@ use datafusion_physical_plan::{
     projection::ProjectionExec,
     stream::RecordBatchStreamAdapter,
 };
-use futures::{TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 use lance::dataset::scanner::{RowAddrMask, RowAddrTreeMap};
 use lance::{Dataset, index::DatasetIndexInternalExt};
 use lance_core::datatypes::BlobHandling;
+use lance_datafusion::exec::{OneShotExec, SessionContextExt};
 use lance_index::metrics::NoOpMetricsCollector;
+use roaring::RoaringTreemap;
 
 use super::duplicate_pairs::{
     DuplicatePairTask, DuplicatePairsConfig, DuplicatePairsExec, DuplicatePairsOutput,
@@ -35,6 +41,84 @@ use crate::table::{NativeTableExt, datafusion::BaseTableAdapter};
 
 const REPRESENTATIVE_SORT_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const MATERIALIZE_BATCH_ROWS: usize = 1024;
+
+fn edge_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("a", DataType::UInt64, false),
+        Field::new("b", DataType::UInt64, false),
+    ]))
+}
+
+/// Sorting canonical edges makes the first unremoved endpoint the smallest
+/// unassigned representative. The sort spills; only vertex masks stay in RAM.
+async fn select_representatives(
+    stream: SendableRecordBatchStream,
+    memory: usize,
+) -> crate::Result<(RoaringTreemap, RoaringTreemap)> {
+    let schema = edge_schema();
+    let batch_schema = schema.clone();
+    let canonical = stream
+        .map_ok(move |batch| {
+            let a = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .expect("native row id");
+            let b = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .expect("native row id");
+            RecordBatch::try_new(
+                batch_schema.clone(),
+                vec![
+                    Arc::new(UInt64Array::from_iter_values(
+                        a.values().iter().zip(b.values()).map(|(&a, &b)| a.min(b)),
+                    )),
+                    Arc::new(UInt64Array::from_iter_values(
+                        a.values().iter().zip(b.values()).map(|(&a, &b)| a.max(b)),
+                    )),
+                ],
+            )
+            .map_err(DataFusionError::from)
+        })
+        .and_then(futures::future::ready);
+    let canonical = Box::pin(RecordBatchStreamAdapter::new(schema, canonical));
+    let mut config = SessionConfig::default().with_batch_size(MATERIALIZE_BATCH_ROWS);
+    config.options_mut().execution.sort_spill_reservation_bytes = memory / 2;
+    let ctx = SessionContext::new_with_config_rt(
+        config,
+        RuntimeEnvBuilder::new()
+            .with_memory_limit(memory, 1.0)
+            .build_arc()?,
+    );
+    let mut sorted = ctx
+        .read_one_shot(canonical)?
+        .sort_by(vec![col("a"), col("b")])?
+        .execute_stream()
+        .await?;
+    let mut removed = RoaringTreemap::new();
+    let mut representatives = RoaringTreemap::new();
+    while let Some(batch) = sorted.try_next().await? {
+        let a = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("sorted id");
+        let b = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("sorted id");
+        for (&a, &b) in a.values().iter().zip(b.values()) {
+            if a != b && !removed.contains(a) && !removed.contains(b) {
+                representatives.insert(a);
+                removed.insert(b);
+            }
+        }
+    }
+    Ok((removed, representatives))
+}
 
 /// Select nonempty physical IVF scopes before dispatch, never by filtering the
 /// resulting pairs. A count spans all segments; partition IDs are segment-local.
@@ -322,12 +406,9 @@ impl ExecutionPlan for VectorDedupExec {
         let dataset = self.dataset.clone();
         let pairs = CoalescePartitionsExec::new(self.pairs.clone()).execute(0, context)?;
         let stream = stream::once(async move {
-            let (removed, _) = crate::materialized_view::vector_dedup::select_representatives(
-                pairs,
-                REPRESENTATIVE_SORT_MEMORY_BYTES,
-            )
-            .await
-            .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
+            let (removed, _) = select_representatives(pairs, REPRESENTATIVE_SORT_MEMORY_BYTES)
+                .await
+                .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
             let mut scanner = dataset.scan();
             scanner
                 .with_row_addr_prefilter(RowAddrMask::from_block(RowAddrTreeMap::from_iter(
