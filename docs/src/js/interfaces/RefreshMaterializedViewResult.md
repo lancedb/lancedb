@@ -14,7 +14,7 @@
 mode: string;
 ```
 
-How the view was brought up to date: "rebuild", "incremental" or "no_op".
+How the view was brought up to date. Materialized views currently always use "rebuild".
 
 ***
 
