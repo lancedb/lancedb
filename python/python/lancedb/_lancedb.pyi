@@ -203,6 +203,7 @@ class Connection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[pa.RecordBatch] = None,
     ) -> SqlQuery: ...
     async def describe_query(self, query_id: UUID) -> QueryDescription: ...
     async def create_table(

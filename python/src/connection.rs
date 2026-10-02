@@ -14,9 +14,10 @@ use crate::{
     table::Table,
 };
 use arrow::{
+    array::RecordBatch,
     datatypes::Schema,
     ffi_stream::ArrowArrayStreamReader,
-    pyarrow::{FromPyArrow, ToPyArrow},
+    pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::{
     connection::Connection as LanceConnection,
@@ -148,18 +149,22 @@ impl Connection {
         self.get_inner().map(|inner| inner.uri().to_string())
     }
 
-    #[pyo3(signature = (query, *, default_namespace_path=None))]
+    #[pyo3(signature = (query, *, default_namespace_path=None, parameters=None))]
     pub fn execute_query_async<'a>(
         self_: PyRef<'a, Self>,
         query: String,
         default_namespace_path: Option<Bound<'_, PyAny>>,
+        parameters: Option<PyArrowType<RecordBatch>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let default_namespace_path = parse_default_namespace_path(default_namespace_path)?;
         future_into_py(self_.py(), async move {
-            let operation = inner
+            let mut operation = inner
                 .execute_query_async(query)
                 .default_namespace_path(default_namespace_path);
+            if let Some(PyArrowType(parameters)) = parameters {
+                operation = operation.parameters(parameters);
+            }
             operation
                 .execute()
                 .await
