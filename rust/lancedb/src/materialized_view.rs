@@ -1228,7 +1228,8 @@ impl PreparedDeclaration {
         let table = Table::new(table, self.database);
         Ok(MaterializedView {
             table,
-            definition: self.definition,
+            definition_sql: self.definition.to_sql(),
+            parsed_definition: Some(self.definition),
         })
     }
 }
