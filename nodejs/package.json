@@ -49,10 +49,14 @@
     "@types/jest": "^29.1.2",
     "@types/node": "22.7.4",
     "@types/tmp": "^0.2.6",
+    "apache-arrow": "21.2.0",
     "apache-arrow-15": "npm:apache-arrow@15.0.0",
     "apache-arrow-16": "npm:apache-arrow@16.0.0",
     "apache-arrow-17": "npm:apache-arrow@17.0.0",
     "apache-arrow-18": "npm:apache-arrow@18.0.0",
+    "apache-arrow-19": "npm:apache-arrow@19.0.1",
+    "apache-arrow-20": "npm:apache-arrow@20.0.0",
+    "apache-arrow-21": "npm:apache-arrow@21.2.0",
     "eslint": "^8.57.0",
     "jest": "^29.7.0",
     "shx": "^0.3.4",
@@ -102,7 +106,7 @@
   },
   "peerDependencies": {
     "@types/node": ">=22",
-    "apache-arrow": ">=15.0.0 <=18.1.0"
+    "apache-arrow": ">=15.0.0 <22.0.0"
   },
   "peerDependenciesMeta": {
     "@types/node": {

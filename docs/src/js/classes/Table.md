@@ -1381,7 +1381,7 @@ repeatedly calling this method.
 
 ##### Parameters
 
-* **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **updates**: `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
     the
     columns to update
 
