@@ -65,9 +65,9 @@ refresh(options?): Promise<RefreshMaterializedViewResult>
 
 Recompute the view from its source.
 
-Every refresh rebuilds the complete view. For local views, `sourceVersion`
-refreshes to that source version instead of the latest; remote SQL refreshes
-do not support source-version pinning.
+Every refresh rebuilds the complete view. For local views,
+`sourceVersion` refreshes to that source version instead of the latest;
+remote SQL refreshes do not support source-version pinning.
 
 #### Parameters
 
