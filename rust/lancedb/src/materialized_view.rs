@@ -1952,5 +1952,11 @@ mod tests {
         let unchanged = view.refresh().execute().await.unwrap();
         assert_eq!(unchanged.mode, RefreshMode::Rebuild);
         assert_eq!(unchanged.rows_written, 3);
+
+        source.delete("true").await.unwrap();
+        let emptied = view.refresh().execute().await.unwrap();
+        assert_eq!(emptied.mode, RefreshMode::Rebuild);
+        assert_eq!(emptied.rows_written, 0);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
     }
 }
