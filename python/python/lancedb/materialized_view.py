@@ -248,8 +248,4 @@ class MaterializedView:
         See
         [AsyncMaterializedView.refresh_async][lancedb.materialized_view.AsyncMaterializedView.refresh_async].
         """
-        return Job(
-            LOOP.run(
-                self._async.refresh_async(source_version=source_version)
-            )
-        )
+        return Job(LOOP.run(self._async.refresh_async(source_version=source_version)))
