@@ -183,8 +183,9 @@ class AsyncMaterializedView:
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
-        Every refresh rebuilds the complete view. ``source_version`` refreshes
-        to that source version instead of the latest.
+        Every refresh rebuilds the complete view. For local views,
+        ``source_version`` refreshes to that source version instead of the
+        latest; remote SQL refreshes do not support source-version pinning.
         """
         return await self._table._inner.refresh_materialized_view(
             source_version=source_version

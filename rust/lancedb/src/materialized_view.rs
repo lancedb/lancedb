@@ -1713,7 +1713,8 @@ pub struct RefreshMaterializedViewBuilder {
 }
 
 impl RefreshMaterializedViewBuilder {
-    /// Refresh to this source table version instead of the latest.
+    /// Refresh a local view to this source table version instead of the latest.
+    /// Remote SQL refreshes do not support source-version pinning.
     pub fn source_version(mut self, version: u64) -> Self {
         self.source_version = Some(version);
         self
