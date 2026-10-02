@@ -38,11 +38,9 @@ use lance::Dataset;
 use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
 use lance_datafusion::exec::SessionContextExt;
 use lance_index::metrics::NoOpMetricsCollector;
-use lance_index::vector::VectorIndex;
 use lance_index::vector::ivf::{IvfTransformer, new_ivf_transformer};
 use lance_linalg::distance::DistanceType;
 use lance_linalg::kernels::normalize_fsl;
-use roaring::RoaringBitmap;
 use uuid::Uuid;
 
 use super::refresh::to_view_batch;
@@ -66,50 +64,6 @@ pub(super) struct IvfBinding {
     pub(super) transformer: Arc<IvfTransformer>,
     /// A cosine index assigns L2 over unit vectors, as lance's index path does.
     pub(super) normalize: bool,
-    /// Partitions of the model; the ids `ivf_partition` returns are below it.
-    pub(super) partitions: u32,
-}
-
-/// The segments of the one IVF index on a column, opened, and the fragments
-/// they cover between them; every other fragment's rows are unindexed.
-/// `covered` is `None` when a segment does not say which fragments it holds
-/// (`fragment_bitmap: None`, which lance defines as unknown rather than
-/// empty): its rows would be read once by the partition reader and again as
-/// unindexed, so no caller may split this index.
-pub(super) struct IvfSegments {
-    pub(super) segments: Vec<IvfSegment>,
-    pub(super) covered: Option<RoaringBitmap>,
-}
-
-/// One opened segment and the fragments it holds rows for. Its postings
-/// still name rows of fragments it has since lost -- a column rewrite
-/// attaches a new file and takes the fragment out of this bitmap -- so a
-/// reader of its partitions keeps only the rows it still owns.
-pub(super) struct IvfSegment {
-    pub(super) index: Arc<dyn VectorIndex>,
-    pub(super) fragments: Option<RoaringBitmap>,
-}
-
-impl IvfSegments {
-    pub(super) fn is_unindexed(&self, fragment_id: u64) -> Option<bool> {
-        Some(!self.covered.as_ref()?.contains(fragment_id as u32))
-    }
-}
-
-/// Coverage after folding in one more segment. Lance defines a segment
-/// without a fragment bitmap as unknown coverage, not empty, and one such
-/// segment is enough to lose the coverage of the whole index.
-fn coverage(
-    covered: Option<RoaringBitmap>,
-    bitmap: Option<&RoaringBitmap>,
-) -> Option<RoaringBitmap> {
-    match (covered, bitmap) {
-        (Some(mut covered), Some(bitmap)) => {
-            covered |= bitmap;
-            Some(covered)
-        }
-        _ => None,
-    }
 }
 
 /// `bindings` maps a source column to its index; planning runs unbound.
@@ -276,16 +230,6 @@ pub(super) async fn bind(
 }
 
 async fn bind_column(source: &Dataset, column: &str) -> Result<IvfBinding> {
-    bind_column_with_segments(source, column)
-        .await
-        .map(|(binding, _)| binding)
-}
-
-/// The binding plus the opened segments it was read from.
-pub(super) async fn bind_column_with_segments(
-    source: &Dataset,
-    column: &str,
-) -> Result<(IvfBinding, IvfSegments)> {
     let field = source
         .schema()
         .field(column)
@@ -296,8 +240,6 @@ pub(super) async fn bind_column_with_segments(
     // on its own fragments carries its own centroids, and grouping every row
     // by one segment's model would bucket the other segments' rows wrongly.
     let mut found: Option<(String, Uuid, DistanceType, FixedSizeListArray)> = None;
-    let mut segments = Vec::new();
-    let mut covered = Some(RoaringBitmap::new());
     for index in source.load_indices().await?.iter() {
         if index.fields != [field.id] {
             continue;
@@ -312,12 +254,6 @@ pub(super) async fn bind_column_with_segments(
             continue;
         };
         let metric = vector.metric_type();
-        covered = coverage(covered, index.fragment_bitmap.as_ref());
-        let fragments = index.fragment_bitmap.clone();
-        segments.push(IvfSegment {
-            index: vector.clone(),
-            fragments,
-        });
         match &found {
             None => found = Some((index.name.clone(), index.uuid, metric, centroids)),
             Some((name, _, seen_metric, seen)) if *name == index.name => {
@@ -367,18 +303,11 @@ pub(super) async fn bind_column_with_segments(
     // Lance's index path assigns cosine by L2 over unit vectors.
     let normalize = metric == DistanceType::Cosine;
     let distance = if normalize { DistanceType::L2 } else { metric };
-    let partitions = u32::try_from(centroids.len()).map_err(|_| Error::InvalidInput {
-        message: format!("{IVF_PARTITION}({column}): too many partitions"),
-    })?;
-    Ok((
-        IvfBinding {
-            index: uuid,
-            transformer: Arc::new(new_ivf_transformer(centroids, distance, vec![])),
-            normalize,
-            partitions,
-        },
-        IvfSegments { segments, covered },
-    ))
+    Ok(IvfBinding {
+        index: uuid,
+        transformer: Arc::new(new_ivf_transformer(centroids, distance, vec![])),
+        normalize,
+    })
 }
 
 pub(super) fn empty_source(source_schema: &SchemaRef) -> Arc<dyn TableSource> {
@@ -593,25 +522,4 @@ pub(super) async fn stream(
         Ok(batch)
     });
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, mapped)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A segment that does not name the fragments it holds leaves the whole
-    /// index's coverage unknown: reading "everything it does not cover" would
-    /// read its rows a second time.
-    #[test]
-    fn one_segment_without_a_bitmap_loses_the_coverage() {
-        let first = RoaringBitmap::from_iter([0u32, 1]);
-        let second = RoaringBitmap::from_iter([2u32]);
-        let both = coverage(
-            coverage(Some(RoaringBitmap::new()), Some(&first)),
-            Some(&second),
-        );
-        assert_eq!(both, Some(RoaringBitmap::from_iter([0u32, 1, 2])));
-        assert_eq!(coverage(both, None), None);
-        assert_eq!(coverage(None, Some(&first)), None);
-    }
 }

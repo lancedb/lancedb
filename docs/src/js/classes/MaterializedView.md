@@ -68,10 +68,6 @@ Recompute the view from its source.
 Every refresh rebuilds the complete view. `sourceVersion` refreshes to
 that source version instead of the latest.
 
-Concurrent refreshes of one view do not duplicate its rows. Two that
-plan the same source rows conflict on commit, and the loser throws
-rather than writing them a second time.
-
 #### Parameters
 
 * **options?**

@@ -654,16 +654,6 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(job_id)
     }
 
-    pub fn new(
-        client: RestfulLanceDbClient<S>,
-        name: String,
-        namespace: Vec<String>,
-        identifier: String,
-        server_version: ServerVersion,
-    ) -> Self {
-        Self::new_with_sql_client(client, name, namespace, identifier, server_version, None)
-    }
-
     pub(super) fn new_with_sql_client(
         client: RestfulLanceDbClient<S>,
         name: String,
