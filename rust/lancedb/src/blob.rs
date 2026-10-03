@@ -368,45 +368,115 @@ pub(crate) fn ensure_blob_v2_column(
     }
 }
 
-fn ensure_all_row_ids_resolved(column: &str, requested: usize, resolved: usize) -> Result<()> {
-    if requested == resolved {
+fn missing_blob_row_ids_error(column: &str, requested: usize, missing: &[u64]) -> Error {
+    let detail = if missing.is_empty() {
+        String::new()
+    } else {
+        format!("; first missing row ids: {missing:?}")
+    };
+    Error::InvalidInput {
+        message: format!(
+            "blob read for column '{column}' requested {requested} row ids but some \
+             do not exist in the table{detail}; pass row ids collected from this table"
+        ),
+    }
+}
+
+/// Diagnose only after a failed read. Stable row IDs use Lance's deletion-aware
+/// index; physical row IDs are fragment/offset pairs. Limit the error to three
+/// distinct IDs so a large failed batch stays readable.
+async fn find_missing_blob_row_ids(dataset: &Dataset, row_ids: &[u64]) -> Result<Vec<u64>> {
+    let mut missing = Vec::new();
+    if let Some(index) = lance::dataset::rowids::get_row_id_index(dataset).await? {
+        for (row_id, address) in row_ids.iter().zip(index.get_many(row_ids)?) {
+            if address.is_none() && !missing.contains(row_id) {
+                missing.push(*row_id);
+                if missing.len() == 3 {
+                    break;
+                }
+            }
+        }
+    } else {
+        let mut fragments = std::collections::HashMap::new();
+        for &row_id in row_ids {
+            let fragment_id = row_id >> 32;
+            let offset = row_id as u32;
+            if let std::collections::hash_map::Entry::Vacant(entry) = fragments.entry(fragment_id) {
+                let fragment = dataset.get_fragment(fragment_id as usize);
+                let state = if let Some(fragment) = fragment {
+                    Some((
+                        fragment.physical_rows().await?,
+                        fragment.get_deletion_vector().await?,
+                    ))
+                } else {
+                    None
+                };
+                entry.insert(state);
+            }
+            let is_missing = match fragments.get(&fragment_id) {
+                Some(Some((physical_rows, deletions))) => {
+                    offset as usize >= *physical_rows
+                        || deletions
+                            .as_ref()
+                            .is_some_and(|deletions| deletions.contains(offset))
+                }
+                Some(None) => true,
+                None => unreachable!(),
+            };
+            if is_missing && !missing.contains(&row_id) {
+                missing.push(row_id);
+                if missing.len() == 3 {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(missing)
+}
+
+async fn ensure_all_row_ids_resolved(
+    dataset: &Dataset,
+    column: &str,
+    row_ids: &[u64],
+    resolved: usize,
+) -> Result<()> {
+    if row_ids.len() == resolved {
         return Ok(());
     }
-    if resolved < requested {
-        Err(Error::InvalidInput {
-            message: format!(
-                "blob read for column '{column}' requested {requested} row ids but only {resolved} \
-                 exist in the table; pass row ids collected from this table"
-            ),
-        })
+    if resolved < row_ids.len() {
+        let missing = find_missing_blob_row_ids(dataset, row_ids)
+            .await
+            .unwrap_or_default();
+        Err(missing_blob_row_ids_error(column, row_ids.len(), &missing))
     } else {
         Err(Error::Runtime {
             message: format!(
-                "blob read for column '{column}' returned {resolved} results for {requested} row ids"
+                "blob read for column '{column}' returned {resolved} results for {} row ids",
+                row_ids.len()
             ),
         })
     }
 }
 
-/// Lance take reports a missing physical row address as NotSupported or InvalidInput.
-fn map_blob_take_error(column: &str, requested: usize, err: lance::Error) -> Error {
-    let missing_row_addr = match &err {
-        lance::Error::NotSupported { source, .. } => {
-            source.to_string().contains("must not target deleted rows")
-        }
-        lance::Error::InvalidInput { source, .. } => source
-            .to_string()
-            .contains("belongs to non-existent fragment"),
-        _ => false,
-    };
+/// Lance reports missing physical and stable row ids through several error paths
+/// without a shared typed error.
+async fn map_blob_take_error(
+    dataset: &Dataset,
+    column: &str,
+    row_ids: &[u64],
+    err: lance::Error,
+) -> Error {
+    let message = err.to_string();
+    let missing_row_id = message.contains("must not target deleted rows")
+        || message.contains("belongs to non-existent fragment")
+        || (message.contains("Invalid read params ") && message.contains("addressable rows"))
+        || message.contains("Could not resolve all requested row IDs");
 
-    if missing_row_addr {
-        Error::InvalidInput {
-            message: format!(
-                "blob read for column '{column}' requested {requested} row ids but some \
-                 do not exist in the table; pass row ids collected from this table"
-            ),
-        }
+    if missing_row_id {
+        let missing = find_missing_blob_row_ids(dataset, row_ids)
+            .await
+            .unwrap_or_default();
+        missing_blob_row_ids_error(column, row_ids.len(), &missing)
     } else {
         err.into()
     }
@@ -423,18 +493,25 @@ pub(crate) async fn take_blob_ranges_aligned(
         return Ok(LargeBinaryBuilder::new().finish());
     }
 
+    let row_ids = requests
+        .iter()
+        .map(|request| request.row_id)
+        .collect::<Vec<_>>();
     let lance_requests = requests
         .iter()
         .map(|request| LanceBlobRangeRequest::new(request.row_id, request.offset, request.length))
         .collect::<Vec<_>>();
-    let payloads = dataset
+    let payloads = match dataset
         .read_blob_ranges(column)?
         .with_row_ids(lance_requests)
         .preserve_order(true)
         .execute()
         .await
-        .map_err(|err| map_blob_take_error(column, requests.len(), err))?;
-    ensure_all_row_ids_resolved(column, requests.len(), payloads.len())?;
+    {
+        Ok(payloads) => payloads,
+        Err(err) => return Err(map_blob_take_error(dataset, column, &row_ids, err).await),
+    };
+    ensure_all_row_ids_resolved(dataset, column, &row_ids, payloads.len()).await?;
 
     let mut builder = LargeBinaryBuilder::new();
     for payload in payloads {
@@ -457,14 +534,17 @@ pub(crate) async fn take_blobs_aligned(
         return Ok(LargeBinaryBuilder::new().finish());
     }
 
-    let payloads = dataset
+    let payloads = match dataset
         .read_blobs(column)?
         .with_row_ids(row_ids.to_vec())
         .preserve_order(true)
         .execute()
         .await
-        .map_err(|err| map_blob_take_error(column, row_ids.len(), err))?;
-    ensure_all_row_ids_resolved(column, row_ids.len(), payloads.len())?;
+    {
+        Ok(payloads) => payloads,
+        Err(err) => return Err(map_blob_take_error(dataset, column, row_ids, err).await),
+    };
+    ensure_all_row_ids_resolved(dataset, column, row_ids, payloads.len()).await?;
 
     let mut builder = LargeBinaryBuilder::new();
     for payload in payloads {
@@ -487,11 +567,11 @@ pub(crate) async fn take_blob_files_aligned(
         return Ok(Vec::new());
     }
 
-    let handles = dataset
-        .take_blobs(row_ids, column)
-        .await
-        .map_err(|err| map_blob_take_error(column, row_ids.len(), err))?;
-    ensure_all_row_ids_resolved(column, row_ids.len(), handles.len())?;
+    let handles = match dataset.take_blobs(row_ids, column).await {
+        Ok(handles) => handles,
+        Err(err) => return Err(map_blob_take_error(dataset, column, row_ids, err).await),
+    };
+    ensure_all_row_ids_resolved(dataset, column, row_ids, handles.len()).await?;
     Ok(handles
         .into_iter()
         .map(|handle| handle.map(Into::into))

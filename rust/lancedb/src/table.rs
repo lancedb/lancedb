@@ -1257,7 +1257,8 @@ impl Table {
     /// [`Self::fetch_blob_files`] for large selections.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
-    /// row ids.
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial results are returned.
     ///
     /// ```
     /// use arrow_array::UInt64Array;
@@ -1301,7 +1302,8 @@ impl Table {
     /// non-null blobs produce empty byte strings.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
-    /// row ids.
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial results are returned.
     ///
     /// ```
     /// use lancedb::blob::BlobRangeRequest;
@@ -1342,7 +1344,8 @@ impl Table {
     /// read from disk until a call to [`BlobFile::read`].
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
-    /// row ids.
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial handles are returned.
     ///
     /// ```
     /// # use lancedb::Table;
