@@ -39,7 +39,7 @@ from .expr import Expr
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .schema import is_blob_like_field, schema_has_blob_field
+from .schema import blob_column_paths, is_blob_like_field, schema_has_blob_field
 from .util import flatten_columns
 from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
@@ -51,6 +51,7 @@ from ._blob import (
     finalize_blob_query_table,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
+    strip_auto_row_ids,
     validate_blob_mode,
 )
 from .types import BlobMode, QueryProjection
@@ -3065,14 +3066,20 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned for plain scan queries.
-            Vector, FTS, hybrid, and other non-native query shapes keep the
-            existing Arrow conversion path and only support blob descriptions.
+            Controls how blob columns are returned. Local plain scan queries
+            use Lance native conversion. Remote queries support descriptions,
+            but cannot safely materialize bytes or lazy handles without a
+            stable table snapshot across the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
         """
         validate_blob_mode(blob_mode)
+        if self._table is not None and not self._table._inner._is_native():
+            return await self._remote_to_pandas(
+                flatten=flatten, timeout=timeout, blob_mode=blob_mode, **kwargs
+            )
+
         if hasattr(self._inner, "output_schema"):
             schema = await self.output_schema()
             if _blob_mode_requires_native_pandas(blob_mode, schema):
@@ -3099,6 +3106,31 @@ class AsyncQueryBase(object):
                 "this query shape cannot use Lance native pandas conversion"
             )
         return tbl.to_pandas(**kwargs)
+
+    async def _remote_to_pandas(
+        self,
+        *,
+        flatten: Optional[Union[int, bool]],
+        timeout: Optional[timedelta],
+        blob_mode: BlobMode,
+        **kwargs,
+    ) -> "pd.DataFrame":
+        # A live remote table can be replaced between query and blob fetch.
+        # Row ids and version numbers do not identify the producing table.
+        tbl = await self.to_arrow(timeout=timeout)
+        projected_blob_paths = set(blob_column_paths(tbl.schema))
+        if not projected_blob_paths:
+            return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+
+        if blob_mode == "descriptions":
+            tbl = strip_auto_row_ids(tbl, self._blob_paths)
+            return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+
+        raise NotImplementedError(
+            f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
+            "blob columns without a stable table snapshot; "
+            "use blob_mode='descriptions'"
+        )
 
     async def _plain_scan_to_pandas(
         self,
