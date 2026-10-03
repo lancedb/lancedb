@@ -687,10 +687,113 @@ def test_table_unimplemented_functions():
 
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
-        with pytest.raises(NotImplementedError):
-            table.to_arrow()
-        with pytest.raises(NotImplementedError):
-            table.to_pandas()
+        for method in ["to_arrow", "to_pandas", "to_polars"]:
+            with pytest.raises(NotImplementedError) as exc_info:
+                getattr(table, method)()
+            message = str(exc_info.value)
+            assert method in message
+            assert "not" in message and "supported" in message
+            assert f"search().{method}()" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [None, 1])
+async def test_remote_to_lance(tmp_path, version):
+    import lance
+
+    location = tmp_path / "test.lance"
+    lance.write_dataset(pa.table({"id": [1]}), location)
+    lance.write_dataset(pa.table({"id": [2]}), location, mode="append")
+
+    def handler(request):
+        assert request.path == "/v1/table/test/describe/"
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = json.loads(request.rfile.read(content_len)) if content_len else {}
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps(
+                {
+                    "version": body.get("version") or 2,
+                    "schema": {"fields": []},
+                    "location": str(location),
+                }
+            ).encode()
+        )
+
+    options = {"default_scan_options": {"with_row_id": True}}
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test", version=version)
+        sync_dataset = table.to_lance(**options)
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test", version=version)
+        async_dataset = await table.to_lance(**options)
+
+    for dataset in [sync_dataset, async_dataset]:
+        assert isinstance(dataset, lance.LanceDataset)
+        assert dataset.version == (version or 2)
+        result = dataset.to_table()
+        assert result["id"].to_pylist() == ([1] if version == 1 else [1, 2])
+        assert "_rowid" in result.column_names
+
+
+@pytest.mark.asyncio
+async def test_remote_to_lance_without_server_location():
+    def handler(request):
+        assert request.path == "/v1/table/test/describe/"
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        with pytest.raises(NotImplementedError) as sync_error:
+            table.to_lance()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        with pytest.raises(NotImplementedError) as async_error:
+            await table.to_lance()
+
+    assert "Table URI not supported by the server" in str(sync_error.value)
+    assert str(sync_error.value) == str(async_error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method, kwargs",
+    [
+        ("drop_all_tables", {}),
+        ("drop_all_tables", {"namespace_path": []}),
+        ("drop_all_tables", {"namespace_path": ["team"]}),
+        ("drop_database", {}),
+    ],
+)
+async def test_remote_drop_all_tables_not_supported(method, kwargs):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(500)
+        request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(NotImplementedError) as sync_error:
+            getattr(db, method)(**kwargs)
+
+    async with mock_lancedb_connection_async(handler) as db:
+        with pytest.raises(NotImplementedError) as async_error:
+            await getattr(db, method)(**kwargs)
+
+    assert "Dropping all tables is not currently supported in the remote API" in str(
+        sync_error.value
+    )
+    assert "drop_table" in str(sync_error.value)
+    assert str(sync_error.value) == str(async_error.value)
+    assert requests == []
 
 
 def test_table_to_pandas_not_supported():
