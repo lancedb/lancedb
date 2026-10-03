@@ -1049,6 +1049,10 @@ class RemoteDBConnection(DBConnection):
         """
         return LOOP.run(self._conn.namespace_client())
 
-    async def close(self):
-        """Close the connection to the database."""
+    @override
+    def is_open(self) -> bool:
+        return self._conn.is_open()
+
+    @override
+    def close(self) -> None:
         self._conn.close()
