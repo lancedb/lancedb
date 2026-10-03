@@ -374,6 +374,16 @@ class StreamingDataset(IterableDataset):
         capping peak memory when the consumer (e.g. a GPU training step) is
         slower than the transform stage.  Must be greater than zero.
         ``None`` (the default) imposes no limit.
+    connection_factory:
+        Optional picklable function that takes the table name and returns an
+        open LanceDB table.  When set, pickling the dataset (as DataLoader
+        workers do under the ``spawn`` and ``forkserver`` start methods)
+        replaces the table's reopen state with its name, and each worker calls
+        the factory with that name to reopen the table.  The factory itself is
+        pickled too, so credentials stay out of the pickle only if the factory
+        loads them in the worker, for example from the environment, instead of
+        capturing them.  ``None`` (the default) pickles the table's own reopen
+        state instead.
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
