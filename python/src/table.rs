@@ -1709,7 +1709,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .uses_v2_manifest_paths()
                 .await
                 .infer_error()
@@ -1721,7 +1724,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .migrate_manifest_paths_v2()
                 .await
                 .infer_error()

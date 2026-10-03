@@ -620,9 +620,9 @@ impl<S: HttpSend> RemoteTable<S> {
                     });
                 }
             }
-            _ => {
+            Index::IvfHnswPq(_) => {
                 return Err(Error::NotSupported {
-                    message: "Index type not supported".into(),
+                    message: "IVF_HNSW_PQ is not supported for remote tables. Please use IVF_HNSW_SQ instead.".into(),
                 });
             }
         };
@@ -1082,7 +1082,7 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(full_text_search) = &params.full_text_search {
             if full_text_search.wand_factor.is_some() {
                 return Err(Error::NotSupported {
-                    message: "Wand factor is not yet supported in LanceDB Cloud".into(),
+                    message: "Wand factor is not supported for remote tables.".into(),
                 });
             }
 
@@ -2848,6 +2848,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.fetch_blobs_impl(column, row_ids).await
     }
 
+    async fn fetch_blob_ranges(
+        &self,
+        _column: &str,
+        _requests: &[crate::blob::BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        Err(Error::NotSupported {
+            message: "fetch_blob_ranges is not supported for remote tables.".into(),
+        })
+    }
+
     async fn fetch_blob_files(
         &self,
         column: &str,
@@ -3162,7 +3172,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
         Err(Error::NotSupported {
-            message: "set_unenforced_primary_key is not supported on LanceDB cloud.".into(),
+            message: "set_unenforced_primary_key is not supported for remote tables.".into(),
         })
     }
 
@@ -3353,7 +3363,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         Err(Error::NotSupported {
-            message: "optimize is not supported on LanceDB cloud.".into(),
+            message: "optimize is not supported for remote tables.".into(),
         })
     }
     async fn add_columns(
@@ -5701,6 +5711,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_remote_unsupported_operations() {
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("unsupported operations must not send requests to the server");
+        });
+        let mut fts = FullTextSearchQuery::new("test".into());
+        fts.wand_factor = Some(1.0);
+        let results = [
+            (
+                "set_unenforced_primary_key",
+                table.set_unenforced_primary_key(["id"]).await,
+            ),
+            (
+                "optimize",
+                table.optimize(OptimizeAction::All).await.map(|_| ()),
+            ),
+            (
+                "fetch_blob_ranges",
+                table.fetch_blob_ranges("image", []).await.map(|_| ()),
+            ),
+            (
+                "Wand factor",
+                table
+                    .query()
+                    .full_text_search(fts)
+                    .execute()
+                    .await
+                    .map(|_| ()),
+            ),
+        ];
+        for (operation, result) in results {
+            match result.unwrap_err() {
+                Error::NotSupported { message } => assert_eq!(
+                    message,
+                    format!("{operation} is not supported for remote tables.")
+                ),
+                error => panic!("expected not-supported error, got {error}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_remote_unsupported_hnsw_pq() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            let schema = Schema::new(vec![Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            )]);
+            http::Response::builder()
+                .status(200)
+                .body(describe_response(&schema))
+                .unwrap()
+        });
+        let error = table
+            .create_index(&["vector"], Index::IvfHnswPq(Default::default()))
+            .execute()
+            .await
+            .unwrap_err();
+        assert_not_supported_error(
+            error,
+            "IVF_HNSW_PQ is not supported for remote tables. Please use IVF_HNSW_SQ instead.",
+        );
+    }
+
+    #[tokio::test]
     async fn test_fetch_blobs_rejects_missing_column() {
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
@@ -5813,12 +5889,12 @@ mod tests {
 
         assert_not_supported_error(
             table.fetch_blobs("image", &[1]).await.unwrap_err(),
-            "fetch_blobs",
+            "fetch_blobs is not supported by this LanceDB server.",
         );
 
         assert_not_supported_error(
             table.fetch_blob_files("image", &[1]).await.unwrap_err(),
-            "requires LanceDB Cloud server 0.5.0 or newer",
+            "requires LanceDB server 0.5.0 or newer",
         );
     }
 

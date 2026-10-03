@@ -42,6 +42,7 @@ from lancedb.index import (
     BTree,
     Bitmap,
     HnswFlat,
+    HnswPq,
     HnswSq,
     IvfFlat,
     IvfPq,
@@ -237,12 +238,12 @@ class RemoteTable(Table):
         return LOOP.run(self._table.list_versions())
 
     def to_arrow(self) -> pa.Table:
-        """to_arrow() is not yet supported on LanceDB cloud."""
-        raise NotImplementedError("to_arrow() is not yet supported on LanceDB cloud.")
+        """to_arrow() is not supported for remote tables."""
+        raise NotImplementedError("to_arrow() is not supported for remote tables.")
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
-        """to_pandas() is not yet supported on LanceDB cloud."""
-        raise NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
+        """to_pandas() is not supported for remote tables."""
+        raise NotImplementedError("to_pandas() is not supported for remote tables.")
 
     def checkout(self, version: Union[int, str]):
         result = LOOP.run(self._table.checkout(version))
@@ -499,14 +500,8 @@ class RemoteTable(Table):
 
             if accelerator is not None:
                 logging.warning(
-                    "GPU accelerator is not yet supported on LanceDB cloud."
-                    "If you have 100M+ vectors to index,"
-                    "please contact us at contact@lancedb.com"
-                )
-            if replace is not None:
-                logging.warning(
-                    "replace is not supported on LanceDB cloud."
-                    "Existing indexes will always be replaced."
+                    "GPU accelerator is not supported for remote tables "
+                    "and will be ignored."
                 )
 
             idx_type = index_type.upper()
@@ -526,9 +521,11 @@ class RemoteTable(Table):
             elif idx_type == "IVF_SQ":
                 config = IvfSq(distance_type=metric, num_partitions=num_partitions)
             elif idx_type == "IVF_HNSW_PQ":
-                raise ValueError(
-                    "IVF_HNSW_PQ is not supported on LanceDB cloud."
-                    "Please use IVF_HNSW_SQ instead."
+                config = HnswPq(
+                    distance_type=metric,
+                    num_partitions=num_partitions,
+                    num_sub_vectors=num_sub_vectors,
+                    num_bits=num_bits,
                 )
             elif idx_type == "IVF_HNSW_SQ":
                 config = HnswSq(distance_type=metric, num_partitions=num_partitions)
@@ -657,7 +654,7 @@ class RemoteTable(Table):
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
         allow_external_blob_outside_bases: bool, default False
-            Not supported on LanceDB Cloud. Setting this raises.
+            Not supported for remote tables. Setting this raises.
 
         Returns
         -------
@@ -933,26 +930,20 @@ class RemoteTable(Table):
 
     def cleanup_old_versions(self, *_):
         """
-        cleanup_old_versions() is a no-op on LanceDB Cloud.
-
-        Tables are automatically cleaned up and optimized.
+        cleanup_old_versions() is a no-op for remote tables.
         """
         warnings.warn(
-            "cleanup_old_versions() is a no-op on LanceDB Cloud. "
-            "Tables are automatically cleaned up and optimized.",
+            "cleanup_old_versions() is a no-op for remote tables.",
             stacklevel=2,
         )
         pass
 
     def compact_files(self, *_):
         """
-        compact_files() is a no-op on LanceDB Cloud.
-
-        Tables are automatically compacted and optimized.
+        compact_files() is a no-op for remote tables.
         """
         warnings.warn(
-            "compact_files() is a no-op on LanceDB Cloud. "
-            "Tables are automatically compacted and optimized.",
+            "compact_files() is a no-op for remote tables.",
             stacklevel=2,
         )
         pass
@@ -963,17 +954,13 @@ class RemoteTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
     ):
-        """
-        optimize() is a no-op on LanceDB Cloud.
-
-        Indices are optimized automatically.
-        """
-        warnings.warn(
-            "optimize() is a no-op on LanceDB Cloud. "
-            "Indices are optimized automatically.",
-            stacklevel=2,
+        """optimize() is not supported for remote tables."""
+        return LOOP.run(
+            self._table.optimize(
+                cleanup_older_than=cleanup_older_than,
+                delete_unverified=delete_unverified,
+            )
         )
-        pass
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -1021,7 +1008,7 @@ class RemoteTable(Table):
         return LOOP.run(self._table.drop_columns(columns))
 
     def set_unenforced_primary_key(self, columns: Union[str, Iterable[str]]) -> None:
-        """Not supported on LanceDB Cloud."""
+        """Not supported for remote tables."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
     def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
@@ -1067,7 +1054,7 @@ class RemoteTable(Table):
         )
 
     def close_lsm_writers(self) -> None:
-        """No-op on LanceDB Cloud (no local shard writers)."""
+        """No-op for remote tables (no local shard writers)."""
         return LOOP.run(self._table.close_lsm_writers())
 
     def drop_index(self, index_name: str):
@@ -1135,14 +1122,10 @@ class RemoteTable(Table):
         return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
 
     def uses_v2_manifest_paths(self) -> bool:
-        raise NotImplementedError(
-            "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
-        )
+        return LOOP.run(self._table.uses_v2_manifest_paths())
 
     def migrate_v2_manifest_paths(self):
-        raise NotImplementedError(
-            "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
-        )
+        return LOOP.run(self._table.migrate_manifest_paths_v2())
 
     def blob_columns(self) -> list[str]:
         return LOOP.run(self._table.blob_columns())
@@ -1153,9 +1136,7 @@ class RemoteTable(Table):
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
     def fetch_blob_ranges(self, column: str, requests) -> pa.LargeBinaryArray:
-        raise NotImplementedError(
-            "fetch_blob_ranges() is not supported on LanceDB Cloud"
-        )
+        return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
 
     def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]

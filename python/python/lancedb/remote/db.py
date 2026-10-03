@@ -483,12 +483,12 @@ class RemoteDBConnection(DBConnection):
             namespace_path = []
         if storage_options is not None:
             logging.info(
-                "storage_options is ignored in LanceDb Cloud"
+                "storage_options is ignored for remote tables"
                 " (storage is managed; set storage_options on connect() instead)"
             )
         if index_cache_size is not None:
             logging.info(
-                "index_cache_size is ignored in LanceDb Cloud"
+                "index_cache_size is ignored for remote tables"
                 " (there is no local cache to configure)"
             )
 
@@ -682,12 +682,6 @@ class RemoteDBConnection(DBConnection):
         if namespace_path is None:
             namespace_path = []
         validate_table_name(name)
-        if embedding_functions is not None:
-            logging.warning(
-                "embedding_functions is not yet supported on LanceDB Cloud."
-                "Please vote https://github.com/lancedb/lancedb/issues/626 "
-                "for this feature."
-            )
 
         from .table import RemoteTable
 
@@ -700,6 +694,7 @@ class RemoteDBConnection(DBConnection):
                 schema=schema,
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
+                embedding_functions=embedding_functions,
             )
         )
         return RemoteTable(
