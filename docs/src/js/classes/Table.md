@@ -143,7 +143,8 @@ containing the new version number of the table after altering the columns.
 abstract blobColumns(): Promise<string[]>
 ```
 
-Blob v2 columns, including nested dotted paths.
+Blob v2 columns addressable by row ID, including struct-nested dotted paths.
+Blobs inside lists are omitted because a row ID does not identify an element.
 
 #### Returns
 
@@ -556,6 +557,8 @@ Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
 Reads the table's current checkout. IDs from another version can fail after
 compaction unless stable row ids are enabled. Results keep input order and
 duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+Blobs inside lists cannot be fetched by row ID.
+
 Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
 The client splits requests automatically and reads an individual larger
 blob through the Range route. This method still materializes all bytes in

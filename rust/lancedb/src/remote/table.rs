@@ -5172,6 +5172,14 @@ mod tests {
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
     }
 
+    fn schema_describe_response(schema: &Schema) -> http::Response<String> {
+        let json_schema = JsonSchema::try_from(schema).unwrap();
+        http::Response::builder()
+            .status(200)
+            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
+            .unwrap()
+    }
+
     fn blob_describe_response() -> http::Response<String> {
         let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -5179,11 +5187,7 @@ mod tests {
             Field::new("caption", DataType::Utf8, true),
             crate::blob("thumbnail", true),
         ]);
-        let json_schema = JsonSchema::try_from(&schema).unwrap();
-        http::Response::builder()
-            .status(200)
-            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
-            .unwrap()
+        schema_describe_response(&schema)
     }
 
     #[rstest]
@@ -5200,6 +5204,48 @@ mod tests {
 
         let columns = table.blob_columns().await.unwrap();
         assert_eq!(columns, vec!["image".to_string(), "thumbnail".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_blob_paths_are_not_advertised_or_fetchable() {
+        let schema = Schema::new(vec![
+            crate::blob("thumbnail", true),
+            Field::new(
+                "imgs",
+                DataType::List(Arc::new(crate::blob("item", true))),
+                true,
+            ),
+        ]);
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => schema_describe_response(&schema),
+                "/v1/table/my_table/fetch_blobs/" => http::Response::builder()
+                    .status(400)
+                    .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                    .unwrap(),
+                path if path.starts_with("/v1/table/my_table/blob/") => http::Response::builder()
+                    .status(400)
+                    .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        assert_eq!(table.blob_columns().await.unwrap(), vec!["thumbnail"]);
+        for column in ["imgs", "imgs.item"] {
+            let err = table.fetch_blobs(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+            let err = table.fetch_blob_files(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
     }
 
     #[tokio::test]
@@ -5464,14 +5510,28 @@ mod tests {
     async fn test_fetch_blobs_does_not_split_unrelated_bad_requests() {
         let requests = Arc::new(AtomicUsize::new(0));
         let seen = requests.clone();
-        let table =
-            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), move |_| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                http::Response::builder()
-                    .status(400)
-                    .body(b"unknown blob column".to_vec())
-                    .unwrap()
-            });
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&Schema::new(vec![Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    )]))
+                    .map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/fetch_blobs/" => {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(400)
+                        .body(b"unknown blob column".to_vec())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            },
+        );
 
         assert_fetch_blobs_http_error(
             table.fetch_blobs("missing", &[10, 20]).await.unwrap_err(),
@@ -5634,10 +5694,18 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_blobs_sends_a_nested_column_as_a_dotted_path() {
         let ipc = one_row_blob_ipc_stream("info.blob");
+        let schema = Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(vec![crate::blob("blob", true)].into()),
+            true,
+        )]);
         let table = Table::new_with_handler_version(
             "my_table",
             semver::Version::new(0, 5, 0),
             move |request| {
+                if request.url().path() == "/v1/table/my_table/describe/" {
+                    return schema_describe_response(&schema).map(|body| body.into_bytes());
+                }
                 let body = request_body_json(&request);
                 assert_eq!(body["column"], "info.blob");
                 http::Response::builder()

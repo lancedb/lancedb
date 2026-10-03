@@ -2049,7 +2049,11 @@ class Table(ABC):
 
     @abstractmethod
     def blob_columns(self) -> list[str]:
-        """Names of the blob v2 columns declared on this table."""
+        """Names of blob v2 columns that can be fetched by row id.
+
+        Struct-nested blobs use dotted paths. Blobs inside lists are omitted
+        because a row id does not identify an individual list element.
+        """
 
     @abstractmethod
     def fetch_blobs(
@@ -2062,6 +2066,8 @@ class Table(ABC):
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
+
+        Blobs inside lists cannot be fetched by row id yet.
 
         Remote servers limit each request to 1024 row IDs and 64 MiB of blob
         bytes. The client splits requests automatically and reads an individual
