@@ -8,6 +8,7 @@ from .bedrock import BedRockText
 from .cohere import CohereEmbeddingFunction
 from .gemini_text import GeminiText
 from .instructor import InstructorEmbeddingFunction
+from .oci_genai import OCIGenAIEmbeddings
 from .ollama import OllamaEmbeddings
 from .open_clip import OpenClipEmbeddings
 from .openai import OpenAIEmbeddings
@@ -41,6 +42,7 @@ __all__ = [
     "GteEmbeddings",
     "InstructorEmbeddingFunction",
     "JinaEmbeddings",
+    "OCIGenAIEmbeddings",
     "OllamaEmbeddings",
     "TransformersEmbeddingFunction",
     "ColbertEmbeddings",
