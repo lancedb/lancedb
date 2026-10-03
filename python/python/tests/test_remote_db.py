@@ -17,6 +17,7 @@ from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
+from lancedb.embeddings import EmbeddingFunctionConfig
 from lancedb.query import ColumnOrdering, MatchQuery
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
@@ -1545,6 +1546,43 @@ def test_query_sync_rejects_ambiguous_vector_column(mem_db):
         with pytest.raises(ValueError) as remote_error:
             remote.search([0.5] * 4)
         assert str(remote_error.value) == str(local_error.value)
+
+
+@pytest.mark.parametrize("vector_columns", [(), (("v1", 4), ("v2", 8))])
+@pytest.mark.parametrize("query_type", ["auto", "fts"])
+def test_query_sync_fts_without_embeddings(vector_columns, query_type):
+    seen = []
+
+    def handler(body):
+        seen.append(body)
+        assert body["full_text_query"] == {"query": "hello", "columns": []}
+        assert body["vector"] == []
+        assert "vector_column" not in body
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler, vector_columns=vector_columns) as table:
+        assert table.search("hello", query_type=query_type).to_list() == [{"id": 1}]
+    assert len(seen) == 1
+
+
+def test_query_sync_auto_with_embedding_function():
+    def handler(body):
+        assert body["vector_column"] == "vector"
+        assert body["vector"] == [0.0] * 10
+        assert "full_text_query" not in body
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler, vector_columns=(("vector", 10),)) as table:
+        table.embedding_functions = {
+            "vector": EmbeddingFunctionConfig(
+                source_column="text",
+                vector_column="vector",
+                function=MockTextEmbeddingFunction(),
+            )
+        }
+        query = table.search("hello")
+        assert query.to_query_object().vector_column == "vector"
+        assert query.to_list() == [{"id": 1}]
 
 
 def test_head():

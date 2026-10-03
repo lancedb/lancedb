@@ -757,6 +757,12 @@ class RemoteTable(Table):
         """
         if isinstance(query, FullTextQuery):
             query_type = "fts"
+        elif (
+            query_type == "auto"
+            and isinstance(query, str)
+            and not self.embedding_functions
+        ):
+            query_type = "fts"
         vector_column_name = infer_vector_column_name(
             schema=self.schema,
             query_type=query_type,
