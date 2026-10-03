@@ -84,7 +84,7 @@ export {
 } from "./arrow";
 
 export { blob, isBlobField, BlobFile } from "./blob";
-export type { BlobOptions } from "./blob";
+export type { BlobOptions, BlobRange, BlobReadOptions } from "./blob";
 
 export {
   Connection,
@@ -195,6 +195,7 @@ export * as rerankers from "./rerankers";
 export {
   SchemaLike,
   TableLike,
+  DataTypeLike,
   FieldLike,
   RecordBatchLike,
   DataLike,

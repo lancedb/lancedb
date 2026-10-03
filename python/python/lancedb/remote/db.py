@@ -863,25 +863,62 @@ class RemoteDBConnection(DBConnection):
         definition: UdfDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> Job[FunctionVersion]:
-        job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
+        job = LOOP.run(
+            self._conn.create_function_async(
+                definition, secrets=secrets, namespace_path=namespace_path
+            )
+        )
         return Job(job)
 
     @override
-    def get_function(self, name: str, *, version: str) -> FunctionVersion:
-        return LOOP.run(self._conn.get_function(name, version=version))
+    def get_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
+        return LOOP.run(
+            self._conn.get_function(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
 
     @override
-    def list_functions(self) -> List[FunctionVersion]:
-        return LOOP.run(self._conn.list_functions())
+    def list_functions(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[FunctionVersion]:
+        return LOOP.run(self._conn.list_functions(namespace_path=namespace_path))
 
     @override
-    def drop_function(self, name: str, *, version: str) -> bool:
-        return LOOP.run(self._conn.drop_function(name, version=version))
+    def drop_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> bool:
+        return LOOP.run(
+            self._conn.drop_function(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
 
     @override
-    def drop_function_async(self, name: str, *, version: str) -> Tuple[bool, Job]:
-        dropped, job = LOOP.run(self._conn.drop_function_async(name, version=version))
+    def drop_function_async(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, Job]:
+        dropped, job = LOOP.run(
+            self._conn.drop_function_async(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
         return dropped, Job(job)
 
     @override

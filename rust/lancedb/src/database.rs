@@ -333,10 +333,12 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
-    /// Submit a Function creation job that builds an image and registers it.
+    /// Submit a Function creation job that builds an image and registers it
+    /// in `namespace_path`.
     async fn create_function_async(
         &self,
         _request: crate::function::FunctionRegistrationRequest,
+        _namespace_path: &[String],
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
@@ -412,15 +414,25 @@ pub trait Database:
         &self,
         _name: &str,
         _version: &str,
+        _namespace_path: &[String],
     ) -> Result<crate::function::FunctionVersion> {
         function_catalog_not_supported()
     }
-    /// List every published immutable Function version in the remote catalog.
-    async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
+    /// List every published immutable Function version in one namespace of the
+    /// remote catalog.
+    async fn list_functions(
+        &self,
+        _namespace_path: &[String],
+    ) -> Result<Vec<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
     /// Remove the current Function name binding, retaining the object history.
-    async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
+    async fn drop_function(
+        &self,
+        _name: &str,
+        _version: &str,
+        _namespace_path: &[String],
+    ) -> Result<bool> {
         function_catalog_not_supported()
     }
     /// Start dropping a Function and return a handle to the cleanup job.
@@ -431,8 +443,9 @@ pub trait Database:
         &self,
         name: &str,
         version: &str,
+        namespace_path: &[String],
     ) -> Result<(bool, crate::job::Job)> {
-        let dropped = self.drop_function(name, version).await?;
+        let dropped = self.drop_function(name, version, namespace_path).await?;
         Ok((dropped, crate::job::Job::new_done()))
     }
     /// Create a named Secret in this database. Fails if the name is taken, so

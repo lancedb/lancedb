@@ -516,7 +516,10 @@ Drop an index from the table.
 ### fetchBlobFiles()
 
 ```ts
-abstract fetchBlobFiles(column, rowIds): Promise<(null | BlobFile)[]>
+abstract fetchBlobFiles(
+   column,
+   rowIds,
+   options?): Promise<(null | BlobFile)[]>
 ```
 
 Opens lazy blob handles for `column` at the given row IDs using the
@@ -531,6 +534,8 @@ See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
 
 * **rowIds**: readonly (`number` \| `bigint`)[]
 
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
 #### Returns
 
 `Promise`&lt;(`null` \| [`BlobFile`](BlobFile.md))[]&gt;
@@ -540,7 +545,10 @@ See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
 ### fetchBlobs()
 
 ```ts
-abstract fetchBlobs(column, rowIds): Promise<(null | Buffer)[]>
+abstract fetchBlobs(
+   column,
+   rowIds,
+   options?): Promise<(null | Buffer)[]>
 ```
 
 Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
@@ -558,6 +566,8 @@ memory; use [Table.fetchBlobFiles](Table.md#fetchblobfiles) for large values.
 * **column**: `string`
 
 * **rowIds**: readonly (`number` \| `bigint`)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
 
 #### Returns
 
@@ -1371,7 +1381,7 @@ repeatedly calling this method.
 
 ##### Parameters
 
-* **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **updates**: `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
     the
     columns to update
 

@@ -754,31 +754,37 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (request_json, namespace_path=None))]
     pub fn create_function_async(
         self_: PyRef<'_, Self>,
         request_json: String,
+        namespace_path: Option<Vec<String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
             .infer_error()?;
+        let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
-                .create_function_async(request)
+                .create_function_async(request, &namespace_path)
                 .await
                 .infer_error()
                 .map(crate::job::Job::new_typed)
         })
     }
 
+    #[pyo3(signature = (name, version, namespace_path=None))]
     pub fn get_function(
         self_: PyRef<'_, Self>,
         name: String,
         version: String,
+        namespace_path: Option<Vec<String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
-                .get_function(name, version)
+                .get_function(name, version, &namespace_path)
                 .await
                 .infer_error()?
                 .to_canonical_json()
@@ -786,11 +792,16 @@ impl Connection {
         })
     }
 
-    pub fn list_functions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (namespace_path=None))]
+    pub fn list_functions(
+        self_: PyRef<'_, Self>,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
-                .list_functions()
+                .list_functions(&namespace_path)
                 .await
                 .infer_error()?
                 .into_iter()
@@ -799,26 +810,35 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (name, version, namespace_path=None))]
     pub fn drop_function(
         self_: PyRef<'_, Self>,
         name: String,
         version: String,
+        namespace_path: Option<Vec<String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
-            inner.drop_function(name, version).await.infer_error()
+            inner
+                .drop_function(name, version, &namespace_path)
+                .await
+                .infer_error()
         })
     }
 
+    #[pyo3(signature = (name, version, namespace_path=None))]
     pub fn drop_function_async(
         self_: PyRef<'_, Self>,
         name: String,
         version: String,
+        namespace_path: Option<Vec<String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
         future_into_py(self_.py(), async move {
             inner
-                .drop_function_async(name, version)
+                .drop_function_async(name, version, &namespace_path)
                 .await
                 .infer_error()
                 .map(|(dropped, job)| (dropped, crate::job::Job::new(job)))

@@ -85,22 +85,25 @@ fn has_unknown_keys(value: &Value, allowed: &[&str]) -> bool {
         .is_some_and(|object| object.keys().any(|key| !allowed.contains(&key.as_str())))
 }
 
+/// Every field a [`FunctionVersionRef`] document may carry. An application or
+/// binding with any other key comes from a newer contract.
+pub(crate) const FUNCTION_VERSION_REF_FIELDS: &[&str] = &[
+    "name",
+    "namespace_path",
+    "object_id",
+    "location",
+    "version",
+    "manifest_digest",
+];
+
 fn application_has_unknown_nested_fields(value: &Value) -> bool {
     let Some(application) = value.as_object() else {
         return false;
     };
-    if application.get("function").is_some_and(|value| {
-        has_unknown_keys(
-            value,
-            &[
-                "name",
-                "object_id",
-                "location",
-                "version",
-                "manifest_digest",
-            ],
-        )
-    }) {
+    if application
+        .get("function")
+        .is_some_and(|value| has_unknown_keys(value, FUNCTION_VERSION_REF_FIELDS))
+    {
         return true;
     }
     if application
@@ -431,9 +434,17 @@ fn deserialize_object_version<'de, D: Deserializer<'de>>(
 }
 
 /// One immutable Function object revision and its executable artifact.
+///
+/// The Function is named by its parts, `name` and `namespace_path`, the way a
+/// [`SecretReference`](crate::secrets::SecretReference) names a Secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
+    /// The namespace holding the Function. Empty is the root, and is absent
+    /// from the wire, as a [`SecretReference`](crate::secrets::SecretReference)
+    /// omits it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    namespace_path: Vec<String>,
     object_id: String,
     location: String,
     #[serde(deserialize_with = "deserialize_object_version")]
@@ -463,6 +474,7 @@ impl FunctionVersion {
     pub fn reference(&self) -> FunctionVersionRef {
         FunctionVersionRef {
             name: self.name.clone(),
+            namespace_path: self.namespace_path.clone(),
             object_id: self.object_id.clone(),
             location: self.location.clone(),
             version: self.version.clone(),
@@ -471,6 +483,9 @@ impl FunctionVersion {
     }
     pub fn name(&self) -> &str {
         &self.name
+    }
+    pub fn namespace_path(&self) -> &[String] {
+        &self.namespace_path
     }
     pub fn version(&self) -> &str {
         &self.version
@@ -556,6 +571,10 @@ impl_json!(FunctionRegistrationRequest);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersionRef {
     pub name: String,
+    /// The namespace holding the Function; empty is the root and is absent
+    /// from the wire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespace_path: Vec<String>,
     pub object_id: String,
     pub location: String,
     #[serde(deserialize_with = "deserialize_object_version")]
@@ -951,6 +970,46 @@ mod tests {
         assert_eq!(
             out,
             r#"{"artifact":{"digest":"sha256:x"},"name":"embed","runtime":{"env":{"A":"1","B":"2"},"kind":"python"}}"#
+        );
+    }
+
+    /// A Function is named by its parts, and a root one states no namespace.
+    #[test]
+    fn function_version_carries_its_namespace_as_a_separate_field() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let root = FunctionVersion::from_json(VERSION).unwrap();
+        assert!(root.namespace_path().is_empty());
+        assert_eq!(root.to_canonical_json().unwrap(), VERSION.trim_end());
+
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        document["namespace_path"] = serde_json::json!(["analytics", "features"]);
+        let nested = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(nested.name(), "embed");
+        assert_eq!(nested.namespace_path(), ["analytics", "features"]);
+        let reference = nested.reference();
+        assert_eq!(reference.name, "embed");
+        assert_eq!(reference.namespace_path, ["analytics", "features"]);
+        let reference: Value = serde_json::to_value(&reference).unwrap();
+        assert_eq!(
+            reference["namespace_path"],
+            serde_json::json!(["analytics", "features"])
+        );
+        let root_reference = serde_json::to_value(root.reference()).unwrap();
+        assert!(root_reference.get("namespace_path").is_none());
+
+        // An application carrying the namespace is not from a newer contract.
+        let application = serde_json::json!({
+            "function": reference,
+            "inputs": [],
+            "output": serde_json::to_value(nested.signature().output.clone()).unwrap(),
+        });
+        let application = FunctionApplication::from_json(&application.to_string()).unwrap();
+        assert!(!application.has_unknown_fields());
+        assert_eq!(
+            application.function().namespace_path,
+            ["analytics", "features"]
         );
     }
 
