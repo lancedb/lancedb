@@ -522,12 +522,14 @@ class LanceNamespaceDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """
         List table names in the database.
+
+        If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
             Use :meth:`list_tables` instead, which provides proper pagination support.
@@ -1146,12 +1148,14 @@ class AsyncLanceNamespaceDBConnection:
     async def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """
         List table names in the namespace.
+
+        If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
             Use :meth:`list_tables` instead, which provides proper pagination support.

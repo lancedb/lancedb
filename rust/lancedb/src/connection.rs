@@ -105,7 +105,9 @@ impl TableNamesBuilder {
         self
     }
 
-    /// The maximum number of table names to return
+    /// The maximum number of table names to return.
+    ///
+    /// Without a limit, all names are returned. Zero returns an empty list.
     pub fn limit(mut self, limit: u32) -> Self {
         self.request.limit = Some(limit);
         self
@@ -505,7 +507,8 @@ impl Connection {
     /// under creation, may contain only uncommitted storage, or may be concurrently
     /// dropped before it is opened.
     ///
-    /// The parameters `page_token` and `limit` can be used to paginate the results
+    /// Without a limit, all names are returned. The parameters `start_after` and
+    /// `limit` can be used to paginate the results.
     pub fn table_names(&self) -> TableNamesBuilder {
         TableNamesBuilder::new(self.internal.clone())
     }
@@ -1054,7 +1057,21 @@ impl Connection {
     }
 
     /// List tables with pagination support
-    pub async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+    ///
+    /// The default limit is 100 tables per page for both local and remote connections,
+    /// including namespaces. Zero returns an empty page without a continuation token.
+    /// Follow the response's opaque `page_token` until it is absent to retrieve every table;
+    /// a page can contain fewer than the limit even when more tables remain.
+    pub async fn list_tables(&self, mut request: ListTablesRequest) -> Result<ListTablesResponse> {
+        // Apply the SDK's page size here so every backend receives the same request.
+        let limit = request.limit.get_or_insert(100);
+        if *limit <= 0 {
+            return Ok(ListTablesResponse {
+                context: None,
+                tables: Vec::new(),
+                page_token: None,
+            });
+        }
         self.internal.list_tables(request).await
     }
 
@@ -2138,6 +2155,61 @@ mod tests {
             }
         }
         assert_eq!(seen, names);
+    }
+
+    #[tokio::test]
+    async fn test_table_listing_defaults_and_zero_limit() {
+        let tempdir = tempfile::tempdir().unwrap();
+        // Listing discovers physical entries without opening the datasets.
+        let names: Vec<_> = (0..130).map(|i| format!("t{i:03}")).collect();
+        for name in &names {
+            std::fs::create_dir(tempdir.path().join(format!("{name}.lance"))).unwrap();
+        }
+        let db = connect(tempdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(db.table_names().execute().await.unwrap(), names);
+        assert!(
+            db.table_names()
+                .limit(0)
+                .execute()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let first = db.list_tables(ListTablesRequest::default()).await.unwrap();
+        assert_eq!(first.tables, names[..100]);
+        assert!(first.page_token.is_some());
+        let second = db
+            .list_tables(ListTablesRequest {
+                page_token: first.page_token,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.tables, names[100..]);
+        assert!(second.page_token.is_none());
+
+        let all = db
+            .list_tables(ListTablesRequest {
+                limit: Some(200),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(all.tables, names);
+        assert!(all.page_token.is_none());
+        let empty = db
+            .list_tables(ListTablesRequest {
+                limit: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(empty.tables.is_empty());
+        assert!(empty.page_token.is_none());
     }
 
     #[tokio::test]
