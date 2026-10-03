@@ -123,10 +123,17 @@ async def test_async_remote_db():
     "alteration, match",
     [
         ({"path": "id"}, "One of rename, nullable or data_type"),
-        ({"path": "id", "nulable": False}, "Unknown column alteration key 'nulable'"),
         (
-            {"path": "id", "rename": "new_id", "nulable": False},
-            "Unknown column alteration key 'nulable'",
+            {"path": "id", "nulable": False},  # spellchecker:disable-line
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+        (
+            {
+                "path": "id",
+                "rename": "new_id",
+                "nulable": False,  # spellchecker:disable-line
+            },
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
         ),
     ],
 )
@@ -155,7 +162,10 @@ def test_remote_alter_columns_rejects_invalid_before_request(alteration, match):
     "alteration, match",
     [
         ({"path": "id"}, "One of rename, nullable or data_type"),
-        ({"path": "id", "nulable": False}, "Unknown column alteration key 'nulable'"),
+        (
+            {"path": "id", "nulable": False},  # spellchecker:disable-line
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
     ],
 )
 async def test_async_remote_alter_columns_rejects_invalid_before_request(

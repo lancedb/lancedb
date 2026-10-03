@@ -4155,10 +4155,19 @@ def test_alter_columns(mem_db: DBConnection, rename_key):
 
 INVALID_COLUMN_ALTERATIONS = [
     (({"path": "id"},), "One of rename, nullable or data_type"),
-    (({"path": "id", "nulable": False},), "Unknown column alteration key 'nulable'"),
     (
-        ({"path": "id", "rename": "new_id", "nulable": False},),
-        "Unknown column alteration key 'nulable'",
+        ({"path": "id", "nulable": False},),  # spellchecker:disable-line
+        "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+    ),
+    (
+        (
+            {
+                "path": "id",
+                "rename": "new_id",
+                "nulable": False,  # spellchecker:disable-line
+            },
+        ),
+        "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
     ),
     (
         ({"path": "id", "rename": "new_id"}, {"path": "id"}),
