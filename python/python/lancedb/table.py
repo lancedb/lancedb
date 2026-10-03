@@ -4766,7 +4766,7 @@ class LanceTable(Table):
         [LanceTable.uses_v2_manifest_paths][lancedb.table.LanceTable.uses_v2_manifest_paths]
         to check if the table is already using the new path style.
         """
-        LOOP.run(self._table.migrate_v2_manifest_paths())
+        LOOP.run(self._table.migrate_manifest_paths_v2())
 
     @deprecation.deprecated(
         deprecated_in="0.33.1",
