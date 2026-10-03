@@ -5218,7 +5218,6 @@ dependencies = [
 [[package]]
 name = "lance-arrow"
 version = "13.1.0-beta.1"
-source = "git+https://github.com/lance-format/lance.git?tag=v13.1.0-beta.1#e5a3553b1699a7062ff7afe4ee268d596bbf2e0d"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5894,6 +5893,7 @@ dependencies = [
  "datafusion-common",
  "env_logger",
  "futures",
+ "lance-arrow",
  "lance-core",
  "lance-io",
  "lance-namespace",
