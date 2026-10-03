@@ -2301,11 +2301,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(Some(Arc::new(snapshot)))
     }
     async fn restore(&self) -> Result<()> {
+        let read_snapshot = self.snapshot_read_state().await;
+        let version = read_snapshot.version.ok_or_else(|| Error::InvalidInput {
+            message: "you must run checkout before running restore".to_string(),
+        })?;
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/restore/", self.identifier));
-        let read_snapshot = self.snapshot_read_state().await;
-        let mut body = serde_json::json!({ "version": read_snapshot.version });
+        let mut body = serde_json::json!({ "version": version });
         self.apply_branch_body(&mut body);
         request = request.json(&body);
 
@@ -8160,6 +8163,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_restore_requires_checkout() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_clone = request_count.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            request_count_clone.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request_body_json(&request)["version"], 42);
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => r#"{"version":42,"schema":{"fields":[]}}"#,
+                "/v1/table/my_table/restore/" => r#"{"version":43}"#,
+                path => panic!("unexpected request path: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+
+        let err = table.restore().await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { message }
+            if message == "you must run checkout before running restore"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 0);
+
+        table.checkout(42).await.unwrap();
+        table.checkout_latest().await.unwrap();
+        let err = table.restore().await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { message }
+            if message == "you must run checkout before running restore"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        table.checkout(42).await.unwrap();
+        table.restore().await.unwrap();
+        assert_eq!(request_count.load(Ordering::SeqCst), 3);
+
+        let err = table.restore().await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { message }
+            if message == "you must run checkout before running restore"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
     async fn test_fails_if_checkout_version_doesnt_exist() {
         let table = Table::new_with_handler("my_table", |request| {
             let body = request.body().unwrap().as_bytes().unwrap();
@@ -10884,22 +10924,24 @@ mod tests {
             }
         });
 
+        table.checkout(1).await.unwrap();
+
         // First schema call
         let schema1 = table.schema().await.unwrap();
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
 
         // Second schema call uses cache
         let schema2 = table.schema().await.unwrap();
         assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
 
         // Restore operation
-        let _ = table.restore().await;
+        table.restore().await.unwrap();
 
         // Schema call after restore should re-fetch (cache invalidated)
         let schema3 = table.schema().await.unwrap();
         assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 
     /// Test that centralized error handling invalidates cache on query errors
@@ -13769,8 +13811,17 @@ mod tests {
                     .status(200)
                     .body("{}".to_string())
                     .unwrap(),
+                "/v1/table/my_table/describe/" => {
+                    assert_eq!(request_body_json(&request)["branch"], "exp");
+                    assert_eq!(request_body_json(&request)["version"], 1);
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":1,"schema":{"fields":[]}}"#.to_string())
+                        .unwrap()
+                }
                 "/v1/table/my_table/restore/" => {
                     assert_eq!(request_body_json(&request)["branch"], "exp");
+                    assert_eq!(request_body_json(&request)["version"], 1);
                     http::Response::builder()
                         .status(200)
                         .body(r#"{"version":1}"#.to_string())
@@ -13782,6 +13833,7 @@ mod tests {
             .create_branch("exp", Ref::Version(None, None))
             .await
             .unwrap();
+        branch.checkout(1).await.unwrap();
         branch.restore().await.unwrap();
     }
 
