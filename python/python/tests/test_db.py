@@ -244,6 +244,40 @@ def test_db_contains_and_len_include_all_table_name_pages(tmp_db: lancedb.DBConn
     assert "does_not_exist" not in tmp_db
 
 
+@pytest.mark.asyncio
+async def test_table_listing_defaults_and_zero_limit(tmp_path):
+    names = [f"t{i:03}" for i in range(130)]
+    for name in names:
+        (tmp_path / f"{name}.lance").mkdir()
+
+    db = lancedb.connect(tmp_path)
+    assert db.table_names() == names
+    assert db.table_names(limit=None) == names
+    assert db.table_names(limit=0) == []
+    first = db.list_tables()
+    assert first.tables == names[:100]
+    assert first.page_token
+    second = db.list_tables(page_token=first.page_token)
+    assert second.tables == names[100:]
+    assert second.page_token is None
+    assert db.list_tables(limit=200).tables == names
+    empty = db.list_tables(limit=0)
+    assert empty.tables == []
+    assert empty.page_token is None
+
+    adb = await lancedb.connect_async(tmp_path)
+    assert await adb.table_names() == names
+    assert await adb.table_names(limit=0) == []
+    first = await adb.list_tables()
+    assert first.tables == names[:100]
+    second = await adb.list_tables(page_token=first.page_token)
+    assert second.tables == names[100:]
+    assert second.page_token is None
+    empty = await adb.list_tables(limit=0)
+    assert empty.tables == []
+    assert empty.page_token is None
+
+
 def test_db_contains_stops_after_matching_table_page(
     tmp_db: lancedb.DBConnection, monkeypatch
 ):

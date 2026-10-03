@@ -13,6 +13,7 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 import uuid
+from urllib.parse import parse_qs, urlparse
 from packaging.version import Version
 
 import lancedb
@@ -96,6 +97,67 @@ async def mock_lancedb_connection_async(handler, **client_config):
         finally:
             server.shutdown()
             handle.join()
+
+
+def paginated_table_listing_handler(request):
+    url = urlparse(request.path)
+    assert url.path in {
+        "/v1/table/",
+        "/v1/namespace/$/table/list",
+        "/v1/namespace/n/table/list",
+    }
+    query = parse_qs(url.query)
+    limit = int(query.get("limit", [10])[0])
+    assert limit > 0
+    token = query.get("page_token", ["page-0"])[0]
+    start = int(token.removeprefix("page-"))
+    end = min(start + limit, 130)
+    body = {"tables": [f"t{i:03}" for i in range(start, end)]}
+    if end < 130:
+        body["page_token"] = f"page-{end}"
+    request.send_response(200)
+    request.send_header("Content-Type", "application/json")
+    request.end_headers()
+    request.wfile.write(json.dumps(body).encode())
+
+
+@pytest.mark.parametrize("namespace", [[], ["n"]])
+def test_remote_table_listing_defaults_and_zero_limit(namespace):
+    names = [f"t{i:03}" for i in range(130)]
+    with mock_lancedb_connection(paginated_table_listing_handler) as db:
+        assert db.table_names(namespace_path=namespace) == names
+        assert db.table_names(limit=None, namespace_path=namespace) == names
+        assert db.table_names(limit=0, namespace_path=namespace) == []
+        first = db.list_tables(namespace_path=namespace)
+        assert first.tables == names[:100]
+        assert first.page_token == "page-100"
+        second = db.list_tables(namespace_path=namespace, page_token=first.page_token)
+        assert second.tables == names[100:]
+        assert second.page_token is None
+        assert db.list_tables(namespace_path=namespace, limit=200).tables == names
+        empty = db.list_tables(namespace_path=namespace, limit=0)
+        assert empty.tables == []
+        assert empty.page_token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace", [[], ["n"]])
+async def test_async_remote_table_listing_defaults_and_zero_limit(namespace):
+    names = [f"t{i:03}" for i in range(130)]
+    async with mock_lancedb_connection_async(paginated_table_listing_handler) as db:
+        assert await db.table_names(namespace_path=namespace) == names
+        assert await db.table_names(limit=0, namespace_path=namespace) == []
+        first = await db.list_tables(namespace_path=namespace)
+        assert first.tables == names[:100]
+        assert first.page_token == "page-100"
+        second = await db.list_tables(
+            namespace_path=namespace, page_token=first.page_token
+        )
+        assert second.tables == names[100:]
+        assert second.page_token is None
+        empty = await db.list_tables(namespace_path=namespace, limit=0)
+        assert empty.tables == []
+        assert empty.page_token is None
 
 
 @pytest.mark.asyncio

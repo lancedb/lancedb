@@ -1429,25 +1429,49 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
+        // A zero limit is an empty listing, even on servers that reject limit=0.
+        if request.limit == Some(0) {
+            return Ok(Vec::new());
+        }
         let (tables, version) = if request.namespace_path.is_empty() {
             // The flat route resumes after a table name and orders by name, which is exactly
-            // what `start_after` means, so the server does the paging.
-            let mut req = self.client.get("/v1/table/");
-            if let Some(limit) = request.limit {
-                req = req.query(&[("limit", limit)]);
+            // what `start_after` means. Subsequent cursors come from the server and may be
+            // opaque. Follow them until the requested limit or the end of the listing.
+            let mut tables = Vec::new();
+            let mut version = None;
+            let mut page_token = request.start_after.clone();
+            let mut seen_tokens = HashSet::new();
+            if let Some(ref token) = page_token {
+                seen_tokens.insert(token.clone());
             }
-            if let Some(ref start_after) = request.start_after {
-                req = req.query(&[("page_token", start_after)]);
+            loop {
+                let mut req = self.client.get("/v1/table/");
+                if let Some(limit) = request.limit {
+                    req = req.query(&[("limit", limit as usize - tables.len())]);
+                }
+                if let Some(ref token) = page_token {
+                    req = req.query(&[("page_token", token)]);
+                }
+                let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+                let rsp = self.client.check_response(&request_id, rsp).await?;
+                if version.is_none() {
+                    version = Some(parse_server_version(&request_id, &rsp)?);
+                }
+                let response: ListTablesResponse = rsp.json().await.err_to_http(request_id)?;
+                tables.extend(response.tables);
+                if let Some(limit) = request.limit
+                    && tables.len() >= limit as usize
+                {
+                    tables.truncate(limit as usize);
+                    break;
+                }
+                // Empty or repeated tokens must not restart the listing or loop forever.
+                match response.page_token.filter(|token| !token.is_empty()) {
+                    Some(token) if seen_tokens.insert(token.clone()) => page_token = Some(token),
+                    _ => break,
+                }
             }
-            let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
-            let rsp = self.client.check_response(&request_id, rsp).await?;
-            let version = parse_server_version(&request_id, &rsp)?;
-            let tables = rsp
-                .json::<ListTablesResponse>()
-                .await
-                .err_to_http(request_id)?
-                .tables;
-            (tables, version)
+            (tables, version.unwrap_or_default())
         } else {
             self.table_names_in_namespace(&request).await?
         };
@@ -2205,6 +2229,133 @@ mod tests {
         assert_eq!(names, vec!["table1", "table2"]);
     }
 
+    #[rstest::rstest]
+    #[case(None, None)]
+    #[case(Some("t009"), None)]
+    #[case(None, Some(200))]
+    #[case(Some("t009"), Some(15))]
+    #[tokio::test]
+    async fn test_table_names_follows_server_pages(
+        #[case] start_after: Option<&str>,
+        #[case] limit: Option<u32>,
+    ) {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            let query: HashMap<_, _> = request.url().query_pairs().collect();
+            let start = query
+                .get("page_token")
+                .map(|token| token[1..4].parse::<usize>().unwrap() + 1)
+                .unwrap_or(0);
+            let limit = query
+                .get("limit")
+                .map(|limit| limit.parse::<usize>().unwrap())
+                .unwrap_or(10);
+            // A server may return a short page even when more tables remain.
+            let end = (start + limit.min(10)).min(130);
+            let tables: Vec<_> = (start..end).map(|i| format!("t{i:03}")).collect();
+            let page_token = (end < 130).then(|| format!("t{:03}.lance/", end - 1));
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::json!({"tables": tables, "page_token": page_token}).to_string())
+                .unwrap()
+        });
+        let mut op = conn.table_names();
+        if let Some(start_after) = start_after {
+            op = op.start_after(start_after);
+        }
+        if let Some(limit) = limit {
+            op = op.limit(limit);
+        }
+        let start = if start_after.is_some() { 10 } else { 0 };
+        let end = limit.map(|limit| (start + limit).min(130)).unwrap_or(130);
+        let expected: Vec<_> = (start..end).map(|i| format!("t{i:03}")).collect();
+        assert_eq!(op.execute().await.unwrap(), expected);
+    }
+
+    #[rstest::rstest]
+    #[case(vec![])]
+    #[case(vec!["ns".to_string()])]
+    #[tokio::test]
+    async fn test_table_listing_zero_limit_never_sends_a_request(#[case] namespace: Vec<String>) {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("a zero limit must not be sent to the server")
+        });
+        assert!(
+            conn.table_names()
+                .namespace(namespace.clone())
+                .limit(0)
+                .execute()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let page = conn
+            .list_tables(lance_namespace::models::ListTablesRequest {
+                id: Some(namespace),
+                limit: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(page.tables.is_empty());
+        assert!(page.page_token.is_none());
+    }
+
+    #[rstest::rstest]
+    #[case(vec![], "/v1/namespace/$/table/list")]
+    #[case(vec!["ns".to_string()], "/v1/namespace/ns/table/list")]
+    #[tokio::test]
+    async fn test_list_tables_default_page_size(
+        #[case] namespace: Vec<String>,
+        #[case] path: &'static str,
+    ) {
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), path);
+            let query: HashMap<_, _> = request.url().query_pairs().collect();
+            assert_eq!(query.get("limit").map(|limit| limit.as_ref()), Some("100"));
+            let start = match query.get("page_token") {
+                None => 0,
+                Some(token) => {
+                    assert_eq!(token, "opaque-token");
+                    100
+                }
+            };
+            let end = (start + 100).min(130);
+            let tables: Vec<_> = (start..end).map(|i| format!("t{i:03}")).collect();
+            http::Response::builder()
+                .status(200)
+                .body(
+                    serde_json::json!({
+                        "tables": tables,
+                        "page_token": (end < 130).then_some("opaque-token")
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+        });
+        let first = conn
+            .list_tables(lance_namespace::models::ListTablesRequest {
+                id: Some(namespace.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.tables.len(), 100);
+        assert_eq!(first.page_token.as_deref(), Some("opaque-token"));
+        let second = conn
+            .list_tables(lance_namespace::models::ListTablesRequest {
+                id: Some(namespace),
+                page_token: first.page_token,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let expected: Vec<_> = (100..130).map(|i| format!("t{i:03}")).collect();
+        assert_eq!(second.tables, expected);
+        assert!(second.page_token.is_none());
+    }
+
     #[tokio::test]
     async fn test_table_names_in_a_namespace_never_invents_a_page_token() {
         // The namespace route's token belongs to the store, so `table_names` cannot build one
@@ -2250,8 +2401,11 @@ mod tests {
         assert_eq!(names, vec!["widgets"]);
     }
 
+    #[rstest::rstest]
+    #[case(vec![])]
+    #[case(vec!["ns".to_string()])]
     #[tokio::test]
-    async fn test_table_names_in_a_namespace_stops_on_a_repeated_token() {
+    async fn test_table_names_stops_on_a_repeated_token(#[case] namespace: Vec<String>) {
         // A server that handed back the token it was given would never finish the walk.
         let conn = Connection::new_with_handler(|_request| {
             http::Response::builder()
@@ -2262,7 +2416,7 @@ mod tests {
 
         let names = conn
             .table_names()
-            .namespace(vec!["ns".to_string()])
+            .namespace(namespace)
             .execute()
             .await
             .unwrap();
@@ -2271,8 +2425,11 @@ mod tests {
         assert_eq!(names, vec!["a", "a"]);
     }
 
+    #[rstest::rstest]
+    #[case(vec![])]
+    #[case(vec!["ns".to_string()])]
     #[tokio::test]
-    async fn test_table_names_in_a_namespace_stops_on_an_empty_token() {
+    async fn test_table_names_stops_on_an_empty_token(#[case] namespace: Vec<String>) {
         // An empty token ends the listing. Sending it back would ask a server that reads it
         // as "start from the beginning" for the first page a second time, and every name on
         // that page would be collected twice.
@@ -2292,7 +2449,7 @@ mod tests {
 
         let names = conn
             .table_names()
-            .namespace(vec!["ns".to_string()])
+            .namespace(namespace)
             .execute()
             .await
             .unwrap();
