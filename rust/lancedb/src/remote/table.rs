@@ -2157,33 +2157,32 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let server_version = self.server_version.clone();
         let freshness = self.freshness.clone();
         let freshness_request = self.snapshot_freshness_headers();
-        Ok(Job::spawned(tokio::spawn(async move {
-            let query = sql_client.submit(&statement, &namespace).await?;
-            let mut reader = query.reader().await?;
-            while reader.try_next().await?.is_some() {}
-
-            let table = Self::new_with_sql_client(
-                client,
-                name,
-                namespace,
-                identifier,
-                server_version,
-                Some(sql_client),
-            );
-            table.checkout_latest().await?;
-            let version = table.version().await?;
-            let rows_written =
-                u64::try_from(table.count_rows(None).await?).map_err(|_| Error::Runtime {
-                    message: "materialized-view row count exceeds u64".to_string(),
-                })?;
-            freshness_request.observe_version(&freshness, version);
-            Ok(RefreshMaterializedViewResult {
-                mode: crate::materialized_view::RefreshMode::Rebuild,
-                rows_written,
-                source_version: 0,
-                version,
-            })
-        })))
+        let job_sql_client = sql_client.clone();
+        Ok(
+            sql_client.submit_as_job(statement, namespace.clone(), move || async move {
+                let table = Self::new_with_sql_client(
+                    client,
+                    name,
+                    namespace,
+                    identifier,
+                    server_version,
+                    Some(job_sql_client),
+                );
+                table.checkout_latest().await?;
+                let version = table.version().await?;
+                let rows_written =
+                    u64::try_from(table.count_rows(None).await?).map_err(|_| Error::Runtime {
+                        message: "materialized-view row count exceeds u64".to_string(),
+                    })?;
+                freshness_request.observe_version(&freshness, version);
+                Ok(RefreshMaterializedViewResult {
+                    mode: crate::materialized_view::RefreshMode::Rebuild,
+                    rows_written,
+                    source_version: 0,
+                    version,
+                })
+            }),
+        )
     }
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let description = self.describe().await?;

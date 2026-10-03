@@ -880,12 +880,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             quote_sql_identifier(&request.name),
             request.query
         );
-        Ok(Job::spawned(tokio::spawn(async move {
-            let query = client.submit(&statement, &namespace).await?;
-            let mut reader = query.reader().await?;
-            while reader.try_next().await?.is_some() {}
-            Ok(())
-        })))
+        Ok(client.submit_as_job(statement, namespace, || async { Ok(()) }))
     }
 
     async fn drop_materialized_view_async(
