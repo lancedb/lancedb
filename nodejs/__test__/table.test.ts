@@ -9,6 +9,7 @@ import * as tmp from "tmp";
 
 import {
   AutoQuery,
+  type BlobMode,
   Connection,
   MatchQuery,
   PhraseQuery,
@@ -17,6 +18,7 @@ import {
   VectorQuery,
   blob,
   connect,
+  isBlobField,
   tokenize,
 } from "../lancedb";
 import {
@@ -2926,6 +2928,148 @@ describe("when dealing with blob columns", () => {
     expect(await handle!.readRange(0n, 4n)).toEqual(payload.subarray(0, 4));
   });
 
+  it("toArrow returns blob bytes with blobMode bytes", async () => {
+    const { table, alpha, beta } = await openBlobTable();
+    const result = await table.query().toArrow({ blobMode: "bytes" });
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isLargeBinary(field.type)).toBe(true);
+    expect(isBlobField(field)).toBe(false);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const byId = new Map(
+      result.toArray().map((row) => [Number(row.id), row.image]),
+    );
+    expect(Buffer.from(byId.get(1)!)).toEqual(alpha);
+    expect(Buffer.from(byId.get(2)!)).toEqual(beta);
+    expect(byId.get(3)).toBeNull();
+  });
+
+  it("toArray returns blob bytes and keeps _rowid only when asked", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [plain] = await table
+      .query()
+      .where("id = 1")
+      .select(["id", "image"])
+      .toArray({ blobMode: "bytes" });
+    expect(Object.keys(plain)).toEqual(["id", "image"]);
+    expect(Buffer.from(plain.image)).toEqual(alpha);
+
+    const [withRowId] = await table
+      .query()
+      .where("id = 1")
+      .withRowId()
+      .toArray({ blobMode: "bytes" });
+    expect(withRowId._rowid).toBe(rowIds[0]);
+    expect(Buffer.from(withRowId.image)).toEqual(alpha);
+  });
+
+  it("fills a renamed blob column with bytes", async () => {
+    const { table, beta } = await openBlobTable();
+    const [row] = await table
+      .query()
+      .where("id = 2")
+      .select(
+        new Map([
+          ["key", "id"],
+          ["picture", "image"],
+        ]),
+      )
+      .toArray({ blobMode: "bytes" });
+    expect(Number(row.key)).toBe(2);
+    expect(Buffer.from(row.picture)).toEqual(beta);
+  });
+
+  it("returns blob bytes from a take query", async () => {
+    const { table, rowIds, alpha, beta } = await openBlobTable();
+    const rows = await table
+      .takeRowIds([rowIds[1], rowIds[0]])
+      .toArray({ blobMode: "bytes" });
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(Buffer.from(byId.get(1)!.image)).toEqual(alpha);
+    expect(Buffer.from(byId.get(2)!.image)).toEqual(beta);
+    expect(Object.keys(rows[0])).not.toContain("_rowid");
+  });
+
+  it("does not change later executions of the same query", async () => {
+    const { table } = await openBlobTable();
+    const query = table.query().where("id = 1");
+    await query.toArray({ blobMode: "bytes" });
+    const [row] = await query.toArray();
+    expect(Object.keys(row)).not.toContain("_rowid");
+    expect(Number(row.image.size)).toBe(5);
+  });
+
+  it("skips row ids when no blob column is selected", async () => {
+    const { table } = await openBlobTable();
+    const result = await table
+      .query()
+      .select(["id"])
+      .toArrow({ blobMode: "bytes" });
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id"]);
+    expect(result.numRows).toBe(3);
+  });
+
+  it("returns an empty bytes column for an empty result", async () => {
+    const { table } = await openBlobTable();
+    const result = await table
+      .query()
+      .where("id > 100")
+      .toArrow({ blobMode: "bytes" });
+    expect(result.numRows).toBe(0);
+  });
+
+  it("rejects an unknown blobMode", async () => {
+    const { table } = await openBlobTable();
+    await expect(
+      table.query().toArray({ blobMode: "lazy" as BlobMode }),
+    ).rejects.toThrow(/blobMode must be/);
+  });
+
+  it("reruns the query when the table changes before the version check", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    native.version = async () => {
+      native.version = liveVersion;
+      await update(2n, "new");
+      return liveVersion();
+    };
+    const [row] = await table.query().toArray({ blobMode: "bytes" });
+    expect(row.generation).toBe(2n);
+    expect(Buffer.from(row.image).toString()).toBe("new");
+  });
+
+  it("reads bytes from the query's version when a write lands before the fetch", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    native.version = async () => {
+      native.version = liveVersion;
+      const version = await liveVersion();
+      await update(2n, "new");
+      return version;
+    };
+    const [row] = await table.query().toArray({ blobMode: "bytes" });
+    expect(row.generation).toBe(1n);
+    expect(Buffer.from(row.image).toString()).toBe("old");
+  });
+
+  it("fails when the table changes during every attempt", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    let generation = 1n;
+    native.version = async () => {
+      generation += 1n;
+      await update(generation, `generation ${generation}`);
+      return liveVersion();
+    };
+    try {
+      await expect(
+        table.query().toArray({ blobMode: "bytes" }),
+      ).rejects.toThrow(/changed during each of 3 attempts/);
+      expect(generation).toBe(4n);
+    } finally {
+      native.version = liveVersion;
+    }
+  });
+
   it("rejects fetchBlobs on a non-blob column", async () => {
     const { table, rowIds } = await openBlobTable();
     await expect(table.fetchBlobs("id", rowIds)).rejects.toThrow(/blob/i);
@@ -3096,6 +3240,32 @@ describe("when dealing with blob columns", () => {
     return Array.from(
       values as Iterable<{ size?: bigint | number } | null>,
     ).map((value) => (value == null ? null : Number(value.size)));
+  }
+
+  async function openVersionedBlobTable() {
+    const db = await connect(tmpDir.name, {
+      storageOptions: { newTableEnableStableRowIds: "true" },
+    });
+    const schema = new Schema([
+      new Field("id", new Int64(), false),
+      new Field("generation", new Int64(), true),
+      blob("image"),
+    ]);
+    const table = await db.createTable(
+      "versions",
+      [{ id: 1n, generation: 1n, image: Buffer.from("old") }],
+      { schema },
+    );
+    const native = (
+      table as unknown as { inner: { version: () => Promise<number> } }
+    ).inner;
+    const update = async (generation: bigint, image: string) => {
+      await table
+        .mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .execute([{ id: 1n, generation, image: Buffer.from(image) }]);
+    };
+    return { table, native, update };
   }
 
   async function openBlobTable() {

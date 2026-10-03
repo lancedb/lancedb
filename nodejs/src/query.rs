@@ -196,6 +196,7 @@ impl Query {
         &self,
         max_batch_length: Option<u32>,
         timeout_ms: Option<u32>,
+        with_row_id: Option<bool>,
     ) -> napi::Result<RecordBatchIterator> {
         let mut execution_opts = QueryExecutionOptions::default();
         if let Some(max_batch_length) = max_batch_length {
@@ -204,8 +205,12 @@ impl Query {
         if let Some(timeout_ms) = timeout_ms {
             execution_opts.timeout = Some(std::time::Duration::from_millis(timeout_ms as u64))
         }
-        let inner_stream = self
-            .inner
+        let query = if with_row_id == Some(true) {
+            self.inner.clone().with_row_id()
+        } else {
+            self.inner.clone()
+        };
+        let inner_stream = query
             .execute_with_options(execution_opts)
             .await
             .map_err(|e| {
@@ -417,6 +422,7 @@ impl VectorQuery {
         &self,
         max_batch_length: Option<u32>,
         timeout_ms: Option<u32>,
+        with_row_id: Option<bool>,
     ) -> napi::Result<RecordBatchIterator> {
         let mut execution_opts = QueryExecutionOptions::default();
         if let Some(max_batch_length) = max_batch_length {
@@ -425,8 +431,12 @@ impl VectorQuery {
         if let Some(timeout_ms) = timeout_ms {
             execution_opts.timeout = Some(std::time::Duration::from_millis(timeout_ms as u64))
         }
-        let inner_stream = self
-            .inner
+        let query = if with_row_id == Some(true) {
+            self.inner.clone().with_row_id()
+        } else {
+            self.inner.clone()
+        };
+        let inner_stream = query
             .execute_with_options(execution_opts)
             .await
             .map_err(|e| {
@@ -505,6 +515,7 @@ impl TakeQuery {
         &self,
         max_batch_length: Option<u32>,
         timeout_ms: Option<u32>,
+        with_row_id: Option<bool>,
     ) -> napi::Result<RecordBatchIterator> {
         let mut execution_opts = QueryExecutionOptions::default();
         if let Some(max_batch_length) = max_batch_length {
@@ -513,8 +524,12 @@ impl TakeQuery {
         if let Some(timeout_ms) = timeout_ms {
             execution_opts.timeout = Some(std::time::Duration::from_millis(timeout_ms as u64))
         }
-        let inner_stream = self
-            .inner
+        let query = if with_row_id == Some(true) {
+            self.inner.clone().with_row_id()
+        } else {
+            self.inner.clone()
+        };
+        let inner_stream = query
             .execute_with_options(execution_opts)
             .await
             .map_err(|e| {

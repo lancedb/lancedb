@@ -1236,11 +1236,17 @@ export class LocalTable extends Table {
   }
 
   takeOffsets(offsets: number[]): TakeQuery {
-    return new TakeQuery(this.inner.takeOffsets(offsets));
+    return new TakeQuery(this.inner.takeOffsets(offsets), {
+      table: this.inner,
+      withRowId: false,
+    });
   }
 
   takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
-    return new TakeQuery(this.inner.takeRowIds(rowIdsToBigInts(rowIds)));
+    return new TakeQuery(this.inner.takeRowIds(rowIdsToBigInts(rowIds)), {
+      table: this.inner,
+      withRowId: false,
+    });
   }
 
   blobColumns(): Promise<string[]> {

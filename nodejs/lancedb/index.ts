@@ -115,6 +115,7 @@ export {
   VectorQuery,
   TakeQuery,
   AnalyzePlanDistributedMetrics,
+  BlobMode,
   QueryExecutionOptions,
   ColumnOrdering,
   FullTextSearchOptions,
