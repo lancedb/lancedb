@@ -15,6 +15,14 @@ import {
   connect,
 } from "../lancedb";
 import {
+  Table as ArrowTable,
+  Field,
+  Int64,
+  RecordBatch,
+  Schema,
+  tableToIPC,
+} from "../lancedb/arrow";
+import {
   HeaderProvider,
   OAuthHeaderProvider,
   StaticHeaderProvider,
@@ -85,6 +93,66 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it.each([false, true])(
+    "preserves an empty query's schema with an empty batch: %s",
+    async (withEmptyBatch) => {
+      const schema = new Schema(
+        [new Field("doubled", new Int64(), false)],
+        new Map([["source", "query-output"]]),
+      );
+      const result = new ArrowTable(
+        schema,
+        withEmptyBatch ? [new RecordBatch(schema, undefined)] : [],
+      );
+      const response = Buffer.from(tableToIPC(result, "stream"));
+      let queryRequests = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.endsWith("/describe/")) {
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              JSON.stringify({
+                name: "items",
+                version: 1,
+                schema: {
+                  fields: [
+                    { name: "id", type: { type: "int64" }, nullable: false },
+                  ],
+                },
+              }),
+            );
+          } else if (req.url?.endsWith("/query/")) {
+            queryRequests++;
+            req.resume();
+            req.on("end", () => {
+              res
+                .writeHead(200, {
+                  "Content-Type": "application/vnd.apache.arrow.stream",
+                })
+                .end(response);
+            });
+          } else {
+            res.writeHead(404).end();
+          }
+        },
+        async (db) => {
+          const table = await db.openTable("items");
+          const result = await table
+            .query()
+            .where("id < 0")
+            .select({ doubled: "id * 2" })
+            .toArrow();
+
+          expect(result.numRows).toBe(0);
+          expect(result.schema).toEqual(schema);
+          expect(result.getChild("doubled")?.length).toBe(0);
+        },
+      );
+
+      expect(queryRequests).toBe(1);
+    },
+  );
+
   it("rejects the external blob opt-in without blocking regular adds", async () => {
     let insertRequests = 0;
     const describeRequests: string[] = [];
