@@ -97,24 +97,6 @@ def test_remote_list_uses_namespace_route():
     assert requests == ["/v1/namespace/$/materialized_view/list"]
 
 
-def test_remote_create_async_returns_server_job():
-    with mock_remote_materialized_view_create() as (host, requests):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        job = db.create_materialized_view_async("adults", "people", where="age >= 18")
-        assert job.id == "mv-create-123"
-    assert requests == [
-        (
-            "/v1/materialized_view/adults/create",
-            {"query": 'SELECT * FROM "people" WHERE age >= 18', "with_no_data": False},
-        )
-    ]
-
-
 def test_remote_drop_async_returns_server_job():
     with mock_remote_materialized_view_create() as (host, requests):
         db = lancedb.connect(
@@ -221,29 +203,29 @@ def test_definition_round_trips(tmp_path):
     )
 
 
-def test_incremental_refresh_after_append(tmp_path):
+def test_full_refresh_after_append(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("copy", "people", with_no_data=True)
     view.refresh()
 
     db.open_table("people").add([{"name": "alan", "age": 41}])
     result = view.refresh()
-    assert result.mode == "incremental"
-    assert result.rows_written == 1
+    assert result.mode == "rebuild"
+    assert result.rows_written == 4
     assert view.table.count_rows() == 4
 
-    assert view.refresh().mode == "no_op"
+    assert view.refresh().mode == "rebuild"
 
 
-def test_incremental_refresh_after_update(tmp_path):
+def test_full_refresh_after_update(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("copy", "people", with_no_data=True)
     view.refresh()
 
     db.open_table("people").update(where="name = 'kid'", values={"age": 8})
     result = view.refresh()
-    assert result.mode == "incremental"
-    assert result.rows_written == 1
+    assert result.mode == "rebuild"
+    assert result.rows_written == 3
     rows = view.table.search().to_list()
     assert sorted(row["age"] for row in rows) == [8, 36, 85]
 
@@ -331,8 +313,8 @@ async def test_async_create_and_refresh_jobs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_incremental(tmp_path):
-    db = await lancedb.connect_async(tmp_path, storage_options=STABLE_ROW_IDS)
+async def test_async_refresh_rebuilds(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
     await db.create_table("people", [{"name": "ada", "age": 36}])
     view = await db.create_materialized_view("copy", "people", with_no_data=True)
     await view.refresh()
@@ -340,15 +322,15 @@ async def test_async_incremental(tmp_path):
     table = await db.open_table("people")
     await table.add([{"name": "alan", "age": 41}])
     result = await view.refresh()
-    assert result.mode == "incremental"
-    assert result.rows_written == 1
+    assert result.mode == "rebuild"
+    assert result.rows_written == 2
 
 
-def test_source_requires_stable_row_ids(tmp_path):
+def test_source_does_not_require_stable_row_ids(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("plain", [{"x": 1}])
-    with pytest.raises(Exception, match="stable row ids"):
-        db.create_materialized_view("v", "plain")
+    view = db.create_materialized_view("v", "plain")
+    assert view.table.count_rows() == 1
 
 
 def test_bare_select_names_are_quoted(tmp_path):
@@ -373,7 +355,7 @@ def test_scalar_select_is_one_column(tmp_path):
     view = db.create_materialized_view("just_name", "people", select="name")
     view.refresh()
     rows = view.table.search().to_list()
-    assert set(rows[0]) - {"__source_row_id"} == {"name"}
+    assert set(rows[0]) == {"name"}
     assert sorted(row["name"] for row in rows) == ["ada", "grace", "kid"]
 
 
@@ -384,7 +366,7 @@ async def test_async_scalar_select_is_one_column(tmp_path):
     view = await db.create_materialized_view("just_name", "people", select="name")
     await view.refresh()
     rows = await view.table.query().to_list()
-    assert set(rows[0]) - {"__source_row_id"} == {"name"}
+    assert set(rows[0]) == {"name"}
 
 
 def test_limit_above_i64_max_is_refused(tmp_path):
@@ -520,166 +502,10 @@ def test_stored_queries_and_legacy_layouts_are_read():
         "SELECT * FROM people"
     )
 
-    for fmt, function in [(3, "vector_duplicate_pairs"), (4, "vector_dedup")]:
-        native = f"SELECT * FROM {function}('images', 3, 'phash', 4)"
-        assert read({"format": fmt, "query": native}).query == native
-
     # A newer writer's layout is reported, never guessed at.
     for newer in (
-        {"format": 5, "query": query},
+        {"format": 3, "query": query},
         {"kind": "select_v3", "source_table": "people"},
     ):
         with pytest.raises(NotImplementedError, match="cannot refresh"):
             read(newer)
-
-
-def indexed_dedup_source(db, name="images"):
-    import pyarrow as pa
-    from lancedb.index import IvfFlat
-
-    vectors = pa.FixedSizeListArray.from_arrays(
-        pa.array(
-            [v for i in range(256) for v in (float(i if i < 3 else i * 10), 0.0)],
-            type=pa.float32(),
-        ),
-        2,
-    )
-    table = db.create_table(name, pa.table({"id": range(256), "vector": vectors}))
-    table.create_index("vector", config=IvfFlat(num_partitions=1))
-    return table
-
-
-@pytest.mark.parametrize("stable", [False, True])
-def test_vector_dedup_source_captures_snapshot_and_preserves_source(tmp_path, stable):
-    db = lancedb.connect(
-        tmp_path,
-        storage_options={"new_table_enable_stable_row_ids": str(stable).lower()},
-    )
-    source = indexed_dedup_source(db, "images.with.dot")
-    version = source.version
-    expression = lancedb.vector_dedup(
-        source.name, column="vector", distance_threshold=1
-    )
-    view = db.create_materialized_view("clean", expression)
-    assert "vector_dedup(" in view.definition.query
-    assert f", {version}, 'vector', 1.0)" in view.definition.query
-    assert view.table.count_rows() == 255
-    assert [r["id"] for r in view.table.search().where("id < 3").to_list()] == [0, 2]
-    assert source.version == version
-    assert source.count_rows() == 256
-
-    source.delete("id = 0")
-    view.refresh_async().wait()
-    assert view.table.search().where("id = 0").to_list() == [
-        {"id": 0, "vector": [0.0, 0.0]}
-    ]
-    assert expression.dataset_version is None  # reusable immutable declaration
-
-
-def test_vector_dedup_create_job_and_explicit_snapshot(tmp_path):
-    db = lancedb.connect(tmp_path)
-    source = indexed_dedup_source(db)
-    version = source.version
-    source.delete("id = 0")
-    job = db.create_materialized_view_async(
-        "clean",
-        lancedb.vector_dedup(
-            "images", column="vector", distance_threshold=1, dataset_version=version
-        ),
-    )
-    assert job.wait() is None
-    view = db.open_materialized_view("clean")
-    assert view.table.count_rows() == 255
-    assert len(view.table.search().where("id = 0").to_list()) == 1
-
-
-@pytest.mark.asyncio
-async def test_async_vector_dedup_declaration_and_creation(tmp_path):
-    sync_db = lancedb.connect(tmp_path)
-    source = indexed_dedup_source(sync_db)
-    db = await lancedb.connect_async(tmp_path)
-    expression = lancedb.vector_dedup("images", column="vector", distance_threshold=1)
-    view = await db.create_materialized_view("clean", expression, with_no_data=True)
-    assert await view.table.count_rows() == 0
-    # The snapshot is captured at declaration even if refresh comes later.
-    source.delete("id = 0")
-    job = await view.refresh_async()
-    await job.wait()
-    assert await view.table.count_rows() == 255
-    another = await db.create_materialized_view_async(
-        "later", expression, with_no_data=True
-    )
-    await another.wait()
-    later = await db.open_materialized_view("later")
-    assert (await later.definition()).query != (await view.definition()).query
-    assert await later.table.count_rows() == 0
-
-
-@pytest.mark.parametrize(
-    "options", [{"select": ["id"]}, {"select": []}, {"where": "id > 0"}, {"limit": 1}]
-)
-def test_vector_dedup_rejects_extra_clauses_before_opening_source(tmp_path, options):
-    db = lancedb.connect(tmp_path)
-    expression = lancedb.vector_dedup("missing", column="vector", distance_threshold=1)
-    with pytest.raises(ValueError, match="cannot be combined"):
-        db.create_materialized_view("bad", expression, **options)
-    assert db.list_tables().tables == []
-
-
-@pytest.mark.parametrize("version", [0, -1, True, 1.5, "2", 2**64])
-def test_vector_dedup_rejects_invalid_snapshot(version):
-    with pytest.raises(ValueError, match="dataset_version"):
-        lancedb.vector_dedup(
-            "images", column="vector", distance_threshold=1, dataset_version=version
-        )
-
-
-@pytest.mark.parametrize(
-    "threshold", [float("nan"), float("inf"), -float("inf"), 1e100, 10**1000, True, "4"]
-)
-def test_vector_dedup_rejects_invalid_threshold(threshold):
-    with pytest.raises((ValueError, TypeError), match="distance_threshold"):
-        lancedb.vector_dedup("images", column="vector", distance_threshold=threshold)
-
-
-def test_vector_dedup_descriptor_is_frozen():
-    from dataclasses import FrozenInstanceError
-
-    expression = lancedb.vector_dedup("images", column="vector", distance_threshold=1)
-    with pytest.raises(FrozenInstanceError):
-        expression.column = "other"
-
-
-@pytest.mark.parametrize("with_no_data", [False, True])
-def test_remote_vector_dedup_uses_mv_endpoint_without_sql_client(with_no_data):
-    with mock_remote_materialized_view_create() as (host, requests):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            sql_host_override="grpc://127.0.0.1:1",
-            client_config={"retry_config": {"retries": 0}},
-        )
-        job = db.create_materialized_view_async(
-            "clean",
-            lancedb.vector_dedup(
-                "images.with'dot",
-                column="vector'field",
-                distance_threshold=4,
-                dataset_version=7,
-            ),
-            with_no_data=with_no_data,
-        )
-        assert job.id == "mv-create-123"
-    assert requests == [
-        (
-            "/v1/materialized_view/clean/create",
-            {
-                "query": (
-                    "SELECT * FROM vector_dedup('`images.with''dot`', "
-                    "7, 'vector''field', 4.0)"
-                ),
-                "with_no_data": with_no_data,
-            },
-        )
-    ]
