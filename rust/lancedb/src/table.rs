@@ -1674,6 +1674,7 @@ impl Table {
     ///     .unwrap()
     ///     .refine_factor(5)
     ///     .nprobes(10)
+    ///     .unwrap()
     ///     .execute()
     ///     .await
     ///     .unwrap();

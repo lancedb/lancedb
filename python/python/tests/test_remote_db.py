@@ -1581,6 +1581,53 @@ def test_query_sync_maximal():
         )
 
 
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_query_sync_nprobes_zero(hybrid):
+    query_requests = []
+
+    def handler(body):
+        query_requests.append(body)
+        return pa.table({"id": []})
+
+    with query_test_table(handler) as table:
+        if hybrid:
+            query = table.search(query_type="hybrid").vector([1, 2, 3]).text("dog")
+        else:
+            query = table.search([1, 2, 3])
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert query_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_query_async_nprobes_zero(hybrid):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        if request.path == "/v1/table/test/describe/":
+            send_json(request, {"version": 1, "schema": {"fields": []}})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = table.query().nearest_to([1, 2, 3])
+        if hybrid:
+            query = query.nearest_to_text("dog")
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert requests == ["/v1/table/test/describe/"]
+
+
 def test_query_sync_nprobes():
     def handler(body):
         assert body == {
