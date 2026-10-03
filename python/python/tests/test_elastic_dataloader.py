@@ -3195,3 +3195,285 @@ def test_streaming_dataset_over_remote_table():
     assert len(server.scans) == 1, "the permutation is built with one row-id scan"
     assert server.takes, "rows must be fetched with row-id takes"
     assert_server_safe_row_id_requests(server)
+
+
+def test_two_phase_over_remote_table():
+    """2-phase (block_size) reads a remote table via offset/limit scans,
+    not pylance's to_lance() (which only works locally)."""
+    server = MockPermutationServer(num_rows=16)
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(table, num_splits=2, block_size=4, shuffle=False)
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == list(range(server.num_rows)), (
+        "Every row of the remote table must be yielded exactly once"
+    )
+
+
+def test_two_phase_over_remote_table_filtered_and_shuffled():
+    """2-phase's filtered live-offset precompute and take_offsets-based
+    block reads both work against a remote table, including restoring
+    take_offsets' unspecified order via the _rowoffset it also selects."""
+    server = MockPermutationServer(num_rows=20)
+    live_ids = list(range(16))  # 16 live rows -> 4 blocks, divides num_splits=2
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(
+            table,
+            num_splits=2,
+            block_size=4,
+            shuffle=True,
+            shuffle_seed=SHUFFLE_SEED,
+            filter="id IN (" + ",".join(str(i) for i in live_ids) + ")",
+            columns=["id"],
+        )
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == live_ids, "only live rows, each exactly once"
+
+
+# ---------------------------------------------------------------------------
+# 2-phase shuffled reads (block_size)
+# ---------------------------------------------------------------------------
+# block_size switches StreamingDataset from 1-phase (per-row permutation) to
+# 2-phase (block-granularity shuffle + a row-level shuffle bounded by
+# max_shuffle_distance).  NUM_ROWS=120 with block_size=10 gives 12 blocks,
+# which divides NUM_SPLITS=12 evenly, so most tests below reuse lance_table
+# and those constants without triggering the runt-block/surplus-block
+# discarding covered explicitly by their own tests.
+
+
+def test_two_phase_full_coverage_no_duplicates(lance_table):
+    """Every sample ID appears exactly once across a full 2-phase epoch."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=10,
+    )
+    ids = [s["id"] for s in ds]
+    assert len(ids) == NUM_ROWS
+    assert sorted(ids) == list(range(NUM_ROWS)), "every row must appear exactly once"
+
+
+def test_two_phase_discards_runt_block(lance_table):
+    """A trailing partial block (block_size doesn't evenly divide row count)
+    is dropped rather than read as an undersized final block."""
+    block_size = 13  # NUM_ROWS=120 -> 9 full blocks (117 rows); 3 rows dropped
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=1,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=block_size,
+        shuffle=False,
+    )
+    ids = [s["id"] for s in ds]
+    assert len(ids) == 117
+    assert sorted(ids) == list(range(117))
+
+
+def test_two_phase_drops_surplus_blocks_across_splits(lance_table):
+    """Blocks beyond num_splits * (num_blocks // num_splits) are dropped so
+    every split gets the same number of blocks."""
+    block_size = 10  # NUM_ROWS=120 -> 12 blocks
+    num_splits = 5  # 12 // 5 = 2 blocks/split -> 10 blocks used, 2 dropped
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=num_splits,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=block_size,
+        shuffle=False,
+    )
+    ids = [s["id"] for s in ds]
+    assert len(ids) == 100, (
+        "2 surplus blocks (20 rows) must be dropped so every split gets 2 blocks"
+    )
+
+
+def test_two_phase_no_shuffle_preserves_order(lance_table):
+    """shuffle=False yields rows in exact original storage order."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=1,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=10,
+        shuffle=False,
+    )
+    ids = [s["id"] for s in ds]
+    assert ids == list(range(NUM_ROWS)), (
+        "shuffle=False must preserve original row order block-by-block"
+    )
+
+
+def test_two_phase_respects_max_shuffle_distance(lance_table):
+    """No row moves farther than max_shuffle_distance from its natural
+    (block, then row) position within its split's own block assignment.
+
+    White-box: reconstructs the expected natural-rank order directly from
+    ds._block_perm (the shuffled block order), since that's the reference
+    frame the displacement bound is defined against, not raw table order.
+    """
+    block_size = 10  # NUM_ROWS=120 -> 12 blocks
+    max_shuffle_distance = 25
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=1,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=block_size,
+        max_shuffle_distance=max_shuffle_distance,
+    )
+    ids = [s["id"] for s in ds]
+
+    natural_order = [
+        row_id
+        for bp in ds._block_perm
+        for row_id in range(bp * block_size, (bp + 1) * block_size)
+    ]
+    assert sorted(ids) == list(range(NUM_ROWS))
+    assert sorted(natural_order) == list(range(NUM_ROWS))
+
+    natural_rank = {row_id: rank for rank, row_id in enumerate(natural_order)}
+    for output_pos, row_id in enumerate(ids):
+        displacement = abs(output_pos - natural_rank[row_id])
+        assert displacement < max_shuffle_distance, (
+            f"row {row_id} displaced {displacement} positions from its natural "
+            f"rank, exceeding max_shuffle_distance={max_shuffle_distance}"
+        )
+
+
+def test_two_phase_filter_counts_live_rows(tmp_path):
+    """block_size counts only rows passing filter; dead rows never appear."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "id": list(range(NUM_ROWS)),
+                "category": ["train"] * 60 + ["val"] * 60,
+            }
+        ),
+    )
+    ds = StreamingDataset(
+        table,
+        num_splits=1,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=10,  # 60 live (train) rows -> 6 blocks exactly, no runt
+        filter="category = 'train'",
+    )
+    ids = [s["id"] for s in ds]
+    assert all(i < 60 for i in ids), "only live (train) rows should appear"
+    assert sorted(ids) == list(range(60))
+
+
+def test_two_phase_resume_checkpoint_round_trip(lance_table):
+    """state_dict/load_state_dict resumes a 2-phase dataset without gaps or
+    repeats, the same guarantee test_doc_example_checkpoint verifies for
+    1-phase."""
+    steps_before_checkpoint = 5
+    block_size = 10  # NUM_ROWS=120 -> 12 blocks, divides NUM_SPLITS=12 evenly
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=block_size,
+    )
+    it = iter(ds)
+    consumed = [next(it)["id"] for _ in range(steps_before_checkpoint * NUM_SPLITS)]
+    checkpoint = ds.state_dict()
+    remaining_original = [s["id"] for s in it]
+
+    ds_resumed = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        block_size=block_size,
+    )
+    ds_resumed.load_state_dict(checkpoint)
+    remaining_resumed = [s["id"] for s in ds_resumed]
+
+    assert remaining_original == remaining_resumed, (
+        "Resumed 2-phase dataset must continue from exactly the same position"
+    )
+    assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
+        "Consumed + remaining must cover every row exactly once"
+    )
+
+
+def test_two_phase_pinned_version_survives_concurrent_write(tmp_path):
+    """The block plan is pinned to the table version at construction; a
+    write between construction and iteration must not change what an
+    in-progress epoch reads."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(8))}))
+
+    ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+    table.delete("id = 0")  # mutate after construction, before iteration
+
+    ids = [s["id"] for s in ds]
+    assert ids == list(range(8)), (
+        "must read the version pinned at construction, not the live, since-mutated one"
+    )
+
+
+def test_two_phase_reshuffle_blocks_per_epoch_toggle(lance_table):
+    """reshuffle_blocks_per_epoch=False keeps each split's blocks fixed
+    across epochs; the default (True) reassigns them every epoch."""
+    block_size = 10  # NUM_ROWS=120 -> 12 blocks
+
+    def block_perm_for(epoch, reshuffle):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=1,
+            shuffle_seed=SHUFFLE_SEED,
+            block_size=block_size,
+            epoch=epoch,
+            reshuffle_blocks_per_epoch=reshuffle,
+        )
+        return list(ds._block_perm)
+
+    assert block_perm_for(0, False) == block_perm_for(1, False), (
+        "blocks must stay pinned to the same split across epochs when disabled"
+    )
+    assert block_perm_for(0, True) != block_perm_for(1, True), (
+        "blocks should be reassigned across epochs by default"
+    )
+
+
+def test_two_phase_too_few_blocks_for_num_splits_raises(tmp_path):
+    """Fewer blocks than num_splits would leave some splits with no data."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(20))}))  # 2 blocks
+    with pytest.raises(ValueError):
+        StreamingDataset(table, num_splits=4, shuffle_seed=SHUFFLE_SEED, block_size=10)
+
+
+@pytest.mark.parametrize(
+    "extra_kwargs",
+    [
+        pytest.param(
+            {"block_size": 10, "shuffle_clump_size": 5},
+            id="shuffle_clump_size_with_block_size",
+        ),
+        pytest.param({"block_size": 1}, id="block_size_too_small"),
+        pytest.param({"window_blocks": 2}, id="window_blocks_without_block_size"),
+        pytest.param(
+            {"max_shuffle_distance": 5}, id="max_shuffle_distance_without_block_size"
+        ),
+        pytest.param(
+            {"reshuffle_blocks_per_epoch": True},
+            id="reshuffle_blocks_per_epoch_without_block_size",
+        ),
+    ],
+)
+def test_two_phase_constructor_validation_raises(lance_table, extra_kwargs):
+    """Invalid 2-phase parameter combinations raise ValueError at construction."""
+    with pytest.raises(ValueError):
+        StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            **extra_kwargs,
+        )
