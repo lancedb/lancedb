@@ -93,6 +93,38 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it("rejects nprobes(0) before sending a query", async () => {
+    const requests: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        requests.push(req.url ?? "");
+        if (req.url === "/v1/table/test/describe/") {
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+        } else {
+          res.writeHead(404).end();
+        }
+      },
+      async (db) => {
+        const table = await db.openTable("test");
+        expect(() => table.vectorSearch([0, 0]).nprobes(0)).toThrow(
+          "Invalid input, nprobes must be greater than 0",
+        );
+        expect(() =>
+          table.query().nearestTo([0, 0]).fullTextSearch("dog").nprobes(0),
+        ).toThrow("Invalid input, nprobes must be greater than 0");
+        await expect(
+          table
+            .vectorSearch(Promise.resolve([0, 0]))
+            .nprobes(0)
+            .toArrow(),
+        ).rejects.toThrow("Invalid input, nprobes must be greater than 0");
+      },
+    );
+    expect(requests).toEqual(["/v1/table/test/describe/"]);
+  });
+
   it.each([false, true])(
     "preserves an empty query's schema with an empty batch: %s",
     async (withEmptyBatch) => {

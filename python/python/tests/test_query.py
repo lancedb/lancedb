@@ -975,6 +975,19 @@ def test_query_builder_with_filter(table):
     assert all(np.array(rs[0]["vector"]) == [3, 4])
 
 
+@pytest.mark.parametrize("query_type", ["vector", "hybrid"])
+@pytest.mark.parametrize("nprobes", [0, -1])
+def test_nprobes_nonpositive_sync(table, query_type, nprobes):
+    if query_type == "hybrid":
+        query = table.search(query_type="hybrid").vector([0, 0]).text("a")
+    else:
+        query = table.search([0, 0])
+    with pytest.raises(
+        ValueError, match="^Invalid input, nprobes must be greater than 0$"
+    ):
+        query.nprobes(nprobes)
+
+
 def test_invalid_nprobes_sync(table):
     with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
         LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(0).to_list()
@@ -1004,6 +1017,18 @@ def test_multiple_nprobes_calls_works_sync(table):
     LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).maximum_nprobes(
         20
     ).minimum_nprobes(20).to_list()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_nprobes_zero_async(table_async: AsyncTable, hybrid):
+    query = table_async.query().nearest_to([0, 0])
+    if hybrid:
+        query = query.nearest_to_text("dog")
+    with pytest.raises(
+        ValueError, match="^Invalid input, nprobes must be greater than 0$"
+    ):
+        query.nprobes(0)
 
 
 @pytest.mark.asyncio

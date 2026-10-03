@@ -1693,13 +1693,15 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Parameters
         ----------
         nprobes: int
-            The number of probes to use.
+            The number of probes to use. Must be greater than 0.
 
         Returns
         -------
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
+        if nprobes <= 0:
+            raise ValueError("Invalid input, nprobes must be greater than 0")
         self._minimum_nprobes = nprobes
         self._maximum_nprobes = nprobes
         return self
@@ -2495,13 +2497,15 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Parameters
         ----------
         nprobes: int
-            The number of probes to use.
+            The number of probes to use. Must be greater than 0.
 
         Returns
         -------
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
+        if nprobes <= 0:
+            raise ValueError("Invalid input, nprobes must be greater than 0")
         self._minimum_nprobes = nprobes
         self._maximum_nprobes = nprobes
         return self
@@ -3653,6 +3657,8 @@ class AsyncVectorQueryBase:
     def nprobes(self, nprobes: int) -> Self:
         """
         Set the number of partitions to search (probe)
+
+        The number of probes must be greater than 0.
 
         This argument is only used when the vector column has an IVF-based index.
         If there is no index then this value is ignored.
