@@ -7,6 +7,7 @@ import logging
 from functools import cached_property
 import os
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -77,6 +78,10 @@ from ..table import (
     Tags,
 )
 from ..types import BaseTokenizerType
+
+if TYPE_CHECKING:
+    import lance
+    import polars as pl
 
 
 class RemoteTable(Table):
@@ -238,11 +243,32 @@ class RemoteTable(Table):
 
     def to_arrow(self) -> pa.Table:
         """to_arrow() is not yet supported on LanceDB cloud."""
-        raise NotImplementedError("to_arrow() is not yet supported on LanceDB cloud.")
+        raise NotImplementedError(
+            "to_arrow() is not yet supported on LanceDB cloud. "
+            "Use table.search().to_arrow() instead."
+        )
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
         """to_pandas() is not yet supported on LanceDB cloud."""
-        raise NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
+        raise NotImplementedError(
+            "to_pandas() is not yet supported on LanceDB cloud. "
+            "Use table.search().to_pandas() instead."
+        )
+
+    def to_lance(self, **kwargs) -> "lance.LanceDataset":
+        """Return the Lance dataset at this table handle's version and branch.
+
+        Requires the server to provide a dataset location accessible to the client.
+        Keyword arguments are forwarded to ``lance.dataset``.
+        """
+        return LOOP.run(self._table.to_lance(**kwargs))
+
+    def to_polars(self, **kwargs) -> "pl.LazyFrame":
+        """Use ``table.search().to_polars()`` to read remote query results."""
+        raise NotImplementedError(
+            "to_polars() is not supported on LanceDB cloud. "
+            "Use table.search().to_polars() instead."
+        )
 
     def checkout(self, version: Union[int, str]):
         result = LOOP.run(self._table.checkout(version))

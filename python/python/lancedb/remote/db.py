@@ -820,6 +820,20 @@ class RemoteDBConnection(DBConnection):
         return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
+    def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
+        """Drop all tables from the database.
+
+        The remote API does not currently support this operation. Use
+        ``list_tables()`` and ``drop_table()`` to drop tables individually.
+        """
+        LOOP.run(self._conn.drop_all_tables(namespace_path=namespace_path))
+
+    @override
+    def drop_database(self):
+        """Deprecated alias for ``drop_all_tables()``."""
+        LOOP.run(self._conn.drop_database())
+
+    @override
     def rename_table(
         self,
         cur_name: str,
