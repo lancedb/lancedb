@@ -1177,11 +1177,14 @@ impl<S: HttpSend> RemoteTable<S> {
                             .values()
                             .iter()
                             .map(|v| {
-                                serde_json::Value::Number(
-                                    serde_json::Number::from_f64(*v as f64).unwrap(),
-                                )
+                                serde_json::Number::from_f64(*v as f64)
+                                    .map(serde_json::Value::Number)
+                                    .ok_or_else(|| Error::InvalidInput {
+                                        message: "query vector must contain only finite values"
+                                            .into(),
+                                    })
                             })
-                            .collect(),
+                            .collect::<Result<Vec<_>>>()?,
                     ))
                 }
                 _ => Err(Error::InvalidInput {
@@ -5777,6 +5780,47 @@ mod tests {
         let blobs = table.fetch_blobs("image", &[10]).await.unwrap();
 
         assert_eq!(blobs.value(0), b"alpha");
+    }
+
+    #[rstest]
+    #[case(DEFAULT_SERVER_VERSION.clone())]
+    #[case(semver::Version::new(0, 2, 0))]
+    #[tokio::test]
+    async fn test_query_vector_non_finite(#[case] version: semver::Version) {
+        let table =
+            Table::new_with_handler_version("my_table", version, |_| -> http::Response<String> {
+                panic!("non-finite vectors must be rejected before sending a request")
+            });
+
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            // Requests built without the query builder must also return an
+            // error, including a non-finite vector later in a batch.
+            for batched in [false, true] {
+                let mut request = table
+                    .query()
+                    .nearest_to(&[0.1, 0.2])
+                    .unwrap()
+                    .into_request();
+                if !batched {
+                    request.query_vector.clear();
+                }
+                request
+                    .query_vector
+                    .push(Arc::new(arrow_array::Float32Array::from(vec![0.1, value])));
+                let result = table
+                    .base_table()
+                    .query(
+                        &AnyQuery::VectorQuery(request),
+                        QueryExecutionOptions::default(),
+                    )
+                    .await;
+                let Err(err) = result else {
+                    panic!("non-finite query vector unexpectedly succeeded")
+                };
+                assert!(matches!(err, Error::InvalidInput { .. }));
+                assert!(err.to_string().contains("only finite values"));
+            }
+        }
     }
 
     #[tokio::test]
