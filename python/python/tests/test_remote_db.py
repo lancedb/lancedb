@@ -1780,8 +1780,9 @@ def test_query_sync_batch_queries(server_version):
         assert results == [{"id": 1, "query_index": 0}, {"id": 1, "query_index": 1}]
 
 
-@pytest.mark.parametrize("vector_columns", [{}, {"v1": 3, "v2": 3}])
-def test_query_sync_fts(vector_columns):
+@pytest.mark.parametrize("vector_columns", [{}, {"vector": 3}, {"v1": 3, "v2": 3}])
+@pytest.mark.parametrize("query_type", ["auto", "fts"])
+def test_query_sync_fts(vector_columns, query_type):
     def handler(body):
         assert body == {
             "full_text_query": {
@@ -1797,7 +1798,7 @@ def test_query_sync_fts(vector_columns):
         return pa.table({"id": [1, 2, 3]})
 
     with query_test_table(handler, vector_columns=vector_columns) as table:
-        (table.search("puppy", query_type="fts").to_list())
+        (table.search("puppy", query_type=query_type).to_list())
 
     def handler(body):
         assert body == {
@@ -1826,7 +1827,9 @@ def test_query_sync_fts(vector_columns):
 
     with query_test_table(handler, vector_columns=vector_columns) as table:
         (
-            table.search("puppy", query_type="fts", fts_columns=["name", "description"])
+            table.search(
+                "puppy", query_type=query_type, fts_columns=["name", "description"]
+            )
             .with_row_id(True)
             .limit(42)
             .to_list()
