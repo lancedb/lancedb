@@ -11,11 +11,12 @@ use lancedb::table::{
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
+use napi::Env;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids};
+use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
@@ -74,13 +75,14 @@ impl Table {
 
     #[napi(
         catch_unwind,
-        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void"
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
     )]
     pub async fn add(
         &self,
         buf: Buffer,
         mode: String,
         progress_callback: Option<ProgressFn>,
+        allow_external_blob_outside_bases: Option<bool>,
     ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -104,6 +106,9 @@ impl Table {
         } else {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
+
+        op = op
+            .allow_external_blob_outside_bases(allow_external_blob_outside_bases.unwrap_or(false));
 
         if let Some(tsfn) = progress_callback {
             op = op.progress(move |p| {
@@ -336,36 +341,44 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn fetch_blobs(
+    pub fn fetch_blobs<'env>(
         &self,
+        env: &'env Env,
         column: String,
         row_ids: Vec<BigInt>,
-    ) -> napi::Result<Vec<Option<Buffer>>> {
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<Buffer>>>> {
         let row_ids = parse_row_ids(row_ids)?;
-        let array = self
-            .inner_ref()?
-            .fetch_blobs(column.as_str(), &row_ids)
-            .await
-            .default_error()?;
-        Ok(copy_blob_buffers(array))
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let array = table
+                .fetch_blobs(column.as_str(), &row_ids)
+                .await
+                .default_error()?;
+            Ok(copy_blob_buffers(array))
+        })
     }
 
     #[napi(catch_unwind)]
-    pub async fn fetch_blob_files(
+    pub fn fetch_blob_files<'env>(
         &self,
+        env: &'env Env,
         column: String,
         row_ids: Vec<BigInt>,
-    ) -> napi::Result<Vec<Option<BlobFile>>> {
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<BlobFile>>>> {
         let row_ids = parse_row_ids(row_ids)?;
-        let files = self
-            .inner_ref()?
-            .fetch_blob_files(column.as_str(), &row_ids)
-            .await
-            .default_error()?;
-        Ok(files
-            .into_iter()
-            .map(|file| file.map(BlobFile::new))
-            .collect())
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let files = table
+                .fetch_blob_files(column.as_str(), &row_ids)
+                .await
+                .default_error()?;
+            Ok(files
+                .into_iter()
+                .map(|file| file.map(BlobFile::new))
+                .collect())
+        })
     }
 
     #[napi(catch_unwind)]

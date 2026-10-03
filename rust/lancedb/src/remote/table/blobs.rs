@@ -3,25 +3,46 @@
 
 //! Cloud blob column listing, whole-byte fetch, and seekable HTTP byte-range handles.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use arrow_array::{Array, LargeBinaryArray};
+use arrow_array::{Array, LargeBinaryArray, StructArray, UInt8Array, UInt64Array};
 use arrow_schema::DataType;
 use bytes::{Bytes, BytesMut};
+use datafusion_expr::{col, lit};
 use futures::{StreamExt, TryStreamExt};
+use lance::dataset::ROW_ID;
+use lance_core::datatypes::BlobKind;
 use reqwest::{Response, StatusCode, header};
 use tokio::sync::Mutex;
 
 use crate::Error;
 use crate::blob::BlobFile;
 use crate::error::Result;
+use crate::query::{QueryFilter, QueryRequest, Select};
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
-use crate::table::BaseTable;
+use crate::table::{AnyQuery, BaseTable};
 
-use super::{FreshnessHeaders, FreshnessState, RemoteTable, freshness_headers_snapshot};
+use super::{
+    FreshnessHeaders, FreshnessState, ReadSnapshot, RemoteTable, VERSION_HEADER,
+    freshness_headers_snapshot,
+};
+
+// The Cloud route rejects larger row-id lists. Its separate 64 MiB byte limit
+// is handled by splitting a rejected request below.
+const MAX_FETCH_BLOBS_ROW_IDS: usize = 1024;
+
+fn is_fetch_blobs_byte_limit_error(error: &Error) -> bool {
+    matches!(error, Error::Http {
+        source,
+        status_code: Some(StatusCode::BAD_REQUEST),
+        ..
+    } if source.to_string().contains("fetch_blobs accepts at most")
+        && source.to_string().contains("total blob bytes"))
+}
 
 #[derive(Debug, Clone, Copy)]
 enum RangeRequestMode {
@@ -35,6 +56,7 @@ trait BlobRangeRequester: Send + Sync + std::fmt::Debug {
         &self,
         range_header: &str,
         mode: RangeRequestMode,
+        version: Option<u64>,
     ) -> Result<(String, Response)>;
 }
 
@@ -56,13 +78,14 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
         &self,
         range_header: &str,
         mode: RangeRequestMode,
+        version: Option<u64>,
     ) -> Result<(String, Response)> {
         let freshness_request =
             freshness_headers_snapshot(&self.freshness, self.read_consistency_interval);
         let mut request = freshness_request
             .apply(self.client.get(&self.path))
             .header(header::RANGE, range_header);
-        if let Some(version) = self.version {
+        if let Some(version) = version.or(self.version) {
             request = request.query(&[("version", version)]);
         }
         if let Some(branch) = &self.branch {
@@ -97,21 +120,25 @@ struct RemoteBlobState {
 }
 
 /// Seekable Cloud blob handle over HTTP Range.
+///
+/// Nonempty handles read the table version returned by their size probe.
 #[derive(Debug)]
 pub struct RemoteBlobFile {
     requester: Arc<dyn BlobRangeRequester>,
     state: Mutex<RemoteBlobState>,
     closed: AtomicBool,
     size: u64,
+    version: Option<u64>,
 }
 
 impl RemoteBlobFile {
-    fn new(requester: Arc<dyn BlobRangeRequester>, size: u64) -> Self {
+    fn new(requester: Arc<dyn BlobRangeRequester>, size: u64, version: Option<u64>) -> Self {
         Self {
             requester,
             state: Mutex::new(RemoteBlobState::default()),
             closed: AtomicBool::new(false),
             size,
+            version,
         }
     }
 
@@ -160,7 +187,7 @@ impl RemoteBlobFile {
         let range_header = format!("bytes={}-{}", range.start, range.end - 1);
         let (request_id, response) = self
             .requester
-            .request_range(&range_header, RangeRequestMode::DataRead)
+            .request_range(&range_header, RangeRequestMode::DataRead, self.version)
             .await
             .map_err(remote_blob_error)?;
         self.ensure_open()?;
@@ -236,7 +263,7 @@ impl RemoteBlobFile {
                 let range_header = format!("bytes={cursor}-");
                 let (request_id, response) = self
                     .requester
-                    .request_range(&range_header, RangeRequestMode::DataRead)
+                    .request_range(&range_header, RangeRequestMode::DataRead, self.version)
                     .await
                     .map_err(remote_blob_error)?;
                 self.ensure_open()?;
@@ -369,7 +396,62 @@ impl<S: HttpSend> RemoteTable<S> {
                 message: "fetch_blobs is not supported on this LanceDB Cloud server".into(),
             });
         }
-        let read_snapshot = self.snapshot_read_state().await;
+        let mut read_snapshot = self.snapshot_read_state().await;
+        // A selection spanning requests must use one exact dataset version.
+        // Resolve latest before the first chunk; a checked-out version is exact already.
+        if row_ids.len() > MAX_FETCH_BLOBS_ROW_IDS && read_snapshot.version.is_none() {
+            read_snapshot.version = Some(self.describe_read_snapshot(read_snapshot).await?.version);
+        }
+        let mut pending: Vec<&[u64]> = row_ids.chunks(MAX_FETCH_BLOBS_ROW_IDS).rev().collect();
+        let mut chunks = Vec::new();
+        while let Some(ids) = pending.pop() {
+            match self.fetch_blobs_chunk(column, ids, read_snapshot).await {
+                Ok(blobs) => chunks.push(blobs),
+                Err(error) if is_fetch_blobs_byte_limit_error(&error) => {
+                    // A single-request call may turn into several requests after a
+                    // byte-cap error. No bytes from the failed request were used.
+                    if read_snapshot.version.is_none() {
+                        read_snapshot.version =
+                            Some(self.describe_read_snapshot(read_snapshot).await?.version);
+                    }
+                    if ids.len() == 1 {
+                        // The whole-byte route cannot serve this blob. The Range route
+                        // has no aggregate response limit and preserves null alignment.
+                        let mut files = self
+                            .fetch_blob_files_with_snapshot(column, ids, read_snapshot)
+                            .await?;
+                        let blob = match files.pop().unwrap() {
+                            Some(file) => Some(file.read().await?),
+                            None => None,
+                        };
+                        chunks.push(LargeBinaryArray::from(vec![blob.as_deref()]));
+                    } else {
+                        let mid = ids.len() / 2;
+                        pending.push(&ids[mid..]);
+                        pending.push(&ids[..mid]);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        if chunks.len() == 1 {
+            return Ok(chunks.pop().unwrap());
+        }
+        let chunk_refs: Vec<&dyn Array> = chunks.iter().map(|chunk| chunk as &dyn Array).collect();
+        Ok(arrow::compute::concat(&chunk_refs)?
+            .as_any()
+            .downcast_ref::<LargeBinaryArray>()
+            .expect("concatenating LargeBinary arrays returns LargeBinary")
+            .clone())
+    }
+
+    async fn fetch_blobs_chunk(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+        read_snapshot: ReadSnapshot,
+    ) -> Result<LargeBinaryArray> {
         let mut body = serde_json::json!({
             "version": read_snapshot.version,
             "column": column,
@@ -443,7 +525,11 @@ impl<S: HttpSend> RemoteTable<S> {
 
     /// Open seekable handles for `row_ids`.
     ///
-    /// Each non-null row is probed once to determine its size.
+    /// Descriptors for the requested rows come from one `_rowid` take query per
+    /// [`MAX_FETCH_BLOBS_ROW_IDS`] unique row ids, all read at one exact table
+    /// version. Each handle is sized from its descriptor and reads that
+    /// version. Only external blobs whose descriptor records no size are
+    /// probed, because their length is the whole object's.
     pub(super) async fn fetch_blob_files_impl(
         &self,
         column: &str,
@@ -453,35 +539,250 @@ impl<S: HttpSend> RemoteTable<S> {
         if row_ids.is_empty() {
             return Ok(Vec::new());
         }
-        if !self.server_version.support_blobs() {
-            return Err(Error::NotSupported {
-                message: "fetch_blob_files requires LanceDB Cloud server 0.5.0 or newer".into(),
-            });
-        }
+        self.ensure_blob_files_supported()?;
 
-        let read_snapshot = self.snapshot_read_state().await;
-        let encoded_column = urlencoding::encode(column);
+        let mut read_snapshot = self.snapshot_read_state().await;
+        let sizes = self
+            .take_blob_descriptor_sizes(column, row_ids, &mut read_snapshot)
+            .await?;
+        let version = read_snapshot.version;
+
+        let mut files = Vec::with_capacity(row_ids.len());
+        let mut probe_indices = Vec::new();
+        let mut probe_requesters = Vec::new();
+        for (index, row_id) in row_ids.iter().enumerate() {
+            match sizes[row_id] {
+                DescriptorSize::Null => files.push(None),
+                DescriptorSize::Known(size) => {
+                    let requester = self.blob_range_requester(column, *row_id, &read_snapshot);
+                    files.push(Some(RemoteBlobFile::new(requester, size, version).into()));
+                }
+                DescriptorSize::Unresolved => {
+                    files.push(None);
+                    probe_indices.push(index);
+                    probe_requesters.push(self.blob_range_requester(
+                        column,
+                        *row_id,
+                        &read_snapshot,
+                    ));
+                }
+            }
+        }
+        let probed = probe_blob_files(probe_requesters).await?;
+        for (index, file) in probe_indices.into_iter().zip(probed) {
+            files[index] = file;
+        }
+        Ok(files)
+    }
+
+    /// Probe each row once for its size.
+    ///
+    /// Serves callers that must not issue a query, such as a single blob that
+    /// the whole-byte route could not return.
+    async fn fetch_blob_files_with_snapshot(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+        read_snapshot: ReadSnapshot,
+    ) -> Result<Vec<Option<BlobFile>>> {
         let requesters = row_ids
             .iter()
-            .map(|row_id| {
-                let path = format!(
-                    "/v1/table/{}/blob/{encoded_column}/{row_id}/bytes",
-                    self.identifier
-                );
-                let requester: Arc<dyn BlobRangeRequester> = Arc::new(TableBlobRangeRequester {
-                    client: self.client.clone(),
-                    path,
-                    version: read_snapshot.version,
-                    branch: self.branch.clone(),
-                    freshness: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
-                    parent_freshness: self.freshness.clone(),
-                    parent_freshness_request: read_snapshot.freshness,
-                    read_consistency_interval: self.client.read_consistency_interval,
-                });
-                requester
-            })
+            .map(|row_id| self.blob_range_requester(column, *row_id, &read_snapshot))
             .collect();
         probe_blob_files(requesters).await
+    }
+
+    /// Read the blob descriptor of every unique row in `row_ids`.
+    ///
+    /// Pins `read_snapshot` to the version the first take read, so later chunks
+    /// and the returned handles all see one table version.
+    async fn take_blob_descriptor_sizes(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+        read_snapshot: &mut ReadSnapshot,
+    ) -> Result<HashMap<u64, DescriptorSize>> {
+        let mut unique_row_ids = row_ids.to_vec();
+        unique_row_ids.sort_unstable();
+        unique_row_ids.dedup();
+
+        let mut sizes = HashMap::with_capacity(unique_row_ids.len());
+        for chunk in unique_row_ids.chunks(MAX_FETCH_BLOBS_ROW_IDS) {
+            let (mut chunk_sizes, response_version) = self
+                .take_blob_descriptor_chunk(column, chunk, *read_snapshot)
+                .await?;
+            if read_snapshot.version.is_none() {
+                match response_version {
+                    Some(version) => read_snapshot.version = Some(version),
+                    None => {
+                        // A server that does not report its read version may have read
+                        // an older version than a describe now returns, so the take is
+                        // repeated at the described version.
+                        read_snapshot.version =
+                            Some(self.describe_read_snapshot(*read_snapshot).await?.version);
+                        (chunk_sizes, _) = self
+                            .take_blob_descriptor_chunk(column, chunk, *read_snapshot)
+                            .await?;
+                    }
+                }
+            }
+            sizes.extend(chunk_sizes);
+        }
+        let found = unique_row_ids
+            .iter()
+            .filter(|row_id| sizes.contains_key(row_id))
+            .count();
+        if found < unique_row_ids.len() {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "blob read for column '{column}' requested {} row ids but only {found} exist \
+                     in the table; pass row ids collected from this table",
+                    unique_row_ids.len()
+                ),
+            });
+        }
+        Ok(sizes)
+    }
+
+    /// Take one chunk of descriptors, also returning the version the server
+    /// reported reading.
+    async fn take_blob_descriptor_chunk(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+        read_snapshot: ReadSnapshot,
+    ) -> Result<(HashMap<u64, DescriptorSize>, Option<u64>)> {
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Datafusion(
+                col(ROW_ID).in_list(row_ids.iter().map(|id| lit(*id)).collect(), false),
+            )),
+            select: Select::columns(&[column]),
+            with_row_id: true,
+            // Row ids name base-table rows, and the MemWAL scanner has no stable `_rowid`.
+            use_lsm: Some(false),
+            ..Default::default()
+        });
+        let body = self
+            .prepare_query_bodies(&query, read_snapshot.version)?
+            .pop()
+            .expect("a plain query has one body");
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/query/", self.identifier))
+            .json(&body);
+        let (request_id, response) = self
+            .send_with_freshness(request, true, read_snapshot.freshness)
+            .await?;
+        let response_version = response
+            .headers()
+            .get(&VERSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok());
+        let mut stream = self.read_arrow_response(&request_id, response).await?;
+
+        let mut sizes = HashMap::with_capacity(row_ids.len());
+        let invalid_response = |message: String| Error::Http {
+            source: message.into(),
+            request_id: request_id.clone(),
+            status_code: None,
+        };
+        while let Some(batch) = stream.try_next().await? {
+            let taken_row_ids = batch
+                .column_by_name(ROW_ID)
+                .and_then(|array| array.as_any().downcast_ref::<UInt64Array>())
+                .ok_or_else(|| {
+                    invalid_response(format!("blob descriptor take is missing UInt64 '{ROW_ID}'"))
+                })?;
+            let values = batch.column_by_name(column).ok_or_else(|| {
+                invalid_response(format!("blob descriptor take is missing '{column}'"))
+            })?;
+            // Only blob v2 columns read back as descriptors.
+            let descriptors = values
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .and_then(BlobDescriptorSizes::try_new)
+                .ok_or_else(|| Error::InvalidInput {
+                    message: format!("column '{column}' is not a blob column"),
+                })?;
+            for (index, row_id) in taken_row_ids.values().iter().enumerate() {
+                sizes.insert(*row_id, descriptors.size(index)?);
+            }
+        }
+        Ok((sizes, response_version))
+    }
+
+    fn ensure_blob_files_supported(&self) -> Result<()> {
+        if self.server_version.support_blobs() {
+            Ok(())
+        } else {
+            Err(Error::NotSupported {
+                message: "fetch_blob_files requires LanceDB Cloud server 0.5.0 or newer".into(),
+            })
+        }
+    }
+
+    fn blob_range_requester(
+        &self,
+        column: &str,
+        row_id: u64,
+        read_snapshot: &ReadSnapshot,
+    ) -> Arc<dyn BlobRangeRequester> {
+        let path = format!(
+            "/v1/table/{}/blob/{}/{row_id}/bytes",
+            self.identifier,
+            urlencoding::encode(column)
+        );
+        Arc::new(TableBlobRangeRequester {
+            client: self.client.clone(),
+            path,
+            version: read_snapshot.version,
+            branch: self.branch.clone(),
+            freshness: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
+            parent_freshness: self.freshness.clone(),
+            parent_freshness_request: read_snapshot.freshness,
+            read_consistency_interval: self.client.read_consistency_interval,
+        })
+    }
+}
+
+/// What a blob v2 descriptor says about a row's size.
+#[derive(Debug, Clone, Copy)]
+enum DescriptorSize {
+    Null,
+    Known(u64),
+    /// An external blob that recorded no size. Its length is the whole
+    /// object's, which only the server can resolve.
+    Unresolved,
+}
+
+/// The `kind` and `size` children of a blob v2 descriptor array.
+struct BlobDescriptorSizes<'a> {
+    descriptors: &'a StructArray,
+    kinds: &'a UInt8Array,
+    sizes: &'a UInt64Array,
+}
+
+impl<'a> BlobDescriptorSizes<'a> {
+    fn try_new(descriptors: &'a StructArray) -> Option<Self> {
+        let child = |name: &str| descriptors.column_by_name(name);
+        Some(Self {
+            descriptors,
+            kinds: child("kind")?.as_any().downcast_ref::<UInt8Array>()?,
+            sizes: child("size")?.as_any().downcast_ref::<UInt64Array>()?,
+        })
+    }
+
+    fn size(&self, index: usize) -> Result<DescriptorSize> {
+        if self.descriptors.is_null(index) || self.kinds.is_null(index) {
+            return Ok(DescriptorSize::Null);
+        }
+        let kind = BlobKind::try_from(self.kinds.value(index))?;
+        let size = self.sizes.value(index);
+        Ok(if kind == BlobKind::External && size == 0 {
+            DescriptorSize::Unresolved
+        } else {
+            DescriptorSize::Known(size)
+        })
     }
 }
 
@@ -499,12 +800,25 @@ async fn probe_blob_files(
 
 const BLOB_REQUEST_CONCURRENCY: usize = 8;
 
+fn probe_blob_version(response: &Response, request_id: &str) -> Result<u64> {
+    response
+        .headers()
+        .get(&VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| Error::Http {
+            source: "blob size probe returned a missing or invalid x-lancedb-version header".into(),
+            request_id: request_id.to_string(),
+            status_code: Some(response.status()),
+        })
+}
+
 /// Probe one blob's size.
 ///
 /// `204` represents null. `416` with `bytes */0` represents an empty blob.
 async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Option<BlobFile>> {
     let (request_id, response) = requester
-        .request_range("bytes=0-0", RangeRequestMode::SizeProbe)
+        .request_range("bytes=0-0", RangeRequestMode::SizeProbe, None)
         .await?;
     match response.status() {
         StatusCode::NO_CONTENT => {
@@ -537,7 +851,8 @@ async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Optio
                     });
                 }
             }
-            Ok(Some(RemoteBlobFile::new(requester, 0).into()))
+            // An empty handle never makes a data range request, so no version is needed.
+            Ok(Some(RemoteBlobFile::new(requester, 0, None).into()))
         }
         StatusCode::PARTIAL_CONTENT => {
             let size = response
@@ -553,6 +868,7 @@ async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Optio
                     request_id: request_id.clone(),
                     status_code: Some(StatusCode::PARTIAL_CONTENT),
                 })?;
+            let version = probe_blob_version(&response, &request_id)?;
             let probe_body = response.bytes().await.err_to_http(request_id.clone())?;
             if probe_body.len() != 1 {
                 return Err(Error::Http {
@@ -565,7 +881,9 @@ async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Optio
                     status_code: Some(StatusCode::PARTIAL_CONTENT),
                 });
             }
-            Ok(Some(RemoteBlobFile::new(requester, size).into()))
+            Ok(Some(
+                RemoteBlobFile::new(requester, size, Some(version)).into(),
+            ))
         }
         status => Err(Error::Http {
             source: format!("blob size probe expected HTTP 206 Partial Content, got {status}")
@@ -578,12 +896,14 @@ async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Optio
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
 
     use reqwest::Request;
     use semver::Version;
+
+    use arrow_array::RecordBatch;
 
     use super::*;
 
@@ -628,6 +948,7 @@ mod tests {
                 header::CONTENT_RANGE,
                 format!("bytes {start}-{end}/{}", payload.len()),
             )
+            .header(VERSION_HEADER, "5")
             .body(payload[start..=end].to_vec())
             .unwrap()
     }
@@ -667,10 +988,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
-        let mut files = table
-            .fetch_blob_files_impl("image", &[10, 20])
-            .await
-            .unwrap();
+        let mut files = table.probe_files("image", &[10, 20]).await.unwrap();
 
         assert_eq!(files.len(), 2);
         assert!(files[1].is_none());
@@ -682,12 +1000,368 @@ mod tests {
         );
     }
 
+    /// Descriptors as a remote query returns them, one `(kind, size)` per row.
+    fn descriptors(rows: &[Option<(BlobKind, u64)>]) -> StructArray {
+        let kinds = rows
+            .iter()
+            .map(|row| row.map_or(0, |(kind, _)| kind as u8))
+            .collect::<UInt8Array>();
+        let sizes = rows
+            .iter()
+            .map(|row| row.map_or(0, |(_, size)| size))
+            .collect::<UInt64Array>();
+        let len = rows.len();
+        StructArray::new(
+            lance_core::datatypes::BLOB_V2_DESC_FIELDS.clone(),
+            vec![
+                Arc::new(kinds),
+                Arc::new(UInt64Array::from(vec![0; len])),
+                Arc::new(sizes),
+                Arc::new(arrow_array::UInt32Array::from(vec![0; len])),
+                Arc::new(arrow_array::StringArray::from(vec![""; len])),
+            ],
+            Some(rows.iter().map(Option::is_some).collect()),
+        )
+    }
+
+    impl<S: HttpSend> RemoteTable<S> {
+        /// Open handles through the per-row size probe alone.
+        async fn probe_files(
+            &self,
+            column: &str,
+            row_ids: &[u64],
+        ) -> Result<Vec<Option<BlobFile>>> {
+            let read_snapshot = self.snapshot_read_state().await;
+            self.fetch_blob_files_with_snapshot(column, row_ids, read_snapshot)
+                .await
+        }
+    }
+
+    /// A request the take mock received.
+    #[derive(Debug, Clone, PartialEq)]
+    enum TakeMockRequest {
+        Query {
+            row_ids: Vec<u64>,
+            version: Option<u64>,
+        },
+        Describe,
+        Range {
+            row_id: u64,
+            range: String,
+            version: Option<String>,
+        },
+    }
+
+    /// Row ids named by a `_rowid IN (...)` filter.
+    fn filter_row_ids(filter: &str) -> Vec<u64> {
+        let list = filter.split_once('(').unwrap().1.trim_end_matches(')');
+        list.split(',')
+            .map(|id| id.trim().parse().unwrap())
+            .collect()
+    }
+
+    /// A table whose query route answers `_rowid` takes from `rows` and whose
+    /// byte routes serve [`PAYLOAD`]. Takes return rows in reverse order, and
+    /// report `query_version` in `x-lancedb-version` when it is set.
+    fn mock_take_blob_table(
+        rows: Vec<(u64, Option<(BlobKind, u64)>)>,
+        query_version: Option<&'static str>,
+    ) -> (
+        RemoteTable<crate::remote::client::test_utils::MockSender>,
+        Arc<StdMutex<Vec<TakeMockRequest>>>,
+    ) {
+        let requests = Arc::new(StdMutex::new(Vec::new()));
+        let captured = requests.clone();
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            move |request| {
+                let path = request.url().path().to_string();
+                if path == "/v1/table/my_table/query/" {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["columns"], serde_json::json!(["image"]));
+                    assert_eq!(body["with_row_id"], serde_json::json!(true));
+                    assert_eq!(body["use_lsm"], serde_json::json!(false));
+                    let requested = filter_row_ids(body["filter"].as_str().unwrap());
+                    captured.lock().unwrap().push(TakeMockRequest::Query {
+                        row_ids: requested.clone(),
+                        version: body["version"].as_u64(),
+                    });
+                    let taken = rows
+                        .iter()
+                        .rev()
+                        .filter(|(row_id, _)| requested.contains(row_id))
+                        .collect::<Vec<_>>();
+                    let batch = RecordBatch::try_from_iter([
+                        (
+                            "image",
+                            Arc::new(descriptors(
+                                &taken.iter().map(|(_, row)| *row).collect::<Vec<_>>(),
+                            )) as Arc<dyn Array>,
+                        ),
+                        (
+                            ROW_ID,
+                            Arc::new(UInt64Array::from_iter_values(
+                                taken.iter().map(|(row_id, _)| *row_id),
+                            )) as Arc<dyn Array>,
+                        ),
+                    ])
+                    .unwrap();
+                    let mut body = Vec::new();
+                    let mut writer =
+                        arrow_ipc::writer::FileWriter::try_new(&mut body, &batch.schema()).unwrap();
+                    writer.write(&batch).unwrap();
+                    writer.finish().unwrap();
+                    drop(writer);
+                    let mut response = http::Response::builder().status(200);
+                    if let Some(version) = query_version {
+                        response = response.header(VERSION_HEADER, version);
+                    }
+                    return response.body(body).unwrap();
+                }
+                if path == "/v1/table/my_table/describe/" {
+                    captured.lock().unwrap().push(TakeMockRequest::Describe);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":9,"schema":{"fields":[]}}"#.as_bytes().to_vec())
+                        .unwrap();
+                }
+                let row_id = path
+                    .strip_prefix("/v1/table/my_table/blob/image/")
+                    .and_then(|rest| rest.strip_suffix("/bytes"))
+                    .unwrap_or_else(|| panic!("unexpected path: {path}"))
+                    .parse()
+                    .unwrap();
+                captured.lock().unwrap().push(TakeMockRequest::Range {
+                    row_id,
+                    range: request.headers()[header::RANGE]
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                    version: request
+                        .url()
+                        .query_pairs()
+                        .find(|(name, _)| name == "version")
+                        .map(|(_, value)| value.into_owned()),
+                });
+                range_response(&request, PAYLOAD)
+            },
+            Some(Version::new(0, 5, 0)),
+        );
+        (table, requests)
+    }
+
+    #[tokio::test]
+    async fn remote_blob_files_are_sized_from_one_descriptor_take() {
+        let payload_size = PAYLOAD.len() as u64;
+        let (table, requests) = mock_take_blob_table(
+            vec![
+                (10, Some((BlobKind::Inline, payload_size))),
+                (20, None),
+                (30, Some((BlobKind::Inline, 0))),
+                (40, Some((BlobKind::Packed, payload_size))),
+                (50, Some((BlobKind::Dedicated, payload_size))),
+                (60, Some((BlobKind::External, 0))),
+            ],
+            Some("7"),
+        );
+
+        // Reordered and duplicated row ids come back in request order.
+        let files = table
+            .fetch_blob_files_impl("image", &[60, 10, 20, 30, 40, 50, 10])
+            .await
+            .unwrap();
+
+        let sizes = files
+            .iter()
+            .map(|file| file.as_ref().map(BlobFile::size))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sizes,
+            [
+                Some(payload_size),
+                Some(payload_size),
+                None,
+                Some(0),
+                Some(payload_size),
+                Some(payload_size),
+                Some(payload_size),
+            ]
+        );
+        // One take, then a probe for the external blob that recorded no size.
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [
+                TakeMockRequest::Query {
+                    row_ids: vec![10, 20, 30, 40, 50, 60],
+                    version: None,
+                },
+                TakeMockRequest::Range {
+                    row_id: 60,
+                    range: "bytes=0-0".into(),
+                    version: Some("7".into()),
+                },
+            ]
+        );
+
+        // Sized handles read the version the take read.
+        assert_eq!(
+            files[1].as_ref().unwrap().read_range(5..12).await.unwrap(),
+            &PAYLOAD[5..12]
+        );
+        assert!(files[3].as_ref().unwrap().read().await.unwrap().is_empty());
+        assert_eq!(
+            requests.lock().unwrap().last().unwrap(),
+            &TakeMockRequest::Range {
+                row_id: 10,
+                range: "bytes=5-11".into(),
+                version: Some("7".into()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_blob_files_take_every_chunk_at_the_first_version() {
+        let row_ids = (0..MAX_FETCH_BLOBS_ROW_IDS as u64 + 1).collect::<Vec<_>>();
+        let (table, requests) = mock_take_blob_table(
+            row_ids.iter().map(|row_id| (*row_id, None)).collect(),
+            Some("7"),
+        );
+
+        let files = table
+            .fetch_blob_files_impl("image", &row_ids)
+            .await
+            .unwrap();
+
+        assert_eq!(files.len(), row_ids.len());
+        let versions = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| match request {
+                TakeMockRequest::Query { row_ids, version } => (row_ids.len(), *version),
+                other => panic!("unexpected request: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(versions, [(MAX_FETCH_BLOBS_ROW_IDS, None), (1, Some(7))]);
+    }
+
+    #[tokio::test]
+    async fn remote_blob_files_retake_at_the_described_version_when_a_take_does_not_report_it() {
+        let payload_size = PAYLOAD.len() as u64;
+        let (table, requests) =
+            mock_take_blob_table(vec![(10, Some((BlobKind::Inline, payload_size)))], None);
+
+        let file = table
+            .fetch_blob_files_impl("image", &[10])
+            .await
+            .unwrap()
+            .pop()
+            .flatten()
+            .unwrap();
+        file.read_range(0..4).await.unwrap();
+
+        // The unversioned take is repeated at the described version.
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [
+                TakeMockRequest::Query {
+                    row_ids: vec![10],
+                    version: None,
+                },
+                TakeMockRequest::Describe,
+                TakeMockRequest::Query {
+                    row_ids: vec![10],
+                    version: Some(9),
+                },
+                TakeMockRequest::Range {
+                    row_id: 10,
+                    range: "bytes=0-3".into(),
+                    version: Some("9".into()),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_blob_files_take_at_the_checked_out_version() {
+        let payload_size = PAYLOAD.len() as u64;
+        let (table, requests) = mock_take_blob_table(
+            vec![(10, Some((BlobKind::Inline, payload_size)))],
+            Some("7"),
+        );
+        table.checkout(9).await.unwrap();
+        requests.lock().unwrap().clear();
+
+        table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [TakeMockRequest::Query {
+                row_ids: vec![10],
+                version: Some(9),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_blob_files_reject_row_ids_missing_from_the_take() {
+        let (table, requests) = mock_take_blob_table(vec![(10, None)], Some("7"));
+
+        let error = table
+            .fetch_blob_files_impl("image", &[10, 99])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::InvalidInput { .. }), "{error}");
+        assert!(error.to_string().contains("only 1 exist"), "{error}");
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn remote_blob_files_reject_a_non_blob_column() {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+                let batch = RecordBatch::try_from_iter([
+                    (
+                        "id",
+                        Arc::new(arrow_array::Int64Array::from(vec![1])) as Arc<dyn Array>,
+                    ),
+                    (
+                        ROW_ID,
+                        Arc::new(UInt64Array::from(vec![10])) as Arc<dyn Array>,
+                    ),
+                ])
+                .unwrap();
+                let mut body = Vec::new();
+                let mut writer =
+                    arrow_ipc::writer::FileWriter::try_new(&mut body, &batch.schema()).unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
+                drop(writer);
+                http::Response::builder().status(200).body(body).unwrap()
+            },
+            Some(Version::new(0, 5, 0)),
+        );
+
+        let error = table.fetch_blob_files_impl("id", &[10]).await.unwrap_err();
+
+        assert!(matches!(error, Error::InvalidInput { .. }), "{error}");
+        assert!(
+            error.to_string().contains("'id' is not a blob column"),
+            "{error}"
+        );
+    }
+
     #[tokio::test]
     async fn remote_blob_file_reads_the_requested_range() {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .probe_files("image", &[10])
             .await
             .unwrap()
             .pop()
@@ -696,6 +1370,68 @@ mod tests {
 
         assert_eq!(file.read_range(5..12).await.unwrap(), &PAYLOAD[5..12]);
         assert!(requests.lock().unwrap().contains(&"bytes=5-11".to_string()));
+    }
+
+    #[tokio::test]
+    async fn remote_blob_file_reads_the_probed_version_after_table_changes() {
+        let changed = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(StdMutex::new(Vec::new()));
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            {
+                let changed = changed.clone();
+                let requests = requests.clone();
+                move |request| {
+                    let range = request
+                        .headers()
+                        .get(header::RANGE)
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
+                    let version = request
+                        .url()
+                        .query_pairs()
+                        .find(|(name, _)| name == "version")
+                        .map(|(_, value)| value.into_owned());
+                    requests
+                        .lock()
+                        .unwrap()
+                        .push((range.to_string(), version.clone()));
+                    if changed.load(Ordering::SeqCst) && version.as_deref() != Some("5") {
+                        return http::Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(b"row id is absent from the latest version".to_vec())
+                            .unwrap();
+                    }
+                    range_response(&request, PAYLOAD)
+                }
+            },
+            Some(Version::new(0, 5, 0)),
+        );
+
+        let file = table
+            .probe_files("image", &[10])
+            .await
+            .unwrap()
+            .pop()
+            .flatten()
+            .unwrap();
+        changed.store(true, Ordering::SeqCst);
+
+        assert_eq!(file.read_range(5..9).await.unwrap(), &PAYLOAD[5..9]);
+        assert_eq!(file.read_up_to(4).await.unwrap(), &PAYLOAD[..4]);
+        file.seek(10).await.unwrap();
+        assert_eq!(file.read().await.unwrap(), &PAYLOAD[10..]);
+
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            [
+                ("bytes=0-0".to_string(), None),
+                ("bytes=5-8".to_string(), Some("5".to_string())),
+                ("bytes=0-".to_string(), Some("5".to_string())),
+                ("bytes=10-".to_string(), Some("5".to_string())),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -723,7 +1459,7 @@ mod tests {
 
         table.checkout(5).await.unwrap();
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .probe_files("image", &[10])
             .await
             .unwrap()
             .pop()
@@ -743,7 +1479,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .probe_files("image", &[10])
             .await
             .unwrap()
             .pop()
@@ -762,21 +1498,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_blob_files_return_a_handle_for_an_empty_blob() {
+    async fn remote_blob_files_allow_an_empty_blob_without_a_version_header() {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
-        let mut files = table
-            .fetch_blob_files_impl("image", &[10, 20, 30])
-            .await
-            .unwrap();
+        let mut files = table.probe_files("image", &[10, 20, 30]).await.unwrap();
 
         assert_eq!(files.len(), 3);
         assert!(files[1].is_none());
         let empty = files[2].take().unwrap();
         assert_eq!(empty.size(), 0);
+        let probe_requests = requests.lock().unwrap().len();
         assert!(empty.read_range(0..0).await.unwrap().is_empty());
         assert!(empty.read().await.unwrap().is_empty());
+        assert_eq!(requests.lock().unwrap().len(), probe_requests);
         let nonempty = files[0].take().unwrap();
         assert_eq!(nonempty.size(), PAYLOAD.len() as u64);
     }
@@ -795,10 +1530,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
 
-        let error = table
-            .fetch_blob_files_impl("image", &[10])
-            .await
-            .unwrap_err();
+        let error = table.probe_files("image", &[10]).await.unwrap_err();
         assert!(
             error
                 .to_string()
@@ -822,14 +1554,32 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
 
-        let error = table
-            .fetch_blob_files_impl("image", &[10])
-            .await
-            .unwrap_err();
+        let error = table.probe_files("image", &[10]).await.unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("blob size probe returned an invalid Content-Range header"),
+            "got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_blob_files_reject_a_probe_without_a_version() {
+        let table = RemoteTable::new_mock(
+            "my_table".to_string(),
+            |request| {
+                let mut response = range_response(&request, PAYLOAD);
+                response.headers_mut().remove(VERSION_HEADER);
+                response
+            },
+            Some(Version::new(0, 5, 0)),
+        );
+
+        let error = table.probe_files("image", &[10]).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing or invalid x-lancedb-version"),
             "got: {error}"
         );
     }
@@ -883,7 +1633,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .probe_files("image", &[10])
             .await
             .unwrap()
             .pop()
@@ -923,7 +1673,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .probe_files("image", &[10])
             .await
             .unwrap()
             .pop()
@@ -974,7 +1724,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .probe_files("image", &[10])
             .await
             .unwrap()
             .pop()
@@ -1001,7 +1751,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .probe_files("image", &[10])
             .await
             .unwrap()
             .pop()
@@ -1025,6 +1775,7 @@ mod tests {
             &self,
             range_header: &str,
             _mode: RangeRequestMode,
+            _version: Option<u64>,
         ) -> Result<(String, Response)> {
             assert_eq!(range_header, "bytes=0-0");
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1039,6 +1790,7 @@ mod tests {
                     header::CONTENT_RANGE,
                     format!("bytes 0-0/{}", 100 + self.index),
                 )
+                .header(VERSION_HEADER, "5")
                 .body(vec![0u8])
                 .unwrap();
             Ok((format!("probe-{}", self.index), Response::from(response)))
@@ -1078,7 +1830,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table.probe_files("image", &[10]).await.unwrap();
         let file = files.remove(0).unwrap();
 
         assert_eq!(file.size(), PAYLOAD.len() as u64);
@@ -1093,7 +1845,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table.probe_files("image", &[10]).await.unwrap();
         let file = files.remove(0).unwrap();
         let probe_requests = requests.lock().unwrap().len();
 
@@ -1118,7 +1870,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table.probe_files("image", &[10]).await.unwrap();
         let file = files.remove(0).unwrap();
         let probe_requests = requests.lock().unwrap().len();
 
@@ -1157,6 +1909,7 @@ mod tests {
                             header::CONTENT_RANGE,
                             format!("bytes 0-0/{}", PAYLOAD.len()),
                         )
+                        .header(VERSION_HEADER, "5")
                         .body(vec![PAYLOAD[0]])
                         .unwrap();
                 }
@@ -1169,7 +1922,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table.probe_files("image", &[10]).await.unwrap();
         let file = files.remove(0).unwrap();
 
         let error = file.read_range(1..3).await.unwrap_err();
@@ -1203,6 +1956,7 @@ mod tests {
             &self,
             range_header: &str,
             _mode: RangeRequestMode,
+            _version: Option<u64>,
         ) -> Result<(String, Response)> {
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_in_flight.fetch_max(now, Ordering::SeqCst);
@@ -1235,7 +1989,7 @@ mod tests {
             in_flight,
             max_in_flight: max_in_flight.clone(),
         });
-        let file = RemoteBlobFile::new(requester, PAYLOAD.len() as u64);
+        let file = RemoteBlobFile::new(requester, PAYLOAD.len() as u64, Some(5));
 
         let ranges: Vec<_> = (0..16u64).map(|start| start..start + 2).collect();
         let output = file.read_ranges(&ranges).await.unwrap();
@@ -1259,7 +2013,7 @@ mod tests {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let table = mock_remote_blob_table(requests.clone());
         let file = table
-            .fetch_blob_files_impl("image", &[10])
+            .probe_files("image", &[10])
             .await
             .unwrap()
             .pop()
@@ -1292,6 +2046,7 @@ mod tests {
                             header::CONTENT_RANGE,
                             format!("bytes 0-0/{}", PAYLOAD.len()),
                         )
+                        .header(VERSION_HEADER, "5")
                         .body(vec![PAYLOAD[0]])
                         .unwrap();
                 }
@@ -1304,7 +2059,7 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
 
-        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let mut files = table.probe_files("image", &[10]).await.unwrap();
         let file = files.remove(0).unwrap();
         let error = file.read_range(1..3).await.unwrap_err();
         assert!(error.to_string().contains("206"), "got: {error}");
@@ -1322,6 +2077,7 @@ mod tests {
             &self,
             range_header: &str,
             _mode: RangeRequestMode,
+            _version: Option<u64>,
         ) -> Result<(String, Response)> {
             if range_header.ends_with('-') {
                 self.started.notify_one();
@@ -1347,7 +2103,11 @@ mod tests {
             release: release.clone(),
             started: started.clone(),
         });
-        let file = Arc::new(RemoteBlobFile::new(requester, PAYLOAD.len() as u64));
+        let file = Arc::new(RemoteBlobFile::new(
+            requester,
+            PAYLOAD.len() as u64,
+            Some(5),
+        ));
 
         let reader = {
             let file = file.clone();

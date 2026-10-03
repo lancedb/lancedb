@@ -241,6 +241,29 @@ pub struct JobDescription {
     pub failure: Option<crate::error::JobFailure>,
 }
 
+/// The server's answer to a pause request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseJobStatus {
+    /// The pause was accepted; workers drain and the job stays parked.
+    Pausing,
+    /// The job was already paused, so a repeated pause changed nothing.
+    AlreadyPaused,
+    /// The job is finalizing its results and cannot be parked right now.
+    /// The commit is the short tail of a long job; retry shortly.
+    Committing,
+}
+
+/// The server's answer to a resume request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeJobStatus {
+    /// The job re-entered the queue and will run again.
+    Resumed,
+    /// The pause's worker drain is not confirmed yet; retry shortly.
+    StillPausing,
+    /// The job was not paused, so there was nothing to resume.
+    NotPaused,
+}
+
 fn job_op_not_supported<T>(what: &str) -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: format!("{} is not supported by this database", what),
@@ -310,10 +333,12 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
-    /// Submit a Function creation job that builds an image and registers it.
+    /// Submit a Function creation job that builds an image and registers it
+    /// in `namespace_path`.
     async fn create_function_async(
         &self,
         _request: crate::function::FunctionRegistrationRequest,
+        _namespace_path: &[String],
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
@@ -389,15 +414,25 @@ pub trait Database:
         &self,
         _name: &str,
         _version: &str,
+        _namespace_path: &[String],
     ) -> Result<crate::function::FunctionVersion> {
         function_catalog_not_supported()
     }
-    /// List every published immutable Function version in the remote catalog.
-    async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
+    /// List every published immutable Function version in one namespace of the
+    /// remote catalog.
+    async fn list_functions(
+        &self,
+        _namespace_path: &[String],
+    ) -> Result<Vec<crate::function::FunctionVersion>> {
         function_catalog_not_supported()
     }
     /// Remove the current Function name binding, retaining the object history.
-    async fn drop_function(&self, _name: &str, _version: &str) -> Result<bool> {
+    async fn drop_function(
+        &self,
+        _name: &str,
+        _version: &str,
+        _namespace_path: &[String],
+    ) -> Result<bool> {
         function_catalog_not_supported()
     }
     /// Start dropping a Function and return a handle to the cleanup job.
@@ -408,8 +443,9 @@ pub trait Database:
         &self,
         name: &str,
         version: &str,
+        namespace_path: &[String],
     ) -> Result<(bool, crate::job::Job)> {
-        let dropped = self.drop_function(name, version).await?;
+        let dropped = self.drop_function(name, version, namespace_path).await?;
         Ok((dropped, crate::job::Job::new_done()))
     }
     /// Create a named Secret in this database. Fails if the name is taken, so
@@ -470,9 +506,14 @@ pub trait Database:
     ) -> Result<ViewDescription> {
         view_ops_not_supported()
     }
-    /// Drop a view. Its sources are untouched -- a view holds no rows of its
-    /// own.
+    /// Drop a view and wait for its definition to be deleted. Its sources are
+    /// untouched -- a view holds no rows of its own.
     async fn drop_view(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        view_ops_not_supported()
+    }
+    /// Drop a view and return the job deleting its definition, without waiting.
+    #[doc(hidden)]
+    async fn drop_view_async(&self, _name: &str, _namespace_path: &[String]) -> Result<Job> {
         view_ops_not_supported()
     }
     /// The names of the views in one namespace.
@@ -494,6 +535,16 @@ pub trait Database:
     /// already-terminal job is a no-op success.
     async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
         job_op_not_supported("cancel_job")
+    }
+    /// Pause a job by id. The job's workers drain and it stays parked until
+    /// resumed; see [`PauseJobStatus`] for the outcomes.
+    async fn pause_job(&self, _job_id: &str) -> Result<PauseJobStatus> {
+        job_op_not_supported("pause_job")
+    }
+    /// Resume a paused job by id. It re-enters the queue and its workers pick
+    /// their work back up from checkpoints; see [`ResumeJobStatus`].
+    async fn resume_job(&self, _job_id: &str) -> Result<ResumeJobStatus> {
+        job_op_not_supported("resume_job")
     }
     /// Start executing a SQL statement on a remote database.
     async fn execute_query_async(

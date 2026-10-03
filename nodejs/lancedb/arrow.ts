@@ -66,11 +66,20 @@ export type SchemaLike =
 export type FieldLike =
   | Field
   | {
-      type: string;
+      type: string | DataTypeLike;
       name: string;
       nullable: boolean;
       metadata?: Map<string, string>;
     };
+/**
+ * A `DataType` from any copy or version of apache-arrow.
+ *
+ * Arrow 21 brands its classes with `unique symbol` properties, so a type
+ * object from a second copy of the library no longer satisfies the `DataType`
+ * type of this one even though it is structurally identical. Inputs that only
+ * need to be sanitized accept this looser shape instead.
+ */
+export type DataTypeLike = DataType | { readonly typeId: number };
 
 /**
  * Create an Arrow field backed by LanceDB's JSON extension type.
@@ -1059,6 +1068,71 @@ export async function fromRecordsToStreamBuffer(
   return Buffer.from(await writer.toUint8Array());
 }
 
+// `Type.Utf8View` / `Type.BinaryView` as numbers: the enum members only exist
+// in Arrow 21+, and this module compiles against every supported release.
+const UTF8_VIEW_TYPE_ID = 24;
+const BINARY_VIEW_TYPE_ID = 23;
+
+/**
+ * Copy a Utf8View / BinaryView `Data` into a single `Data` of `type`.
+ */
+function materializeViewData(child: ArrowData, type: DataType): ArrowData {
+  const builder = makeBuilder({ type, nullValues: [null] });
+  for (const value of new Vector([child])) {
+    builder.append(value);
+  }
+  return builder.finish().flush();
+}
+
+/**
+ * Rebuild any top-level Utf8View / BinaryView column as Utf8 / Binary.
+ *
+ * Lance stores the view types as their offset-based equivalents anyway, so
+ * nothing is lost. Doing it here also sidesteps an Arrow JS 21 bug: its IPC
+ * writer emits a truncated views buffer for a *sliced* view array, which the
+ * Rust reader rejects with "Need at least N bytes in buffers[0]".
+ *
+ * The record batches are rebuilt positionally rather than through a
+ * `Record<string, Vector>`: JavaScript enumerates integer-like keys first, so
+ * a field named e.g. `"1"` would otherwise be paired with the wrong column.
+ *
+ * Tables without view columns are returned as-is.
+ */
+function materializeViewColumns(table: ArrowTable): ArrowTable {
+  const replacements = new Map<number, DataType>();
+  table.schema.fields.forEach((field, i) => {
+    if (field.type.typeId === UTF8_VIEW_TYPE_ID) {
+      replacements.set(i, new Utf8());
+    } else if (field.type.typeId === BINARY_VIEW_TYPE_ID) {
+      replacements.set(i, new Binary());
+    }
+  });
+  if (replacements.size === 0) {
+    return table;
+  }
+  const fields = table.schema.fields.map((field, i) => {
+    const type = replacements.get(i);
+    return type === undefined
+      ? field
+      : new Field(field.name, type, field.nullable, field.metadata);
+  });
+  const schema = new Schema(fields, table.schema.metadata);
+  const batches = table.batches.map((batch) => {
+    const children = batch.data.children.map((child, i) => {
+      const type = replacements.get(i);
+      return type === undefined ? child : materializeViewData(child, type);
+    });
+    const data = makeData({
+      type: new Struct(fields),
+      length: batch.numRows,
+      nullCount: 0,
+      children,
+    });
+    return new RecordBatch(schema, data);
+  });
+  return new ArrowTable(schema, batches);
+}
+
 /**
  * Serialize an Arrow Table into a buffer using the Arrow IPC File serialization
  *
@@ -1075,7 +1149,9 @@ export async function fromTableToBuffer(
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
   }
-  const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  const tableWithEmbeddings = materializeViewColumns(
+    await applyEmbeddings(table, embeddings, schema),
+  );
   validateBlobSchema(tableWithEmbeddings.schema);
   const writer = RecordBatchFileWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
@@ -1146,7 +1222,8 @@ export async function fromRecordBatchToBuffer(
 export async function fromRecordBatchToStreamBuffer(
   batch: RecordBatch,
 ): Promise<Buffer> {
-  const writer = RecordBatchStreamWriter.writeAll([batch]);
+  const table = materializeViewColumns(new ArrowTable([batch]));
+  const writer = RecordBatchStreamWriter.writeAll(table);
   return Buffer.from(await writer.toUint8Array());
 }
 
@@ -1163,7 +1240,9 @@ export async function fromTableToStreamBuffer(
   embeddings?: EmbeddingFunctionConfig,
   schema?: SchemaLike,
 ): Promise<Buffer> {
-  const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  const tableWithEmbeddings = materializeViewColumns(
+    await applyEmbeddings(table, embeddings, schema),
+  );
   const writer = RecordBatchStreamWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
 }

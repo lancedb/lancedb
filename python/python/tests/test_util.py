@@ -213,6 +213,35 @@ def test_value_to_sql_numpy_scalars():
     assert value_to_sql(np.bool_(False)) == "FALSE"
 
 
+def test_value_to_sql_nan_and_infinity(tmp_path):
+    # str(float("nan")) is "nan", which SQL reads as a column named nan, so
+    # table.update(values={"x": float("nan")}) failed with "No field named nan".
+    import math
+
+    import numpy as np
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2, 3, 4],
+                "f64": [1.0, 2.0, 3.0, 4.0],
+                "f32": pa.array([1.0, 2.0, 3.0, 4.0], pa.float32()),
+            }
+        ),
+    )
+    table.update(where="id = 1", values={"f64": float("nan"), "f32": np.nan})
+    table.update(where="id = 2", values={"f64": math.inf, "f32": np.float32("inf")})
+    table.update(where="id = 3", values={"f64": -math.inf, "f32": -math.inf})
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert math.isnan(rows[1]["f64"]) and math.isnan(rows[1]["f32"])
+    assert rows[2]["f64"] == math.inf and rows[2]["f32"] == math.inf
+    assert rows[3]["f64"] == -math.inf and rows[3]["f32"] == -math.inf
+    assert rows[4]["f64"] == 4.0 and rows[4]["f32"] == 4.0
+
+
 def test_append_vector_columns():
     registry = EmbeddingFunctionRegistry.get_instance()
     registry.register("test")(MockTextEmbeddingFunction)
@@ -946,6 +975,55 @@ def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
         {"data": b"hello", "uri": None, "position": None, "size": None},
         None,
     ]
+
+
+def test_cast_to_target_schema_labels_json_text_with_table_extension_metadata():
+    # A table created from pa.json_() stores the empty ARROW:extension:metadata that
+    # pyarrow exports next to the name. Lance keeps that key when it turns the
+    # arrow.json label back into lance.json on write and then requires the field to
+    # match the stored one exactly, so the label has to mirror the table's metadata.
+    target = pa.schema(
+        [
+            pa.field(
+                "payload",
+                pa.large_binary(),
+                metadata={
+                    b"ARROW:extension:name": b"lance.json",
+                    b"ARROW:extension:metadata": b"",
+                },
+            ),
+            pa.field(
+                "docs",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.large_binary(),
+                        metadata={b"ARROW:extension:name": b"lance.json"},
+                    )
+                ),
+            ),
+        ]
+    )
+    data = pa.table(
+        {
+            "payload": pa.array(['{"a": 1}', None], type=pa.string()),
+            "docs": pa.array([['{"b": 2}'], []], type=pa.list_(pa.string())),
+        }
+    )
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    payload = output.schema.field("payload")
+    assert payload.type == pa.string()
+    assert payload.metadata == {
+        b"ARROW:extension:name": b"arrow.json",
+        b"ARROW:extension:metadata": b"",
+    }
+    docs_item = output.schema.field("docs").type.value_field
+    assert docs_item.type == pa.string()
+    assert docs_item.metadata == {b"ARROW:extension:name": b"arrow.json"}
+    assert output["payload"].to_pylist() == ['{"a": 1}', None]
+    assert output["docs"].to_pylist() == [['{"b": 2}'], []]
 
 
 def test_cast_to_target_schema_coerces_nested_binary_blob():

@@ -2391,6 +2391,27 @@ def blob_query_response_table():
     )
 
 
+def blob_descriptor_take_table():
+    """What `fetch_blob_files` reads for rows 10, 20, 30, and 40."""
+    queried = blob_query_response_table()
+    image_field = queried.schema.field("image")
+    images = pa.StructArray.from_arrays(
+        [
+            pa.array([0, 0, 0, 0], type=pa.uint8()),
+            pa.array([0, 0, 0, 0], type=pa.uint64()),
+            pa.array([5, 0, 5, 0], type=pa.uint64()),
+            pa.array([0, 0, 0, 0], type=pa.uint32()),
+            pa.array(["", "", "", ""], type=pa.string()),
+        ],
+        fields=image_field.type,
+        mask=pa.array([False, True, False, False]),
+    )
+    return pa.Table.from_arrays(
+        [images, pa.array([10, 20, 30, 40], type=pa.uint64())],
+        schema=pa.schema([image_field, pa.field("_rowid", pa.uint64())]),
+    )
+
+
 @contextlib.contextmanager
 def blob_remote_table(*, server_version=Version("0.5.0")):
     def handler(request):
@@ -2403,9 +2424,14 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
         elif request.path.startswith("/v1/table/test/blob/image/"):
             path = request.path.partition("?")[0]
             row_id = int(path.split("/")[-2])
-            payload = {10: b"alpha", 20: None, 30: b"gamma"}[row_id]
+            payload = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}[row_id]
             if payload is None:
                 request.send_response(204)
+                request.end_headers()
+                return
+            if not payload:
+                request.send_response(416)
+                request.send_header("Content-Range", "bytes */0")
                 request.end_headers()
                 return
             byte_range = request.headers["Range"].removeprefix("bytes=")
@@ -2416,18 +2442,26 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
             request.send_response(206)
             request.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
             request.send_header("Content-Length", str(len(chunk)))
+            request.send_header(
+                "x-lancedb-version", str(BLOB_DESCRIBE_RESPONSE["version"])
+            )
             request.end_headers()
             request.wfile.write(chunk)
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
             columns = body.get("columns")
-            assert columns in (None, ["id", "image"], ["id"])
+            assert columns in (None, ["id", "image"], ["id"], ["image"])
             if columns == ["id"]:
                 response_table = blob_query_response_table().select(["id"])
             else:
                 assert body["with_row_id"] is True
-                response_table = blob_query_response_table()
+                if columns == ["image"]:
+                    # fetch_blob_files sizes its handles from a descriptor take.
+                    assert body["filter"].startswith("_rowid IN")
+                    response_table = blob_descriptor_take_table()
+                else:
+                    response_table = blob_query_response_table()
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()
@@ -2543,17 +2577,25 @@ async def test_async_remote_nonblob_projection_to_pandas(blob_mode):
 
 def test_remote_blob_files_are_lazy_seekable_handles():
     with blob_remote_table() as table:
-        files = table.fetch_blob_files("image", [10, 20, 30])
+        files = table.fetch_blob_files("image", [10, 20, 30, 40])
 
-        assert len(files) == 3
-        alpha, null_row, gamma = files
+        assert len(files) == 4
+        alpha, null_row, gamma, empty = files
         assert null_row is None
         assert alpha is not None
         assert gamma is not None
+        assert empty is not None
         assert alpha.size() == 5
         assert alpha.read_range(1, 3) == b"lph"
         gamma.seek(2)
         assert gamma.read() == b"mma"
+        assert empty.size() == 0
+        assert empty.read() == b""
+        assert empty.read_range(0, 0) == b""
+        alpha.close()
+        assert alpha.closed
+        with pytest.raises(RuntimeError, match="already closed"):
+            alpha.read_range(0, 1)
 
 
 def test_remote_blob_fetch_accepts_query_table():
@@ -2708,6 +2750,26 @@ def test_remote_connection_jobs_surface():
             request.send_header("Content-Type", "application/json")
             request.end_headers()
             request.wfile.write(b'{"job_id": "job-1"}')
+        elif request.path == "/v1/jobs/pause":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-1", "paused": true}')
+        elif request.path == "/v1/jobs/resume":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                b'{"job_id": "job-1", "resumed": false, "still_pausing": true}'
+            )
         elif request.path == "/v1/jobs/query_events":
             query_events_payloads.append(payload)
             request.send_response(200)
@@ -2727,6 +2789,9 @@ def test_remote_connection_jobs_surface():
 
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
+
+        assert db.pause_job("job-1") == "pausing"
+        assert db.resume_job("job-1") == "still_pausing"
 
         # Opening a job hands back a populated handle; a missing one fails.
         with pytest.raises(JobNotFoundError, match="missing"):

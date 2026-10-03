@@ -23,8 +23,8 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, ReadConsistency,
-    TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, PauseJobStatus,
+    ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -587,7 +587,8 @@ impl Connection {
         )
     }
 
-    /// Build and register a Python callable as an immutable Function version.
+    /// Build and register a Python callable as an immutable Function version
+    /// in `namespace_path`, which is empty for the root namespace.
     ///
     /// The server-side job builds the OCI image, then registers the completed
     /// artifact. Waiting on the returned typed job yields the durable
@@ -597,8 +598,11 @@ impl Connection {
     pub async fn create_function_async(
         &self,
         request: crate::function::FunctionRegistrationRequest,
+        namespace_path: &[String],
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
-        self.internal.create_function_async(request).await
+        self.internal
+            .create_function_async(request, namespace_path)
+            .await
     }
 
     /// Look up one exact immutable Function version in the remote catalog.
@@ -610,13 +614,15 @@ impl Connection {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        namespace_path: &[String],
     ) -> Result<crate::function::FunctionVersion> {
         self.internal
-            .get_function(name.as_ref(), version.as_ref())
+            .get_function(name.as_ref(), version.as_ref(), namespace_path)
             .await
     }
 
-    /// List every published immutable Function version in the remote catalog.
+    /// List every published immutable Function version in `namespace_path` of
+    /// the remote catalog. Functions in child namespaces are not included.
     ///
     /// Results are ordered by Function name then version. The client walks all
     /// server pages before returning. Local databases return
@@ -628,14 +634,17 @@ impl Connection {
     /// # async fn list_functions(
     /// #     connection: &lancedb::Connection,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// for function in connection.list_functions().await? {
+    /// for function in connection.list_functions(&[]).await? {
     ///     println!("{} {}", function.name(), function.version());
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
-        self.internal.list_functions().await
+    pub async fn list_functions(
+        &self,
+        namespace_path: &[String],
+    ) -> Result<Vec<crate::function::FunctionVersion>> {
+        self.internal.list_functions(namespace_path).await
     }
 
     /// Remove the current Function name binding, retaining the object history.
@@ -647,9 +656,10 @@ impl Connection {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        namespace_path: &[String],
     ) -> Result<bool> {
         self.internal
-            .drop_function(name.as_ref(), version.as_ref())
+            .drop_function(name.as_ref(), version.as_ref(), namespace_path)
             .await
     }
 
@@ -663,9 +673,10 @@ impl Connection {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        namespace_path: &[String],
     ) -> Result<(bool, crate::job::Job)> {
         self.internal
-            .drop_function_async(name.as_ref(), version.as_ref())
+            .drop_function_async(name.as_ref(), version.as_ref(), namespace_path)
             .await
     }
 
@@ -820,13 +831,40 @@ impl Connection {
             .await
     }
 
-    /// Drop a view.
+    /// Drop a view and wait for its definition to be deleted.
     ///
     /// The tables it reads are untouched: a view holds no rows of its own.
-    /// Local databases return [`Error::NotSupported`].
+    /// Use [`Connection::drop_view_async`] to get the cleanup job instead of
+    /// waiting on it. Local databases return [`Error::NotSupported`].
     pub async fn drop_view(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
         validate_view_reference(name.as_ref(), namespace_path)?;
         self.internal.drop_view(name.as_ref(), namespace_path).await
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    ///
+    /// The name is free before this returns; the definition dataset may still
+    /// be being deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for
+    /// that. When nothing was bound to the name, the returned job is already
+    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::Connection;
+    /// # async fn drop(conn: &Connection) -> lancedb::Result<()> {
+    /// let job = conn.drop_view_async("recent_orders", &[]).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn drop_view_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_view_async(name.as_ref(), namespace_path)
+            .await
     }
 
     /// The names of the views in one namespace.
@@ -903,6 +941,18 @@ impl Connection {
     /// server accepted the cancellation, false if no such job exists.
     pub async fn cancel_job(&self, job_id: impl AsRef<str>) -> Result<bool> {
         self.internal.cancel_job(job_id.as_ref()).await
+    }
+
+    /// Pause a server-side job by id. Its workers drain and it stays parked
+    /// until resumed; see [`PauseJobStatus`] for the outcomes.
+    pub async fn pause_job(&self, job_id: impl AsRef<str>) -> Result<PauseJobStatus> {
+        self.internal.pause_job(job_id.as_ref()).await
+    }
+
+    /// Resume a paused server-side job by id. Its workers pick their work
+    /// back up from checkpoints; see [`ResumeJobStatus`] for the outcomes.
+    pub async fn resume_job(&self, job_id: impl AsRef<str>) -> Result<ResumeJobStatus> {
+        self.internal.resume_job(job_id.as_ref()).await
     }
 
     /// Drop a table in the database.

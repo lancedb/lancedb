@@ -141,13 +141,16 @@ export class BlobFile {
   }
 
   /**
-   * Reads from the cursor to the end and advances the cursor.
+   * Reads from the cursor and advances the cursor.
    *
-   * A second call returns an empty buffer. {@link BlobFile.readRange} does
-   * not move the cursor.
+   * Reads to the end when `maxBytes` is omitted, or at most `maxBytes` bytes
+   * otherwise. Returns an empty buffer at the end of the blob.
+   * {@link BlobFile.readRange} does not move the cursor.
    */
-  read(): Promise<Buffer> {
-    return this.inner.read();
+  read(maxBytes?: bigint, options?: BlobReadOptions): Promise<Buffer> {
+    return runWithSignal(options?.signal, (signal) =>
+      this.inner.read(maxBytes, signal),
+    );
   }
 
   /**
@@ -155,10 +158,95 @@ export class BlobFile {
    *
    * Fails when `end` is past the blob size. Does not move the cursor.
    */
-  readRange(start: bigint, end: bigint): Promise<Buffer> {
-    return this.inner.readRange(start, end);
+  readRange(
+    start: bigint,
+    end: bigint,
+    options?: BlobReadOptions,
+  ): Promise<Buffer> {
+    return runWithSignal(options?.signal, (signal) =>
+      this.inner.readRange(start, end, signal),
+    );
+  }
+
+  /**
+   * Reads several half-open byte ranges. Returns one buffer per range, in
+   * the order given.
+   *
+   * Fails when any `end` is past the blob size. Does not move the cursor.
+   */
+  readRanges(
+    ranges: BlobRange[],
+    options?: BlobReadOptions,
+  ): Promise<Buffer[]> {
+    return runWithSignal(options?.signal, (signal) =>
+      this.inner.readRanges(ranges, signal),
+    );
+  }
+
+  /** Moves the cursor to `position`, in bytes from the start of the blob. */
+  seek(position: bigint): Promise<void> {
+    return this.inner.seek(position);
+  }
+
+  /** Returns the cursor position in bytes. */
+  tell(): Promise<bigint> {
+    return this.inner.tell();
+  }
+
+  /**
+   * Releases the handle. Reads after `close()` fail. Calling it again does
+   * nothing.
+   */
+  close(): Promise<void> {
+    return this.inner.close();
+  }
+
+  /** Returns true after {@link BlobFile.close}. */
+  isClosed(): boolean {
+    return this.inner.isClosed();
   }
 }
+
+/** Options for blob reads. */
+export type BlobReadOptions = {
+  /**
+   * Cancels the read. The call rejects with `signal.reason`, and the native
+   * read stops, including in-flight requests to a remote table.
+   */
+  signal?: AbortSignal;
+};
+
+/** @ignore */
+export async function runWithSignal<T>(
+  signal: AbortSignal | undefined,
+  run: (signal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  if (signal === undefined) {
+    return run(undefined);
+  }
+  signal.throwIfAborted();
+  // napi-rs replaces `onabort` on the signal it receives, so pass a private
+  // signal and forward the caller's abort to it.
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await run(controller.signal);
+  } catch (err) {
+    if (signal.aborted) {
+      throw signal.reason;
+    }
+    throw err;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/** A half-open byte range `[start, end)` for {@link BlobFile.readRanges}. */
+export type BlobRange = {
+  start: bigint;
+  end: bigint;
+};
 
 export function coerceBlobValue(value: unknown): BlobInput | null {
   if (value == null) {

@@ -26,6 +26,7 @@ import re
 import sys
 import textwrap
 import types
+import warnings
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import (
@@ -355,9 +356,16 @@ _ObjectVersion = Annotated[
 
 
 class FunctionVersion(_RemoteValue):
-    """A pinned object revision, independent of its executable image digest."""
+    """A pinned object revision, independent of its executable image digest.
+
+    ``name`` and ``namespace_path`` are the Function's parts, as a
+    [SecretReference][lancedb.functions.SecretReference] carries a Secret's;
+    they are what [get_function][lancedb.db.DBConnection.get_function] takes.
+    An empty ``namespace_path`` is the root namespace.
+    """
 
     name: str
+    namespace_path: tuple[str, ...] = ()
     object_id: str
     location: str
     version: _ObjectVersion
@@ -443,6 +451,7 @@ class FunctionVersion(_RemoteValue):
         return FunctionApplication(
             function=FunctionVersionRef(
                 name=self.name,
+                namespace_path=self.namespace_path,
                 object_id=self.object_id,
                 location=self.location,
                 version=self.version,
@@ -501,6 +510,7 @@ class FunctionRegistrationRequest(_RemoteValue):
 
 class FunctionVersionRef(_OpenRemoteValue):
     name: str
+    namespace_path: tuple[str, ...] = ()
     object_id: str
     location: str
     version: _ObjectVersion
@@ -1527,9 +1537,14 @@ class _SourcePackager:
         return f"{name} = {_literal_source(value)}"
 
     def _require_importable(self, module_name: str) -> None:
-        """Refuse an import the Function's environment has no way to satisfy:
-        a module that lives in a local source tree, is not shipped with
-        ``code=``, and names no declared package."""
+        """Warn about an import the Function's environment likely cannot
+        satisfy: a module that lives in a local source tree, is not shipped
+        with ``code=``, and names no declared package.
+
+        A warning rather than an error: a distribution name need not match
+        the module it installs, so a declared package can still provide the
+        module, and callers may rewrite the packaged source before
+        registering it."""
         top = module_name.partition(".")[0]
         if (
             top in self._code_modules
@@ -1543,10 +1558,12 @@ class _SourcePackager:
         roots = _installed_roots()
         if not locations or any(location.startswith(roots) for location in locations):
             return
-        raise ValueError(
+        warnings.warn(
             f"@udf source imports {module_name!r} from {locations[0]}, a local "
-            "module the Function's environment cannot import; ship it with "
-            f"code=[{top}] or declare the package that provides it in pip/conda"
+            "module the Function's environment may not be able to import; ship "
+            f"it with code=[{top}] or declare the package that provides it in "
+            "pip/conda",
+            UserWarning,
         )
 
 
@@ -1991,8 +2008,9 @@ def udf(
       place.
 
     A reference to a module in a local source tree that is neither shipped
-    with ``code`` nor provided by a declared package is rejected at
-    registration. Closures, lambdas, nested definitions, mutable module-level
+    with ``code`` nor named by a declared package draws a warning at
+    registration, because the worker will most likely fail to import it.
+    Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
     non-standard ``__builtins__`` are rejected where they can be seen and
