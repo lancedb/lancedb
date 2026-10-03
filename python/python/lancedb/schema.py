@@ -5,7 +5,7 @@
 """Schema helpers for Lance blob columns."""
 
 import importlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import pyarrow as pa
 import pyarrow.ipc
@@ -181,13 +181,58 @@ def _resolve_blob_type():
     return _resolved_blob_type
 
 
-def blob(name: str, nullable: bool = True) -> pa.Field:
+def blob(
+    name: str,
+    nullable: bool = True,
+    inline_size_threshold: Optional[int] = None,
+    dedicated_size_threshold: Optional[int] = None,
+    pack_file_size_threshold: Optional[int] = None,
+) -> pa.Field:
     """Create a Lance blob v2 column field.
 
     When pylance is installed this is ``lance.blob.BlobType``.
+
+    Parameters
+    ----------
+    name:
+        Field name.
+    nullable:
+        Whether the column accepts null values.
+    inline_size_threshold:
+        Maximum payload size in bytes to keep inline in the data file
+        before using packed blob storage. Zero is allowed.
+    dedicated_size_threshold:
+        Maximum payload size in bytes to store in packed blob storage
+        before using dedicated blob storage. Must be positive.
+    pack_file_size_threshold:
+        Maximum size in bytes of a single packed blob sidecar file before
+        a new one is started. Must be positive.
+
+    The thresholds are forwarded to ``lance.blob_field``, which validates
+    them and stores them as field metadata, so pylance is required whenever
+    any threshold is set. When all thresholds are omitted the behavior is
+    unchanged.
     """
-    blob_type = _resolve_blob_type()
-    return pa.field(name, blob_type(), nullable=nullable)
+    if (
+        inline_size_threshold is None
+        and dedicated_size_threshold is None
+        and pack_file_size_threshold is None
+    ):
+        blob_type = _resolve_blob_type()
+        return pa.field(name, blob_type(), nullable=nullable)
+    try:
+        from lance import blob_field
+    except ModuleNotFoundError as err:
+        raise ValueError(
+            "Setting blob tier thresholds requires pylance to be installed"
+        ) from err
+    return blob_field(
+        name,
+        nullable=nullable,
+        inline_size_threshold=inline_size_threshold,
+        dedicated_size_threshold=dedicated_size_threshold,
+        pack_file_size_threshold=pack_file_size_threshold,
+    )
 
 
 def vector(dimension: int, value_type: pa.DataType = pa.float32()) -> pa.DataType:
