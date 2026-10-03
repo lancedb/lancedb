@@ -1573,6 +1573,22 @@ def test_query_sync_minimal():
         assert data == expected
 
 
+def test_query_sync_dictionary_projection_order():
+    # The server will inherently receive and return them alphabetically
+    def handler(body):
+        import pyarrow as pa
+
+        # The mocked server returns them alphabetically (id, then p)
+        return pa.table({"id": [1, 2], "p": ["x1", "x2"]})
+
+    with query_test_table(handler) as table:
+        # The user requested 'p' first, then 'id'
+        data = table.search([1, 2, 3]).select({"p": "x", "id": "id"}).to_arrow()
+
+        # The final Arrow schema should perfectly match the user's requested order
+        assert data.schema.names == ["p", "id"]
+
+
 def test_query_sync_empty_query():
     def handler(body):
         assert body == {

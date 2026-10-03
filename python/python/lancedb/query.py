@@ -1334,12 +1334,19 @@ class LanceQueryBuilder(ABC):
             if blob_auto_row_id
             else ()
         )
-        return finalize_blob_query_table(
+        tbl = finalize_blob_query_table(
             tbl,
             user_requested_row_id=self._user_requested_row_id(),
             blob_auto_row_id=blob_auto_row_id,
             blob_paths=blob_paths,
         )
+        if isinstance(self._columns, dict):
+            new_order = list(self._columns.keys())
+            for col in tbl.schema.names:
+                if col not in self._columns:
+                    new_order.append(col)
+            tbl = tbl.select(new_order)
+        return tbl
 
     def with_row_address(self, with_row_address: bool = True) -> Self:
         """Set whether to return row addresses.
@@ -3004,9 +3011,17 @@ class AsyncQueryBase(object):
             complete within the specified time, an error will be raised.
         """
         batch_iter = await self.to_batches(timeout=timeout)
-        return self._finalize_blob_query_table(
+        tbl = self._finalize_blob_query_table(
             pa.Table.from_batches(await batch_iter.read_all(), schema=batch_iter.schema)
         )
+        if isinstance(self._columns, dict):
+            # Ensure we don't drop _distance or other auto-columns
+            new_order = list(self._columns.keys())
+            for col in tbl.schema.names:
+                if col not in self._columns:
+                    new_order.append(col)
+            tbl = tbl.select(new_order)
+        return tbl
 
     async def to_list(self, timeout: Optional[timedelta] = None) -> List[dict]:
         """
