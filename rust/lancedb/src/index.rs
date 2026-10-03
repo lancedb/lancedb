@@ -456,13 +456,14 @@ pub struct IndexConfig {
     /// The number of rows indexed, across all segments.
     ///
     /// This is approximate and may include rows that have since been deleted.
-    /// `None` if unavailable (e.g. for remote tables).
+    /// `None` if unavailable (e.g. for remote tables whose server does not
+    /// report it).
     pub num_indexed_rows: Option<u64>,
     /// The number of rows in the table that are not yet covered by this index.
     ///
     /// Computed as the table's total row count minus [`Self::num_indexed_rows`].
     /// Optimizing the index will fold these rows into it. `None` if unavailable
-    /// (e.g. for remote tables).
+    /// (e.g. for remote tables whose server does not report it).
     pub num_unindexed_rows: Option<u64>,
     /// The total size in bytes of all index files across all segments.
     ///
