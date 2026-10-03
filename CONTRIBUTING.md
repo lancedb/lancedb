@@ -66,10 +66,9 @@ For the best chance of having your pull request accepted, please follow these gu
 The core library is written in Rust. The Python, Typescript, and Java libraries
 are wrappers around the Rust library.
 
-* `src/lancedb`: Rust library source code
+* `rust/lancedb`: Rust library source code
 * `python`: Python package source code
 * `nodejs`: Typescript package source code
-* `node`: **Deprecated** Typescript package source code
 * `java`: Java package source code
 * `docs`: Documentation source code
 
