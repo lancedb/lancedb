@@ -1,0 +1,65 @@
+---
+title: "Prepared statements"
+sidebarTitle: "Prepared Statements"
+description: "Preparing a statement once and executing it many times, over the Flight SQL protocol."
+icon: bolt
+keywords: ["prepared statement", "flight sql", "parameters", "bind"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+A prepared statement is planned once and executed many times, which saves
+re-planning a statement whose shape does not change between runs.
+
+## It is a protocol feature, not a statement {#protocol}
+
+<Warning>
+There is no SQL `PREPARE` / `EXECUTE` here. Preparation is part of the
+**Arrow Flight SQL protocol**, so you reach it through your client rather than
+by sending a statement.
+</Warning>
+
+That distinction matters when porting SQL from another engine: a script
+containing `PREPARE name AS SELECT ...` will not run, while the same intent
+expressed through a Flight SQL client will.
+
+## The flow {#flow}
+
+Every Flight SQL client exposes the same three steps, whatever it calls them:
+
+1. **Prepare** — send the SQL, get back a handle and the result schema. The
+   statement is parsed and planned at this point, so a syntax or name error
+   surfaces here rather than at execution.
+2. **Bind and execute** — supply parameter values for the handle and read the
+   result. Repeat as often as you like.
+3. **Close** — release the handle. Servers do not hold them forever.
+
+Knowing that the plan is built at step 1 is the practical part: if a statement
+is slow to prepare and fast to execute, the cost is planning, and reusing the
+handle is exactly the right fix.
+
+## Parameters {#parameters}
+
+Parameters are placeholders in the SQL text, bound to an Arrow record batch at
+execution. Binding rather than interpolating is worth doing for the usual two
+reasons — the value cannot change the statement's meaning, and the plan is
+reused across values.
+
+```sql
+SELECT id, title FROM documents WHERE category = $1 AND score > $2
+```
+
+The exact placeholder spelling and the binding call belong to your client; see
+[connecting a client](/search/sql).
+
+## When it helps {#when}
+
+| | |
+| --- | --- |
+| The same query with different values, many times | prepare once, bind per execution |
+| A complex plan — several joins, window functions | planning dominates; reuse it |
+| A one-off analytical query | no benefit; just execute it |
+
+For a statement you want to keep rather than re-prepare, a
+[view](/management/view) stores the query server-side, and a
+[materialized view](/management/materialized-view) stores its rows.

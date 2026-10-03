@@ -1,0 +1,93 @@
+---
+title: "Functions"
+sidebarTitle: "Functions"
+description: "Where to find each kind of function, and the dialect version they come from."
+icon: function
+keywords: ["functions", "datafusion", "scalar", "aggregate", "window", "fts", "table function"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+LanceDB executes SQL with [Apache DataFusion](https://datafusion.apache.org),
+currently **version 54**. The function set is DataFusion's default registration
+plus what Lance adds.
+
+| | |
+| --- | --- |
+| [Scalar functions](/sql/scalar-functions) | per row — math, string, regex, date/time, array, struct, JSON |
+| [Aggregate functions](/sql/aggregation#functions) | per group — `count`, `sum`, statistical, approximate |
+| [Window functions](/sql/window#functions) | per window — ranking, offset, running aggregates |
+| [Table functions](#table-functions) | produce a relation rather than a value |
+
+<Note>
+Function availability is version-specific. DataFusion adds functions in most
+releases, so one documented on `main` may not exist in 54. When a name is not
+recognised, check it against the reference for that version before assuming a
+bug.
+</Note>
+
+## Table functions {#table-functions}
+
+A table function appears in `FROM` and produces a relation, which is what lets
+it return columns a scalar function has nowhere to put.
+
+### `fts(table, query)` {#fts}
+
+Full-text search is a table function rather than a predicate, because it
+produces relevance alongside the matching rows:
+
+```sql
+SELECT id, text, _score
+FROM fts('my_docs', 'puppy')
+ORDER BY _score DESC
+LIMIT 5
+```
+
+The second argument is a bare query string, or a JSON query object for the
+fuzzy, phrase, boolean, boost and multi-match forms.
+
+Its schema is the dataset's, so every column of the table is available in the
+result and projections push into the scan rather than being applied afterwards.
+Being a relation is also what makes it compose — join it, filter it, aggregate
+over it:
+
+```sql
+SELECT c.name, count(*) AS hits
+FROM fts('my_docs', 'puppy') AS m
+JOIN categories AS c ON c.id = m.category_id
+GROUP BY c.name
+ORDER BY hits DESC
+```
+
+For a keyword test that needs no score, the
+[`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate is
+index-accelerated and usable directly in `WHERE`.
+
+### `_score` {#score}
+
+A pseudo-column produced by `fts()`, carrying relevance for the row. It behaves
+like any other column — order by it, filter on it, project it — and exists only
+in a relation that came from `fts()`. See
+[Data types](/sql/data-types#pseudo-columns).
+
+### `generate_series` {#generate-series}
+
+```sql
+SELECT * FROM generate_series(1, 10)
+```
+
+Rows from a range, useful for building a dense axis to left-join sparse data
+onto.
+
+## What Lance accelerates {#accelerated}
+
+Two function families use an index rather than scanning, which is the difference
+between a fast predicate and a slow one:
+
+| | Index used |
+| --- | --- |
+| [`contains_tokens`](/sql/scalar-functions#contains-tokens) | full-text index |
+| [`json_get`, typed variants, `json_extract`](/sql/scalar-functions#json) | JSON scalar index |
+
+Confirm with [`EXPLAIN`](/sql/explain): an accelerated predicate shows an index
+node rather than a `LanceScan` followed by a filter.

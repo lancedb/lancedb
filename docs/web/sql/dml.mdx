@@ -1,0 +1,81 @@
+---
+title: "DML"
+sidebarTitle: "DML"
+description: "INSERT, UPDATE, DELETE and COPY — changing the rows a table holds."
+icon: pen-to-square
+keywords: ["insert", "update", "delete", "copy", "dml"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+Statements that change rows. For the shape of the table, see [DDL](/sql/ddl).
+
+Each of these commits a new table version, so
+[versioning](/management/table#versioning) and the
+[write guarantees](/basics/guarantees#writes) apply -- including that the
+version advances even when a statement affects zero rows.
+
+## INSERT {#insert}
+
+```sql
+INSERT INTO documents (id, title) VALUES (1, 'Merlin'), (2, 'Arthur')
+
+INSERT INTO archive SELECT * FROM documents WHERE created_at < '2026-01-01'
+```
+
+`INSERT ... SELECT` is the form worth knowing: it moves rows between tables
+server-side, without a round trip through your process.
+
+## UPDATE {#update}
+
+```sql
+UPDATE documents SET title = upper(title) WHERE category = 'film'
+```
+
+Assignments take any expression the [dialect](/sql/functions) supports,
+including references to other columns of the same row. Without a `WHERE` clause
+every row is updated.
+
+<Warning>
+An update does not recompute [computed columns](/feature-engineering/add-computed-column)
+that derive from the column you changed. A filled value keeps what it was
+computed from -- see [Guarantees](/basics/guarantees#jobs).
+</Warning>
+
+## DELETE {#delete}
+
+```sql
+DELETE FROM documents WHERE created_at < '2025-01-01'
+```
+
+Deletion marks rows rather than erasing them, so the data remains recoverable
+for as long as the version holding it survives
+[retention](/maintenance/compaction).
+
+## COPY {#copy}
+
+```sql
+COPY (SELECT id, title FROM documents) TO 's3://bucket/export/' STORED AS PARQUET
+```
+
+Writes a query result to object storage. This is the export path when the
+consumer is another engine rather than an application -- results land as files
+rather than streaming to a client.
+
+## Merge insert {#merge-insert}
+
+Upsert -- matching incoming rows against existing keys -- has no SQL form. It is
+an SDK operation, because it needs a source relation and a per-match policy that
+a single statement cannot express. See
+[Merge insert](/ingestion/merge-insert).
+
+## See also {#see-also}
+
+<CardGroup cols={2}>
+  <Card title="Ingestion" icon="inbox" href="/ingestion">
+    The same operations from the SDKs.
+  </Card>
+  <Card title="DDL" icon="pen-ruler" href="/sql/ddl">
+    Changing structure rather than rows.
+  </Card>
+</CardGroup>

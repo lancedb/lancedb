@@ -1,0 +1,124 @@
+---
+title: "Ranking and deduplication"
+sidebarTitle: "Windowing"
+description: "Picking one row per thing, ranking within a group, and splitting a dataset."
+icon: chart-simple
+keywords: ["window", "deduplication", "row_number", "rank", "train test split", "per class"]
+---
+
+<Badge color="red">Enterprise</Badge> Window functions are SQL, and
+[SQL needs a deployment](/basics/apis).
+
+A window function computes across a set of related rows and returns a value
+**per row** — nothing is collapsed. That is what makes it the tool for "which of
+these do I keep", where an aggregate would throw away the rows you are choosing
+between.
+
+## One row per thing {#dedup}
+
+The most common curation query there is. You have several rows per document —
+revisions, re-uploads, repeated annotations — and want one.
+
+```sql
+WITH ranked AS (
+    SELECT *,
+           row_number() OVER (PARTITION BY doc_id ORDER BY version DESC) AS rn
+    FROM revisions
+)
+SELECT * FROM ranked WHERE rn = 1
+```
+
+`PARTITION BY` says what "per thing" means; `ORDER BY` says which one wins. The
+outer query is not optional — a window function cannot appear in `WHERE`,
+because windows are computed after filtering, so the predicate would have
+nothing to read.
+
+<Note>
+Swap `row_number()` for `rank()` when ties should both survive. `row_number()`
+always picks exactly one; `rank()` gives tied rows the same rank, so `rank = 1`
+can return several.
+</Note>
+
+## A fixed number per class {#per-group}
+
+Class imbalance found by [profiling](/curation/aggregate#balance) is fixed here:
+rank within each class, then take the top N.
+
+```sql
+WITH ranked AS (
+    SELECT *, row_number() OVER (PARTITION BY label ORDER BY score DESC) AS rn
+    FROM images
+)
+SELECT * FROM ranked WHERE rn <= 1000
+```
+
+That gives at most 1,000 rows per label, taking the highest-scoring ones. Order
+by something arbitrary but stable if you want an unbiased draw instead, or
+combine with [sampling](/curation/sampling) to randomize within each class.
+
+## Splitting a dataset {#splits}
+
+`ntile` divides each partition into equal buckets, which is a train/test split
+that stays balanced per class:
+
+```sql
+WITH split AS (
+    SELECT *, ntile(10) OVER (PARTITION BY label ORDER BY id) AS bucket
+    FROM images
+)
+SELECT * FROM split WHERE bucket <= 8    -- train
+```
+
+Buckets 9 and 10 are your validation and test sets. Because the partition is by
+label, each split keeps the class proportions of the whole.
+
+<Warning>
+Order by something stable. Ordering by a value that changes — a score you
+recompute, a timestamp that gets updated — means the split changes with it, and
+a row can move from train to test between runs.
+</Warning>
+
+## Comparing a row to its neighbours {#offset}
+
+`lag` and `lead` read the previous and next row in the window, which is how you
+find gaps and changes without a self-join:
+
+```sql
+SELECT
+    id,
+    created_at,
+    created_at - lag(created_at) OVER (ORDER BY created_at) AS gap
+FROM events
+```
+
+Useful for spotting ingestion gaps, duplicate timestamps, and runs of identical
+values that suggest a broken upstream job.
+
+## Running totals {#running}
+
+Any [aggregate](/curation/aggregate) becomes a window function with `OVER`,
+which is how cumulative coverage is expressed:
+
+```sql
+SELECT
+    label,
+    count(*) AS n,
+    sum(count(*)) OVER (ORDER BY count(*) DESC) AS cumulative
+FROM images
+GROUP BY label
+```
+
+Reading down the `cumulative` column tells you how many classes cover most of
+your data — usually far fewer than you expect.
+
+## Cost {#cost}
+
+Window functions sort within each partition, so on a large table they are among
+the more expensive things you can ask for. Filter first, partition on something
+selective, and check the plan with
+[Explain Analyze](/search/explain).
+
+## Reference {#reference}
+
+The full window syntax, framing, and function list are in
+[Window functions](/sql/window).

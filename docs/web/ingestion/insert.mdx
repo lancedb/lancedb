@@ -1,0 +1,215 @@
+---
+title: "Insert data"
+sidebarTitle: "Insert"
+description: "Append rows to a table, including datasets too large to hold in memory."
+icon: plus
+---
+
+Rows are appended with `table.add()`. It accepts the same shapes
+[table creation](/ingestion) does — lists of objects, Arrow tables, pandas
+and polars frames, Pydantic models — and commits a new table version.
+
+These examples use the table set up in [Ingesting data](/ingestion).
+
+import {
+    PyAddFromDataset as AddFromDataset,
+    PyCreateTableFromIterator as CreateTableFromIterator,
+    TsCreateTableFromIterator as TsCreateTableFromIterator,
+    RsCreateTableFromIterator as RsCreateTableFromIterator,
+    TsAddProgress,
+} from '/snippets/tables.mdx';
+
+<Note>
+In SQL this is [`INSERT`](/sql/dml#insert), including `INSERT ... SELECT` to move rows server-side.
+</Note>
+
+## Ingesting large datasets {#large-datasets}
+
+When ingesting large datasets, use `table.add()` on an existing table rather than
+passing all data to `create_table()`. The `add()` method auto-parallelizes large
+writes, while `create_table(name, data)` does not.
+
+<Tip>
+For best performance with large datasets, create an empty table first and then call
+`table.add()`. This enables automatic write parallelism for materialized data sources.
+</Tip>
+
+### From files (Parquet, CSV, etc.) {#from-files-parquet-csv-etc}
+<Badge color="green">Python Only</Badge>
+
+For file-based data, pass a `pyarrow.dataset.Dataset` to `table.add()`. This streams
+data from disk without loading the entire dataset into memory.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {AddFromDataset}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+`pa.dataset()` input is currently Python-only. TypeScript and Rust support for
+file-based dataset ingestion is tracked in
+[lancedb#3173](https://github.com/lancedb/lancedb/issues/3173).
+</Note>
+
+### From iterators (custom batch generation) {#from-iterators-custom-batch-generation}
+
+When you need custom batch logic — generating embeddings on the fly, transforming
+rows from an external source, etc. — use an iterator of `RecordBatch` objects.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateTableFromIterator}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateTableFromIterator}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateTableFromIterator}
+    </CodeBlock>
+</CodeGroup>
+
+Use this pattern when:
+
+- Your source data already arrives in Arrow batches, readers, datasets, or streams.
+- Materializing the entire ingest as one giant in-memory list or array would be too expensive.
+- You want to control chunk size explicitly during ingestion.
+
+Python can also consume iterators of other supported types like Pandas DataFrames or Python lists.
+
+### Write parallelism {#write-parallelism}
+
+<Note title="Automatic parallelism">
+For materialized data (`pa.Table`, `pd.DataFrame`, `pa.dataset()`), LanceDB
+automatically parallelizes large writes — no configuration needed. Auto-parallelism
+targets approximately 1M rows or 2GB per write partition.
+
+For streaming sources (iterators, `RecordBatchReader`), LanceDB cannot determine
+total size upfront. A `parallelism` parameter to control this manually is planned
+but not yet exposed in Python or TypeScript
+([tracking issue](https://github.com/lancedb/lancedb/issues/3173)).
+</Note>
+
+### Tracking ingestion progress {#tracking-ingestion-progress}
+<Badge color="green">TypeScript Only</Badge>
+
+For long-running writes, pass a `progress` callback to `table.add()` to surface
+per-batch progress in your UI, logs, or metrics pipeline. The callback fires
+once per batch written and once more with `done: true` when the write completes.
+
+Each invocation receives a `WriteProgress` object:
+
+| Field | Description |
+|:------|:------------|
+| `outputRows` | Rows written so far. |
+| `outputBytes` | Bytes written so far. |
+| `totalRows` | Expected total rows when the input source reports one. Always set on the final callback. |
+| `elapsedSeconds` | Wall-clock seconds since the write started. |
+| `activeTasks` | Parallel write tasks currently in flight. |
+| `totalTasks` | Total parallel write tasks (the write parallelism). |
+| `done` | `true` only for the final callback. |
+
+<CodeGroup>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsAddProgress}
+    </CodeBlock>
+</CodeGroup>
+
+A few things to know before you wire this up:
+
+- Back-pressures the writer: callback invocations are serialized and run inline with each batch, so a slow callback will slow the write rather than drop updates. Every batch update is delivered, and the final `done: true` callback always fires (even on error or cancellation). Keep the callback cheap — offload heavy work to a queue you drain elsewhere.
+- Errors swallowed: anything your callback throws is logged with `console.warn` and won't abort the write, so keep the callback side-effect-only and don't rely on it for control flow.
+- Row totals: `totalRows` is only populated when the input source can report it up front (for example, a materialized `arrow.Table`). For streaming sources it stays `undefined` until the final callback, where it falls back to the actual rows written.
+
+## Performance {#performance}
+
+If ingestion is taking longer than expected on a large dataset, the cause is almost always how `add()` is called: each call commits a new version and a new fragment, so a per-row loop pays that per-call overhead at every row. The best practice is to pick the ingestion mode that matches your data shape — bulk ingestion when the data is already materialized, or iterator ingestion when it's streamed or computed on the fly.
+
+<Note>
+**Why `merge_insert()` is significantly slower than `add()`**
+
+A merge has to scan existing data to find matches on the join key (or look them up via a scalar index, if one exists), and then delete-and-reinsert any updated rows in a single transaction; `add()` simply appends new fragments.
+
+Use `add()` for pure appends, and reach for `merge_insert()` only when you need upsert or conditional-insert logic. When you do use it, build a scalar index on the join column first — otherwise the match step falls back to a full column scan, which is the dominant cost at scale.
+</Note>
+
+#### Bulk ingestion: for data you already have {#bulk-ingestion-for-data-you-already-have}
+
+For materialized inputs (Arrow Tables, DataFrames) and file-backed sources (`pyarrow.dataset(...)`), LanceDB auto-parallelizes the write across workers, estimating the partition count from the data size — more partitions means more concurrent writes and higher throughput, up to the CPU core count.
+
+```python Python icon="python"
+table.add(arrow_table)                              # in-memory
+table.add(df)                                       # pandas
+table.add(ds.dataset("data/", format="parquet"))    # streams from disk, still parallelized
+```
+
+Pass `progress=True` to watch it happen: LanceDB shows a live tqdm bar with rows written, throughput in MB/s, and active worker count.
+
+```python Python icon="python"
+table.add(ds.dataset("data/", format="parquet"), progress=True)
+```
+
+```text
+71%|███████▏  | 710000/1000000 [00:12<00:05, 58.8kit/s, 42.3 MB/s | 8/8 workers]
+```
+
+For larger-than-memory data, prefer scanning a file-backed dataset (`ds.dataset(...)`) over a hand-built `pyarrow.RecordBatchReader`: a `Dataset` can be counted and rescanned, so LanceDB knows the row count upfront (better auto-parallelism) and can retry a failed write from the start — a reader can only be consumed once, so neither is possible. Reach for the iterator path below only when the data genuinely can't be backed by files, e.g. to apply custom data transformations as you ingest.
+
+For very large initial loads, create the table empty first; passing data directly to `create_table(name, data)` skips the auto-parallel path.
+
+#### Iterator ingestion: for data you transform on the fly {#iterator-ingestion-for-data-you-transform-on-the-fly}
+
+If each row needs work before it can be written — applying a custom transformation as you ingest, for example — the data doesn't exist as a file you can point `ds.dataset(...)` at. The best practice is to pass an iterator of `pyarrow.RecordBatch` instead; LanceDB consumes one batch at a time as you produce them.
+
+```python Python icon="python"
+def stream():
+    for raw in source:
+        vectors = model.encode(raw["text"])
+        yield pa.RecordBatch.from_pydict({**raw, "vector": vectors})
+
+table.add(stream())
+```
+
+Use decently large chunks of several thousand rows or more, rather than yielding single-row batches.
+
+<Note>
+**Set `write_parallelism` yourself for large inputs**
+
+A reader can't be counted or rescanned the way a `Dataset` can (see above), so LanceDB can't auto-size parallelism for it — set `write_parallelism` explicitly for large inputs:
+
+```python Python icon="python"
+table.add(stream(), write_parallelism=4)
+```
+
+Each partition becomes its own fragment, so don't over-allocate on a small input — budget one unit of parallelism per ~100K rows or ~1 GB of data as a rule of thumb.
+</Note>
+
+#### Bulk ingests into a remote table {#bulk-ingests-into-a-remote-table}
+
+<Badge color="red">Enterprise</Badge>
+
+This section applies only to remote tables (`db://` connections). Embedded (local) writes are unaffected.
+
+When you write to a remote LanceDB Enterprise table, the client splits each write partition into one or more HTTP `insert` parts and uploads them under a single upload id. Each part is streamed rather than buffered, so peak memory stays bounded. But each part still has to finish within the client read timeout while the server writes it to object storage, so on very large ingests an oversized part can run past that timeout and surface as:
+
+```text
+lancedb.remote.errors.HttpError: operation timed out
+```
+
+Two environment variables control how parts are cut. Both are picked up automatically by the Python and TypeScript clients, and are the only way to tune this from those SDKs:
+
+| Variable | Default | What it controls |
+|----------|---------|------------------|
+| `LANCE_CLIENT_MAX_BYTES_PER_REQUEST` | 8 GiB | Maximum size of a single insert part, in LZ4-compressed Arrow IPC bytes. Set to `0` to disable splitting and send one request per partition. |
+| `LANCE_CLIENT_MAX_REQUEST_DURATION` | Half the read timeout | Maximum wall-clock time, in whole seconds, that any one insert part may stay open. Set to `0` to disable the time-based cut. |
+
+A part is cut when it hits either limit, whichever comes first. Lower the byte budget when large ingests hit the read timeout; lower the duration when uploads are slow or throttled and the byte budget isn't the limiting factor.
+
+```bash
+export LANCE_CLIENT_MAX_BYTES_PER_REQUEST=1073741824  # 1 GiB
+export LANCE_CLIENT_MAX_REQUEST_DURATION=120          # 2 minutes
+```
+
+Splitting into more parts does not change the final table. The server stages every part under the shared upload id and merges them atomically when the write completes.

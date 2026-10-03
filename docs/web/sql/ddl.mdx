@@ -1,0 +1,192 @@
+---
+title: "DDL"
+sidebarTitle: "DDL"
+description: "Creating and altering catalog objects: tables, views, indexes, functions, and columns."
+icon: pen-ruler
+keywords: ["ddl", "create table", "alter table", "add column", "create function", "create index", "wal"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+Statements that change what exists rather than what it holds. For the values in
+a table, see [DML](/sql/dml).
+
+## Tables {#tables}
+
+```sql
+CREATE TABLE documents (id BIGINT, title VARCHAR, created_at TIMESTAMP)
+CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
+DROP TABLE documents
+```
+
+Column types are Arrow types under SQL names -- see
+[Data types](/sql/data-types). A table in a [namespace](/management/namespace) is written
+as a dotted path: `prod.events.clicks`.
+
+## Views {#views}
+
+```sql
+CREATE VIEW recent_matches AS
+SELECT t1.floats FROM documents AS t1
+INNER JOIN categories AS t2 ON t1.ints = t2.ints
+
+DROP VIEW recent_matches
+```
+
+`CREATE VIEW` returns the view's schema -- column name, type, nullability --
+resolved from the query at creation time. A view stores only the query; see
+[Views](/management/view).
+
+## Columns {#columns}
+
+`ALTER TABLE ... ADD COLUMN` covers three different things, distinguished by
+what follows the column name.
+
+### A plain column {#plain-column}
+
+```sql
+ALTER TABLE t ADD COLUMN c INT
+```
+
+Added empty and nullable. Nothing is computed.
+
+### A computed column {#computed-column}
+
+```sql
+ALTER TABLE t ADD COLUMN doubled AS value * 2
+```
+
+`AS <expression>` declares a [computed column](/feature-engineering/add-computed-column).
+The column is committed empty and the expression is stored, not evaluated --
+declaring one on a billion-row table costs what declaring one on an empty table
+costs. [`REFRESH COLUMN`](/sql/refresh) fills it.
+
+### A function column {#function-column}
+
+```sql
+ALTER TABLE t ADD COLUMN embedded AS embed(name) WITH (version = 'fv_1')
+```
+
+When the expression calls a [registered function](#functions), the column is
+filled by running that function on workers. `version` pins which immutable
+function version fills it, so a later registration does not silently change what
+the column means.
+
+Several modifiers narrow what gets computed:
+
+| | |
+| --- | --- |
+| `FILTER (WHERE pred)` | only rows matching `pred` are computed |
+| `IGNORE NULLS` | rows with null inputs are skipped |
+| `OVER (PARTITION BY col)` | the function sees rows grouped by `col` |
+
+A function returning several values fills several columns at once:
+
+```sql
+ALTER TABLE t ADD COLUMN (label, score) AS classify(text) WITH (version = 'fv_1')
+```
+
+```sql
+ALTER TABLE t ADD COLUMN c AS f(x) FILTER (WHERE keep) WITH (version = 'fv_1')
+ALTER TABLE t ADD COLUMN c AS f(x) WITH (num_workers = '2')
+```
+
+<Note>
+`WITH` on a plain computed column accepts only `version`. Resource options such
+as `num_workers` apply to function columns, where there are workers to size.
+</Note>
+
+## Functions {#functions}
+
+```sql
+CREATE FUNCTION f(x BIGINT) RETURNS BIGINT
+LANGUAGE python
+AS 'def f(x): return x * 2'
+WITH (pip = 'numpy==1.26.4', python_version = '3.11')
+```
+
+The body is Python source. Its dependencies are declared with it and are part of
+the **immutable function version** -- changing one produces a new version rather
+than altering the registered one, so a column filled by an earlier version is
+unaffected.
+
+| Option | |
+| --- | --- |
+| `pip` | pip requirements for the worker environment |
+| `conda` | conda packages instead of pip |
+| `conda_channels` | channels in priority order; requires `conda` |
+| `python_version` | worker Python version, defaulting to yours |
+| `gpu` | `'true'` when every execution needs a GPU |
+
+**Errors and limits**
+
+| | |
+| --- | --- |
+| `LANGUAGE` other than `python` | refused |
+| `pip` and `conda` together | refused -- pick one |
+| `conda_channels` without `conda` | refused |
+| `gpu` set to anything but `'true'` | refused |
+| An empty body | refused |
+| Any other option | refused, and the message lists what is supported |
+
+See [Functions](/management/function) for the SDK equivalent and for diagnosing
+environment mismatches.
+
+## Indexes {#indexes}
+
+```sql
+CREATE INDEX ON documents (title)
+DROP INDEX documents.title_idx
+```
+
+<Note>
+SQL `CREATE INDEX` covers **one column** and takes **no user-chosen name** --
+the server names it. For a multi-column or named index, use the SDK. `DROP
+INDEX` takes the qualified `table.index` name; find it with `list_indices`.
+</Note>
+
+Index type and parameters are chosen in the SDK; see [Indexing](/indexing).
+
+## Table properties {#properties}
+
+```sql
+ALTER TABLE t SET UNENFORCED PRIMARY KEY (id)
+```
+
+Records which column identifies a row. **Unenforced** is not a hedge in the
+naming: uniqueness is not checked on write, and declaring it does not make
+duplicates impossible. It tells the planner what to assume.
+
+```sql
+ALTER TABLE t SET WAL
+ALTER TABLE t SET WAL WITH (sharding = 'bucket', buckets = 4)
+ALTER TABLE t SET WAL WITH (maintained_indexes = '')
+ALTER TABLE t UNSET WAL
+```
+
+A write-ahead log makes small frequent writes cheap by batching them out of the
+commit path. `sharding` and `buckets` spread the log so concurrent writers do
+not contend on one place; `maintained_indexes` chooses which indexes are kept
+current against WAL rows.
+
+<Warning>
+[`TABLESAMPLE`](/sql/sampling) is refused on a WAL-backed table, because rows a
+sample would draw from are not all in the fragments yet.
+</Warning>
+
+## See also {#see-also}
+
+<CardGroup cols={2}>
+  <Card title="DML" icon="pen-to-square" href="/sql/dml">
+    Changing rows rather than structure.
+  </Card>
+  <Card title="Refresh" icon="arrows-rotate" href="/sql/refresh">
+    Filling the columns declared here.
+  </Card>
+  <Card title="Management" icon="folder-tree" href="/management">
+    The same operations from the SDKs.
+  </Card>
+  <Card title="SHOW" icon="list" href="/sql/show">
+    Listing what exists.
+  </Card>
+</CardGroup>

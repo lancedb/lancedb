@@ -1,0 +1,115 @@
+---
+title: "Lance format"
+sidebarTitle: "Lance Format"
+description: "Lance is the open format underneath. LanceDB is what implements a lakehouse on top of it."
+icon: "/static/assets/logo/lance-logo-gray.svg"
+keywords: ["lance", "format", "open standard", "lakehouse", "namespace", "catalog"]
+---
+
+Two names, two things. [Lance](https://lance.org/) is an open format and
+specification. LanceDB is an implementation built on it.
+
+The distinction matters when you are deciding what you are committing to: the
+format is a standard other engines read, and your data stays readable by them
+whichever LanceDB you run.
+
+## Lance is the open standard {#standard}
+
+Lance is an open-source, columnar lakehouse format for multimodal AI. It
+specifies three things:
+
+| | |
+| --- | --- |
+| **File format** | how bytes are laid out on disk, optimized for random access without giving up scan throughput |
+| **Table format** | how files compose into a versioned table -- schema evolution, deletions, indexes |
+| **Namespace specification** | how tables are named, grouped, and resolved -- the catalog layer |
+
+Being a specification rather than a product is the point. Object storage holds
+the bytes, and open engines -- PyTorch, Ray, Spark, Trino, DuckDB, Polars --
+read them without going through LanceDB at all.
+
+<Card
+  title="Lance format documentation"
+  icon="/static/assets/logo/lance-logo-gray.svg"
+  href="https://lance.org/format"
+>
+  The format specification: design, layout, and how it enables the multimodal lakehouse.
+</Card>
+
+## LanceDB embedded implements the storage half {#embedded}
+
+Connecting to a directory or a bucket gives you a **storage-only lakehouse**.
+Your process opens Lance tables directly and does the work itself: it plans and
+executes queries, builds indexes, and writes new versions.
+
+```python
+db = lancedb.connect("./.lancedb")
+db = lancedb.connect("s3://bucket/path")
+```
+
+There is no server, which is what makes it embedded -- and also what bounds it.
+There is nothing to run work on your behalf, so there are no server-side
+[jobs](/basics/jobs), no [SQL endpoint](/basics/apis), and no shared catalog
+beyond what the storage layer itself provides.
+
+## LanceDB Enterprise implements the catalog specification {#enterprise}
+
+<Badge color="red">Enterprise</Badge> A `db://` connection talks to a deployment
+that implements the **Lance REST Namespace** -- the REST server defined by the
+Lance namespace specification, covering the catalog operations in the
+[REST API reference](/api-reference/rest).
+
+```python
+db = lancedb.connect("db://my-database", api_key="...")
+```
+
+Implementing the specification rather than inventing an interface is what makes
+the catalog reachable by anything that speaks it, and what makes
+[authorization](/governance/authorization), server-side jobs, and
+[SQL](/basics/apis) possible: there is now a server to enforce and to run them.
+
+The tables are the same Lance tables either way. What changes is who resolves
+their names and who does the work.
+
+## What the format gives you {#capabilities}
+
+These are properties of Lance, so they hold in both forms:
+
+| Capability | What it enables |
+| --- | --- |
+| Multimodal storage | Images, video, audio, text, embeddings, annotations and metadata in one table. |
+| First-class blob API | Large binary objects in blob columns, with lazy reads and streaming byte access. |
+| Fast random access and scans | Sample, shuffle, and fetch individual rows without giving up sequential throughput. |
+| Zero-copy schema evolution | Add, drop, rename, or alter columns without rewriting existing data files. |
+| Versioned tables | Reproduce experiments and tie artifacts to the exact table version they used. |
+| Hybrid search and indexing | Vector search, full-text search, and scalar filters over the same dataset. |
+| Open interoperability | Object storage underneath, open engines on top. |
+
+Two of them explain behaviour you will meet elsewhere in these docs.
+
+### Versioning is why old data lingers {#versioning}
+
+Every write creates a version, and old versions are not immediately destroyed --
+another reader may be part-way through one. A hundred versions are not a hundred
+copies of the data, but they do carry a hundred times the metadata, which
+eventually slows queries down.
+
+Deletion works the same way: a deleted row is marked in a deletion file rather
+than erased, so the data is recoverable for as long as the version is.
+
+[Compaction](/maintenance/compaction) is what resolves both.
+
+### Column evolution is why feature engineering is cheap {#evolution}
+
+Adding a derived column writes only the new column. Existing data -- the
+expensive part, the images and videos -- is untouched. That is what makes
+[computed columns](/feature-engineering/add-computed-column) a reasonable thing to
+do repeatedly on a large table rather than a full rewrite each time.
+
+<Card
+  title="Learn more about Lance"
+  icon="/static/assets/logo/lance-logo-gray.svg"
+  href="https://lance.org/quickstart"
+>
+  Lance is a separate open source project with its own documentation.
+</Card>

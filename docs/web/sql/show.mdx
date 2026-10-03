@@ -1,0 +1,89 @@
+---
+title: "SHOW"
+sidebarTitle: "SHOW"
+description: "Listing jobs, functions, materialized views, and the errors a job produced."
+icon: list
+keywords: ["show jobs", "show functions", "show materialized views", "show errors", "show tables"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+Introspection over objects DataFusion has no concept of. All four are LanceDB
+extensions.
+
+<Warning>
+DataFusion's own `SHOW TABLES`, `SHOW COLUMNS` and `SHOW <variable>` are **not
+available**. They are implemented over `information_schema`, which this session
+does not enable, so they fail with
+`"... is not supported unless information_schema is enabled"`.
+
+List tables with the SDKs -- `table_names()` / `tableNames()`. For a table's
+columns, use [`DESCRIBE`](/sql/explain#describe).
+</Warning>
+
+## SHOW MATERIALIZED VIEWS {#materialized-views}
+
+```sql
+SHOW MATERIALIZED VIEWS
+```
+
+<Note>
+Cheaper than the SDK equivalent. `list_materialized_views` finds views by
+reading every table's schema, costing one open per table; this asks the server.
+</Note>
+
+## SHOW FUNCTIONS {#functions}
+
+```sql
+SHOW FUNCTIONS
+```
+
+Lists registered [functions](/management/function) and their versions. Since a
+version is immutable and a column pins the version that fills it, this is how
+you find which versions are still in use before dropping one.
+
+## SHOW JOBS {#jobs}
+
+```sql
+SHOW JOBS
+```
+
+Every job the server knows about — id, type, state, creation time. The SQL
+counterpart of `list_jobs`; see [Query and job](/basics/jobs).
+
+## SHOW ERRORS {#errors}
+
+```sql
+SHOW ERRORS ON <table> [FOR JOB '<job-id>'] [LIMIT <n>]
+```
+
+```sql
+SHOW ERRORS ON documents
+SHOW ERRORS ON documents FOR JOB 'job-abc' LIMIT 100
+```
+
+Why rows failed. This is the statement to reach for when a
+[refresh](/sql/refresh) reports fewer filled rows than you expected.
+
+**Errors and limits**
+
+| | |
+| --- | --- |
+| `LIMIT` | must be between 1 and 100,000 |
+| Failed jobs scanned without `FOR JOB` | 32 most recent |
+| Tables the server does not open directly | not supported |
+
+Without `FOR JOB` this surveys recent failures and stops at 32 jobs. When the
+listing stops at your `LIMIT`, the message says so — narrow with `FOR JOB`
+rather than raising the limit blindly.
+
+## See also {#see-also}
+
+<CardGroup cols={2}>
+  <Card title="Management" icon="folder-tree" href="/management">
+    The SDK listing calls, per object.
+  </Card>
+  <Card title="Query and job" icon="hourglass-half" href="/basics/jobs">
+    What a job handle exposes beyond these listings.
+  </Card>
+</CardGroup>

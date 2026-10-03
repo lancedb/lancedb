@@ -1,0 +1,130 @@
+---
+title: "Guarantees"
+sidebarTitle: "Guarantees"
+description: "What a write promises when it returns, what a reader sees, and what survives a failure."
+icon: shield-check
+keywords: ["guarantees", "consistency", "atomicity", "durability", "concurrency", "acid"]
+---
+
+What the system promises, and — just as usefully — what it does not. Most
+surprises in practice come from assuming one of the guarantees below is
+stronger or weaker than it is.
+
+## Writes {#writes}
+
+**A write is atomic.** Every write commits a new table version. Either the
+version exists and holds all of the change, or it does not exist and holds none
+of it. There is no state in which a reader sees half an `add()`.
+
+**A write returns only after the commit.** When the call returns, the version
+is durable in object storage. Nothing is buffered in your process waiting to be
+flushed.
+
+**Every write advances the version**, including one that affects zero rows. A
+delete whose predicate matches nothing still commits. Version numbers count
+commits, not changes.
+
+**Concurrent writes are resolved optimistically.** A transaction records the
+change and the version it was based on. At commit time, a conflicting
+concurrent operation is detected rather than silently overwritten, and the
+commit is retried against the newer version. Operations that do not collide —
+appending while another process appends — both succeed.
+
+<Note>
+`merge_insert` reports its retry attempts in the result. A high count means
+contention on the same keys, not an error.
+</Note>
+
+## Reads {#reads}
+
+**A read sees a consistent snapshot.** A query reads one table version
+throughout; it never sees a mixture of two.
+
+**Which version, by default, is the one open at the time the table was opened.**
+This is the guarantee most often assumed to be stronger than it is:
+
+<Warning>
+A long-lived connection **does not observe other processes' writes** until it
+reopens the table or its `read_consistency_interval` elapses. The default is
+right for a batch job reading a stable snapshot and wrong for a service
+expected to see fresh data.
+</Warning>
+
+Set `read_consistency_interval` when several processes write the same table and
+readers must observe those writes. The cost is a metadata check on that
+interval. See [Consistency](/tables/consistency).
+
+**Your own writes are always visible to you.** The interval governs other
+writers, not yourself.
+
+## Durability and history {#durability}
+
+**Old versions are retained, not overwritten.** A new version does not destroy
+the one before it, which is what makes [time travel](/management/table#versioning) work
+and what lets a reader finish a scan that started on an older version.
+
+**Deletion is a mark, not an erase.** A deleted row is recorded in a deletion
+file. The data is recoverable for as long as the version that contains it
+exists.
+
+<Warning>
+Retention is finite. [Compaction](/maintenance/compaction) prunes versions
+older than the retention window — **7 days by default** — and a tag or branch
+pointing at a pruned version no longer resolves. If you rely on reading old
+versions, widen the window before running it, not after.
+</Warning>
+
+**Dropping a table ends its history.** Versioning does not survive
+`drop_table`; there is no undrop.
+
+## Jobs {#jobs}
+
+**A refresh never revisits a filled row.** It gives values to rows that lack
+them and leaves the rest alone. Two consequences, both relied on elsewhere:
+
+- **Retrying is safe and cheap.** A failed backfill is resumed, not restarted —
+  re-running costs only the rows that did not complete.
+- **A filled value does not track its input.** If a column derives from `price`
+  and a row's `price` later changes, the derived value stays as computed.
+  Recomputing means dropping the column and declaring it again.
+
+**A failure is not a rollback.** Rows filled before a failure keep their values,
+because each commits as it completes.
+
+**Cancellation is a request.** `cancel()` asks a job to stop; it does not
+guarantee it stops before doing more work, and cancelling a finished job does
+nothing.
+
+**A job id is opaque.** It correlates with server logs and the jobs API.
+Parsing it, or storing it to resume the job later, is not supported.
+
+See [Query and job](/basics/jobs).
+
+## Schema {#schema}
+
+**Schema changes are versioned like data changes.** Adding, renaming, retyping
+or dropping a column commits a version, so a schema change can be travelled back
+through.
+
+**A computed column's inputs are protected.** While a declaration references a
+column, that column cannot be renamed, retyped, or dropped — the declaration is
+part of the schema and will not be invalidated out from under itself.
+
+**Most schema changes do not rewrite data.** Adding a derived column writes only
+the new column. Type changes are the exception and can be substantial.
+
+## What is not guaranteed {#not-guaranteed}
+
+Worth stating plainly, because each is occasionally assumed:
+
+| | |
+| --- | --- |
+| Multi-table transactions | A commit covers one table. There is no cross-table atomic write. |
+| Read-your-writes across processes | Governed by `read_consistency_interval`, not automatic. |
+| Unenforced primary keys | `SET UNENFORCED PRIMARY KEY` records intent; it does not enforce uniqueness. |
+| Ordering of concurrent appends | Two appends both succeed; their relative row order is not defined. |
+| Index freshness | An index does not cover rows added after it was built until [optimized](/maintenance/compaction). |
+| Automatic compaction | Nothing runs in the background. `optimize()` runs when you call it. |
+
+The last two are the most common source of "why is this query slow" — see
+[Limits](/basics/limits) for the bounds that pair with them.
