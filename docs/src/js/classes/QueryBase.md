@@ -252,6 +252,8 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 ***
 
 ### withRowId()

@@ -490,6 +490,14 @@ class LanceNamespaceDBConnection(DBConnection):
         self._uri = self._inner.uri
 
     @override
+    def is_open(self) -> bool:
+        return self._inner.is_open()
+
+    @override
+    def close(self) -> None:
+        self._inner.close()
+
+    @override
     def serialize(self) -> str:
         import json
 
