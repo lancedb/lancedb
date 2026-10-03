@@ -21,6 +21,13 @@ pub struct Catalog {
 #[pymethods]
 impl Catalog {
     #[getter]
+    fn authz(&self) -> PyResult<crate::authz::AuthorizationClient> {
+        Ok(crate::authz::AuthorizationClient {
+            inner: self.inner.authz().infer_error()?,
+        })
+    }
+
+    #[getter]
     fn uri(&self) -> &str {
         self.inner.uri()
     }

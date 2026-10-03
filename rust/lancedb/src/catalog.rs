@@ -121,6 +121,13 @@ pub struct ListDatabasesResponse {
 /// A backend that manages databases. Implementations own database lifecycle semantics.
 #[async_trait::async_trait]
 pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
+    /// Obtain deployment-wide authorization, if supported by this backend.
+    fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
+        Err(crate::Error::NotSupported {
+            message: "Authorization administration is not supported by this catalog".into(),
+        })
+    }
+
     /// Catalog endpoint or location.
     fn uri(&self) -> &str;
     /// Create a database, or open it when `exist_ok` permits.
@@ -167,6 +174,11 @@ impl CatalogConnection {
     pub fn uri(&self) -> &str {
         self.catalog.uri()
     }
+    /// Obtain a handle sharing this catalog's deployment scope and credentials.
+    pub fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
+        self.catalog.authz()
+    }
+
     /// Access the underlying backend.
     pub fn catalog(&self) -> &Arc<dyn Catalog> {
         &self.catalog
