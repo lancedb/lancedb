@@ -15,7 +15,7 @@ use crate::expr::expr_to_sql_string;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::scalar::FtsQuery;
-use crate::index::waiter::wait_for_index;
+use crate::index::waiter::{MAX_WAIT, wait_for_index};
 use crate::job::Job;
 use crate::materialized_view::{
     MaterializedViewDefinition, MaterializedViewInfo, RefreshMaterializedViewResult, ViewProjection,
@@ -647,11 +647,40 @@ impl<S: HttpSend> RemoteTable<S> {
             .and_then(|body| extract_job_id(&body));
 
         if let Some(wait_timeout) = index.wait_timeout {
-            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
-            self.wait_for_index(&[&index_name], wait_timeout).await?;
+            if let Some(job_id) = &job_id {
+                if wait_timeout > MAX_WAIT {
+                    return Err(Error::InvalidInput {
+                        message: format!("timeout must be less than {:?}", MAX_WAIT),
+                    });
+                }
+                // An older same-named index may still be ready while its
+                // replacement is building. Wait for this submission instead.
+                tokio::time::timeout(wait_timeout, self.index_job(job_id.clone()).wait())
+                    .await
+                    .map_err(|_| Error::Timeout {
+                        message: format!(
+                            "timed out waiting for index job {:?} after {:?}",
+                            job_id, wait_timeout
+                        ),
+                    })??;
+            } else {
+                // Older servers do not return a job ID.
+                let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
+                self.wait_for_index(&[&index_name], wait_timeout).await?;
+            }
         }
 
         Ok(job_id)
+    }
+
+    fn index_job(&self, job_id: String) -> Job {
+        Job::new(Box::new(FreshnessJob {
+            inner: RemoteJob::new(self.client.clone(), job_id),
+            freshness: self.freshness.clone(),
+            version: self.version.clone(),
+            tracked_result: TrackedJobResult::None,
+            freshness_request: self.snapshot_freshness_headers(),
+        }))
     }
 
     pub fn new(
@@ -3059,13 +3088,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn create_index_async(&self, index: IndexBuilder) -> Result<Job> {
         Ok(match self.submit_create_index(index).await? {
-            Some(job_id) => Job::new(Box::new(FreshnessJob {
-                inner: RemoteJob::new(self.client.clone(), job_id),
-                freshness: self.freshness.clone(),
-                version: self.version.clone(),
-                tracked_result: TrackedJobResult::None,
-                freshness_request: self.snapshot_freshness_headers(),
-            })),
+            Some(job_id) => self.index_job(job_id),
             None => Job::new_done(),
         })
     }
@@ -7162,6 +7185,157 @@ mod tests {
         assert_eq!(failure.phase.as_deref(), Some("commit"));
         assert_eq!(failure.retryable, Some(true));
         assert_eq!(err.to_string(), "Job job-err failed: preempted (in commit)");
+    }
+
+    // The name-based endpoint deliberately exposes an already-ready old index.
+    // A replacement must wait on the new job, not mistake that index for success.
+    fn index_wait_fixture(
+        job_id: Option<&'static str>,
+        terminal_state: &'static str,
+    ) -> (
+        Table,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let job_polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let index_polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let jobs = job_polls.clone();
+        let indices = index_polls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap();
+                }
+                "/v1/table/my_table/create_index/" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    // Replacement is the default and omitted from the wire body.
+                    assert!(body.get("replace").is_none());
+                    match job_id {
+                        Some(id) => json!({"job_id": id}),
+                        None => json!({}),
+                    }
+                }
+                "/v1/jobs/describe" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["job_id"], json!(job_id.unwrap()));
+                    let poll = jobs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    json!({
+                        "job_id": job_id.unwrap(),
+                        "job_state": if poll == 0 { "IN_PROGRESS" } else { terminal_state },
+                        "failure": {"phase": "build", "message": "invalid index config",
+                                    "retryable": false}
+                    })
+                }
+                "/v1/table/my_table/index/list/" => {
+                    indices.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    json!({"indexes": [{"index_name": "a_idx", "columns": ["a"],
+                        "index_uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                        "index_status": "done"}]})
+                }
+                "/v1/table/my_table/index/a_idx/stats/" => json!({
+                    "num_indexed_rows": 100, "num_unindexed_rows": 0, "index_type": "BTREE"
+                }),
+                path => panic!("Unexpected path: {path}"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(body.to_string())
+                .unwrap()
+        });
+        (table, job_polls, index_polls)
+    }
+
+    #[tokio::test]
+    async fn test_create_index_wait_timeout_tracks_job() {
+        for state in ["DONE", "FAILED", "CANCELLED"] {
+            let (table, jobs, indices) = index_wait_fixture(Some("new-index-job"), state);
+            let result = table
+                .create_index(&["a"], Index::BTree(Default::default()))
+                .replace(true)
+                .wait_timeout(Duration::from_secs(2))
+                .execute()
+                .await;
+            match state {
+                "DONE" => result.unwrap(),
+                "FAILED" => match result.unwrap_err() {
+                    Error::JobFailed { job_id, failure } => {
+                        assert_eq!(job_id.as_deref(), Some("new-index-job"));
+                        assert_eq!(failure.message.as_deref(), Some("invalid index config"));
+                        assert_eq!(failure.phase.as_deref(), Some("build"));
+                    }
+                    error => panic!("Expected job failure, got {error:?}"),
+                },
+                "CANCELLED" => assert!(matches!(result, Err(Error::JobCancelled { .. }))),
+                _ => unreachable!(),
+            }
+            assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 2);
+            assert_eq!(indices.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_index_wait_timeout_bounds_job_polling() {
+        let (table, jobs, indices) = index_wait_fixture(Some("new-index-job"), "IN_PROGRESS");
+        let error = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .replace(true)
+            .wait_timeout(Duration::from_millis(10))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Timeout { message } if message.contains("new-index-job")));
+        assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(indices.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_wait_timeout_legacy_fallback() {
+        let (table, jobs, indices) = index_wait_fixture(None, "DONE");
+        table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .replace(true)
+            .wait_timeout(Duration::from_secs(2))
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(indices.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_wait_timeout_absent_does_not_poll() {
+        let (table, jobs, indices) = index_wait_fixture(Some("new-index-job"), "IN_PROGRESS");
+        table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(indices.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_wait_timeout_preserves_maximum() {
+        let (table, jobs, indices) = index_wait_fixture(Some("new-index-job"), "DONE");
+        let error = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .replace(true)
+            .wait_timeout(Duration::from_secs(2 * 60 * 60 + 1))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(indices.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     /// Servers that return no job id (e.g. an empty create-index response)
