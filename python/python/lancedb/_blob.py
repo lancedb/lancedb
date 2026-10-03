@@ -110,7 +110,9 @@ def projection_includes_blob_column(
     if projection is None:
         return True
     for output, source in _iter_projection_pairs(projection):
-        if output in columns or source in columns:
+        if output in columns or any(
+            column == source or column.startswith(f"{source}.") for column in columns
+        ):
             return True
     return False
 
@@ -122,14 +124,16 @@ def blob_v2_projection_sources(
     blob_columns = row_addressable_blob_v2_paths(schema)
     if not blob_columns:
         return {}
-    columns = set(blob_columns)
     if projection is None:
         return {column: column for column in blob_columns}
-    return {
-        output: source
-        for output, source in _iter_projection_pairs(projection)
-        if source in columns
-    }
+    sources = {}
+    for output, source in _iter_projection_pairs(projection):
+        for column in blob_columns:
+            if column == source:
+                sources[output] = column
+            elif column.startswith(f"{source}."):
+                sources[f"{output}{column[len(source) :]}"] = column
+    return sources
 
 
 def v2_projection_needs_row_id(
@@ -180,7 +184,7 @@ async def replace_v2_blob_columns_with_bytes(
     fetch_blobs: FetchBlobsAsync,
 ) -> pa.Table:
     for output_name, source_name in blob_sources.items():
-        if output_name not in tbl.column_names:
+        if not _has_column_path(tbl.schema, output_name):
             continue
         blobs = await fetch_blobs(source_name, tbl)
         tbl = _set_blob_column(tbl, output_name, blobs)
@@ -193,7 +197,7 @@ def replace_v2_blob_columns_with_bytes_sync(
     fetch_blobs: FetchBlobsSync,
 ) -> pa.Table:
     for output_name, source_name in blob_sources.items():
-        if output_name not in tbl.column_names:
+        if not _has_column_path(tbl.schema, output_name):
             continue
         blobs = fetch_blobs(source_name, tbl)
         tbl = _set_blob_column(tbl, output_name, blobs)
@@ -287,9 +291,45 @@ def _iter_projection_pairs(
                 yield name, source if source is not None else expr.to_sql()
 
 
-def _set_blob_column(tbl: pa.Table, output_name: str, blobs: pa.Array) -> pa.Table:
+def _has_column_path(schema: pa.Schema, path: str) -> bool:
+    if schema.get_field_index(path) >= 0:
+        return True
+    top_name, *rest = path.split(".")
+    index = schema.get_field_index(top_name)
+    if index < 0:
+        return False
+    field = schema.field(index)
+    for name in rest:
+        if not pa.types.is_struct(field.type):
+            return False
+        index = field.type.get_field_index(name)
+        if index < 0:
+            return False
+        field = field.type.field(index)
+    return True
+
+
+def _set_blob_column(
+    tbl: pa.Table, output_name: str, blobs: pa.Array | pa.ChunkedArray
+) -> pa.Table:
     index = tbl.schema.get_field_index(output_name)
-    return tbl.set_column(index, pa.field(output_name, blobs.type), [blobs])
+    if index >= 0:
+        return tbl.set_column(index, pa.field(output_name, blobs.type), [blobs])
+
+    parent_path, leaf_name = output_name.rsplit(".", 1)
+    if isinstance(blobs, pa.ChunkedArray):
+        blobs = blobs.combine_chunks()
+
+    def replace_blob(children: list, child_fields: list) -> None:
+        for i, field in enumerate(child_fields):
+            if field.name == leaf_name:
+                children[i] = blobs
+                child_fields[i] = pa.field(
+                    leaf_name, blobs.type, nullable=field.nullable
+                )
+                return
+
+    return _transform_struct_column(tbl, parent_path, replace_blob)
 
 
 def _embed_row_id_in_column(tbl: pa.Table, path: str, row_ids: pa.Array) -> pa.Table:
