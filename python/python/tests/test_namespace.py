@@ -72,6 +72,47 @@ def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
     return table
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace_path", [[], ["test_ns"]])
+async def test_namespace_table_names_defaults_and_limits(tmp_path, namespace_path):
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    if namespace_path:
+        db.create_namespace(namespace_path)
+    names = [f"t{idx:03}" for idx in range(12)]
+    schema = pa.schema([pa.field("id", pa.int64())])
+    for name in names:
+        db.create_table(name, schema=schema, namespace_path=namespace_path)
+
+    assert list(db.table_names(namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=None, namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert list(db.table_names(limit=2, namespace_path=namespace_path)) == names[:2]
+    assert (
+        list(
+            db.table_names(page_token=names[1], limit=2, namespace_path=namespace_path)
+        )
+        == names[2:4]
+    )
+
+    adb = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    assert list(await adb.table_names(namespace_path=namespace_path)) == names
+    assert (
+        list(await adb.table_names(limit=None, namespace_path=namespace_path)) == names
+    )
+    assert list(await adb.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert (
+        list(await adb.table_names(limit=2, namespace_path=namespace_path)) == names[:2]
+    )
+    assert (
+        list(
+            await adb.table_names(
+                page_token=names[1], limit=2, namespace_path=namespace_path
+            )
+        )
+        == names[2:4]
+    )
+
+
 class TestNamespaceConnection:
     """Test namespace-based LanceDB connection using DirectoryNamespace."""
 
