@@ -3101,7 +3101,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // loop can re-execute the plan (and re-stream the body) on each retry.
         // This mirrors the old `send_streaming(with_retry=true)` path, which
         // likewise buffered the reader to support retries.
-        let batches = new_data.collect::<std::result::Result<Vec<_>, _>>()?;
+        let schema = RecordBatchReader::schema(new_data.as_ref());
+        let mut batches = new_data.collect::<std::result::Result<Vec<_>, _>>()?;
+        // An empty reader still carries a schema. Keep it in an empty batch so
+        // the buffered source remains scannable and can be replayed on retries.
+        if batches.is_empty() {
+            batches.push(RecordBatch::new_empty(schema));
+        }
         let source: Box<dyn Scannable> = Box::new(batches);
         let rescannable = source.rescannable();
         let input: Arc<dyn ExecutionPlan> =
@@ -4688,6 +4694,25 @@ mod tests {
         assert_eq!(result.rows_updated, if old_server { 0 } else { 5 });
     }
 
+    #[tokio::test]
+    async fn test_alter_columns_rejects_missing_changes_before_request() {
+        let table = Table::new_with_handler::<String>("my_table", |request| {
+            panic!("Unexpected request: {}", request.url().path())
+        });
+
+        for alterations in [
+            vec![ColumnAlteration::new("id".into())],
+            vec![
+                ColumnAlteration::new("id".into()).rename("new_id".into()),
+                ColumnAlteration::new("id".into()),
+            ],
+        ] {
+            let err = table.alter_columns(&alterations).await.unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+            assert!(err.to_string().contains("path 'id'"));
+        }
+    }
+
     #[rstest]
     #[case(true)]
     #[case(false)]
@@ -4799,6 +4824,104 @@ mod tests {
             assert_eq!(result.num_inserted_rows, 3);
             assert_eq!(result.num_updated_rows, 0);
         }
+    }
+
+    #[rstest]
+    #[case::no_batches_insert(false, false)]
+    #[case::empty_batch_insert(true, false)]
+    #[case::no_batches_delete(false, true)]
+    #[case::empty_batch_delete(true, true)]
+    #[tokio::test]
+    async fn test_merge_insert_empty_source(
+        #[case] has_batch: bool,
+        #[case] delete_unmatched: bool,
+    ) {
+        let mut fields = vec![Field::new("id", DataType::Int64, false)];
+        if !delete_unmatched {
+            fields.extend([
+                Field::new("k", DataType::Int64, false),
+                Field::new(
+                    "vector",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    true,
+                ),
+                Field::new("s", DataType::Utf8, true),
+            ]);
+        }
+        let schema = Arc::new(Schema::new_with_metadata(
+            fields,
+            HashMap::from([("source".to_string(), "empty".to_string())]),
+        ));
+        let batches = if has_batch {
+            vec![Ok(RecordBatch::new_empty(schema.clone()))]
+        } else {
+            vec![]
+        };
+        let data: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(batches, schema.clone()));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let num_deleted_rows = if delete_unmatched { 3 } else { 0 };
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
+            assert_eq!(request.headers()[CONTENT_TYPE], ARROW_STREAM_CONTENT_TYPE);
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["on"], "id");
+            assert_eq!(
+                params["when_not_matched_insert_all"],
+                (!delete_unmatched).to_string()
+            );
+            assert_eq!(
+                params["when_not_matched_by_source_delete"],
+                delete_unmatched.to_string()
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let reader = StreamReader::try_new(Cursor::new(body), None).unwrap();
+            assert_eq!(reader.schema(), schema);
+            for batch in reader {
+                assert_eq!(batch.unwrap().num_rows(), 0);
+            }
+
+            // The empty source must retain its schema when replayed after a conflict.
+            if attempts_ref.fetch_add(1, Ordering::SeqCst) == 0 {
+                http::Response::builder()
+                    .status(409)
+                    .body(String::new())
+                    .unwrap()
+            } else {
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        json!({
+                            "version": 43,
+                            "num_deleted_rows": num_deleted_rows,
+                            "num_inserted_rows": 0,
+                            "num_updated_rows": 0,
+                        })
+                        .to_string(),
+                    )
+                    .unwrap()
+            }
+        });
+
+        let mut merge = table.merge_insert(&["id"]);
+        if delete_unmatched {
+            merge.when_not_matched_by_source_delete(None);
+        } else {
+            merge.when_not_matched_insert_all();
+        }
+        let result = merge.execute(data).await.unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(result.version, 43);
+        assert_eq!(result.num_deleted_rows, num_deleted_rows);
+        assert_eq!(result.num_inserted_rows, 0);
+        assert_eq!(result.num_updated_rows, 0);
     }
 
     #[tokio::test]
