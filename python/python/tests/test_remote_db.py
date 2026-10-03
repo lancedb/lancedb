@@ -16,7 +16,8 @@ import uuid
 from packaging.version import Version
 
 import lancedb
-from lancedb.conftest import MockTextEmbeddingFunction
+from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
+from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.query import AsyncQuery, ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
@@ -592,6 +593,106 @@ def test_remote_permutation_is_picklable():
             {"a": 2},
             {"a": 0},
             {"a": 4},
+        ]
+
+
+@pytest.mark.parametrize("with_schema", [True, False])
+def test_create_table_embedding_functions(with_schema):
+    func = MockNonNormTextEmbeddingFunction.create()
+    config = EmbeddingFunctionConfig(
+        source_column="text", vector_column="vector", function=func
+    )
+    schema = pa.schema(
+        [pa.field("text", pa.string()), pa.field("vector", pa.list_(pa.float32(), 10))]
+    )
+    received = {}
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            # Echo the metadata actually sent by create_table, as the server does.
+            metadata = received["create"].schema.metadata or {}
+            send_json(
+                request,
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "text",
+                                "type": {"type": "string"},
+                                "nullable": True,
+                            },
+                            {
+                                "name": "vector",
+                                "type": {
+                                    "type": "fixed_size_list",
+                                    "fields": [
+                                        {
+                                            "name": "item",
+                                            "type": {"type": "float"},
+                                            "nullable": True,
+                                        }
+                                    ],
+                                    "length": 10,
+                                },
+                                "nullable": True,
+                            },
+                        ],
+                        "metadata": {
+                            k.decode(): v.decode() for k, v in metadata.items()
+                        },
+                    },
+                },
+            )
+        elif request.path in (
+            "/v1/table/test/create/?mode=create",
+            "/v1/table/test/insert/",
+        ):
+            if request.headers.get("Transfer-Encoding") == "chunked":
+                body = bytearray()
+                while True:
+                    size = int(request.rfile.readline(), 16)
+                    if size == 0:
+                        request.rfile.readline()
+                        break
+                    body.extend(request.rfile.read(size))
+                    request.rfile.read(2)
+            else:
+                body = request.rfile.read(int(request.headers["Content-Length"]))
+            operation = "create" if "/create/" in request.path else "insert"
+            received[operation] = pa.ipc.open_stream(body).read_all()
+            send_json(request, {})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table(
+            "test",
+            schema=schema if with_schema else None,
+            data=None if with_schema else [{"text": "hello world"}],
+            embedding_functions=[config],
+        )
+        metadata = pa.schema(
+            [],
+            metadata=EmbeddingFunctionRegistry.get_instance().get_table_metadata(
+                [config]
+            ),
+        ).metadata
+        assert received["create"].schema.metadata == metadata
+        assert table.schema.metadata == metadata
+        assert table.schema.field("vector").type == pa.list_(pa.float32(), 10)
+        assert table.embedding_functions["vector"].source_column == "text"
+        if with_schema:
+            assert received["create"].num_rows == 0
+        else:
+            assert received["create"]["vector"].to_pylist() == [
+                func.compute_source_embeddings(["hello world"])[0].tolist()
+            ]
+
+        table.add([{"text": "goodbye world"}])
+        assert received["insert"]["vector"].to_pylist() == [
+            func.compute_source_embeddings(["goodbye world"])[0].tolist()
         ]
 
 
