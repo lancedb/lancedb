@@ -5,14 +5,13 @@ import type OpenAI from "openai";
 import type { EmbeddingCreateParams } from "openai/resources/index";
 import { Float, Float32 } from "../arrow";
 import { EmbeddingFunction } from "./embedding_function";
-import { register } from "./registry";
+import { registerBuiltIn } from "./registry";
 
 export type OpenAIOptions = {
   apiKey: string;
   model: EmbeddingCreateParams["model"];
 };
 
-@register("openai")
 export class OpenAIEmbeddingFunction extends EmbeddingFunction<
   string,
   Partial<OpenAIOptions>
@@ -100,3 +99,5 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
     return response.data[0].embedding;
   }
 }
+
+registerBuiltIn("openai", OpenAIEmbeddingFunction);

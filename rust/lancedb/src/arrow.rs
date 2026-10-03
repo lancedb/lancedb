@@ -163,7 +163,7 @@ pub struct PolarsDataFrameRecordBatchReader {
 impl PolarsDataFrameRecordBatchReader {
     /// Creates a new `PolarsDataFrameRecordBatchReader` from a given Polars DataFrame.
     /// If the input dataframe does not have aligned chunks, this function undergoes
-    /// the costly operation of reallocating each series as a single contigous chunk.
+    /// the costly operation of reallocating each series as a single contiguous chunk.
     pub fn new(mut df: DataFrame) -> Result<Self> {
         df.align_chunks();
         let arrow_schema =

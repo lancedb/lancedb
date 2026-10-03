@@ -3,7 +3,7 @@
 
 import { Float, Float32 } from "../arrow";
 import { EmbeddingFunction } from "./embedding_function";
-import { register } from "./registry";
+import { registerBuiltIn } from "./registry";
 
 export type XenovaTransformerOptions = {
   /** The wasm compatible model to use */
@@ -31,7 +31,6 @@ export type XenovaTransformerOptions = {
   };
 };
 
-@register("huggingface")
 export class TransformersEmbeddingFunction extends EmbeddingFunction<
   string,
   Partial<XenovaTransformerOptions>
@@ -157,6 +156,8 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     return (await this.computeSourceEmbeddings([data]))[0];
   }
 }
+
+registerBuiltIn("huggingface", TransformersEmbeddingFunction);
 
 const tensorDiv = (
   src: import("@huggingface/transformers").Tensor,

@@ -1,24 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-import * as arrow15 from "apache-arrow-15";
-import * as arrow16 from "apache-arrow-16";
-import * as arrow17 from "apache-arrow-17";
-import * as arrow18 from "apache-arrow-18";
+import * as fs from "node:fs";
+import * as vm from "node:vm";
+
+import { type ApacheArrow, arrow15, arrowVersions } from "./arrow_versions";
 
 import {
+  Field as CurrentField,
+  LargeBinary as CurrentLargeBinary,
+  Schema as CurrentSchema,
+  Vector as CurrentVector,
   convertToTable,
+  tableFromIPC as currentTableFromIPC,
   fromBufferToRecordBatch,
   fromDataToBuffer,
   fromRecordBatchToBuffer,
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
+  makeJsonField,
 } from "../lancedb/arrow";
 import {
   EmbeddingFunction,
   FunctionOptions,
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
+import { sanitizeTable } from "../lancedb/sanitize";
+
+it("creates a nullable JSON field with the Arrow extension metadata", () => {
+  const field = makeJsonField("metadata");
+
+  expect(field.name).toBe("metadata");
+  expect(field.type).toEqual(new arrow15.Utf8());
+  expect(field.nullable).toBe(true);
+  expect(field.metadata).toEqual(
+    new Map([["ARROW:extension:name", "arrow.json"]]),
+  );
+});
+
+it("allows JSON fields to be non-nullable", () => {
+  expect(makeJsonField("metadata", false).nullable).toBe(false);
+});
 
 // biome-ignore lint/suspicious/noExplicitAny: skip
 function sampleRecords(): Array<Record<string, any>> {
@@ -33,1171 +55,1555 @@ function sampleRecords(): Array<Record<string, any>> {
     },
   ];
 }
-describe.each([arrow15, arrow16, arrow17, arrow18])(
-  "Arrow",
-  (
-    arrow: typeof arrow15 | typeof arrow16 | typeof arrow17 | typeof arrow18,
-  ) => {
-    type ApacheArrow =
-      | typeof arrow15
-      | typeof arrow16
-      | typeof arrow17
-      | typeof arrow18;
-    const {
-      Schema,
-      Field,
-      Binary,
-      Bool,
-      Utf8,
-      Float64,
-      Struct,
-      List,
-      Map_,
-      Int16,
-      Int32,
-      Int64,
-      Float,
-      Float16,
-      Float32,
-      FixedSizeList,
-      Precision,
-      tableFromIPC,
-      DataType,
-      Dictionary,
-      Uint8: ArrowUint8,
+
+it("serializes an Arrow Table created in another JavaScript realm", async () => {
+  const context = vm.createContext({
+    TextDecoder,
+    TextEncoder,
+    console,
+    setTimeout,
+    clearTimeout,
+  });
+  vm.runInContext(
+    fs.readFileSync(
+      require.resolve("apache-arrow-15/Arrow.es2015.min"),
+      "utf8",
+    ),
+    context,
+  );
+  const foreignTable: unknown = vm.runInContext(
+    "Arrow.tableFromArrays({ id: new Int32Array([1, 2, 3]), text: ['foo', 'bar', 'baz'] })",
+    context,
+  );
+
+  const foreignMetadata = (
+    foreignTable as { schema: { metadata: Map<string, string> } }
+  ).schema.metadata;
+  expect(foreignMetadata).not.toBeInstanceOf(Map);
+
+  const buf = await fromDataToBuffer(
+    foreignTable as Parameters<typeof fromDataToBuffer>[0],
+  );
+  const actual = currentTableFromIPC(buf);
+
+  expect(actual.numRows).toBe(3);
+  expect(actual.getChild("id")?.toJSON()).toEqual([1, 2, 3]);
+  expect(actual.getChild("text")?.toJSON()).toEqual(["foo", "bar", "baz"]);
+});
+
+it("preserves field metadata from a provided schema", async function () {
+  const jsonMetadata = new Map([["ARROW:extension:name", "lance.json"]]);
+  const schema = new CurrentSchema([
+    new CurrentField("meta", new CurrentLargeBinary(), true, jsonMetadata),
+  ]);
+
+  const table = makeArrowTable(
+    [{ meta: Buffer.from(JSON.stringify({ source: "test" })) }],
+    { schema },
+  );
+
+  expect(table.schema.fields[0].metadata).toEqual(jsonMetadata);
+
+  const roundTripped = currentTableFromIPC(await fromTableToBuffer(table));
+  expect(roundTripped.schema.fields[0].metadata).toEqual(jsonMetadata);
+});
+
+describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
+  const {
+    Schema,
+    Field,
+    Binary,
+    Bool,
+    Utf8,
+    Float64,
+    Struct,
+    List,
+    Map_,
+    Int16,
+    Int32,
+    Int64,
+    Float,
+    Float16,
+    Float32,
+    FixedSizeList,
+    Precision,
+    tableFromIPC,
+    DataType,
+    Dictionary,
+    RecordBatch: ArrowRecordBatch,
+    Table: ArrowTable,
+    Uint8: ArrowUint8,
+    makeData: arrowMakeData,
+    vectorFromArray,
+    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+  } = <any>arrow;
+  type Schema = ApacheArrow["Schema"];
+  type Table = ApacheArrow["Table"];
+
+  function expectValidMapField(
+    // biome-ignore lint/suspicious/noExplicitAny: Arrow Field types vary across supported versions
+    field: any,
+  ): void {
+    expect(DataType.isMap(field.type)).toBe(true);
+    expect(field.type.keysSorted).toBe(true);
+    expect(field.type.children).toHaveLength(1);
+
+    const entries = field.type.children[0];
+    expect(entries.name).toBe("entries");
+    expect(entries.nullable).toBe(false);
+    expect(DataType.isStruct(entries.type)).toBe(true);
+    expect(entries.type.children).toHaveLength(2);
+
+    const [key, value] = entries.type.children;
+    expect([key.name, value.name]).toEqual(["key", "value"]);
+    expect(key.nullable).toBe(false);
+    expect(DataType.isUtf8(key.type)).toBe(true);
+    expect(value.nullable).toBe(true);
+    expect(DataType.isInt(value.type)).toBe(true);
+    expect(value.type.bitWidth).toBe(32);
+    expect(value.type.isSigned).toBe(true);
+  }
+
+  // Helper method to verify various ways to create a table
+  async function checkTableCreation(
+    tableCreationMethod: (
+      records: Record<string, unknown>[],
+      recordsReversed: Record<string, unknown>[],
+      schema: Schema,
+    ) => Promise<Table>,
+    infersTypes: boolean,
+  ): Promise<void> {
+    const records = sampleRecords();
+    const recordsReversed = [
+      {
+        list: ["anime", "action", "comedy"],
+        struct: { x: 0, y: 0 },
+        string: "hello",
+        number: 7,
+        boolean: false,
+        binary: Buffer.alloc(5),
+      },
+    ];
+    const schema = new Schema([
+      new Field("binary", new Binary(), false),
+      new Field("boolean", new Bool(), false),
+      new Field("number", new Float64(), false),
+      new Field("string", new Utf8(), false),
+      new Field(
+        "struct",
+        new Struct([
+          new Field("x", new Float64(), false),
+          new Field("y", new Float64(), false),
+        ]),
+      ),
+      new Field("list", new List(new Field("item", new Utf8(), false)), false),
+    ]);
+    const table = (await tableCreationMethod(
+      records,
+      recordsReversed,
+      schema,
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-    } = <any>arrow;
-    type Schema = ApacheArrow["Schema"];
-    type Table = ApacheArrow["Table"];
+    )) as any;
 
-    function expectValidMapField(
-      // biome-ignore lint/suspicious/noExplicitAny: Arrow Field types vary across supported versions
-      field: any,
-    ): void {
-      expect(DataType.isMap(field.type)).toBe(true);
-      expect(field.type.keysSorted).toBe(true);
-      expect(field.type.children).toHaveLength(1);
+    // We expect deterministic ordering of the fields
+    expect(table.schema.names).toEqual(schema.names);
 
-      const entries = field.type.children[0];
-      expect(entries.name).toBe("entries");
-      expect(entries.nullable).toBe(false);
-      expect(DataType.isStruct(entries.type)).toBe(true);
-      expect(entries.type.children).toHaveLength(2);
+    schema.fields.forEach(
+      (
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+        field: { name: any; type: { toString: () => any } },
+        idx: string | number,
+      ) => {
+        const actualField = table.schema.fields[idx];
+        // Type inference always assumes nullable=true
+        if (infersTypes) {
+          expect(actualField.nullable).toBe(true);
+        } else {
+          expect(actualField.nullable).toBe(false);
+        }
+        expect(table.getChild(field.name)?.type.toString()).toEqual(
+          field.type.toString(),
+        );
+        expect(table.getChildAt(idx)?.type.toString()).toEqual(
+          field.type.toString(),
+        );
+      },
+    );
+  }
 
-      const [key, value] = entries.type.children;
-      expect([key.name, value.name]).toEqual(["key", "value"]);
-      expect(key.nullable).toBe(false);
-      expect(DataType.isUtf8(key.type)).toBe(true);
-      expect(value.nullable).toBe(true);
-      expect(DataType.isInt(value.type)).toBe(true);
-      expect(value.type.bitWidth).toBe(32);
-      expect(value.type.isSigned).toBe(true);
-    }
-
-    // Helper method to verify various ways to create a table
-    async function checkTableCreation(
-      tableCreationMethod: (
-        records: Record<string, unknown>[],
-        recordsReversed: Record<string, unknown>[],
-        schema: Schema,
-      ) => Promise<Table>,
-      infersTypes: boolean,
-    ): Promise<void> {
-      const records = sampleRecords();
-      const recordsReversed = [
-        {
-          list: ["anime", "action", "comedy"],
-          struct: { x: 0, y: 0 },
-          string: "hello",
-          number: 7,
-          boolean: false,
-          binary: Buffer.alloc(5),
-        },
+  describe("The function makeArrowTable", function () {
+    it("accepts snake_case embedding metadata like camelCase", function () {
+      const spellings = [
+        // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+        { source_column: "text", vector_column: "vector" },
+        { sourceColumn: "text", vectorColumn: "vector" },
       ];
-      const schema = new Schema([
-        new Field("binary", new Binary(), false),
-        new Field("boolean", new Bool(), false),
-        new Field("number", new Float64(), false),
-        new Field("string", new Utf8(), false),
-        new Field(
-          "struct",
-          new Struct([
-            new Field("x", new Float64(), false),
-            new Field("y", new Float64(), false),
+      for (const columns of spellings) {
+        const schema = new Schema(
+          [
+            new Field("text", new Utf8(), false),
+            new Field(
+              "vector",
+              new FixedSizeList(3, new Field("item", new Float32(), true)),
+              false,
+            ),
+          ],
+          new Map([
+            [
+              "embedding_functions",
+              JSON.stringify([{ name: "mock", model: {}, ...columns }]),
+            ],
           ]),
-        ),
+        );
+        // The vector field is non-nullable and absent from the data; only a
+        // recognized embedding config makes that acceptable.
+        const table = makeArrowTable([{ text: "hello" }], { schema });
+        expect(table.numRows).toBe(1);
+      }
+    });
+
+    it("will use data types from a provided schema instead of inference", async function () {
+      const schema = new Schema([
+        new Field("a", new Int32(), false),
+        new Field("b", new Float32(), true),
+        new Field("c", new FixedSizeList(3, new Field("item", new Float16()))),
+        new Field("d", new Int64(), true),
+      ]);
+      const table = makeArrowTable(
+        [
+          { a: 1, b: 2, c: [1, 2, 3], d: 9 },
+          { a: 4, b: 5, c: [4, 5, 6], d: 10 },
+          { a: 7, b: 8, c: [7, 8, 9], d: null },
+        ],
+        { schema },
+      );
+
+      const buf = await fromTableToBuffer(table);
+      expect(buf.byteLength).toBeGreaterThan(0);
+
+      const actual = tableFromIPC(buf);
+      expect(actual.numRows).toBe(3);
+      const actualSchema = actual.schema;
+      expect(actualSchema).toEqual(schema);
+      expect(table.getChild("a")?.toJSON()).toEqual([1, 4, 7]);
+      expect(table.getChild("b")?.toJSON()).toEqual([2, 5, 8]);
+      expect(table.getChild("d")?.toJSON()).toEqual([9n, 10n, null]);
+    });
+
+    it("will use a provided FixedSizeList schema with typed array values", function () {
+      const schema = new Schema([
+        new Field("text", new Utf8(), false),
         new Field(
-          "list",
-          new List(new Field("item", new Utf8(), false)),
+          "vector",
+          new FixedSizeList(3, new Field("item", new Float32(), false)),
           false,
         ),
       ]);
-      const table = (await tableCreationMethod(
-        records,
-        recordsReversed,
-        schema,
-        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-      )) as any;
 
-      // We expect deterministic ordering of the fields
-      expect(table.schema.names).toEqual(schema.names);
+      const table = makeArrowTable(
+        [
+          {
+            text: "foo",
+            vector: new Float32Array([1, 2, 3]),
+          },
+        ],
+        { schema },
+      );
 
-      schema.fields.forEach(
-        (
-          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-          field: { name: any; type: { toString: () => any } },
-          idx: string | number,
-        ) => {
-          const actualField = table.schema.fields[idx];
-          // Type inference always assumes nullable=true
-          if (infersTypes) {
-            expect(actualField.nullable).toBe(true);
-          } else {
-            expect(actualField.nullable).toBe(false);
-          }
-          expect(table.getChild(field.name)?.type.toString()).toEqual(
-            field.type.toString(),
-          );
-          expect(table.getChildAt(idx)?.type.toString()).toEqual(
-            field.type.toString(),
-          );
+      expect(table.getChild("text")?.toJSON()).toEqual(["foo"]);
+      expect(
+        table
+          .getChild("vector")
+          ?.toJSON()
+          .map((value) => value.toJSON()),
+      ).toEqual([[1, 2, 3]]);
+    });
+
+    it("will assume the column `vector` is FixedSizeList<Float32> by default", async function () {
+      const schema = new Schema([
+        new Field("a", new Float(Precision.DOUBLE), true),
+        new Field("b", new Int64(), true),
+        new Field(
+          "vector",
+          new FixedSizeList(
+            3,
+            new Field("item", new Float(Precision.SINGLE), true),
+          ),
+          true,
+        ),
+      ]);
+      const table = makeArrowTable([
+        { a: 1, b: 2n, vector: [1, 2, 3] },
+        { a: 4, b: 5n, vector: [4, 5, 6] },
+        { a: 7, b: 8n, vector: [7, 8, 9] },
+      ]);
+
+      const buf = await fromTableToBuffer(table);
+      expect(buf.byteLength).toBeGreaterThan(0);
+
+      const actual = tableFromIPC(buf);
+      expect(actual.numRows).toBe(3);
+      const actualSchema = actual.schema;
+      expect(actualSchema).toEqual(schema);
+
+      expect(table.getChild("a")?.toJSON()).toEqual([1, 4, 7]);
+      expect(table.getChild("b")?.toJSON()).toEqual([2n, 5n, 8n]);
+      expect(
+        table
+          .getChild("vector")
+          ?.toJSON()
+          .map((v) => v.toJSON()),
+      ).toEqual([
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+      ]);
+    });
+
+    it("can support multiple vector columns", async function () {
+      const schema = new Schema([
+        new Field("a", new Float(Precision.DOUBLE), true),
+        new Field("b", new Float(Precision.DOUBLE), true),
+        new Field(
+          "vec1",
+          new FixedSizeList(3, new Field("item", new Float16(), true)),
+          true,
+        ),
+        new Field(
+          "vec2",
+          new FixedSizeList(3, new Field("item", new Float64(), true)),
+          true,
+        ),
+      ]);
+      const table = makeArrowTable(
+        [
+          { a: 1, b: 2, vec1: [1, 2, 3], vec2: [2, 4, 6] },
+          { a: 4, b: 5, vec1: [4, 5, 6], vec2: [8, 10, 12] },
+          { a: 7, b: 8, vec1: [7, 8, 9], vec2: [14, 16, 18] },
+        ],
+        {
+          vectorColumns: {
+            vec1: { type: new Float16() },
+            vec2: { type: new Float64() },
+          },
         },
       );
-    }
 
-    describe("The function makeArrowTable", function () {
-      it("will use data types from a provided schema instead of inference", async function () {
-        const schema = new Schema([
-          new Field("a", new Int32(), false),
-          new Field("b", new Float32(), true),
-          new Field(
-            "c",
-            new FixedSizeList(3, new Field("item", new Float16())),
-          ),
-          new Field("d", new Int64(), true),
-        ]);
-        const table = makeArrowTable(
-          [
-            { a: 1, b: 2, c: [1, 2, 3], d: 9 },
-            { a: 4, b: 5, c: [4, 5, 6], d: 10 },
-            { a: 7, b: 8, c: [7, 8, 9], d: null },
-          ],
-          { schema },
-        );
+      const buf = await fromTableToBuffer(table);
+      expect(buf.byteLength).toBeGreaterThan(0);
 
-        const buf = await fromTableToBuffer(table);
-        expect(buf.byteLength).toBeGreaterThan(0);
+      const actual = tableFromIPC(buf);
+      expect(actual.numRows).toBe(3);
+      const actualSchema = actual.schema;
+      expect(actualSchema).toEqual(schema);
+    });
 
-        const actual = tableFromIPC(buf);
-        expect(actual.numRows).toBe(3);
-        const actualSchema = actual.schema;
-        expect(actualSchema).toEqual(schema);
-        expect(table.getChild("a")?.toJSON()).toEqual([1, 4, 7]);
-        expect(table.getChild("b")?.toJSON()).toEqual([2, 5, 8]);
-        expect(table.getChild("d")?.toJSON()).toEqual([9n, 10n, null]);
-      });
+    it("will detect vector columns when name contains 'vector' or 'embedding'", async function () {
+      // Test various naming patterns that should be detected as vector columns
+      const floatVectorTable = makeArrowTable([
+        {
+          // Float vectors (use decimal values to ensure they're treated as floats)
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          user_vector: [1.1, 2.2],
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          text_embedding: [3.3, 4.4],
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          doc_embeddings: [5.5, 6.6],
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          my_vector_field: [7.7, 8.8],
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          embedding_model: [9.9, 10.1],
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          VECTOR_COL: [11.1, 12.2], // uppercase
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          Vector_Mixed: [13.3, 14.4], // mixed case
+        },
+      ]);
 
-      it("will use a provided FixedSizeList schema with typed array values", function () {
-        const schema = new Schema([
-          new Field("text", new Utf8(), false),
-          new Field(
-            "vector",
-            new FixedSizeList(3, new Field("item", new Float32(), false)),
-            false,
-          ),
-        ]);
+      // Check that columns with 'vector' or 'embedding' in name are converted to FixedSizeList
+      const floatVectorColumns = [
+        "user_vector",
+        "text_embedding",
+        "doc_embeddings",
+        "my_vector_field",
+        "embedding_model",
+        "VECTOR_COL",
+        "Vector_Mixed",
+      ];
 
-        const table = makeArrowTable(
-          [
-            {
-              text: "foo",
-              vector: new Float32Array([1, 2, 3]),
-            },
-          ],
-          { schema },
-        );
-
-        expect(table.getChild("text")?.toJSON()).toEqual(["foo"]);
+      for (const columnName of floatVectorColumns) {
         expect(
-          table
-            .getChild("vector")
-            ?.toJSON()
-            .map((value) => value.toJSON()),
-        ).toEqual([[1, 2, 3]]);
-      });
-
-      it("will assume the column `vector` is FixedSizeList<Float32> by default", async function () {
-        const schema = new Schema([
-          new Field("a", new Float(Precision.DOUBLE), true),
-          new Field("b", new Int64(), true),
-          new Field(
-            "vector",
-            new FixedSizeList(
-              3,
-              new Field("item", new Float(Precision.SINGLE), true),
-            ),
-            true,
-          ),
-        ]);
-        const table = makeArrowTable([
-          { a: 1, b: 2n, vector: [1, 2, 3] },
-          { a: 4, b: 5n, vector: [4, 5, 6] },
-          { a: 7, b: 8n, vector: [7, 8, 9] },
-        ]);
-
-        const buf = await fromTableToBuffer(table);
-        expect(buf.byteLength).toBeGreaterThan(0);
-
-        const actual = tableFromIPC(buf);
-        expect(actual.numRows).toBe(3);
-        const actualSchema = actual.schema;
-        expect(actualSchema).toEqual(schema);
-
-        expect(table.getChild("a")?.toJSON()).toEqual([1, 4, 7]);
-        expect(table.getChild("b")?.toJSON()).toEqual([2n, 5n, 8n]);
+          DataType.isFixedSizeList(floatVectorTable.getChild(columnName)?.type),
+        ).toBe(true);
+        // Check that float vectors use Float32 by default
         expect(
-          table
-            .getChild("vector")
-            ?.toJSON()
-            .map((v) => v.toJSON()),
-        ).toEqual([
-          [1, 2, 3],
-          [4, 5, 6],
-          [7, 8, 9],
-        ]);
-      });
+          floatVectorTable
+            .getChild(columnName)
+            ?.type.children[0].type.toString(),
+        ).toEqual(new Float32().toString());
+      }
 
-      it("can support multiple vector columns", async function () {
-        const schema = new Schema([
-          new Field("a", new Float(Precision.DOUBLE), true),
-          new Field("b", new Float(Precision.DOUBLE), true),
-          new Field(
-            "vec1",
-            new FixedSizeList(3, new Field("item", new Float16(), true)),
-            true,
-          ),
-          new Field(
-            "vec2",
-            new FixedSizeList(3, new Field("item", new Float64(), true)),
-            true,
-          ),
-        ]);
-        const table = makeArrowTable(
-          [
-            { a: 1, b: 2, vec1: [1, 2, 3], vec2: [2, 4, 6] },
-            { a: 4, b: 5, vec1: [4, 5, 6], vec2: [8, 10, 12] },
-            { a: 7, b: 8, vec1: [7, 8, 9], vec2: [14, 16, 18] },
-          ],
-          {
-            vectorColumns: {
-              vec1: { type: new Float16() },
-              vec2: { type: new Float64() },
-            },
-          },
-        );
+      // Test that regular integer arrays still get treated as float vectors
+      // (since JavaScript doesn't distinguish integers from floats at runtime)
+      const integerArrayTable = makeArrowTable([
+        {
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          vector_int: [1, 2], // Regular array with integers - should be Float32
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          embedding_int: [3, 4], // Regular array with integers - should be Float32
+        },
+      ]);
 
-        const buf = await fromTableToBuffer(table);
-        expect(buf.byteLength).toBeGreaterThan(0);
+      const integerArrayColumns = ["vector_int", "embedding_int"];
 
-        const actual = tableFromIPC(buf);
-        expect(actual.numRows).toBe(3);
-        const actualSchema = actual.schema;
-        expect(actualSchema).toEqual(schema);
-      });
-
-      it("will detect vector columns when name contains 'vector' or 'embedding'", async function () {
-        // Test various naming patterns that should be detected as vector columns
-        const floatVectorTable = makeArrowTable([
-          {
-            // Float vectors (use decimal values to ensure they're treated as floats)
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            user_vector: [1.1, 2.2],
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            text_embedding: [3.3, 4.4],
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            doc_embeddings: [5.5, 6.6],
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            my_vector_field: [7.7, 8.8],
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            embedding_model: [9.9, 10.1],
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            VECTOR_COL: [11.1, 12.2], // uppercase
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            Vector_Mixed: [13.3, 14.4], // mixed case
-          },
-        ]);
-
-        // Check that columns with 'vector' or 'embedding' in name are converted to FixedSizeList
-        const floatVectorColumns = [
-          "user_vector",
-          "text_embedding",
-          "doc_embeddings",
-          "my_vector_field",
-          "embedding_model",
-          "VECTOR_COL",
-          "Vector_Mixed",
-        ];
-
-        for (const columnName of floatVectorColumns) {
-          expect(
-            DataType.isFixedSizeList(
-              floatVectorTable.getChild(columnName)?.type,
-            ),
-          ).toBe(true);
-          // Check that float vectors use Float32 by default
-          expect(
-            floatVectorTable
-              .getChild(columnName)
-              ?.type.children[0].type.toString(),
-          ).toEqual(new Float32().toString());
-        }
-
-        // Test that regular integer arrays still get treated as float vectors
-        // (since JavaScript doesn't distinguish integers from floats at runtime)
-        const integerArrayTable = makeArrowTable([
-          {
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            vector_int: [1, 2], // Regular array with integers - should be Float32
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            embedding_int: [3, 4], // Regular array with integers - should be Float32
-          },
-        ]);
-
-        const integerArrayColumns = ["vector_int", "embedding_int"];
-
-        for (const columnName of integerArrayColumns) {
-          expect(
-            DataType.isFixedSizeList(
-              integerArrayTable.getChild(columnName)?.type,
-            ),
-          ).toBe(true);
-          // Regular integer arrays should use Float32 (avoiding false positives)
-          expect(
-            integerArrayTable
-              .getChild(columnName)
-              ?.type.children[0].type.toString(),
-          ).toEqual(new Float32().toString());
-        }
-
-        // Test normal list should NOT be converted to FixedSizeList
-        const normalListTable = makeArrowTable([
-          {
-            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
-            normal_list: [15.5, 16.6], // should NOT be detected as vector
-          },
-        ]);
-
+      for (const columnName of integerArrayColumns) {
         expect(
           DataType.isFixedSizeList(
-            normalListTable.getChild("normal_list")?.type,
+            integerArrayTable.getChild(columnName)?.type,
           ),
-        ).toBe(false);
-        expect(
-          DataType.isList(normalListTable.getChild("normal_list")?.type),
         ).toBe(true);
-      });
-
-      it("will allow different vector column types", async function () {
-        const table = makeArrowTable([{ fp16: [1], fp32: [1], fp64: [1] }], {
-          vectorColumns: {
-            fp16: { type: new Float16() },
-            fp32: { type: new Float32() },
-            fp64: { type: new Float64() },
-          },
-        });
-
+        // Regular integer arrays should use Float32 (avoiding false positives)
         expect(
-          table.getChild("fp16")?.type.children[0].type.toString(),
-        ).toEqual(new Float16().toString());
-        expect(
-          table.getChild("fp32")?.type.children[0].type.toString(),
+          integerArrayTable
+            .getChild(columnName)
+            ?.type.children[0].type.toString(),
         ).toEqual(new Float32().toString());
+      }
+
+      // Test normal list should NOT be converted to FixedSizeList
+      const normalListTable = makeArrowTable([
+        {
+          // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+          normal_list: [15.5, 16.6], // should NOT be detected as vector
+        },
+      ]);
+
+      expect(
+        DataType.isFixedSizeList(normalListTable.getChild("normal_list")?.type),
+      ).toBe(false);
+      expect(
+        DataType.isList(normalListTable.getChild("normal_list")?.type),
+      ).toBe(true);
+    });
+
+    it("will allow different vector column types", async function () {
+      const table = makeArrowTable([{ fp16: [1], fp32: [1], fp64: [1] }], {
+        vectorColumns: {
+          fp16: { type: new Float16() },
+          fp32: { type: new Float32() },
+          fp64: { type: new Float64() },
+        },
+      });
+
+      expect(table.getChild("fp16")?.type.children[0].type.toString()).toEqual(
+        new Float16().toString(),
+      );
+      expect(table.getChild("fp32")?.type.children[0].type.toString()).toEqual(
+        new Float32().toString(),
+      );
+      expect(table.getChild("fp64")?.type.children[0].type.toString()).toEqual(
+        new Float64().toString(),
+      );
+    });
+
+    it("will infer FixedSizeList<Float32> from Float32Array values", async function () {
+      const table = makeArrowTable([
+        { id: "a", vector: new Float32Array([0.1, 0.2, 0.3]) },
+        { id: "b", vector: new Float32Array([0.4, 0.5, 0.6]) },
+      ]);
+
+      expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
+        true,
+      );
+      const vectorType = table.getChild("vector")?.type;
+      expect(vectorType.listSize).toBe(3);
+      expect(vectorType.children[0].type.toString()).toEqual(
+        new Float32().toString(),
+      );
+    });
+
+    it("will infer FixedSizeList<Uint8> from Uint8Array values", async function () {
+      const table = makeArrowTable([
+        { id: "a", vector: new Uint8Array([1, 2, 3]) },
+        { id: "b", vector: new Uint8Array([4, 5, 6]) },
+      ]);
+
+      expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
+        true,
+      );
+      const vectorType = table.getChild("vector")?.type;
+      expect(vectorType.listSize).toBe(3);
+      expect(vectorType.children[0].type.toString()).toEqual(
+        new ArrowUint8().toString(),
+      );
+    });
+
+    it("will use dictionary encoded strings if asked", async function () {
+      const table = makeArrowTable([{ str: "hello" }]);
+      expect(DataType.isUtf8(table.getChild("str")?.type)).toBe(true);
+
+      const tableWithDict = makeArrowTable([{ str: "hello" }], {
+        dictionaryEncodeStrings: true,
+      });
+      expect(DataType.isDictionary(tableWithDict.getChild("str")?.type)).toBe(
+        true,
+      );
+
+      const schema = new Schema([
+        new Field("str", new Dictionary(new Utf8(), new Int32())),
+      ]);
+
+      const tableWithDict2 = makeArrowTable([{ str: "hello" }], { schema });
+      expect(DataType.isDictionary(tableWithDict2.getChild("str")?.type)).toBe(
+        true,
+      );
+    });
+
+    it("will infer data types correctly", async function () {
+      await checkTableCreation(
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+        async (records) => (<any>makeArrowTable)(records),
+        true,
+      );
+    });
+
+    it("will allow matching inferred types across records", function () {
+      expect(() => makeArrowTable([{ value: 1 }, { value: 2 }])).not.toThrow();
+    });
+
+    it("will reject mismatched inferred types across records", function () {
+      expect(() => makeArrowTable([{ value: 1 }, { value: "two" }])).toThrow(
+        "Failed to infer schema for data. Previously inferred type Float64 but found Utf8 for field value at row 1. Consider providing an explicit schema.",
+      );
+    });
+
+    it.each([
+      ["ArrayBuffer", new Uint8Array([104]).buffer],
+      ["URL", new URL("https://example.com/")],
+      ["empty object", {}],
+      [
+        "class instance with enumerable fields",
+        Object.assign(new Blob(["x"]), { position: 0 }),
+      ],
+    ])("rejects %s values without a schema", (_name, value) => {
+      expect(() => makeArrowTable([{ id: 1, value }])).toThrow(
+        /field value at row 0/,
+      );
+      expect(() => makeArrowTable([{ value }])).toThrow(/field value at row 0/);
+    });
+
+    it.each([
+      ["Binary", new Binary(), new Uint8Array([104]).buffer],
+      ["Utf8", new Utf8(), new URL("https://example.com/")],
+    ])("rejects %s values with a schema", (_name, type, value) => {
+      const schema = new Schema([new Field("value", type, true)]);
+      expect(() => makeArrowTable([{ value }], { schema })).toThrow(
+        /field value at row 0/,
+      );
+    });
+
+    it("rejects unsupported values in nested struct fields", () => {
+      const schema = new Schema([
+        new Field(
+          "metadata",
+          new Struct([new Field("bytes", new Binary(), true)]),
+          true,
+        ),
+      ]);
+      expect(() =>
+        makeArrowTable(
+          [{ metadata: { bytes: new Uint8Array([104]).buffer } }],
+          { schema },
+        ),
+      ).toThrow(/field metadata\.bytes at row 0/);
+    });
+
+    it("rejects unsupported objects in list elements", () => {
+      const schema = new Schema([
+        new Field(
+          "images",
+          new List(new Field("item", new Binary(), true)),
+          true,
+        ),
+      ]);
+      expect(() =>
+        makeArrowTable([{ images: [new Blob(["abc"])] }], { schema }),
+      ).toThrow(/field images\[0\] at row 0/);
+    });
+
+    it("rejects unsupported objects in nested lists", () => {
+      const schema = new Schema([
+        new Field(
+          "images",
+          new List(
+            new Field(
+              "item",
+              new List(new Field("item", new Binary(), true)),
+              true,
+            ),
+          ),
+          true,
+        ),
+      ]);
+      expect(() =>
+        makeArrowTable([{ images: [[new Blob(["abc"])]] }], { schema }),
+      ).toThrow(/field images\[0\]\[0\] at row 0/);
+    });
+
+    it("rejects unsupported nested struct fields in lists", () => {
+      const schema = new Schema([
+        new Field(
+          "items",
+          new List(
+            new Field(
+              "item",
+              new Struct([new Field("bytes", new Binary(), true)]),
+              true,
+            ),
+          ),
+          true,
+        ),
+      ]);
+      expect(() =>
+        makeArrowTable([{ items: [{ bytes: new Uint8Array([104]).buffer }] }], {
+          schema,
+        }),
+      ).toThrow(/field items\[0\]\.bytes at row 0/);
+    });
+
+    it("will ignore generated dictionary IDs when comparing inferred types", function () {
+      const table = makeArrowTable([{ str: "a" }, { str: "b" }], {
+        dictionaryEncodeStrings: true,
+      });
+
+      expect(table.getChild("str")?.toJSON()).toEqual(["a", "b"]);
+    });
+
+    it("will preserve null values without treating them as type mismatches", function () {
+      for (const records of [
+        [{ vector: [1, 2, 3] }, { vector: null }],
+        [{ vector: null }, { vector: [1, 2, 3] }],
+      ]) {
+        const table = makeArrowTable(records);
+
+        expect(table.numRows).toBe(2);
+        expect(table.getChild("vector")?.nullCount).toBe(1);
+      }
+    });
+
+    it("will preserve empty variable-size lists", function () {
+      for (const records of [
+        [{ items: [1] }, { items: [] }],
+        [{ items: [] }, { items: [1] }],
+      ]) {
+        const table = makeArrowTable(records);
         expect(
-          table.getChild("fp64")?.type.children[0].type.toString(),
-        ).toEqual(new Float64().toString());
-      });
+          table
+            .getChild("items")
+            ?.toJSON()
+            .map((value) => value.toJSON()),
+        ).toEqual(records.map((record) => record.items));
+      }
+    });
 
-      it("will infer FixedSizeList<Float32> from Float32Array values", async function () {
-        const table = makeArrowTable([
-          { id: "a", vector: new Float32Array([0.1, 0.2, 0.3]) },
-          { id: "b", vector: new Float32Array([0.4, 0.5, 0.6]) },
-        ]);
-
-        expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
-          true,
-        );
-        const vectorType = table.getChild("vector")?.type;
-        expect(vectorType.listSize).toBe(3);
-        expect(vectorType.children[0].type.toString()).toEqual(
-          new Float32().toString(),
-        );
-      });
-
-      it("will infer FixedSizeList<Uint8> from Uint8Array values", async function () {
-        const table = makeArrowTable([
-          { id: "a", vector: new Uint8Array([1, 2, 3]) },
-          { id: "b", vector: new Uint8Array([4, 5, 6]) },
-        ]);
-
-        expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
-          true,
-        );
-        const vectorType = table.getChild("vector")?.type;
-        expect(vectorType.listSize).toBe(3);
-        expect(vectorType.children[0].type.toString()).toEqual(
-          new ArrowUint8().toString(),
-        );
-      });
-
-      it("will use dictionary encoded strings if asked", async function () {
-        const table = makeArrowTable([{ str: "hello" }]);
-        expect(DataType.isUtf8(table.getChild("str")?.type)).toBe(true);
-
-        const tableWithDict = makeArrowTable([{ str: "hello" }], {
-          dictionaryEncodeStrings: true,
-        });
-        expect(DataType.isDictionary(tableWithDict.getChild("str")?.type)).toBe(
-          true,
-        );
-
-        const schema = new Schema([
-          new Field("str", new Dictionary(new Utf8(), new Int32())),
-        ]);
-
-        const tableWithDict2 = makeArrowTable([{ str: "hello" }], { schema });
+    it("will propagate deferred evidence through nested lists", function () {
+      for (const records of [
+        [{ items: [1] }, { items: [null] }],
+        [{ items: [null] }, { items: [1] }],
+        [{ items: [null, 1] }, { items: [2, null] }],
+      ]) {
+        const table = makeArrowTable(records);
         expect(
-          DataType.isDictionary(tableWithDict2.getChild("str")?.type),
-        ).toBe(true);
-      });
+          table
+            .getChild("items")
+            ?.toJSON()
+            .map((value) => value.toJSON()),
+        ).toEqual(records.map((record) => record.items));
+      }
 
-      it("will infer data types correctly", async function () {
-        await checkTableCreation(
+      const nestedRecords = [{ items: [[1]] }, { items: [[null]] }];
+      const nestedTable = makeArrowTable(nestedRecords);
+      expect(
+        nestedTable
+          .getChild("items")
+          ?.toJSON()
+          .map((value) =>
+            value
+              .toJSON()
+              .map((nestedValue: { toJSON: () => unknown[] }) =>
+                nestedValue.toJSON(),
+              ),
+          ),
+      ).toEqual(nestedRecords.map((record) => record.items));
+    });
+
+    it("will reject incompatible deferred evidence within a list", function () {
+      for (const items of [
+        [[], 1],
+        [1, []],
+        [[null], 1],
+        [1, [null]],
+      ]) {
+        expect(() => makeArrowTable([{ items }])).toThrow(
+          "Failed to infer data type for field items at row 0.",
+        );
+      }
+    });
+
+    it("will reject empty fixed-size lists", function () {
+      expect(() =>
+        makeArrowTable([{ vector: [1, 2, 3] }, { vector: [] }]),
+      ).toThrow(
+        "Failed to infer schema for data. Previously inferred type FixedSizeList[3]<Float32> but found List[0] for field vector at row 1.",
+      );
+    });
+
+    it("will reject inferred leaf and branch shape changes", function () {
+      expect(() =>
+        makeArrowTable([{ value: 1 }, { value: { nested: 2 } }]),
+      ).toThrow(
+        "Failed to infer schema for data. Previously inferred type Float64 but found Struct for field value at row 1.",
+      );
+      expect(() =>
+        makeArrowTable([{ value: { nested: 1 } }, { value: 2 }]),
+      ).toThrow(
+        "Failed to infer schema for data. Previously inferred type Struct but found Float64 for field value at row 1.",
+      );
+    });
+
+    it("will allow null values around inferred struct values", function () {
+      for (const { records, nullIndex } of [
+        {
+          records: [{ value: null }, { value: { nested: 2 } }],
+          nullIndex: 0,
+        },
+        {
+          records: [{ value: { nested: 1 } }, { value: null }],
+          nullIndex: 1,
+        },
+      ]) {
+        const table = makeArrowTable(records);
+        const values = table.getChild("value");
+
+        expect(values?.nullCount).toBe(1);
+        expect(values?.get(nullIndex)).toBeNull();
+      }
+    });
+
+    it("will allow a schema to be provided", async function () {
+      await checkTableCreation(
+        async (records, _, schema) =>
           // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-          async (records) => (<any>makeArrowTable)(records),
+          (<any>makeArrowTable)(records, { schema }),
+        false,
+      );
+    });
+
+    it("will use the field order of any provided schema", async function () {
+      await checkTableCreation(
+        async (_, recordsReversed, schema) =>
+          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+          (<any>makeArrowTable)(recordsReversed, { schema }),
+        false,
+      );
+    });
+
+    it("will make an empty table", async function () {
+      await checkTableCreation(
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+        async (_, __, schema) => (<any>makeArrowTable)([], { schema }),
+        false,
+      );
+    });
+
+    it("will allow subsets of columns if nullable", async function () {
+      const schema = new Schema([
+        new Field("a", new Int64(), true),
+        new Field(
+          "s",
+          new Struct([
+            new Field("x", new Int32(), true),
+            new Field("y", new Int32(), true),
+          ]),
           true,
-        );
-      });
+        ),
+        new Field("d", new Int16(), true),
+      ]);
 
-      it("will allow a schema to be provided", async function () {
-        await checkTableCreation(
-          async (records, _, schema) =>
-            // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-            (<any>makeArrowTable)(records, { schema }),
-          false,
-        );
-      });
+      const table = makeArrowTable([{ a: 1n }], { schema });
+      expect(table.numCols).toBe(1);
+      expect(table.numRows).toBe(1);
 
-      it("will use the field order of any provided schema", async function () {
-        await checkTableCreation(
-          async (_, recordsReversed, schema) =>
-            // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-            (<any>makeArrowTable)(recordsReversed, { schema }),
-          false,
-        );
-      });
+      const table2 = makeArrowTable([{ a: 1n, d: 2 }], { schema });
+      expect(table2.numCols).toBe(2);
 
-      it("will make an empty table", async function () {
-        await checkTableCreation(
-          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-          async (_, __, schema) => (<any>makeArrowTable)([], { schema }),
-          false,
-        );
-      });
+      const table3 = makeArrowTable([{ s: { y: 3 } }], { schema });
+      expect(table3.numCols).toBe(1);
+      const expectedSchema = new Schema([
+        new Field("s", new Struct([new Field("y", new Int32(), true)]), true),
+      ]);
+      expect(table3.schema).toEqual(expectedSchema);
+    });
 
-      it("will allow subsets of columns if nullable", async function () {
-        const schema = new Schema([
-          new Field("a", new Int64(), true),
+    it("will work even if columns are sparsely provided", async function () {
+      const sparseRecords = [{ a: 1n }, { b: 2n }, { c: 3n }, { d: 4n }];
+      const table = makeArrowTable(sparseRecords);
+      expect(table.numCols).toBe(4);
+      expect(table.numRows).toBe(4);
+
+      const schema = new Schema([
+        new Field("a", new Int64(), true),
+        new Field("b", new Int32(), true),
+        new Field("c", new Int64(), true),
+        new Field("d", new Int16(), true),
+      ]);
+      const table2 = makeArrowTable(sparseRecords, { schema });
+      expect(table2.numCols).toBe(4);
+      expect(table2.numRows).toBe(4);
+      expect(table2.schema).toEqual(schema);
+    });
+
+    it("will handle missing columns in schema alignment when using embeddings", async function () {
+      const schema = new Schema(
+        [
+          new Field("domain", new Utf8(), true),
+          new Field("name", new Utf8(), true),
+          new Field("description", new Utf8(), true),
+        ],
+        new Map([["embedding_functions", JSON.stringify([])]]),
+      );
+
+      const data = [
+        { domain: "google.com", name: "Google" },
+        { domain: "facebook.com", name: "Facebook" },
+      ];
+
+      const table = await convertToTable(data, undefined, { schema });
+
+      expect(table.numCols).toBe(3);
+      expect(table.numRows).toBe(2);
+
+      const descriptionColumn = table.getChild("description");
+      expect(descriptionColumn).toBeDefined();
+      expect(descriptionColumn?.nullCount).toBe(2);
+      expect(descriptionColumn?.toArray()).toEqual([null, null]);
+
+      expect(table.getChild("domain")?.toArray()).toEqual([
+        "google.com",
+        "facebook.com",
+      ]);
+      expect(table.getChild("name")?.toArray()).toEqual(["Google", "Facebook"]);
+    });
+
+    it("will handle completely missing nested struct columns", async function () {
+      const schema = new Schema(
+        [
+          new Field("id", new Utf8(), true),
+          new Field("name", new Utf8(), true),
           new Field(
-            "s",
+            "metadata",
             new Struct([
-              new Field("x", new Int32(), true),
-              new Field("y", new Int32(), true),
+              new Field("version", new Int32(), true),
+              new Field("author", new Utf8(), true),
+              new Field(
+                "tags",
+                new List(new Field("item", new Utf8(), true)),
+                true,
+              ),
             ]),
             true,
           ),
-          new Field("d", new Int16(), true),
-        ]);
-
-        const table = makeArrowTable([{ a: 1n }], { schema });
-        expect(table.numCols).toBe(1);
-        expect(table.numRows).toBe(1);
-
-        const table2 = makeArrowTable([{ a: 1n, d: 2 }], { schema });
-        expect(table2.numCols).toBe(2);
-
-        const table3 = makeArrowTable([{ s: { y: 3 } }], { schema });
-        expect(table3.numCols).toBe(1);
-        const expectedSchema = new Schema([
-          new Field("s", new Struct([new Field("y", new Int32(), true)]), true),
-        ]);
-        expect(table3.schema).toEqual(expectedSchema);
-      });
-
-      it("will work even if columns are sparsely provided", async function () {
-        const sparseRecords = [{ a: 1n }, { b: 2n }, { c: 3n }, { d: 4n }];
-        const table = makeArrowTable(sparseRecords);
-        expect(table.numCols).toBe(4);
-        expect(table.numRows).toBe(4);
-
-        const schema = new Schema([
-          new Field("a", new Int64(), true),
-          new Field("b", new Int32(), true),
-          new Field("c", new Int64(), true),
-          new Field("d", new Int16(), true),
-        ]);
-        const table2 = makeArrowTable(sparseRecords, { schema });
-        expect(table2.numCols).toBe(4);
-        expect(table2.numRows).toBe(4);
-        expect(table2.schema).toEqual(schema);
-      });
-
-      it("will handle missing columns in schema alignment when using embeddings", async function () {
-        const schema = new Schema(
-          [
-            new Field("domain", new Utf8(), true),
-            new Field("name", new Utf8(), true),
-            new Field("description", new Utf8(), true),
-          ],
-          new Map([["embedding_functions", JSON.stringify([])]]),
-        );
-
-        const data = [
-          { domain: "google.com", name: "Google" },
-          { domain: "facebook.com", name: "Facebook" },
-        ];
-
-        const table = await convertToTable(data, undefined, { schema });
-
-        expect(table.numCols).toBe(3);
-        expect(table.numRows).toBe(2);
-
-        const descriptionColumn = table.getChild("description");
-        expect(descriptionColumn).toBeDefined();
-        expect(descriptionColumn?.nullCount).toBe(2);
-        expect(descriptionColumn?.toArray()).toEqual([null, null]);
-
-        expect(table.getChild("domain")?.toArray()).toEqual([
-          "google.com",
-          "facebook.com",
-        ]);
-        expect(table.getChild("name")?.toArray()).toEqual([
-          "Google",
-          "Facebook",
-        ]);
-      });
-
-      it("will handle completely missing nested struct columns", async function () {
-        const schema = new Schema(
-          [
-            new Field("id", new Utf8(), true),
-            new Field("name", new Utf8(), true),
-            new Field(
-              "metadata",
-              new Struct([
-                new Field("version", new Int32(), true),
-                new Field("author", new Utf8(), true),
-                new Field(
-                  "tags",
-                  new List(new Field("item", new Utf8(), true)),
-                  true,
-                ),
-              ]),
-              true,
-            ),
-          ],
-          new Map([["embedding_functions", JSON.stringify([])]]),
-        );
-
-        const data = [
-          { id: "doc1", name: "Document 1" },
-          { id: "doc2", name: "Document 2" },
-        ];
-
-        const table = await convertToTable(data, undefined, { schema });
-
-        expect(table.numCols).toBe(3);
-        expect(table.numRows).toBe(2);
-
-        const buf = await fromTableToBuffer(table);
-        const retrievedTable = tableFromIPC(buf);
-
-        const rows = [];
-        for (let i = 0; i < retrievedTable.numRows; i++) {
-          rows.push(retrievedTable.get(i));
-        }
-
-        expect(rows[0].metadata.version).toBe(null);
-        expect(rows[0].metadata.author).toBe(null);
-        expect(rows[0].metadata.tags).toBe(null);
-        expect(rows[0].id).toBe("doc1");
-        expect(rows[0].name).toBe("Document 1");
-      });
-
-      it("will handle partially missing nested struct fields", async function () {
-        const schema = new Schema(
-          [
-            new Field("id", new Utf8(), true),
-            new Field(
-              "metadata",
-              new Struct([
-                new Field("version", new Int32(), true),
-                new Field("author", new Utf8(), true),
-                new Field("created_at", new Utf8(), true),
-              ]),
-              true,
-            ),
-          ],
-          new Map([["embedding_functions", JSON.stringify([])]]),
-        );
-
-        const data = [
-          { id: "doc1", metadata: { version: 1, author: "Alice" } },
-          { id: "doc2", metadata: { version: 2 } },
-        ];
-
-        const table = await convertToTable(data, undefined, { schema });
-
-        expect(table.numCols).toBe(2);
-        expect(table.numRows).toBe(2);
-
-        const metadataColumn = table.getChild("metadata");
-        expect(metadataColumn).toBeDefined();
-        expect(metadataColumn?.type.toString()).toBe(
-          "Struct<{version:Int32, author:Utf8, created_at:Utf8}>",
-        );
-      });
-
-      it("will handle multiple levels of nested structures", async function () {
-        const schema = new Schema(
-          [
-            new Field("id", new Utf8(), true),
-            new Field(
-              "config",
-              new Struct([
-                new Field("database", new Utf8(), true),
-                new Field(
-                  "connection",
-                  new Struct([
-                    new Field("host", new Utf8(), true),
-                    new Field("port", new Int32(), true),
-                    new Field(
-                      "ssl",
-                      new Struct([
-                        new Field("enabled", new Bool(), true),
-                        new Field("cert_path", new Utf8(), true),
-                      ]),
-                      true,
-                    ),
-                  ]),
-                  true,
-                ),
-              ]),
-              true,
-            ),
-          ],
-          new Map([["embedding_functions", JSON.stringify([])]]),
-        );
-
-        const data = [
-          {
-            id: "config1",
-            config: {
-              database: "postgres",
-              connection: { host: "localhost" },
-            },
-          },
-          {
-            id: "config2",
-            config: { database: "mysql" },
-          },
-          {
-            id: "config3",
-          },
-        ];
-
-        const table = await convertToTable(data, undefined, { schema });
-
-        expect(table.numCols).toBe(2);
-        expect(table.numRows).toBe(3);
-
-        const configColumn = table.getChild("config");
-        expect(configColumn).toBeDefined();
-        expect(configColumn?.type.toString()).toBe(
-          "Struct<{database:Utf8, connection:Struct<{host:Utf8, port:Int32, ssl:Struct<{enabled:Bool, cert_path:Utf8}>}>}>",
-        );
-      });
-
-      it("will handle missing columns in Arrow table input when using embeddings", async function () {
-        const incompleteTable = makeArrowTable([
-          { domain: "google.com", name: "Google" },
-          { domain: "facebook.com", name: "Facebook" },
-        ]);
-
-        const schema = new Schema(
-          [
-            new Field("domain", new Utf8(), true),
-            new Field("name", new Utf8(), true),
-            new Field("description", new Utf8(), true),
-          ],
-          new Map([["embedding_functions", JSON.stringify([])]]),
-        );
-
-        const buf = await fromDataToBuffer(incompleteTable, undefined, schema);
-
-        expect(buf.byteLength).toBeGreaterThan(0);
-
-        const retrievedTable = tableFromIPC(buf);
-        expect(retrievedTable.numCols).toBe(3);
-        expect(retrievedTable.numRows).toBe(2);
-
-        const descriptionColumn = retrievedTable.getChild("description");
-        expect(descriptionColumn).toBeDefined();
-        expect(descriptionColumn?.nullCount).toBe(2);
-        expect(descriptionColumn?.toArray()).toEqual([null, null]);
-
-        expect(retrievedTable.getChild("domain")?.toArray()).toEqual([
-          "google.com",
-          "facebook.com",
-        ]);
-        expect(retrievedTable.getChild("name")?.toArray()).toEqual([
-          "Google",
-          "Facebook",
-        ]);
-      });
-
-      it("should correctly retain values in nested struct fields", async function () {
-        const testData = [
-          {
-            id: "doc1",
-            vector: [1, 2, 3],
-            metadata: {
-              filePath: "/path/to/file1.ts",
-              startLine: 10,
-              endLine: 20,
-              text: "function test() { return true; }",
-            },
-          },
-          {
-            id: "doc2",
-            vector: [4, 5, 6],
-            metadata: {
-              filePath: "/path/to/file2.ts",
-              startLine: 30,
-              endLine: 40,
-              text: "function test2() { return false; }",
-            },
-          },
-        ];
-
-        const table = makeArrowTable(testData);
-
-        const metadataField = table.schema.fields.find(
-          (f) => f.name === "metadata",
-        );
-        expect(metadataField).toBeDefined();
-        // biome-ignore lint/suspicious/noExplicitAny: accessing fields in different Arrow versions
-        const childNames = metadataField?.type.children.map((c: any) => c.name);
-        expect(childNames).toEqual([
-          "filePath",
-          "startLine",
-          "endLine",
-          "text",
-        ]);
-
-        const buf = await fromTableToBuffer(table);
-        const retrievedTable = tableFromIPC(buf);
-
-        const rows = [];
-        for (let i = 0; i < retrievedTable.numRows; i++) {
-          rows.push(retrievedTable.get(i));
-        }
-
-        const firstRow = rows[0];
-        expect(firstRow.id).toBe("doc1");
-        expect(firstRow.vector.toJSON()).toEqual([1, 2, 3]);
-        expect(firstRow.metadata.filePath).toBe("/path/to/file1.ts");
-        expect(firstRow.metadata.startLine).toBe(10);
-        expect(firstRow.metadata.endLine).toBe(20);
-        expect(firstRow.metadata.text).toBe("function test() { return true; }");
-      });
-    });
-
-    class DummyEmbedding extends EmbeddingFunction<string> {
-      toJSON(): Partial<FunctionOptions> {
-        return {};
-      }
-
-      async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
-        return data.map(() => [0.0, 0.0]);
-      }
-
-      ndims(): number {
-        return 2;
-      }
-
-      embeddingDataType() {
-        return new Float16();
-      }
-    }
-
-    class DummyEmbeddingWithNoDimension extends EmbeddingFunction<string> {
-      toJSON(): Partial<FunctionOptions> {
-        return {};
-      }
-
-      embeddingDataType() {
-        return new Float16();
-      }
-
-      async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
-        return data.map(() => [0.0, 0.0]);
-      }
-    }
-    const dummyEmbeddingConfig: EmbeddingFunctionConfig = {
-      sourceColumn: "string",
-      function: new DummyEmbedding(),
-    };
-
-    const dummyEmbeddingConfigWithNoDimension: EmbeddingFunctionConfig = {
-      sourceColumn: "string",
-      function: new DummyEmbeddingWithNoDimension(),
-    };
-
-    describe("convertToTable", function () {
-      it("will infer data types correctly", async function () {
-        await checkTableCreation(
-          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-          async (records) => await (<any>convertToTable)(records),
-          true,
-        );
-      });
-
-      it("will allow a schema to be provided", async function () {
-        await checkTableCreation(
-          async (records, _, schema) =>
-            // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-            await (<any>convertToTable)(records, undefined, { schema }),
-          false,
-        );
-      });
-
-      it("will use the field order of any provided schema", async function () {
-        await checkTableCreation(
-          async (_, recordsReversed, schema) =>
-            // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-            await (<any>convertToTable)(recordsReversed, undefined, { schema }),
-          false,
-        );
-      });
-
-      it("will make an empty table", async function () {
-        await checkTableCreation(
-          async (_, __, schema) =>
-            // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-            await (<any>convertToTable)([], undefined, { schema }),
-          false,
-        );
-      });
-
-      it("will apply embeddings", async function () {
-        const records = sampleRecords();
-        const table = await convertToTable(records, dummyEmbeddingConfig);
-        expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
-          true,
-        );
-        expect(
-          table.getChild("vector")?.type.children[0].type.toString(),
-        ).toEqual(new Float16().toString());
-      });
-
-      it("will fail if missing the embedding source column", async function () {
-        await expect(
-          convertToTable([{ id: 1 }], dummyEmbeddingConfig),
-        ).rejects.toThrow("'string' was not present");
-      });
-
-      it("use embeddingDimension if embedding missing from table", async function () {
-        const schema = new Schema([new Field("string", new Utf8(), false)]);
-        // Simulate getting an empty Arrow table (minus embedding) from some other source
-        // In other words, we aren't starting with records
-        const table = makeEmptyTable(schema);
-
-        // If the embedding specifies the dimension we are fine
-        await fromTableToBuffer(table, dummyEmbeddingConfig);
-
-        // We can also supply a schema and should be ok
-        const schemaWithEmbedding = new Schema([
-          new Field("string", new Utf8(), false),
-          new Field(
-            "vector",
-            new FixedSizeList(2, new Field("item", new Float16(), false)),
-            false,
-          ),
-        ]);
-        await fromTableToBuffer(
-          table,
-          dummyEmbeddingConfigWithNoDimension,
-          schemaWithEmbedding,
-        );
-
-        // Otherwise we will get an error
-        await expect(
-          fromTableToBuffer(table, dummyEmbeddingConfigWithNoDimension),
-        ).rejects.toThrow("does not specify `embeddingDimension`");
-      });
-
-      it("will apply embeddings to an empty table", async function () {
-        const schema = new Schema([
-          new Field("string", new Utf8(), false),
-          new Field(
-            "vector",
-            new FixedSizeList(2, new Field("item", new Float16(), false)),
-            false,
-          ),
-        ]);
-        const table = await convertToTable([], dummyEmbeddingConfig, {
-          schema,
-        });
-        expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
-          true,
-        );
-        expect(
-          table.getChild("vector")?.type.children[0].type.toString(),
-        ).toEqual(new Float16().toString());
-      });
-
-      it("will complain if embeddings present but schema missing embedding column", async function () {
-        const schema = new Schema([new Field("string", new Utf8(), false)]);
-        await expect(
-          convertToTable([], dummyEmbeddingConfig, { schema }),
-        ).rejects.toThrow("column vector was missing");
-      });
-
-      it("will skip embedding application if already applied", async function () {
-        const records = sampleRecords();
-        const table = await convertToTable(records, dummyEmbeddingConfig);
-
-        // fromTableToBuffer will try and apply the embeddings again
-        // but should skip since the column already has non-null values
-        const result = await fromTableToBuffer(table, dummyEmbeddingConfig);
-        expect(result.byteLength).toBeGreaterThan(0);
-      });
-    });
-
-    describe("makeEmptyTable", function () {
-      it("will make an empty table", async function () {
-        await checkTableCreation(
-          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-          async (_, __, schema) => (<any>makeEmptyTable)(schema),
-          false,
-        );
-      });
-
-      it("will make an empty table with a Map field", async function () {
-        const schema = new Schema([
-          new Field(
-            "attributes",
-            new Map_(
-              new Field(
-                "entries",
-                new Struct([
-                  new Field("key", new Utf8(), false),
-                  new Field("value", new Int32(), true),
-                ]),
-                false,
-              ),
-              true,
-            ),
-          ),
-        ]);
-
-        const table = makeEmptyTable(schema);
-
-        expectValidMapField(table.schema.fields[0]);
-
-        const buffer = await fromTableToBuffer(table);
-        const roundTripped = tableFromIPC(buffer);
-
-        expectValidMapField(roundTripped.schema.fields[0]);
-      });
-
-      it("preserves string schema metadata", function () {
-        const metadata = new Map([["source", "fixture"]]);
-        const schema = new Schema(
-          [new Field("value", new Int32(), true)],
-          metadata,
-        );
-
-        expect(makeEmptyTable(schema).schema.metadata.get("source")).toBe(
-          "fixture",
-        );
-      });
-
-      it.each([
-        ["non-string keys", new Map<unknown, unknown>([[42, "fixture"]])],
-        ["non-string values", new Map<unknown, unknown>([["source", 42]])],
-        [
-          "non-string keys and values",
-          new Map<unknown, unknown>([[42, false]]),
         ],
-      ])("rejects schema metadata with %s", function (_, metadataLike) {
-        const metadata = metadataLike as unknown as Map<string, string>;
-        const schema = new Schema(
-          [new Field("value", new Int32(), true)],
-          metadata,
-        );
+        new Map([["embedding_functions", JSON.stringify([])]]),
+      );
 
-        expect(() => makeEmptyTable(schema)).toThrow(
-          "Expected metadata, if present, to be a Map<string, string> but it had non-string keys or values",
-        );
-      });
+      const data = [
+        { id: "doc1", name: "Document 1" },
+        { id: "doc2", name: "Document 2" },
+      ];
+
+      const table = await convertToTable(data, undefined, { schema });
+
+      expect(table.numCols).toBe(3);
+      expect(table.numRows).toBe(2);
+
+      const buf = await fromTableToBuffer(table);
+      const retrievedTable = tableFromIPC(buf);
+
+      const rows = [];
+      for (let i = 0; i < retrievedTable.numRows; i++) {
+        rows.push(retrievedTable.get(i));
+      }
+
+      expect(rows[0].metadata.version).toBe(null);
+      expect(rows[0].metadata.author).toBe(null);
+      expect(rows[0].metadata.tags).toBe(null);
+      expect(rows[0].id).toBe("doc1");
+      expect(rows[0].name).toBe("Document 1");
     });
 
-    describe("when using two versions of arrow", function () {
-      it("can still import data", async function () {
-        const schema = new arrow15.Schema([
-          new arrow15.Field("id", new arrow15.Int32()),
-          new arrow15.Field(
-            "vector",
-            new arrow15.FixedSizeList(
-              1024,
-              new arrow15.Field("item", new arrow15.Float32(), true),
-            ),
+    it("will handle partially missing nested struct fields", async function () {
+      const schema = new Schema(
+        [
+          new Field("id", new Utf8(), true),
+          new Field(
+            "metadata",
+            new Struct([
+              new Field("version", new Int32(), true),
+              new Field("author", new Utf8(), true),
+              new Field("created_at", new Utf8(), true),
+            ]),
+            true,
           ),
-          new arrow15.Field(
-            "struct",
-            new arrow15.Struct([
-              new arrow15.Field(
-                "nested",
-                new arrow15.Dictionary(
-                  new arrow15.Utf8(),
-                  new arrow15.Int32(),
-                  1,
-                  true,
-                ),
-              ),
-              new arrow15.Field(
-                "ts_with_tz",
-                new arrow15.TimestampNanosecond("some_tz"),
-              ),
-              new arrow15.Field(
-                "ts_no_tz",
-                new arrow15.TimestampNanosecond(null),
+        ],
+        new Map([["embedding_functions", JSON.stringify([])]]),
+      );
+
+      const data = [
+        { id: "doc1", metadata: { version: 1, author: "Alice" } },
+        { id: "doc2", metadata: { version: 2 } },
+      ];
+
+      const table = await convertToTable(data, undefined, { schema });
+
+      expect(table.numCols).toBe(2);
+      expect(table.numRows).toBe(2);
+
+      const metadataColumn = table.getChild("metadata");
+      expect(metadataColumn).toBeDefined();
+      expect(metadataColumn?.type.toString()).toBe(
+        "Struct<{version:Int32, author:Utf8, created_at:Utf8}>",
+      );
+    });
+
+    it("will handle multiple levels of nested structures", async function () {
+      const schema = new Schema(
+        [
+          new Field("id", new Utf8(), true),
+          new Field(
+            "config",
+            new Struct([
+              new Field("database", new Utf8(), true),
+              new Field(
+                "connection",
+                new Struct([
+                  new Field("host", new Utf8(), true),
+                  new Field("port", new Int32(), true),
+                  new Field(
+                    "ssl",
+                    new Struct([
+                      new Field("enabled", new Bool(), true),
+                      new Field("cert_path", new Utf8(), true),
+                    ]),
+                    true,
+                  ),
+                ]),
+                true,
               ),
             ]),
+            true,
           ),
-          // biome-ignore lint/suspicious/noExplicitAny: skip
-        ]) as any;
-        schema.metadataVersion = arrow15.MetadataVersion.V5;
-        const table = makeArrowTable([], { schema });
+        ],
+        new Map([["embedding_functions", JSON.stringify([])]]),
+      );
 
-        const buf = await fromTableToBuffer(table);
-        expect(buf.byteLength).toBeGreaterThan(0);
-        const actual = tableFromIPC(buf);
-        const actualSchema = actual.schema;
-        expect(actualSchema.fields.length).toBe(3);
+      const data = [
+        {
+          id: "config1",
+          config: {
+            database: "postgres",
+            connection: { host: "localhost" },
+          },
+        },
+        {
+          id: "config2",
+          config: { database: "mysql" },
+        },
+        {
+          id: "config3",
+        },
+      ];
 
-        // Deep equality gets hung up on some very minor unimportant differences
-        // between arrow version 13 and 15 which isn't really what we're testing for
-        // and so we do our own comparison that just checks name/type/nullability
-        function compareFields(lhs: arrow15.Field, rhs: arrow15.Field) {
-          expect(lhs.name).toEqual(rhs.name);
-          expect(lhs.nullable).toEqual(rhs.nullable);
-          expect(lhs.typeId).toEqual(rhs.typeId);
-          if ("children" in lhs.type && lhs.type.children !== null) {
-            const lhsChildren = lhs.type.children as arrow15.Field[];
-            lhsChildren.forEach((child: arrow15.Field, idx) => {
-              compareFields(child, rhs.type.children[idx]);
-            });
-          }
-        }
+      const table = await convertToTable(data, undefined, { schema });
+
+      expect(table.numCols).toBe(2);
+      expect(table.numRows).toBe(3);
+
+      const configColumn = table.getChild("config");
+      expect(configColumn).toBeDefined();
+      expect(configColumn?.type.toString()).toBe(
+        "Struct<{database:Utf8, connection:Struct<{host:Utf8, port:Int32, ssl:Struct<{enabled:Bool, cert_path:Utf8}>}>}>",
+      );
+    });
+
+    it("will handle missing columns in Arrow table input when using embeddings", async function () {
+      const incompleteTable = makeArrowTable([
+        { domain: "google.com", name: "Google" },
+        { domain: "facebook.com", name: "Facebook" },
+      ]);
+
+      const schema = new Schema(
+        [
+          new Field("domain", new Utf8(), true),
+          new Field("name", new Utf8(), true),
+          new Field("description", new Utf8(), true),
+        ],
+        new Map([["embedding_functions", JSON.stringify([])]]),
+      );
+
+      const buf = await fromDataToBuffer(incompleteTable, undefined, schema);
+
+      expect(buf.byteLength).toBeGreaterThan(0);
+
+      const retrievedTable = tableFromIPC(buf);
+      expect(retrievedTable.numCols).toBe(3);
+      expect(retrievedTable.numRows).toBe(2);
+
+      const descriptionColumn = retrievedTable.getChild("description");
+      expect(descriptionColumn).toBeDefined();
+      expect(descriptionColumn?.nullCount).toBe(2);
+      expect(descriptionColumn?.toArray()).toEqual([null, null]);
+
+      expect(retrievedTable.getChild("domain")?.toArray()).toEqual([
+        "google.com",
+        "facebook.com",
+      ]);
+      expect(retrievedTable.getChild("name")?.toArray()).toEqual([
+        "Google",
+        "Facebook",
+      ]);
+    });
+
+    it("should correctly retain values in nested struct fields", async function () {
+      const testData = [
+        {
+          id: "doc1",
+          vector: [1, 2, 3],
+          metadata: {
+            filePath: "/path/to/file1.ts",
+            startLine: 10,
+            endLine: 20,
+            text: "function test() { return true; }",
+          },
+        },
+        {
+          id: "doc2",
+          vector: [4, 5, 6],
+          metadata: {
+            filePath: "/path/to/file2.ts",
+            startLine: 30,
+            endLine: 40,
+            text: "function test2() { return false; }",
+          },
+        },
+      ];
+
+      const table = makeArrowTable(testData);
+
+      const metadataField = table.schema.fields.find(
+        (f) => f.name === "metadata",
+      );
+      expect(metadataField).toBeDefined();
+      // biome-ignore lint/suspicious/noExplicitAny: accessing fields in different Arrow versions
+      const childNames = metadataField?.type.children.map((c: any) => c.name);
+      expect(childNames).toEqual(["filePath", "startLine", "endLine", "text"]);
+
+      const buf = await fromTableToBuffer(table);
+      const retrievedTable = tableFromIPC(buf);
+
+      const rows = [];
+      for (let i = 0; i < retrievedTable.numRows; i++) {
+        rows.push(retrievedTable.get(i));
+      }
+
+      const firstRow = rows[0];
+      expect(firstRow.id).toBe("doc1");
+      expect(firstRow.vector.toJSON()).toEqual([1, 2, 3]);
+      expect(firstRow.metadata.filePath).toBe("/path/to/file1.ts");
+      expect(firstRow.metadata.startLine).toBe(10);
+      expect(firstRow.metadata.endLine).toBe(20);
+      expect(firstRow.metadata.text).toBe("function test() { return true; }");
+    });
+  });
+
+  class DummyEmbedding extends EmbeddingFunction<string> {
+    toJSON(): Partial<FunctionOptions> {
+      return {};
+    }
+
+    async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
+      return data.map(() => [0.0, 0.0]);
+    }
+
+    ndims(): number {
+      return 2;
+    }
+
+    embeddingDataType() {
+      return new Float16();
+    }
+  }
+
+  class DummyEmbeddingWithNoDimension extends EmbeddingFunction<string> {
+    toJSON(): Partial<FunctionOptions> {
+      return {};
+    }
+
+    embeddingDataType() {
+      return new Float16();
+    }
+
+    async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
+      return data.map(() => [0.0, 0.0]);
+    }
+  }
+  const dummyEmbeddingConfig: EmbeddingFunctionConfig = {
+    sourceColumn: "string",
+    function: new DummyEmbedding(),
+  };
+
+  const dummyEmbeddingConfigWithNoDimension: EmbeddingFunctionConfig = {
+    sourceColumn: "string",
+    function: new DummyEmbeddingWithNoDimension(),
+  };
+
+  describe("convertToTable", function () {
+    it("will infer data types correctly", async function () {
+      await checkTableCreation(
         // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-        actualSchema.fields.forEach((field: any, idx: string | number) => {
-          compareFields(field, actualSchema.fields[idx]);
-        });
-      });
+        async (records) => await (<any>convertToTable)(records),
+        true,
+      );
     });
 
-    describe("converting record batches to buffers", function () {
-      it("can convert to buffered record batch and back again", async function () {
-        const records = [
-          { text: "dog", vector: [0.1, 0.2] },
-          { text: "cat", vector: [0.3, 0.4] },
-        ];
-        const table = await convertToTable(records);
-        const batch = table.batches[0];
-
-        const buffer = await fromRecordBatchToBuffer(batch);
-        const result = await fromBufferToRecordBatch(buffer);
-
-        expect(JSON.stringify(batch.toArray())).toEqual(
-          JSON.stringify(result?.toArray()),
-        );
-      });
-
-      it("converting from buffer returns null if buffer has no record batches", async function () {
-        const result = await fromBufferToRecordBatch(Buffer.from([0x01, 0x02])); // bad data
-        expect(result).toEqual(null);
-      });
+    it("will allow a schema to be provided", async function () {
+      await checkTableCreation(
+        async (records, _, schema) =>
+          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+          await (<any>convertToTable)(records, undefined, { schema }),
+        false,
+      );
     });
 
-    describe("boolean null handling", function () {
-      it("should handle null values in nullable boolean fields", () => {
-        const { makeArrowTable } = require("../lancedb/arrow");
-        const schema = new Schema([new Field("test", new arrow.Bool(), true)]);
-
-        // Test with all null values
-        const data = [{ test: null }];
-        const table = makeArrowTable(data, { schema });
-
-        expect(table.numRows).toBe(1);
-        expect(table.schema.names).toEqual(["test"]);
-        expect(table.getChild("test")!.get(0)).toBeNull();
-      });
-
-      it("should handle mixed null and non-null boolean values", () => {
-        const { makeArrowTable } = require("../lancedb/arrow");
-        const schema = new Schema([new Field("test", new Bool(), true)]);
-
-        // Test with mixed values
-        const data = [{ test: true }, { test: null }, { test: false }];
-        const table = makeArrowTable(data, { schema });
-
-        expect(table.numRows).toBe(3);
-        expect(table.getChild("test")!.get(0)).toBe(true);
-        expect(table.getChild("test")!.get(1)).toBeNull();
-        expect(table.getChild("test")!.get(2)).toBe(false);
-      });
+    it("will use the field order of any provided schema", async function () {
+      await checkTableCreation(
+        async (_, recordsReversed, schema) =>
+          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+          await (<any>convertToTable)(recordsReversed, undefined, { schema }),
+        false,
+      );
     });
 
-    // Test for the undefined values bug fix
-    describe("undefined values handling", () => {
-      it("should handle mixed undefined and actual values", () => {
-        const schema = new Schema([
-          new Field("text", new Utf8(), true), // nullable
-          new Field("number", new Int32(), true), // nullable
-          new Field("bool", new Bool(), true), // nullable
-        ]);
+    it("will make an empty table", async function () {
+      await checkTableCreation(
+        async (_, __, schema) =>
+          // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+          await (<any>convertToTable)([], undefined, { schema }),
+        false,
+      );
+    });
 
-        const data = [
-          { text: undefined, number: 42, bool: true },
-          { text: "hello", number: undefined, bool: false },
-          { text: "world", number: 123, bool: undefined },
-        ];
-        const table = makeArrowTable(data, { schema });
+    it("will apply embeddings", async function () {
+      const records = sampleRecords();
+      const table = await convertToTable(records, dummyEmbeddingConfig);
+      expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
+        true,
+      );
+      expect(
+        table.getChild("vector")?.type.children[0].type.toString(),
+      ).toEqual(new Float16().toString());
+    });
 
-        const result = table.toArray();
-        expect(result).toHaveLength(3);
-        expect(result[0].text).toBe(null);
-        expect(result[0].number).toBe(42);
-        expect(result[0].bool).toBe(true);
-        expect(result[1].text).toBe("hello");
-        expect(result[1].number).toBe(null);
-        expect(result[1].bool).toBe(false);
-        expect(result[2].text).toBe("world");
-        expect(result[2].number).toBe(123);
-        expect(result[2].bool).toBe(null);
+    it("will fail if missing the embedding source column", async function () {
+      await expect(
+        convertToTable([{ id: 1 }], dummyEmbeddingConfig),
+      ).rejects.toThrow("'string' was not present");
+    });
+
+    it("use embeddingDimension if embedding missing from table", async function () {
+      const schema = new Schema([new Field("string", new Utf8(), false)]);
+      // Simulate getting an empty Arrow table (minus embedding) from some other source
+      // In other words, we aren't starting with records
+      const table = makeEmptyTable(schema);
+
+      // If the embedding specifies the dimension we are fine
+      await fromTableToBuffer(table, dummyEmbeddingConfig);
+
+      // We can also supply a schema and should be ok
+      const schemaWithEmbedding = new Schema([
+        new Field("string", new Utf8(), false),
+        new Field(
+          "vector",
+          new FixedSizeList(2, new Field("item", new Float16(), false)),
+          false,
+        ),
+      ]);
+      await fromTableToBuffer(
+        table,
+        dummyEmbeddingConfigWithNoDimension,
+        schemaWithEmbedding,
+      );
+
+      // Otherwise we will get an error
+      await expect(
+        fromTableToBuffer(table, dummyEmbeddingConfigWithNoDimension),
+      ).rejects.toThrow("does not specify `embeddingDimension`");
+    });
+
+    it("will apply embeddings to an empty table", async function () {
+      const schema = new Schema([
+        new Field("string", new Utf8(), false),
+        new Field(
+          "vector",
+          new FixedSizeList(2, new Field("item", new Float16(), false)),
+          false,
+        ),
+      ]);
+      const table = await convertToTable([], dummyEmbeddingConfig, {
+        schema,
+      });
+      expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
+        true,
+      );
+      expect(
+        table.getChild("vector")?.type.children[0].type.toString(),
+      ).toEqual(new Float16().toString());
+    });
+
+    it("will complain if embeddings present but schema missing embedding column", async function () {
+      const schema = new Schema([new Field("string", new Utf8(), false)]);
+      await expect(
+        convertToTable([], dummyEmbeddingConfig, { schema }),
+      ).rejects.toThrow("column vector was missing");
+    });
+
+    it("will skip embedding application if already applied", async function () {
+      const records = sampleRecords();
+      const table = await convertToTable(records, dummyEmbeddingConfig);
+
+      // fromTableToBuffer will try and apply the embeddings again
+      // but should skip since the column already has non-null values
+      const result = await fromTableToBuffer(table, dummyEmbeddingConfig);
+      expect(result.byteLength).toBeGreaterThan(0);
+    });
+  });
+
+  describe("makeEmptyTable", function () {
+    it("will make an empty table", async function () {
+      await checkTableCreation(
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+        async (_, __, schema) => (<any>makeEmptyTable)(schema),
+        false,
+      );
+    });
+
+    it("will make an empty table with a Map field", async function () {
+      const schema = new Schema([
+        new Field(
+          "attributes",
+          new Map_(
+            new Field(
+              "entries",
+              new Struct([
+                new Field("key", new Utf8(), false),
+                new Field("value", new Int32(), true),
+              ]),
+              false,
+            ),
+            true,
+          ),
+        ),
+      ]);
+
+      const table = makeEmptyTable(schema);
+
+      expectValidMapField(table.schema.fields[0]);
+
+      const buffer = await fromTableToBuffer(table);
+      const roundTripped = tableFromIPC(buffer);
+
+      expectValidMapField(roundTripped.schema.fields[0]);
+    });
+
+    it("preserves string schema metadata", function () {
+      const metadata = new Map([["source", "fixture"]]);
+      const schema = new Schema(
+        [new Field("value", new Int32(), true)],
+        metadata,
+      );
+
+      expect(makeEmptyTable(schema).schema.metadata.get("source")).toBe(
+        "fixture",
+      );
+    });
+
+    it.each([
+      ["non-string keys", new Map<unknown, unknown>([[42, "fixture"]])],
+      ["non-string values", new Map<unknown, unknown>([["source", 42]])],
+      ["non-string keys and values", new Map<unknown, unknown>([[42, false]])],
+    ])("rejects schema metadata with %s", function (_, metadataLike) {
+      const metadata = metadataLike as unknown as Map<string, string>;
+      const schema = new Schema(
+        [new Field("value", new Int32(), true)],
+        metadata,
+      );
+
+      expect(() => makeEmptyTable(schema)).toThrow(
+        "Expected metadata, if present, to be a Map<string, string> but it had non-string keys or values",
+      );
+    });
+  });
+
+  describe("when using two versions of arrow", function () {
+    it("preserves a dictionary shared by multiple fields", async function () {
+      const values = ["alpha", "beta", "alpha"];
+      const dictionaryVector = vectorFromArray(values);
+      const batch = new ArrowRecordBatch({
+        first: dictionaryVector.data[0],
+        second: dictionaryVector.data[0],
+      });
+      const table = new ArrowTable([batch]);
+
+      const sanitized = sanitizeTable(table);
+      expect([...sanitized.getChild("first")!]).toEqual(values);
+      expect([...sanitized.getChild("second")!]).toEqual(values);
+      const firstType = sanitized.schema.fields[0].type as {
+        dictionary: unknown;
+      };
+      const secondType = sanitized.schema.fields[1].type as {
+        dictionary: unknown;
+      };
+      expect(secondType.dictionary).toBe(firstType.dictionary);
+      expect(sanitized.batches[0].data.children[1].dictionary).toBe(
+        sanitized.batches[0].data.children[0].dictionary,
+      );
+
+      const buf = await fromDataToBuffer(table);
+      const actual = currentTableFromIPC(buf);
+      expect([...actual.getChild("first")!]).toEqual(values);
+      expect([...actual.getChild("second")!]).toEqual(values);
+    });
+
+    it("preserves shared dictionary data from another Arrow version", async function () {
+      const values = ["alpha", "beta", "alpha"];
+      const dictionaryVector = vectorFromArray(values);
+      const firstBatch = new ArrowRecordBatch({
+        label: dictionaryVector.slice(0, 2).data[0],
+      });
+      const secondBatch = new ArrowRecordBatch({
+        label: dictionaryVector.slice(2).data[0],
+      });
+      const table = new ArrowTable([firstBatch, secondBatch]);
+
+      const sanitized = sanitizeTable(table);
+      expect([...sanitized.getChild("label")!]).toEqual(values);
+
+      const dictionaries = sanitized.batches.map(
+        (batch) => batch.data.children[0].dictionary,
+      );
+      expect(dictionaries[0]).toBeInstanceOf(CurrentVector);
+      expect(dictionaries[1]).toBe(dictionaries[0]);
+
+      const buf = await fromDataToBuffer(table);
+      const actual = currentTableFromIPC(buf);
+      expect([...actual.getChild("label")!]).toEqual(values);
+    });
+
+    it("preserves shared chunks in growing dictionaries", async function () {
+      const type = new Dictionary(new Utf8(), new Int32(), 42, false);
+      const firstDictionary = vectorFromArray(["alpha", "beta"], new Utf8());
+      const secondDictionary = firstDictionary.concat(
+        vectorFromArray(["gamma"], new Utf8()),
+      );
+      const firstData = arrowMakeData({
+        type,
+        data: Int32Array.from([0, 1]),
+        dictionary: firstDictionary,
+      });
+      const secondData = arrowMakeData({
+        type,
+        data: Int32Array.from([2]),
+        dictionary: secondDictionary,
+      });
+      const table = new ArrowTable([
+        new ArrowRecordBatch({ label: firstData }),
+        new ArrowRecordBatch({ label: secondData }),
+      ]);
+
+      const sanitized = sanitizeTable(table);
+      const expected = ["alpha", "beta", "gamma"];
+      expect([...sanitized.getChild("label")!]).toEqual(expected);
+      const firstLocalDictionary =
+        sanitized.batches[0].data.children[0].dictionary!;
+      const secondLocalDictionary =
+        sanitized.batches[1].data.children[0].dictionary!;
+      expect(secondLocalDictionary.data[0]).toBe(firstLocalDictionary.data[0]);
+
+      const buf = await fromTableToBuffer(sanitized);
+      const actual = currentTableFromIPC(buf);
+      expect([...actual.getChild("label")!]).toEqual(expected);
+    });
+
+    it("can serialize list data from another Arrow version", async function () {
+      const values = [["anime", "action"], [], null];
+      const vector = vectorFromArray(
+        values,
+        new List(new Field("item", new Utf8(), true)),
+      );
+      const table = new ArrowTable({ tags: vector });
+
+      const buf = await fromDataToBuffer(table);
+      const actual = currentTableFromIPC(buf);
+      const actualTags = actual.getChild("tags");
+
+      expect(actualTags?.get(0)?.toJSON()).toEqual(values[0]);
+      expect(actualTags?.get(1)?.toJSON()).toEqual(values[1]);
+      expect(actualTags?.get(2)).toBeNull();
+    });
+
+    it("can still import data", async function () {
+      const schema = new arrow15.Schema([
+        new arrow15.Field("id", new arrow15.Int32()),
+        new arrow15.Field(
+          "vector",
+          new arrow15.FixedSizeList(
+            1024,
+            new arrow15.Field("item", new arrow15.Float32(), true),
+          ),
+        ),
+        new arrow15.Field(
+          "struct",
+          new arrow15.Struct([
+            new arrow15.Field(
+              "nested",
+              new arrow15.Dictionary(
+                new arrow15.Utf8(),
+                new arrow15.Int32(),
+                1,
+                true,
+              ),
+            ),
+            new arrow15.Field(
+              "ts_with_tz",
+              new arrow15.TimestampNanosecond("some_tz"),
+            ),
+            new arrow15.Field(
+              "ts_no_tz",
+              new arrow15.TimestampNanosecond(null),
+            ),
+          ]),
+        ),
+        // biome-ignore lint/suspicious/noExplicitAny: skip
+      ]) as any;
+      schema.metadataVersion = arrow15.MetadataVersion.V5;
+      const table = makeArrowTable([], { schema });
+
+      const buf = await fromTableToBuffer(table);
+      expect(buf.byteLength).toBeGreaterThan(0);
+      const actual = tableFromIPC(buf);
+      const actualSchema = actual.schema;
+      expect(actualSchema.fields.length).toBe(3);
+
+      // Deep equality gets hung up on some very minor unimportant differences
+      // between arrow version 13 and 15 which isn't really what we're testing for
+      // and so we do our own comparison that just checks name/type/nullability
+      function compareFields(lhs: arrow15.Field, rhs: arrow15.Field) {
+        expect(lhs.name).toEqual(rhs.name);
+        expect(lhs.nullable).toEqual(rhs.nullable);
+        expect(lhs.typeId).toEqual(rhs.typeId);
+        if ("children" in lhs.type && lhs.type.children !== null) {
+          const lhsChildren = lhs.type.children as arrow15.Field[];
+          lhsChildren.forEach((child: arrow15.Field, idx) => {
+            compareFields(child, rhs.type.children[idx]);
+          });
+        }
+      }
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      actualSchema.fields.forEach((field: any, idx: string | number) => {
+        compareFields(field, actualSchema.fields[idx]);
       });
     });
-  },
-);
+  });
+
+  describe("converting record batches to buffers", function () {
+    it("can convert to buffered record batch and back again", async function () {
+      const records = [
+        { text: "dog", vector: [0.1, 0.2] },
+        { text: "cat", vector: [0.3, 0.4] },
+      ];
+      const table = await convertToTable(records);
+      const batch = table.batches[0];
+
+      const buffer = await fromRecordBatchToBuffer(batch);
+      const result = await fromBufferToRecordBatch(buffer);
+
+      expect(JSON.stringify(batch.toArray())).toEqual(
+        JSON.stringify(result?.toArray()),
+      );
+    });
+
+    it("converting from buffer returns null if buffer has no record batches", async function () {
+      const result = await fromBufferToRecordBatch(Buffer.from([0x01, 0x02])); // bad data
+      expect(result).toEqual(null);
+    });
+  });
+
+  describe("boolean null handling", function () {
+    it("should handle null values in nullable boolean fields", () => {
+      const { makeArrowTable } = require("../lancedb/arrow");
+      const schema = new Schema([new Field("test", new arrow.Bool(), true)]);
+
+      // Test with all null values
+      const data = [{ test: null }];
+      const table = makeArrowTable(data, { schema });
+
+      expect(table.numRows).toBe(1);
+      expect(table.schema.names).toEqual(["test"]);
+      expect(table.getChild("test")!.get(0)).toBeNull();
+    });
+
+    it("should handle mixed null and non-null boolean values", () => {
+      const { makeArrowTable } = require("../lancedb/arrow");
+      const schema = new Schema([new Field("test", new Bool(), true)]);
+
+      // Test with mixed values
+      const data = [{ test: true }, { test: null }, { test: false }];
+      const table = makeArrowTable(data, { schema });
+
+      expect(table.numRows).toBe(3);
+      expect(table.getChild("test")!.get(0)).toBe(true);
+      expect(table.getChild("test")!.get(1)).toBeNull();
+      expect(table.getChild("test")!.get(2)).toBe(false);
+    });
+  });
+
+  // Test for the undefined values bug fix
+  describe("undefined values handling", () => {
+    it("should handle mixed undefined and actual values", () => {
+      const schema = new Schema([
+        new Field("text", new Utf8(), true), // nullable
+        new Field("number", new Int32(), true), // nullable
+        new Field("bool", new Bool(), true), // nullable
+      ]);
+
+      const data = [
+        { text: undefined, number: 42, bool: true },
+        { text: "hello", number: undefined, bool: false },
+        { text: "world", number: 123, bool: undefined },
+      ];
+      const table = makeArrowTable(data, { schema });
+
+      const result = table.toArray();
+      expect(result).toHaveLength(3);
+      expect(result[0].text).toBe(null);
+      expect(result[0].number).toBe(42);
+      expect(result[0].bool).toBe(true);
+      expect(result[1].text).toBe("hello");
+      expect(result[1].number).toBe(null);
+      expect(result[1].bool).toBe(false);
+      expect(result[2].text).toBe("world");
+      expect(result[2].number).toBe(123);
+      expect(result[2].bool).toBe(null);
+    });
+  });
+});

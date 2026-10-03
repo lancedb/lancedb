@@ -4,7 +4,15 @@
 import { Field, Schema } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { EmbeddingFunction } from "./embedding_function";
-import { EmbeddingFunctionConfig, getRegistry } from "./registry";
+import {
+  EmbeddingFunctionConfig,
+  EmbeddingFunctionRegistry,
+  getRegistry as getGlobalRegistry,
+  registerBuiltIn,
+} from "./registry";
+
+type OpenAIModule = typeof import("./openai");
+type TransformersModule = typeof import("./transformers");
 
 export {
   FieldOptions,
@@ -14,7 +22,39 @@ export {
   EmbeddingFunctionConstructor,
 } from "./embedding_function";
 
-export * from "./registry";
+export {
+  EmbeddingFunctionRegistry,
+  parseEmbeddingMetadata,
+  register,
+} from "./registry";
+export type {
+  CreateReturnType,
+  EmbeddingFunctionConfig,
+  EmbeddingFunctionCreate,
+  EmbeddingMetadataEntry,
+  ResolvedEmbeddingFunctionConfig,
+} from "./registry";
+
+function initializeBuiltInProviders() {
+  const { OpenAIEmbeddingFunction } = require("./openai") as OpenAIModule;
+  const { TransformersEmbeddingFunction } =
+    require("./transformers") as TransformersModule;
+
+  registerBuiltIn("openai", OpenAIEmbeddingFunction);
+  registerBuiltIn("huggingface", TransformersEmbeddingFunction);
+}
+
+/**
+ * Get the global embedding function registry.
+ *
+ * LanceDB built-in providers are initialized when this public API is first
+ * used, so importing the root package does not change automatic search
+ * selection for tables without embedding metadata.
+ */
+export function getRegistry(): EmbeddingFunctionRegistry {
+  initializeBuiltInProviders();
+  return getGlobalRegistry();
+}
 
 /**
  * Create a schema with embedding functions.

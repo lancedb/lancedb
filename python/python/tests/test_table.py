@@ -5,6 +5,7 @@
 import asyncio
 import ctypes
 import gc
+import json
 import os
 import sys
 import threading
@@ -12,11 +13,13 @@ import warnings
 import weakref
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from time import sleep
 from typing import List
 from unittest.mock import patch
 
 import lancedb
+from lancedb import table as table_module
 from lancedb.dependencies import _PANDAS_AVAILABLE
 from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
 import numpy as np
@@ -64,15 +67,23 @@ async def _blob_v2_table_async(db: AsyncConnection, name: str):
     return table
 
 
+# Legacy v1 blob columns are only writable at file version <= 2.1.
+LEGACY_BLOB_STORAGE_OPTIONS = {"new_table_data_storage_version": "2.1"}
+
+
 def _blob_table(db: DBConnection, name: str, blob_schema: str):
     if blob_schema == "v1":
-        return db.create_table(name, data=_blob_test_data())
+        return db.create_table(
+            name, data=_blob_test_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return _blob_v2_table(db, name)
 
 
 async def _blob_table_async(db: AsyncConnection, name: str, blob_schema: str):
     if blob_schema == "v1":
-        return await db.create_table(name, data=_blob_test_data())
+        return await db.create_table(
+            name, data=_blob_test_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return await _blob_v2_table_async(db, name)
 
 
@@ -147,7 +158,11 @@ def test_table_to_pandas_invalid_blob_mode_non_blob_table(tmp_db: DBConnection):
 @pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
 def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
     pytest.importorskip("lance")
-    table = tmp_db.create_table(f"test_to_pandas_blob_{blob_mode}", _blob_test_data())
+    table = tmp_db.create_table(
+        f"test_to_pandas_blob_{blob_mode}",
+        _blob_test_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
 
     df = table.to_pandas(blob_mode=blob_mode)
 
@@ -335,6 +350,21 @@ async def test_update_async(mem_db_async: AsyncConnection):
     assert update_res.rows_updated == 1
     assert update_res.version == 5
     assert await table.count_rows("id == 10") == 1
+
+
+@pytest.mark.asyncio
+async def test_update_expr_filter_literals_async(mem_db_async: AsyncConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = await mem_db_async.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = await table.update({"result": value}, where=col("field") == value)
+        assert update_res.rows_updated == 1
+
+    assert (await table.to_arrow())["result"].to_pylist() == values
 
 
 def test_create_table(mem_db: DBConnection):
@@ -930,6 +960,7 @@ def test_polars(mem_db: DBConnection):
 
     # enter table to polars dataframe
     result = table.to_polars()
+    assert isinstance(result, pl.LazyFrame)
     assert np.allclose(result.collect()["vector"].to_list(), data["vector"])
 
     # make sure filtering isn't broken
@@ -1467,7 +1498,7 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     table = mem_db.create_table("job_test", [{"id": i} for i in range(10)])
     job = table.create_index_async("id", config=BTree())
     assert job.id is None
-    job.wait()
+    assert job.wait() is None
     assert len(table.list_indices()) == 1
     job.cancel()
 
@@ -1844,6 +1875,27 @@ def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     data = table.to_arrow()
     assert data["text"].to_pylist() == ["bar"]
     assert np.allclose(data["embedding"].to_pylist()[0], np.array([0.1] * 16))
+
+
+def test_add_nullable_fixed_size_list_with_none(mem_db: DBConnection):
+    """Regression test for issue #2340."""
+    table = mem_db.create_table(
+        "test_nullable_fixed_size_list",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field("feature", pa.list_(pa.float32(), 256)),
+                pa.field("tags", pa.list_(pa.string())),
+            ]
+        ),
+    )
+
+    table.add([{"id": "1", "feature": None, "tags": ["tag1", "tag2"]}])
+
+    result = table.to_arrow()
+    assert result.to_pylist() == [
+        {"id": "1", "feature": None, "tags": ["tag1", "tag2"]}
+    ]
 
 
 def test_add_nullable_struct_with_none(mem_db: DBConnection):
@@ -2451,6 +2503,45 @@ def test_merge(tmp_db: DBConnection, tmp_path):
     table.merge(other_dataset, left_on="id")
 
 
+@pytest.mark.parametrize("storage_version", ["legacy", "stable"])
+def test_search_after_merge(tmp_path, storage_version):
+    pytest.importorskip("lance")
+    pd = pytest.importorskip("pandas")
+
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_data_storage_version": storage_version},
+    )
+    rng = np.random.default_rng(42)
+    row_count = 512
+    vectors = rng.standard_normal((row_count, 8)).astype(np.float32)
+    table = db.create_table(
+        "search_after_merge",
+        data=pd.DataFrame(
+            {
+                "id": [str(i) for i in range(row_count)],
+                "vector": list(vectors),
+            }
+        ),
+    )
+    table.create_index("vector", config=IvfPq(num_partitions=1, num_sub_vectors=2))
+
+    links = pd.DataFrame(
+        {
+            "id": [str(i) for i in range(row_count // 2)],
+            "link": [f"https://example.com/{i}" for i in range(row_count // 2)],
+        }
+    )
+    table.merge(links, left_on="id")
+
+    query = table.search(vectors[-1]).refine_factor(50).limit(10)
+    assert "ANN" in query.explain_plan(verbose=True)
+
+    result = query.to_arrow()
+    links_by_id = dict(zip(result["id"].to_pylist(), result["link"].to_pylist()))
+    assert links_by_id[str(row_count - 1)] is None
+
+
 def test_delete(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
@@ -2535,6 +2626,148 @@ def test_update(mem_db: DBConnection):
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
+
+
+def test_update_expr_filter_literals(mem_db: DBConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = mem_db.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = table.update(where=col("field") == value, values={"result": value})
+        assert update_res.rows_updated == 1
+
+    assert table.to_arrow()["result"].to_pylist() == values
+
+
+def test_update_expr_filter_preserves_typed_semantics(mem_db: DBConnection):
+    low = Decimal("1.234567890123456789")
+    high = Decimal("1.234567890123456790")
+    decimal_schema = pa.schema(
+        [("val", pa.decimal128(19, 18)), ("result", pa.string())]
+    )
+    decimal_table = mem_db.create_table(
+        "update_expr_decimal",
+        pa.table(
+            {"val": [low, high], "result": ["old", "old"]},
+            schema=decimal_schema,
+        ),
+    )
+    predicate = col("val") < lit(high)
+    assert decimal_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    keyword_table = mem_db.create_table(
+        "update_expr_keyword", [{"null": 1, "result": "old"}]
+    )
+    predicate = col("null") == 1
+    assert keyword_table.search().where(predicate).to_arrow().num_rows == 1
+    result = keyword_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    empty_in_table = mem_db.create_table(
+        "update_expr_empty_in", [{"id": 1, "result": "old"}]
+    )
+    predicate = col("id").isin([])
+    assert empty_in_table.search().where(predicate).to_arrow().num_rows == 0
+    result = empty_in_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
+
+    marker = "__lancedb_binary_placeholder_0__"
+    binary_schema = pa.schema(
+        [("payload", pa.binary()), ("text", pa.string()), ("result", pa.string())]
+    )
+    binary_table = mem_db.create_table(
+        "update_expr_binary",
+        pa.table(
+            {
+                "payload": [b"\x01", b"\x02"],
+                "text": ["other", marker],
+                "result": ["old", "old"],
+            },
+            schema=binary_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) | (col("text") == marker)
+    assert binary_table.search().where(predicate).to_arrow().num_rows == 2
+    result = binary_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    nonfinite_table = mem_db.create_table(
+        "update_expr_nonfinite",
+        [{"x": 1.0, "result": "old"}, {"x": 2.0, "result": "old"}],
+    )
+    predicate = col("x") < float("inf")
+    assert nonfinite_table.search().where(predicate).to_arrow().num_rows == 2
+    result = nonfinite_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    float16_table = mem_db.create_table(
+        "update_expr_float16",
+        [{"x": 1.0, "result": "old"}, {"x": 3.0, "result": "old"}],
+    )
+    predicate = col("x").cast(pa.float16()) < 2.0
+    assert float16_table.search().where(predicate).to_arrow().num_rows == 1
+    result = float16_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    string_cast_table = mem_db.create_table(
+        "update_expr_string_cast",
+        [{"x": 1, "result": "old"}, {"x": 2, "result": "old"}],
+    )
+    predicate = col("x").cast("string") == "1"
+    assert string_cast_table.search().where(predicate).to_arrow().num_rows == 1
+    result = string_cast_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    quoted_identifier_schema = pa.schema(
+        [("payload", pa.binary()), ("odd'name", pa.int64()), ("result", pa.string())]
+    )
+    quoted_identifier_table = mem_db.create_table(
+        "update_expr_quoted_identifier",
+        pa.table(
+            {"payload": [b"\x01"], "odd'name": [1], "result": ["old"]},
+            schema=quoted_identifier_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) & (col("odd'name") == 1)
+    assert quoted_identifier_table.search().where(predicate).to_arrow().num_rows == 1
+    result = quoted_identifier_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    decimal256_schema = pa.schema(
+        [("val", pa.decimal256(40, 2)), ("result", pa.string())]
+    )
+    decimal256_table = mem_db.create_table(
+        "update_expr_decimal256",
+        pa.table(
+            {
+                "val": [Decimal("1.00"), Decimal("3.00")],
+                "result": ["old", "old"],
+            },
+            schema=decimal256_schema,
+        ),
+    )
+    predicate = col("val") < lit(Decimal("2.00")).cast(pa.decimal256(40, 2))
+    assert decimal256_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal256_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    binary_empty_table = mem_db.create_table(
+        "update_expr_binary_empty",
+        pa.table(
+            {"payload": [b"\x01", b"\x02"], "result": ["old", "old"]},
+            schema=pa.schema([("payload", pa.binary()), ("result", pa.string())]),
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")).isin([])
+    assert binary_empty_table.search().where(predicate).to_arrow().num_rows == 0
+    assert predicate.to_sql() == "false"
+    result = binary_empty_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
 
 
 def test_update_with_arrow_scalar(mem_db: DBConnection):
@@ -2716,6 +2949,43 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a").when_matched_update_all().execute(
             new_data, timeout=timedelta(0)
         )
+
+
+def test_merge_insert_composite_key(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table(
+            {
+                "shard": ["a", "a", "b"],
+                "id": [1, 2, 1],
+                "val": ["x", "y", "z"],
+            }
+        ),
+    )
+
+    # ("a", 1) matches an existing row and updates it. ("b", 2) agrees with an
+    # existing row on each key column separately but on neither pair, so it is
+    # an insert.
+    new_data = pa.table({"shard": ["a", "b"], "id": [1, 2], "val": ["X", "W"]})
+    res = (
+        table.merge_insert(["shard", "id"])
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+    assert res.num_updated_rows == 1
+    assert res.num_inserted_rows == 1
+
+    expected = pa.table(
+        {
+            "shard": ["a", "a", "b", "b"],
+            "id": [1, 2, 1, 2],
+            "val": ["X", "y", "z", "W"],
+        }
+    )
+    assert table.to_arrow().sort_by([("shard", "ascending"), ("id", "ascending")]) == (
+        expected
+    )
 
 
 def test_merge_insert_nullable_pandas_into_pydantic_schema(mem_db: DBConnection):
@@ -2966,6 +3236,443 @@ async def test_merge_insert_async(mem_db_async: AsyncConnection):
     assert (await table.to_arrow()).sort_by("a") == expected
 
 
+def _json_arrow_table(schema, rows):
+    json_type = schema.field("j").type
+    json_values = pa.ExtensionArray.from_storage(
+        json_type,
+        pa.array([value for _, value in rows], type=json_type.storage_type),
+    )
+    return pa.Table.from_arrays(
+        [pa.array([row_id for row_id, _ in rows]), json_values], schema=schema
+    )
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_merge_insert_encodes_json(mem_db_async: AsyncConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+
+    table = await mem_db_async.create_table("json_merge", schema=schema)
+    await table.add(_json_arrow_table(schema, [("a", '{"k": 1}'), ("b", '{"k": 9}')]))
+
+    await (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .execute(_json_arrow_table(schema, [("a", '{"k": 2}')]))
+    )
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": '{"k":2}'},
+        {"id": "b", "j": '{"k":9}'},
+    ]
+    filtered = await table.query().where("json_extract(j, '$.k') = '2'").to_list()
+    assert filtered == [{"id": "a", "j": '{"k":2}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+
+    table = await mem_db_async.create_table("json_add", schema=schema)
+    await table.add(
+        _json_arrow_table(schema, [("c", '{"k": 3}')]), on_bad_vectors="fill"
+    )
+
+    rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
+    assert rows == [{"id": "c", "j": '{"k":3}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_python_objects_to_json_column(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("payload", pa.json_()),
+            pa.field("metadata", pa.struct([("label", pa.string())])),
+            pa.field("tags", pa.list_(pa.string())),
+        ]
+    )
+    table = mem_db.create_table("json_python_objects_add", schema=schema)
+    table.add(
+        [
+            {
+                "id": 1,
+                "payload": {"foo": "bar", "count": 2},
+                "metadata": {"label": "dict"},
+                "tags": ["a", "b"],
+            },
+            {
+                "id": 2,
+                "payload": {
+                    "name": "alice",
+                    "tags": ["x", "y"],
+                    "nested": {"enabled": True},
+                },
+                "metadata": {"label": "nested"},
+                "tags": ["c"],
+            },
+            {
+                "id": 3,
+                "payload": ["x", "y", "z"],
+                "metadata": {"label": "list"},
+                "tags": ["d", "e"],
+            },
+            {
+                "id": 4,
+                "payload": '{"foo": "bar"}',
+                "metadata": {"label": "string"},
+                "tags": ["f"],
+            },
+            {
+                "id": 5,
+                "payload": None,
+                "metadata": {"label": "null"},
+                "tags": ["g"],
+            },
+        ]
+    )
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert json.loads(rows[1]["payload"]) == {"foo": "bar", "count": 2}
+    assert json.loads(rows[2]["payload"]) == {
+        "name": "alice",
+        "tags": ["x", "y"],
+        "nested": {"enabled": True},
+    }
+    assert json.loads(rows[3]["payload"]) == ["x", "y", "z"]
+    assert json.loads(rows[4]["payload"]) == {"foo": "bar"}
+    assert rows[5]["payload"] is None
+    assert rows[1]["metadata"] == {"label": "dict"}
+    assert rows[1]["tags"] == ["a", "b"]
+
+    matched = table.search().where("json_extract(payload, '$.count') = '2'").to_list()
+    assert [row["id"] for row in matched] == [1]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_merge_insert_python_objects_to_json_column(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("payload", pa.json_()),
+            pa.field("metadata", pa.struct([("label", pa.string())])),
+            pa.field("tags", pa.list_(pa.string())),
+        ]
+    )
+    table = mem_db.create_table("json_python_objects_merge", schema=schema)
+    table.add(
+        [
+            {
+                "id": 1,
+                "payload": {"old": True},
+                "metadata": {"label": "old"},
+                "tags": ["old"],
+            }
+        ]
+    )
+
+    table.merge_insert(
+        "id"
+    ).when_matched_update_all().when_not_matched_insert_all().execute(
+        [
+            {
+                "id": 1,
+                "payload": {"foo": "bar", "count": 2},
+                "metadata": {"label": "dict"},
+                "tags": ["a", "b"],
+            },
+            {
+                "id": 2,
+                "payload": {
+                    "name": "alice",
+                    "tags": ["x", "y"],
+                    "nested": {"enabled": True},
+                },
+                "metadata": {"label": "nested"},
+                "tags": ["c"],
+            },
+            {
+                "id": 3,
+                "payload": ["x", "y", "z"],
+                "metadata": {"label": "list"},
+                "tags": ["d", "e"],
+            },
+            {
+                "id": 4,
+                "payload": '{"foo": "bar"}',
+                "metadata": {"label": "string"},
+                "tags": ["f"],
+            },
+            {
+                "id": 5,
+                "payload": None,
+                "metadata": {"label": "null"},
+                "tags": ["g"],
+            },
+        ]
+    )
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert json.loads(rows[1]["payload"]) == {"foo": "bar", "count": 2}
+    assert json.loads(rows[2]["payload"]) == {
+        "name": "alice",
+        "tags": ["x", "y"],
+        "nested": {"enabled": True},
+    }
+    assert json.loads(rows[3]["payload"]) == ["x", "y", "z"]
+    assert json.loads(rows[4]["payload"]) == {"foo": "bar"}
+    assert rows[5]["payload"] is None
+    assert rows[1]["metadata"] == {"label": "dict"}
+    assert rows[1]["tags"] == ["a", "b"]
+
+    matched = table.search().where("json_extract(payload, '$.count') = '2'").to_list()
+    assert [row["id"] for row in matched] == [1]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_python_objects_to_nested_json_fields(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info",
+                pa.struct([pa.field("payload", pa.json_())]),
+            ),
+            pa.field("documents", pa.list_(pa.field("item", pa.json_()))),
+        ]
+    )
+    table = mem_db.create_table("nested_json_python_objects_add", schema=schema)
+
+    table.add(
+        [
+            {
+                "id": 1,
+                "info": {"payload": {"kind": "struct", "value": 1}},
+                "documents": [{"kind": "list", "value": 2}],
+            }
+        ]
+    )
+
+    row = table.to_arrow().to_pylist()[0]
+    assert json.loads(row["info"]["payload"]) == {"kind": "struct", "value": 1}
+    assert json.loads(row["documents"][0]) == {"kind": "list", "value": 2}
+    assert [
+        row["id"]
+        for row in table.search()
+        .where("json_extract(info.payload, '$.value') = '1'")
+        .to_list()
+    ] == [1]
+    assert [
+        row["id"]
+        for row in table.search()
+        .where("json_extract(documents[1], '$.value') = '2'")
+        .to_list()
+    ] == [1]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_json_serialization_plan_skips_non_json_branches():
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), 3)),
+            pa.field("payload", pa.json_()),
+            pa.field(
+                "metadata",
+                pa.struct(
+                    [
+                        pa.field("label", pa.string()),
+                        pa.field("payload", pa.json_()),
+                    ]
+                ),
+            ),
+            pa.field(
+                "documents",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("title", pa.string()),
+                            pa.field("payload", pa.json_()),
+                        ]
+                    )
+                ),
+            ),
+        ]
+    )
+
+    plans = table_module._json_serialization_plans(schema)
+
+    assert set(plans) == {"payload", "metadata", "documents"}
+    metadata_children = plans["metadata"].children
+    assert metadata_children is not None
+    assert set(metadata_children) == {"payload"}
+    documents_item = plans["documents"].item
+    assert documents_item is not None
+    assert documents_item.children is not None
+    assert set(documents_item.children) == {"payload"}
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_all_null_json_batch(mem_db_async: AsyncConnection):
+    """A batch of dicts whose json values are all None infers as pa.null(), which used
+    to fail with a `json` vs `large_binary` schema mismatch. A row-at-a-time insert of
+    an optional json column always looks like this."""
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+    table = await mem_db_async.create_table("json_nulls", schema=schema)
+
+    await table.add([{"id": "a", "j": None}])
+    assert await table.count_rows() == 1
+
+    # ... and again once real JSON has been written.
+    await table.add(_json_arrow_table(schema, [("b", '{"k": 9}')]))
+    await table.add([{"id": "c", "j": None}])
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": None},
+        {"id": "b", "j": '{"k":9}'},
+        {"id": "c", "j": None},
+    ]
+
+    # The nulls must not disturb reads of the column.
+    filtered = await table.query().where("json_extract(j, '$.k') = '9'").to_list()
+    assert filtered == [{"id": "b", "j": '{"k":9}'}]
+    assert len(await table.query().where("j IS NULL").to_list()) == 2
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_all_null_json_batch_sync(mem_db: DBConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+    table = mem_db.create_table("json_nulls_sync", schema=schema)
+
+    table.add([{"id": "a", "j": None}])
+
+    assert table.count_rows() == 1
+    assert table.to_arrow()["j"].to_pylist() == [None]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([None], [None]),
+        ([None, '{"k": 1}'], [None, '{"k":1}']),
+        (['{"k": 2}'], ['{"k":2}']),
+    ],
+)
+async def test_add_list_of_dicts_to_json_column(
+    mem_db_async: AsyncConnection, values, expected
+):
+    schema = pa.schema([pa.field("id", pa.int64()), pa.field("value", pa.json_())])
+    table = await mem_db_async.create_table("json_list_add", schema=schema)
+
+    await table.add([{"id": idx, "value": value} for idx, value in enumerate(values)])
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert [row["value"] for row in rows] == expected
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_list_of_dicts_to_nested_json_column(
+    mem_db_async: AsyncConnection,
+):
+    json_field = pa.field("value", pa.json_())
+    info_field = pa.field("info", pa.struct([json_field]))
+    info = pa.StructArray.from_arrays(
+        [pa.array(['{"seed": 0}'], type=pa.json_())], fields=[json_field]
+    )
+    seed = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), info],
+        schema=pa.schema([pa.field("id", pa.int64()), info_field]),
+    )
+    table = await mem_db_async.create_table("nested_json_list_add", data=seed)
+
+    await table.add([{"id": 1, "info": {"value": '{"k": 1}'}}])
+    await table.add([{"id": 2, "info": {"value": '{"k": 2}'}}], on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 0, "info": {"value": '{"seed":0}'}},
+        {"id": 1, "info": {"value": '{"k":1}'}},
+        {"id": 2, "info": {"value": '{"k":2}'}},
+    ]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_list_of_dicts_to_json_list_column(mem_db_async: AsyncConnection):
+    """JSON inside a list must be JSONB-encoded, not stored as the raw text.
+
+    Storing raw text appends without error but leaves the column unreadable, so the
+    round trip is checked with a filter as well as by value.
+    """
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("docs", pa.list_(pa.field("item", pa.json_()))),
+        ]
+    )
+    table = await mem_db_async.create_table("json_list_add", schema=schema)
+
+    await table.add([{"id": 1, "docs": ['{"k": 1}', '{"k": 2}']}])
+    await table.add([{"id": 2, "docs": ['{"k": 3}']}], on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 1, "docs": ['{"k":1}', '{"k":2}']},
+        {"id": 2, "docs": ['{"k":3}']},
+    ]
+
+    matched = await table.query().where("json_extract(docs[1], '$.k') = 3").to_arrow()
+    assert matched.column("id").to_pylist() == [2]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_map_of_json_values(mem_db_async: AsyncConnection):
+    """JSON in a map's values needs the same encoding a list's items do."""
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("m", pa.map_(pa.string(), pa.json_())),
+        ]
+    )
+    table = await mem_db_async.create_table(
+        "json_map_add",
+        schema=schema,
+        storage_options={"new_table_data_storage_version": "2.2"},
+    )
+
+    def batch(row_id: int, text: str) -> pa.Table:
+        return pa.table(
+            {
+                "id": pa.array([row_id], type=pa.int64()),
+                "m": pa.array([[("k", text)]], type=pa.map_(pa.string(), pa.string())),
+            }
+        )
+
+    await table.add(batch(1, '{"x": 1}'))
+    await table.add(batch(2, '{"x": 2}'), on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 1, "m": [("k", '{"x":1}')]},
+        {"id": 2, "m": [("k", '{"x":2}')]},
+    ]
+
+    matched = (
+        await table.query()
+        .where("json_extract(element_at(m, 'k')[1], '$.x') = '2'")
+        .to_arrow()
+    )
+    assert matched.column("id").to_pylist() == [2]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
@@ -2993,15 +3700,40 @@ def test_create_with_embedding_function(mem_db: DBConnection):
     assert actual == expected
 
 
+def test_create_f16_table_from_arrow_data(mem_db: DBConnection):
+    dimension = 32
+    num_rows = 512
+    values = pa.array(
+        np.random.default_rng(42)
+        .standard_normal(num_rows * dimension)
+        .astype(np.float16)
+    )
+    df = pa.table(
+        {
+            "text": [f"s-{i}" for i in range(num_rows)],
+            "vector": pa.FixedSizeListArray.from_arrays(values, dimension),
+        }
+    )
+    table = mem_db.create_table("f16_tbl", data=df)
+    assert table.schema.field("vector").type == pa.list_(pa.float16(), dimension)
+    table.create_index(num_partitions=2, num_sub_vectors=2)
+
+    query = df["vector"][2].as_py()
+    expected = table.search(query).limit(2).to_arrow()
+
+    assert "s-2" in expected["text"].to_pylist()
+
+
 def test_create_f16_table(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
         vector: Vector(32, value_type=pa.float16())
 
+    rng = np.random.default_rng(42)
     df = pa.table(
         {
             "text": [f"s-{i}" for i in range(512)],
-            "vector": [np.random.randn(32).astype(np.float16) for _ in range(512)],
+            "vector": [rng.standard_normal(32).astype(np.float16) for _ in range(512)],
         }
     )
     table = mem_db.create_table(
@@ -3266,7 +3998,7 @@ def test_empty_query(mem_db: DBConnection):
     # None is the same as default
     df = table.search().select(["id"]).limit(None).to_arrow()
     assert df.num_rows == 100
-    # invalid limist is the same as None, wihch is the same as default
+    # invalid limist is the same as None, which is the same as default
     df = table.search().select(["id"]).limit(-1).to_arrow()
     assert df.num_rows == 100
     # valid limit should work
@@ -3830,7 +4562,8 @@ async def test_optimize(mem_db_async: AsyncConnection):
     assert stats.prune.bytes_removed == 0
     assert stats.prune.old_versions_removed == 0
 
-    stats = await table.optimize(cleanup_older_than=timedelta(seconds=0))
+    with pytest.warns(UserWarning, match="concurrent"):
+        stats = await table.optimize(cleanup_older_than=timedelta(seconds=0))
     assert stats.prune.bytes_removed > 0
     assert stats.prune.old_versions_removed == 3
 
@@ -3858,10 +4591,33 @@ async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_pat
 
     stats = await table.optimize(delete_unverified=False)
     assert stats.prune.old_versions_removed == 0
-    stats = await table.optimize(
-        cleanup_older_than=timedelta(seconds=0), delete_unverified=True
-    )
+    with pytest.warns(UserWarning, match="concurrent"):
+        stats = await table.optimize(
+            cleanup_older_than=timedelta(seconds=0), delete_unverified=True
+        )
     assert stats.prune.old_versions_removed == 2
+
+
+@pytest.mark.asyncio
+async def test_optimize_warns_on_zero_cleanup(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("test", data=[{"x": [1]}])
+    with pytest.warns(UserWarning, match="concurrent"):
+        await table.optimize(cleanup_older_than=timedelta(0))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        await table.optimize(cleanup_older_than=timedelta(days=1))
+        await table.optimize()
+
+
+def test_optimize_warns_on_zero_cleanup_sync(mem_db: DBConnection):
+    table = mem_db.create_table("test", data=[{"x": [1]}])
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("default")
+        table.optimize(cleanup_older_than=timedelta(0))
+        table.optimize(cleanup_older_than=timedelta(0))
+    assert [w.filename for w in seen] == [__file__, __file__]
+    assert all("concurrent" in str(w.message) for w in seen)
 
 
 def test_replace_field_metadata(tmp_path):
@@ -3882,7 +4638,8 @@ def test_stats(mem_db: DBConnection):
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 60,
+        # Full on-disk size of the data file, footer and metadata included.
+        "total_bytes": 637,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {
@@ -3899,6 +4656,13 @@ def test_stats(mem_db: DBConnection):
             },
         },
     }
+
+    # Index files count toward total_bytes too (only deletion files and
+    # manifests are excluded).
+    table.create_index("id", config=BTree())
+    stats_with_index = table.stats()
+    assert stats_with_index["num_indices"] == 1
+    assert stats_with_index["total_bytes"] > stats["total_bytes"]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
@@ -4015,3 +4779,111 @@ async def test_async_search_runs_embedding_on_dedicated_executor(
     assert all(name.startswith("lancedb-embedding") for name in captured_threads), (
         f"embedding ran off the dedicated executor: {captured_threads}"
     )
+
+
+def test_computed_column_declare_and_refresh(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed", [{"x": 1}, {"x": 2}])
+
+    table.add_columns(computed={"doubled": "x * 2"})
+    assert table.to_arrow()["doubled"].to_pylist() == [None, None]
+
+    result = table.refresh_column("doubled")
+    assert result.rows_filled == 2
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    table.add([{"x": 5}])
+    assert table.refresh_column("doubled").rows_filled == 1
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4, 10]
+
+
+def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_mixed", [{"x": 1}])
+    with pytest.raises(ValueError):
+        table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
+
+
+def test_computed_column_blob_projection_inherits_semantics(tmp_path):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_column_blob", schema=schema)
+    table.add(
+        [
+            {"id": 1, "image": b"hello"},
+            {"id": 2, "image": b""},
+            {"id": 3, "image": None},
+        ]
+    )
+
+    table.add_columns(computed={"image_copy": "image", "second_copy": "image_copy"})
+    assert table.refresh_column("image_copy").rows_filled == 2
+    assert table.refresh_column("second_copy").rows_filled == 2
+    assert table.blob_columns() == ["image", "image_copy", "second_copy"]
+
+    hits = table.search().with_row_id(True).limit(10).to_arrow()
+    rows = sorted(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+    copied = table.fetch_blobs("second_copy", [row_id for _, row_id in rows])
+    assert copied.to_pylist() == [b"hello", b"", None]
+
+
+@pytest.mark.asyncio
+async def test_computed_column_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("computed_async", [{"x": 3}])
+
+    await table.add_columns(computed={"tripled": "x * 3"})
+    await table.refresh_column("tripled")
+
+    assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+def test_function_errors_are_remote_only(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"x": 1}])
+    with pytest.raises(NotImplementedError, match="LanceDB Cloud and Enterprise"):
+        table.function_errors()
+
+
+def test_refresh_column_async_returns_job(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])
+    table.add_columns(computed={"doubled": "x * 2"})
+
+    job = table.refresh_column_async("doubled")
+    assert job.id is None  # in-process jobs have no server id
+    result = job.wait()
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.rows_assigned == 2
+    assert result.rows_failed == 0
+    assert result.rows_remaining == 0
+    assert result.source_version == 2
+    # The fill lands at 3; the stamp recording its inputs is published at 4.
+    assert result.published_version == 4
+    assert job.status() == "finished"
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    no_op = table.refresh_column_async("doubled").wait()
+    assert no_op.rows_assigned == 0
+    assert no_op.source_version == 4
+    assert no_op.published_version is None
+
+    # Bad input raises at the call, not through the job.
+    with pytest.raises(Exception, match="not a computed column"):
+        table.refresh_column_async("x")
+
+
+@pytest.mark.asyncio
+async def test_refresh_column_async_job_async_table(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("computed_job_async", [{"x": 3}])
+    await table.add_columns(computed={"tripled": "x * 3"})
+
+    job = await table.refresh_column_async("tripled")
+    result = await job.wait()
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.rows_assigned == 1
+    assert result.source_version == 2
+    assert result.published_version == 4
+    assert await job.status() == "finished"
+    assert (await table.to_arrow())["tripled"].to_pylist() == [9]

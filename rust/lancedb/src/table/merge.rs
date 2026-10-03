@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatchReader;
+use arrow_schema::{DataType, Fields};
 use futures::future::Either;
 use futures::{FutureExt, TryFutureExt};
 use lance::dataset::{
     MergeInsertBuilder as LanceMergeInsertBuilder, WhenMatched, WhenNotMatchedBySource,
 };
+use lance_datafusion::utils::StreamingWriteSource;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -103,7 +106,7 @@ impl MergeInsertBuilder {
     /// but that behavior is subject to change.
     ///
     /// An optional condition may be specified.  If it is, then only
-    /// matched rows that satisfy the condtion will be updated.  Any
+    /// matched rows that satisfy the condition will be updated.  Any
     /// rows that do not satisfy the condition will be left as they
     /// are.  Failing to satisfy the condition does not cause a
     /// "matched row" to become a "not matched" row.
@@ -220,8 +223,84 @@ impl MergeInsertBuilder {
     ///
     /// Returns version and statistics about the merge operation including the number of rows
     /// inserted, updated, and deleted.
-    pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeResult> {
+    pub async fn execute(
+        mut self,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<MergeResult> {
+        self.canonicalize_filters()?;
         self.table.clone().merge_insert(self, new_data).await
+    }
+
+    pub(crate) fn canonicalize_filters(&mut self) -> Result<()> {
+        self.when_matched_update_all_filt =
+            canonicalize_merge_filter(self.when_matched_update_all_filt.take())?;
+        self.when_not_matched_by_source_delete_filt =
+            canonicalize_merge_filter(self.when_not_matched_by_source_delete_filt.take())?;
+        Ok(())
+    }
+}
+
+fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<MergeFilter>> {
+    filter
+        .map(|filter| match filter {
+            MergeFilter::Sql(predicate) => {
+                crate::expr::canonicalize_sql_predicate(&predicate).map(MergeFilter::Sql)
+            }
+            filter @ MergeFilter::Expr(_) => Ok(filter),
+        })
+        .transpose()
+}
+
+// The JSON projection iterates target fields, so reject unknown source fields
+// before it can erase them. Missing and reordered fields remain valid merge
+// inputs; type compatibility is still checked by the cast and Lance writer.
+fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -> Result<()> {
+    let mut names = HashSet::with_capacity(input.len());
+    for field in input {
+        let path = if parent.is_empty() {
+            field.name().clone()
+        } else {
+            format!("{parent}.{}", field.name())
+        };
+        if !names.insert(field.name()) {
+            return Err(Error::InvalidInput {
+                message: format!("merge source field '{path}' is specified more than once"),
+            });
+        }
+        let target_field = target
+            .iter()
+            .find(|candidate| candidate.name() == field.name())
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!("merge source field '{path}' is not present in the table schema"),
+            })?;
+        validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+    }
+    Ok(())
+}
+
+fn validate_merge_source_type(input: &DataType, target: &DataType, path: &str) -> Result<()> {
+    match (input, target) {
+        (DataType::Struct(input), DataType::Struct(target)) => {
+            validate_merge_source_fields(input, target, path)
+        }
+        (
+            DataType::List(input)
+            | DataType::LargeList(input)
+            | DataType::FixedSizeList(input, _)
+            | DataType::ListView(input)
+            | DataType::LargeListView(input),
+            DataType::List(target)
+            | DataType::LargeList(target)
+            | DataType::FixedSizeList(target, _)
+            | DataType::ListView(target)
+            | DataType::LargeListView(target),
+        )
+        | (DataType::Map(input, _), DataType::Map(target, _)) => {
+            validate_merge_source_type(input.data_type(), target.data_type(), path)
+        }
+        (DataType::Dictionary(_, input), _) => validate_merge_source_type(input, target, path),
+        (_, DataType::Dictionary(_, target)) => validate_merge_source_type(input, target, path),
+        _ => Ok(()),
     }
 }
 
@@ -230,9 +309,14 @@ impl MergeInsertBuilder {
 /// This logic was moved from NativeTable::merge_insert to keep table.rs clean.
 pub(crate) async fn execute_merge_insert(
     table: &NativeTable,
-    params: MergeInsertBuilder,
+    mut params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
+    params.canonicalize_filters()?;
+    super::computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "merge_insert",
+    )?;
     match lsm::lsm_dispatch_decision(table, &params).await? {
         lsm::LsmDispatch::Lsm(plan) => {
             let future =
@@ -251,6 +335,27 @@ pub(crate) async fn execute_merge_insert(
     }
 
     let dataset = table.dataset.get().await?;
+    let schema = arrow_schema::Schema::from(dataset.schema());
+    // JSON source fields must carry the stored extension metadata just as on
+    // append. Keep arrow.json text labelled until Lance encodes it as JSONB.
+    let source = if schema
+        .fields()
+        .iter()
+        .any(|field| lance_arrow::json::has_json_fields(field))
+    {
+        validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
+        let plan = Arc::new(super::datafusion::scannable_exec::ScannableExec::new(
+            Box::new(new_data),
+            None,
+        ));
+        let plan = super::datafusion::cast::cast_to_table_schema(plan, &schema)?;
+        datafusion_physical_plan::execute_stream(
+            plan,
+            Arc::new(datafusion_execution::TaskContext::default()),
+        )?
+    } else {
+        new_data.into_stream()
+    };
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -285,10 +390,7 @@ pub(crate) async fn execute_merge_insert(
     builder.use_index(params.use_index);
 
     let future = if let Some(timeout) = params.timeout {
-        let future = builder
-            .retry_timeout(timeout)
-            .try_build()?
-            .execute_reader(new_data);
+        let future = builder.retry_timeout(timeout).try_build()?.execute(source);
         Either::Left(tokio::time::timeout(timeout, future).map(|res| match res {
             Ok(Ok((new_dataset, stats))) => Ok((new_dataset, stats)),
             Ok(Err(e)) => Err(e.into()),
@@ -298,7 +400,7 @@ pub(crate) async fn execute_merge_insert(
         }))
     } else {
         let job = builder.try_build()?;
-        Either::Right(job.execute_reader(new_data).map_err(|e| e.into()))
+        Either::Right(job.execute(source).map_err(|e| e.into()))
     };
     let (new_dataset, stats) = future.await?;
     let version = new_dataset.manifest().version;
@@ -317,12 +419,193 @@ pub(crate) async fn execute_merge_insert(
 mod tests {
     use arrow_array::builder::FixedSizeBinaryBuilder;
     use arrow_array::{
-        Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray, UInt64Array,
+        FixedSizeListArray, Int32Array, NullArray, RecordBatch, RecordBatchIterator,
+        RecordBatchReader, StringArray, UInt32Array, UInt64Array,
     };
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
     use crate::connect;
+
+    #[rstest::rstest]
+    #[case(None)]
+    #[case(Some("struct"))]
+    #[case(Some("list"))]
+    #[case(Some("large_list"))]
+    #[case(Some("fixed_size_list"))]
+    #[case(Some("map"))]
+    #[tokio::test]
+    async fn merge_json_rejects_ambiguous_source_fields(
+        #[case] nested: Option<&str>,
+        #[values(false, true)] duplicate: bool,
+    ) {
+        let mut target = vec![
+            Field::new("id", DataType::Int32, false),
+            lance_arrow::json::json_field("payload", true),
+        ];
+        let mut input = vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("payload", DataType::Utf8, true),
+        ];
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = vec![
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(StringArray::from(vec![r#"{"x":1}"#])),
+        ];
+        if let Some(nested) = nested {
+            let wrap = |children: Vec<Field>| {
+                let structure = DataType::Struct(children.into());
+                let item = Arc::new(Field::new("item", structure.clone(), true));
+                match nested {
+                    "struct" => structure,
+                    "list" => DataType::List(item),
+                    "large_list" => DataType::LargeList(item),
+                    "fixed_size_list" => DataType::FixedSizeList(item, 2),
+                    "map" => DataType::Map(
+                        Arc::new(Field::new(
+                            "entries",
+                            DataType::Struct(
+                                vec![
+                                    Field::new("key", DataType::Utf8, false),
+                                    Field::new("value", structure, true),
+                                ]
+                                .into(),
+                            ),
+                            false,
+                        )),
+                        false,
+                    ),
+                    _ => unreachable!(),
+                }
+            };
+            let known = Field::new("value", DataType::Int32, true);
+            let unexpected = if duplicate { "value" } else { "extra" };
+            let target_type = wrap(vec![known.clone()]);
+            let input_type = wrap(vec![known, Field::new(unexpected, DataType::Int32, true)]);
+            columns.push(arrow_array::new_null_array(&input_type, 1));
+            target.push(Field::new("details", target_type, true));
+            input.push(Field::new("details", input_type, true));
+        } else {
+            let unexpected = if duplicate { "id" } else { "extra" };
+            input.push(Field::new(unexpected, DataType::Int32, true));
+            columns.push(Arc::new(Int32Array::from(vec![99])));
+        }
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("ambiguous_json", Arc::new(Schema::new(target)))
+            .execute()
+            .await
+            .unwrap();
+        let version = table.version().await.unwrap();
+        let schema = Arc::new(Schema::new(input));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_not_matched_insert_all();
+        let error = merge
+            .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
+            .await
+            .expect_err("JSON alignment must not drop source fields");
+        let expected = if duplicate {
+            "more than once"
+        } else {
+            "not present"
+        };
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(table.version().await.unwrap(), version);
+        assert_eq!(table.count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn merge_json_preserves_empty_extension_metadata() {
+        use crate::query::{ExecutableQuery, QueryBase, Select};
+        use futures::TryStreamExt;
+        let mut stored_json = lance_arrow::json::json_field("payload", true);
+        let mut metadata = stored_json.metadata().clone();
+        metadata.insert(lance_arrow::ARROW_EXT_META_KEY.into(), String::new());
+        stored_json = stored_json.with_metadata(metadata);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            stored_json,
+        ]));
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_merge_metadata", schema)
+            .execute()
+            .await
+            .unwrap();
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("payload", DataType::Utf8, true).with_metadata(
+                std::collections::HashMap::from([(
+                    lance_arrow::ARROW_EXT_NAME_KEY.into(),
+                    lance_arrow::json::ARROW_JSON_EXT_NAME.into(),
+                )]),
+            ),
+        ]));
+        let seed = RecordBatch::try_new(
+            input_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![r#"{"old":true}"#])),
+            ],
+        )
+        .unwrap();
+        table.add(seed).execute().await.unwrap();
+        let batch = RecordBatch::try_new(
+            input_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec![
+                    r#"{"updated":true}"#,
+                    r#"{"inserted":true}"#,
+                ])),
+            ],
+        )
+        .unwrap();
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let result = merge
+            .execute(Box::new(RecordBatchIterator::new(
+                vec![Ok(batch)],
+                input_schema,
+            )))
+            .await
+            .unwrap();
+        assert_eq!(result.num_updated_rows, 1);
+        assert_eq!(result.num_inserted_rows, 1);
+        let output = table
+            .query()
+            .select(Select::columns(&["payload"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let values = output
+            .iter()
+            .flat_map(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .iter()
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        assert!(
+            values
+                .iter()
+                .any(|v| serde_json::from_str::<serde_json::Value>(v).unwrap()["updated"] == true)
+        );
+        assert!(
+            values
+                .iter()
+                .any(|v| serde_json::from_str::<serde_json::Value>(v).unwrap()["inserted"] == true)
+        );
+    }
 
     fn merge_insert_test_batches(offset: i32, age: i32) -> Box<dyn RecordBatchReader + Send> {
         let schema = Arc::new(Schema::new(vec![
@@ -524,6 +807,74 @@ mod tests {
         let result = merge_insert_builder.execute(new_batches).await.unwrap();
         assert_eq!(result.num_deleted_rows, 5);
         assert_eq!(table.count_rows(None).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_fixed_size_list_above_u32_child_count() {
+        // Arrow's FixedSizeList take kernel uses u32 child indices. Previously,
+        // delete-by-source materialized the target payload in a full outer join,
+        // causing the final list below to overflow those indices and panic.
+        // A Null child keeps this boundary test small in memory.
+        const LIST_SIZE: i32 = 65_536;
+        const ROW_COUNT: usize = (u32::MAX as usize / LIST_SIZE as usize) + 1;
+        const BATCH_SIZE: usize = 8_192;
+
+        let item = Arc::new(Field::new("item", DataType::Null, true));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(item.clone(), LIST_SIZE),
+                false,
+            ),
+        ]));
+        let batch = |start: usize, len: usize| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(UInt32Array::from_iter_values(
+                        start as u32..(start + len) as u32,
+                    )),
+                    Arc::new(FixedSizeListArray::new(
+                        item.clone(),
+                        LIST_SIZE,
+                        Arc::new(NullArray::new(len * LIST_SIZE as usize)),
+                        None,
+                    )),
+                ],
+            )
+            .unwrap()
+        };
+
+        let target_batches = (0..ROW_COUNT)
+            .step_by(BATCH_SIZE)
+            .map(|start| {
+                let len = (ROW_COUNT - start).min(BATCH_SIZE);
+                Ok(batch(start, len))
+            })
+            .collect::<Vec<_>>();
+        let target_data: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(target_batches, schema.clone()));
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("fixed_size_list_overflow", target_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let source = batch(ROW_COUNT - 1, 1);
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_by_source_delete(None);
+        let result = merge
+            .execute(Box::new(RecordBatchIterator::new([Ok(source)], schema)))
+            .await
+            .unwrap();
+
+        assert_eq!(result.num_updated_rows, 1);
+        assert_eq!(result.num_deleted_rows, (ROW_COUNT - 1) as u64);
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
 }
 
@@ -984,6 +1335,44 @@ mod lsm_tests {
     }
 
     #[tokio::test]
+    async fn query_snapshot_preserves_lsm_read_semantics() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let snapshot = table.query_snapshot().await.unwrap();
+        let rows = collect_id_value(snapshot.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_snapshot_preserves_time_travel_lsm_guard() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4]).await;
+
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        let direct_error = table.query().execute().await.err().unwrap();
+        assert!(matches!(direct_error, Error::NotSupported { .. }));
+
+        let snapshot = table.query_snapshot().await.unwrap();
+        let snapshot_error = snapshot.query().execute().await.err().unwrap();
+        assert!(matches!(snapshot_error, Error::NotSupported { .. }));
+    }
+
+    #[tokio::test]
     async fn lsm_read_dedup_newest_wins() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // base: id 2 -> value 1
@@ -1116,6 +1505,30 @@ mod lsm_tests {
         );
     }
 
+    /// A table with `id`/`text` and a primary key, ready for an LSM write spec.
+    async fn lsm_text_table(dir: &tempfile::TempDir) -> crate::Table {
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_text_reader(vec![(1, "alpha")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+    }
+
+    /// Upsert `rows` through the LSM write path.
+    async fn upsert_text(table: &crate::Table, rows: Vec<(i64, &str)>) {
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder.execute(id_text_reader(rows)).await.unwrap();
+    }
+
     /// A reader of `[id: Int64, text: Utf8]` rows.
     fn id_text_reader(rows: Vec<(i64, &str)>) -> Box<dyn RecordBatchReader + Send> {
         let schema = Arc::new(Schema::new(vec![
@@ -1133,6 +1546,165 @@ mod lsm_tests {
         )
         .unwrap();
         Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    /// Under the default set, an index created while a writer is open reaches
+    /// that writer.
+    ///
+    /// The default maintains every index the table has, so creating one changes
+    /// what the table maintains without anyone touching the spec. A writer left
+    /// on its old configs would keep building MemTables the new index does not
+    /// cover.
+    #[tokio::test]
+    async fn lsm_default_set_picks_up_an_index_created_while_writing() {
+        use crate::index::Index;
+        use lance_index::scalar::FullTextSearchQuery;
+
+        let dir = tempdir().unwrap();
+        let table = lsm_text_table(&dir).await;
+        // The default set, on a table with no FTS index yet.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        // Opens the writer, whose MemTable carries no FTS index.
+        upsert_text(&table, vec![(99, "zebra")]).await;
+
+        // Created with the writer still open and never reopened.
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        upsert_text(&table, vec![(100, "zebra stripes")]).await;
+
+        let query = FullTextSearchQuery::new("stripes".to_string())
+            .with_column("text".to_string())
+            .unwrap();
+        let batches = table
+            .query()
+            .full_text_search(query)
+            .execute()
+            .await
+            .expect("the created index reached the open writer")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let found: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(found, 1, "the row written after create_index must be found");
+    }
+
+    /// A spec is replaced by unsetting it and setting the new one.
+    ///
+    /// `unset_lsm_write_spec` drains the open writer, so the rows it held
+    /// survive the replacement, and the writer the next write opens builds its
+    /// MemTables from the new set.
+    #[tokio::test]
+    async fn lsm_spec_is_replaced_by_unsetting_it_first() {
+        use crate::index::Index;
+        use lance_index::scalar::FullTextSearchQuery;
+
+        let dir = tempdir().unwrap();
+        let table = lsm_text_table(&dir).await;
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        let fts_index = table.list_indices().await.unwrap()[0].name.clone();
+
+        // Installed maintaining nothing, then written to: the writer opens with
+        // no FTS index.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
+            .await
+            .unwrap();
+        upsert_text(&table, vec![(99, "zebra")]).await;
+
+        // Setting over an installed spec is refused; unset, then set.
+        let err = table
+            .set_lsm_write_spec(
+                LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index.clone()]),
+            )
+            .await
+            .expect_err("an installed spec cannot be set over");
+        assert!(
+            err.to_string().contains("already set"),
+            "unexpected error: {err}"
+        );
+        table.unset_lsm_write_spec().await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
+            .await
+            .unwrap();
+
+        // A row written after the replacement is answered by the index the new
+        // writer maintains.
+        upsert_text(&table, vec![(100, "zebra stripes")]).await;
+
+        let query = FullTextSearchQuery::new("stripes".to_string())
+            .with_column("text".to_string())
+            .unwrap();
+        let batches = table
+            .query()
+            .full_text_search(query)
+            .execute()
+            .await
+            .expect("the replaced spec maintains the index")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let found: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            found, 1,
+            "the row written after the replacement must be found"
+        );
+    }
+
+    /// A row written before the index exists is searchable once it does.
+    ///
+    /// The MemTable holding it was built without the index. Creating the index
+    /// replaces the writer's configs, which seals that MemTable and waits for
+    /// its flush, so no resident MemTable is left that cannot answer the read.
+    #[tokio::test]
+    async fn lsm_a_row_written_before_the_index_is_searchable_after_it() {
+        use crate::index::Index;
+        use lance_index::scalar::FullTextSearchQuery;
+
+        let dir = tempdir().unwrap();
+        let table = lsm_text_table(&dir).await;
+        // No index yet, and the default set: maintain whatever the table has.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        // Opens the writer, whose MemTable therefore carries no FTS index.
+        upsert_text(&table, vec![(99, "zebra")]).await;
+
+        // Built afterwards: the spec now resolves to it, the MemTable does not.
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let query = FullTextSearchQuery::new("zebra".to_string())
+            .with_column("text".to_string())
+            .unwrap();
+        let batches = table
+            .query()
+            .full_text_search(query)
+            .execute()
+            .await
+            .expect("no resident MemTable is left that cannot answer")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let found: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(found, 1, "the row written before the index must be found");
     }
 
     #[tokio::test]
@@ -1161,7 +1733,7 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([fts_index]))
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
@@ -1254,7 +1826,7 @@ mod lsm_tests {
             .unwrap();
         let vec_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([vec_index]))
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
             .await
             .unwrap();
 

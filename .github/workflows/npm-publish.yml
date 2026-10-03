@@ -40,40 +40,31 @@ jobs:
           - target: aarch64-apple-darwin
             host: macos-latest
             features: fp16kernels
+            # Fat LTO was ~111 of this job's ~113 minutes.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
               brew install protobuf
-              # Fat LTO (the workspace default in .cargo/config.toml) is
-              # single-threaded and is the peak-memory step of the build. On
-              # this runner it accounted for ~111 of the job's ~113 minutes,
-              # making it the critical path of the entire publish pipeline.
-              # ThinLTO parallelizes it across the runner's cores, for a few
-              # percent of runtime performance.
-              export CARGO_PROFILE_RELEASE_LTO=thin
-              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: x86_64-pc-windows-msvc
             host: windows-2025
             features: ","
+            # The lower peak also keeps this on the standard 4-core runner.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
               choco install --no-progress protoc ninja nasm
               tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
               # There is an issue where choco doesn't add nasm to the path
               export PATH="$PATH:/c/Program Files/NASM"
               nasm -v
-              # See the ThinLTO note on aarch64-apple-darwin above. Keeping
-              # peak memory down is also what lets this run on the standard
-              # 4-core runner: the 8-core larger runner was only needed to
-              # stop fat LTO from OOMing rustc-LLVM.
-              export CARGO_PROFILE_RELEASE_LTO=thin
-              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: aarch64-pc-windows-msvc
             host: windows-2025
             features: ","
+            lto: thin
+            codegen_units: 16
             pre_build: |-
                 choco install --no-progress protoc
                 rustup target add aarch64-pc-windows-msvc
-                # See the ThinLTO note on aarch64-apple-darwin above.
-                export CARGO_PROFILE_RELEASE_LTO=thin
-                export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
             features: fp16kernels
@@ -103,6 +94,14 @@ jobs:
             # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
             features: "fp16kernels"
+            # Fat LTO OOM-killed rustc every nightly; even with lld it peaked
+            # at 31391 MiB of the runner's 32 GiB.
+            lto: thin
+            codegen_units: 16
+            # arm64 Linux links through GNU `ld` where x86_64 defaults to
+            # `rust-lld`, which is why only arm64 OOM'd. lld cut the largest
+            # linker process 7.0 -> 4.0 GiB (lancedb/sophon#7313).
+            linker: /tmp/aarch64-lld-clang
             pre_build: |-
               set -e &&
               apt-get update &&
@@ -112,9 +111,30 @@ jobs:
               # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.
               export CFLAGS="$CFLAGS -DAT_HWCAP2=26" &&
               rustup target add aarch64-unknown-linux-gnu
+              # Not `&&`-chained: in dash, errexit does not fire for a
+              # non-final command in an `&&` list, so failures were ignored.
+              #
+              # A wrapper rather than `-C link-arg` because the per-target
+              # rustflags variable does not reach every unit that links, while
+              # the linker variable does. `clang` because GCC silently ignores
+              # `-fuse-ld=lld` unless built with lld support. Two echoes
+              # because printf's newline escape gets rewritten to `;` between
+              # here and the container.
+              echo '#!/bin/sh' > /tmp/aarch64-lld-clang
+              echo 'exec clang --target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot --gcc-toolchain=/usr/aarch64-unknown-linux-gnu -fuse-ld=lld "$@"' >> /tmp/aarch64-lld-clang
+              chmod 0755 /tmp/aarch64-lld-clang
+              # Fail now, not at the cdylib link ~30 minutes later. Linking at
+              # all also proves lld resolved; clang errors out when it cannot.
+              echo 'int main(void){return 0;}' > /tmp/probe.c
+              /tmp/aarch64-lld-clang /tmp/probe.c -o /tmp/probe
+              readelf -h /tmp/probe | grep AArch64
           - target: aarch64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             features: ","
+            # Fat LTO took the whole runner down. lld cannot help: it died
+            # inside rustc's LLVM, before any linker was spawned.
+            lto: thin
+            codegen_units: 16
             pre_build: |-
               set -e &&
               sudo apt-get update &&
@@ -123,6 +143,19 @@ jobs:
               export EXTRA_ARGS="-x"
     name: build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
+    # On the job, not exported from `pre_build`: `Swatinem/rust-cache` hashes
+    # `CARGO_*` into its cache key before any step runs, so a step-local export
+    # leaves the key unchanged while cargo still rebuilds cold. The ThinLTO
+    # legs had been doing that every run.
+    #
+    # Not `RUSTFLAGS`: setting it, even to "", discards every config-file
+    # rustflag, silently dropping .cargo/config.toml's `target-cpu` and
+    # `target-feature` from the published binaries.
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ matrix.settings.lto || 'fat' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ matrix.settings.codegen_units || '1' }}
+      # Empty elsewhere: a per-target variable is only read for that triple.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.settings.linker }}
     defaults:
       run:
         working-directory: nodejs
@@ -135,8 +168,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v6
         with:
-          # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
-          # in October.
+          # pnpm 11 requires Node >= 22.13.
           node-version: 24
           cache: pnpm
           cache-dependency-path: nodejs/pnpm-lock.yaml
@@ -169,19 +201,15 @@ jobs:
           # creating ref). The nightly cadence also keeps entries inside
           # GitHub's 7-day eviction window, which a tag-only trigger would not.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Docker builds can use rust-cache too. `target/` already lives on the
-      # host because the whole workspace is bind-mounted into the container, and
-      # rust-cache's prune and save run host-side, so they can manage it -- which
-      # is what keeps the entry to dependency artifacts rather than a multi-GB
-      # copy of everything.
+      # Docker builds can use rust-cache too: the workspace is bind-mounted, so
+      # `target/` lives on the host and rust-cache's prune keeps the entry
+      # small.
       #
       # Two differences from the native builds. The container's CARGO_HOME is
-      # bind-mounted from `.cargo-cache` rather than the host's ~/.cargo, so that
-      # has to be cached explicitly. And the key is derived from the *host* rustc
-      # version, which is not the compiler that produced these artifacts; that is
-      # safe because cargo fingerprints the real compiler and rebuilds on a
-      # mismatch, it just means a base-image toolchain bump costs one cold build
-      # instead of invalidating the key.
+      # bind-mounted from `.cargo-cache` rather than ~/.cargo, so that is cached
+      # explicitly. And the key uses the *host* rustc version, not the compiler
+      # that built these artifacts -- safe, since cargo fingerprints the real
+      # one; a base-image bump just costs one cold build.
       - name: Cache cargo (docker builds)
         uses: Swatinem/rust-cache@v2
         if: ${{ matrix.settings.docker }}
@@ -210,14 +238,19 @@ jobs:
           # cache step above saves. Previously the registry mounts pointed at
           # `.cargo/...`, a path nothing cached, so the container re-downloaded
           # the whole crate registry on every run.
+          #
+          # `docker run` inherits nothing; `-e NAME` carries the job's `env:` in.
           options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
                     -v ${{ github.workspace }}/.cargo-cache/registry/cache:/usr/local/cargo/registry/cache \
                     -v ${{ github.workspace }}/.cargo-cache/registry/index:/usr/local/cargo/registry/index \
+                    -e CARGO_PROFILE_RELEASE_LTO \
+                    -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS \
+                    -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER \
                     -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
             ${{ matrix.settings.pre_build }}
-            npx napi build --platform --release \
+            node_modules/.bin/napi build --platform --release \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
@@ -237,7 +270,7 @@ jobs:
       - name: Build
         run: |
           ${{ matrix.settings.pre_build }}
-          npx napi build --platform --release \
+          node_modules/.bin/napi build --platform --release \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
@@ -256,6 +289,18 @@ jobs:
         if: always()
         run: df -h
         shell: bash
+      - name: Report peak memory
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          peak=$(find /sys/fs/cgroup -name memory.peak -readable \
+                 -exec cat {} + 2>/dev/null | sort -n | tail -1)
+          if [ -n "$peak" ]; then
+            echo "peak memory: $((peak / 1024 / 1024)) MiB"
+          else
+            echo "peak memory: unavailable (no readable cgroup v2 memory.peak)"
+          fi
+          free -g || true
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -293,7 +338,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-2404-8x-arm64
         node:
-          - '20'
+          - '22'
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -339,9 +384,9 @@ jobs:
       - name: Move built files
         run: cp dist/native.d.ts dist/native.js dist/*.node lancedb/
       - name: Test bindings
-        # Invoke jest directly because pnpm 11 itself requires Node 22+
-        # while the matrix tests on older Node versions.
-        run: npx jest --verbose
+        # Invoke the installed jest binary directly; the pnpm shim is set up
+        # against the install-phase Node, not the version selected above.
+        run: node_modules/.bin/jest --verbose
   publish:
     name: Publish
     runs-on: ubuntu-latest

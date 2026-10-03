@@ -1,0 +1,1128 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+//! Canonical Function values exchanged with the Enterprise service, plus the
+//! backend-neutral terminal result of a computed-column refresh.
+//!
+//! This module contains client/wire values only. Catalog persistence,
+//! environment bake, secret resolution, and execution are owned by Sophon.
+
+use std::collections::BTreeMap;
+
+use serde::de::{self, DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
+
+use crate::secrets::SecretBinding;
+use crate::{Error, Result};
+
+/// Semantic Function type for a Blob v2 value.
+pub const FUNCTION_BLOB_V2_TYPE: &str = "blob_v2";
+
+fn invalid_json(error: impl std::fmt::Display) -> Error {
+    Error::InvalidInput {
+        message: format!("invalid remote Function JSON: {error}"),
+    }
+}
+
+fn write_canonical_json(value: &Value, output: &mut String) -> serde_json::Result<()> {
+    match value {
+        Value::Object(map) => {
+            output.push('{');
+            let mut entries = map.iter().collect::<Vec<_>>();
+            entries.sort_unstable_by_key(|(key, _)| *key);
+            for (index, (key, value)) in entries.into_iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                output.push_str(&serde_json::to_string(key)?);
+                output.push(':');
+                write_canonical_json(value, output)?;
+            }
+            output.push('}');
+        }
+        Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                write_canonical_json(value, output)?;
+            }
+            output.push(']');
+        }
+        other => output.push_str(&serde_json::to_string(other)?),
+    }
+    Ok(())
+}
+
+fn canonical_json<T: Serialize>(value: &T) -> Result<String> {
+    let value = serde_json::to_value(value).map_err(invalid_json)?;
+    let mut output = String::new();
+    write_canonical_json(&value, &mut output).map_err(invalid_json)?;
+    Ok(output)
+}
+
+fn from_json<T: DeserializeOwned>(json: &str) -> Result<T> {
+    serde_json::from_str(json).map_err(invalid_json)
+}
+
+fn validate_literal(value: &Value) -> Result<()> {
+    match value {
+        Value::Number(number) if number.is_f64() => Err(Error::InvalidInput {
+            message: "floating-point Function literals are not part of the Slice 1 canonical wire contract"
+                .to_string(),
+        }),
+        Value::Array(values) => values.iter().try_for_each(validate_literal),
+        Value::Object(values) => values.values().try_for_each(validate_literal),
+        _ => Ok(()),
+    }
+}
+
+fn has_unknown_keys(value: &Value, allowed: &[&str]) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.keys().any(|key| !allowed.contains(&key.as_str())))
+}
+
+/// Every field a [`FunctionVersionRef`] document may carry. An application or
+/// binding with any other key comes from a newer contract.
+pub(crate) const FUNCTION_VERSION_REF_FIELDS: &[&str] = &[
+    "name",
+    "namespace_path",
+    "object_id",
+    "location",
+    "version",
+    "manifest_digest",
+];
+
+fn application_has_unknown_nested_fields(value: &Value) -> bool {
+    let Some(application) = value.as_object() else {
+        return false;
+    };
+    if application
+        .get("function")
+        .is_some_and(|value| has_unknown_keys(value, FUNCTION_VERSION_REF_FIELDS))
+    {
+        return true;
+    }
+    if application
+        .get("inputs")
+        .and_then(Value::as_array)
+        .is_some_and(|inputs| {
+            inputs
+                .iter()
+                .any(|input| has_unknown_keys(input, &["parameter", "kind", "value"]))
+        })
+    {
+        return true;
+    }
+    application.get("output").is_some_and(|output| {
+        has_unknown_keys(output, &["kind", "arrow_type", "nullable", "fields"])
+            || output
+                .get("fields")
+                .and_then(Value::as_array)
+                .is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
+                })
+    })
+}
+
+macro_rules! impl_json {
+    ($type:ty) => {
+        impl $type {
+            /// Decode a remote value. Unknown fields and discriminator values
+            /// are accepted so newer servers remain readable.
+            pub fn from_json(json: &str) -> Result<Self> {
+                from_json(json)
+            }
+
+            /// Encode the known client contract with bytewise-sorted JSON keys.
+            pub fn to_canonical_json(&self) -> Result<String> {
+                canonical_json(self)
+            }
+        }
+    };
+}
+
+/// Packaged Python artifact identity. Source bytes are never part of this value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionArtifact {
+    pub kind: String,
+    pub digest: String,
+    pub entrypoint: String,
+}
+
+/// One ordered Arrow input parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionParameter {
+    pub name: String,
+    pub arrow_type: String,
+    pub nullable: bool,
+}
+
+/// One field of an ordered named-struct result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionResultField {
+    pub name: String,
+    pub arrow_type: String,
+    pub nullable: bool,
+}
+
+/// Scalar or named-struct Function output.
+///
+/// `kind` remains a string so unknown future result shapes can be decoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionOutput {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nullable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FunctionResultField>,
+}
+
+/// Ordered language-neutral Function signature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionSignature {
+    pub inputs: Vec<FunctionParameter>,
+    pub output: FunctionOutput,
+    /// Ordered fields of the single initialization row a Function instance is
+    /// created with. Each binding supplies its own values; they are not part
+    /// of the Function version. Empty when the Function takes none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initialization: Vec<FunctionParameter>,
+}
+
+/// One Python environment source.
+///
+/// The selected source is interpreted by Sophon. `kind` is open for forward
+/// compatible decoding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PythonEnvironmentSpec {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packages: Vec<String>,
+    /// Conda channels in priority order; conda environments only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+/// Reproducible Python runtime definition understood by Sophon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PythonRuntimeSpec {
+    /// The V1 Sophon-managed Python runtime.
+    Python {
+        python_version: String,
+        environment: PythonEnvironmentSpec,
+        env: BTreeMap<String, String>,
+    },
+    /// The GPU-enabled Sophon-managed Python runtime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeMap;
+    /// use lancedb::function::{PythonEnvironmentSpec, PythonRuntimeSpec};
+    ///
+    /// let runtime = PythonRuntimeSpec::PythonV2 {
+    ///     python_version: "3.12".to_string(),
+    ///     environment: PythonEnvironmentSpec {
+    ///         kind: "pip".to_string(),
+    ///         packages: vec!["cupy-cuda12x".to_string()],
+    ///         channels: Vec::new(),
+    ///         path: None,
+    ///         modules: Vec::new(),
+    ///         image: None,
+    ///     },
+    ///     env: BTreeMap::new(),
+    /// };
+    /// assert!(runtime.requires_gpu());
+    /// ```
+    PythonV2 {
+        python_version: String,
+        environment: PythonEnvironmentSpec,
+        env: BTreeMap<String, String>,
+    },
+    /// A runtime kind introduced by a newer server.
+    ///
+    /// Unknown payload fields are intentionally not retained because the
+    /// client does not proxy catalog values.
+    Unrecognized { kind: String },
+}
+
+impl PythonRuntimeSpec {
+    /// The wire discriminator reported by Sophon.
+    pub fn kind(&self) -> &str {
+        match self {
+            Self::Python { .. } => "python",
+            Self::PythonV2 { .. } => "python_v2",
+            Self::Unrecognized { kind } => kind,
+        }
+    }
+
+    /// The Python version for a known Python runtime, or `None` for an unknown kind.
+    pub fn python_version(&self) -> Option<&str> {
+        match self {
+            Self::Python { python_version, .. } | Self::PythonV2 { python_version, .. } => {
+                Some(python_version)
+            }
+            Self::Unrecognized { .. } => None,
+        }
+    }
+
+    /// The Python environment for a known Python runtime, or `None` for an unknown kind.
+    pub fn environment(&self) -> Option<&PythonEnvironmentSpec> {
+        match self {
+            Self::Python { environment, .. } | Self::PythonV2 { environment, .. } => {
+                Some(environment)
+            }
+            Self::Unrecognized { .. } => None,
+        }
+    }
+
+    /// Environment variables, or `None` for an unknown kind.
+    pub fn env(&self) -> Option<&BTreeMap<String, String>> {
+        match self {
+            Self::Python { env, .. } | Self::PythonV2 { env, .. } => Some(env),
+            Self::Unrecognized { .. } => None,
+        }
+    }
+
+    /// Whether the runtime requires a GPU selected by the execution platform.
+    pub fn requires_gpu(&self) -> bool {
+        matches!(self, Self::PythonV2 { .. })
+    }
+}
+
+#[derive(Deserialize)]
+struct PythonRuntimeV1Wire {
+    python_version: String,
+    environment: PythonEnvironmentSpec,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    gpu: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct PythonRuntimeV2Wire {
+    python_version: String,
+    environment: PythonEnvironmentSpec,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    gpu: bool,
+}
+
+impl<'de> Deserialize<'de> for PythonRuntimeSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let kind = value
+            .get("kind")
+            .ok_or_else(|| de::Error::missing_field("kind"))?
+            .as_str()
+            .ok_or_else(|| de::Error::custom("runtime.kind must be a string"))?
+            .to_string();
+        match kind.as_str() {
+            "python" => {
+                let wire: PythonRuntimeV1Wire =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                if wire.gpu.is_some() {
+                    return Err(de::Error::custom(
+                        "python runtime with gpu requires kind='python_v2'",
+                    ));
+                }
+                Ok(Self::Python {
+                    python_version: wire.python_version,
+                    environment: wire.environment,
+                    env: wire.env,
+                })
+            }
+            "python_v2" => {
+                let wire: PythonRuntimeV2Wire =
+                    serde_json::from_value(value).map_err(de::Error::custom)?;
+                if !wire.gpu {
+                    return Err(de::Error::custom("runtime.gpu must be true"));
+                }
+                Ok(Self::PythonV2 {
+                    python_version: wire.python_version,
+                    environment: wire.environment,
+                    env: wire.env,
+                })
+            }
+            _ => Ok(Self::Unrecognized { kind }),
+        }
+    }
+}
+
+impl Serialize for PythonRuntimeSpec {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct PythonRuntimeRef<'a> {
+            kind: &'static str,
+            python_version: &'a str,
+            environment: &'a PythonEnvironmentSpec,
+            #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+            env: &'a BTreeMap<String, String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpu: Option<bool>,
+        }
+
+        #[derive(Serialize)]
+        struct UnrecognizedRuntimeRef<'a> {
+            kind: &'a str,
+        }
+
+        match self {
+            Self::Python {
+                python_version,
+                environment,
+                env,
+            } => PythonRuntimeRef {
+                kind: "python",
+                python_version,
+                environment,
+                env,
+                gpu: None,
+            }
+            .serialize(serializer),
+            Self::PythonV2 {
+                python_version,
+                environment,
+                env,
+            } => PythonRuntimeRef {
+                kind: "python_v2",
+                python_version,
+                environment,
+                env,
+                gpu: Some(true),
+            }
+            .serialize(serializer),
+            Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
+        }
+    }
+}
+
+/// A complete OCI Function image. Its digest is independent of catalog names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionImage {
+    pub manifest_digest: String,
+    pub descriptor: Value,
+    pub source: bool,
+}
+
+fn deserialize_object_version<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    match value.parse::<u64>() {
+        Ok(number) if number > 0 && number.to_string() == value => Ok(value),
+        _ => Err(de::Error::custom(
+            "Function version must be a canonical positive uint64",
+        )),
+    }
+}
+
+/// One immutable Function object revision and its executable artifact.
+///
+/// The Function is named by its parts, `name` and `namespace_path`, the way a
+/// [`SecretReference`](crate::secrets::SecretReference) names a Secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionVersion {
+    name: String,
+    /// The namespace holding the Function. Empty is the root, and is absent
+    /// from the wire, as a [`SecretReference`](crate::secrets::SecretReference)
+    /// omits it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    namespace_path: Vec<String>,
+    object_id: String,
+    location: String,
+    #[serde(deserialize_with = "deserialize_object_version")]
+    version: String,
+    image: FunctionImage,
+    signature: FunctionSignature,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    secret_bindings: Vec<SecretBinding>,
+    created_at: String,
+    metadata: BTreeMap<String, String>,
+    disabled: bool,
+}
+
+impl FunctionVersion {
+    pub fn object_id(&self) -> &str {
+        &self.object_id
+    }
+    pub fn location(&self) -> &str {
+        &self.location
+    }
+    pub fn metadata(&self) -> &BTreeMap<String, String> {
+        &self.metadata
+    }
+    pub fn disabled(&self) -> bool {
+        self.disabled
+    }
+    pub fn reference(&self) -> FunctionVersionRef {
+        FunctionVersionRef {
+            name: self.name.clone(),
+            namespace_path: self.namespace_path.clone(),
+            object_id: self.object_id.clone(),
+            location: self.location.clone(),
+            version: self.version.clone(),
+            manifest_digest: self.image.manifest_digest.clone(),
+        }
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn namespace_path(&self) -> &[String] {
+        &self.namespace_path
+    }
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+    pub fn image(&self) -> &FunctionImage {
+        &self.image
+    }
+    pub fn signature(&self) -> &FunctionSignature {
+        &self.signature
+    }
+
+    /// Declared environment variable name to the Secret each one resolves.
+    ///
+    /// Bindings are part of this version's identity; the credentials behind
+    /// them are not, and resolve at execution. Rotating a bound Secret
+    /// therefore changes what the same version runs with, and no value has a
+    /// field in this model.
+    pub fn secret_bindings(&self) -> &[SecretBinding] {
+        &self.secret_bindings
+    }
+
+    pub fn created_at(&self) -> &str {
+        &self.created_at
+    }
+}
+
+impl_json!(FunctionVersion);
+
+/// Encoded artifact bytes uploaded with a Function registration request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionArtifactContent {
+    /// Encoding of `data`. V1 Python authoring uses `base64`.
+    pub encoding: String,
+    pub data: String,
+}
+
+/// Internal execution adapter selected for a Python callable artifact.
+///
+/// The adapter converts the public scalar callable to the Arrow batch ABI
+/// used by the remote executor. It is part of the request envelope, not a
+/// public batch-UDF authoring mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PythonAdapterSpec {
+    pub kind: String,
+    pub version: u32,
+}
+
+/// Python artifact uploaded while registering a Function.
+///
+/// Unlike [`FunctionArtifact`], which is the durable artifact identity
+/// returned by the catalog, this request value contains the encoded source
+/// bytes that Sophon must durably bake before publishing a FunctionVersion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionArtifactRequest {
+    pub kind: String,
+    pub digest: String,
+    pub entrypoint: String,
+    pub content: FunctionArtifactContent,
+    pub adapter: PythonAdapterSpec,
+}
+
+/// Stable request envelope for remote immutable Function registration.
+///
+/// Credential values deliberately have no field here. The only secret-shaped
+/// thing a client sends is `secret_bindings`: the name of a Secret the
+/// database already holds, which Sophon resolves inside the remote runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRegistrationRequest {
+    pub name: String,
+    pub artifact: FunctionArtifactRequest,
+    pub signature: FunctionSignature,
+    pub runtime: PythonRuntimeSpec,
+    /// Declared environment variable name to the Secret it binds. A binding is
+    /// a reference: whether the Secret exists is answered when a column is
+    /// declared against this version, not here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_bindings: Vec<SecretBinding>,
+}
+
+impl_json!(FunctionRegistrationRequest);
+
+/// Exact FunctionVersion reference embedded in applications and bindings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionVersionRef {
+    pub name: String,
+    /// The namespace holding the Function; empty is the root and is absent
+    /// from the wire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespace_path: Vec<String>,
+    pub object_id: String,
+    pub location: String,
+    #[serde(deserialize_with = "deserialize_object_version")]
+    pub version: String,
+    pub manifest_digest: String,
+}
+
+/// Parameter binding in a FunctionApplication.
+///
+/// `kind` remains open until Python authoring is added in Slice 2. Slice 1
+/// freezes JSON integers, strings, booleans, nulls, arrays, and objects as
+/// canonical literal values. Floating-point literals are rejected until a
+/// language-neutral numeric representation is defined.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationInput {
+    pub parameter: String,
+    pub kind: String,
+    pub value: Value,
+}
+
+/// Pre-declaration application of an exact FunctionVersion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionApplication {
+    function: FunctionVersionRef,
+    inputs: Vec<ApplicationInput>,
+    output: FunctionOutput,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    columns: BTreeMap<String, String>,
+    /// Initialization values for this binding, by initialization field name.
+    /// The service validates them against the Function's initialization
+    /// schema and persists the resulting Arrow row in the binding; this JSON
+    /// is transport only and never hashed into an identity, so floating-point
+    /// values are accepted here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    initialization: BTreeMap<String, Value>,
+    #[serde(default, flatten, skip_serializing)]
+    unknown_fields: BTreeMap<String, Value>,
+    #[serde(default, skip)]
+    unknown_nested_fields: bool,
+}
+
+impl FunctionApplication {
+    pub fn function(&self) -> &FunctionVersionRef {
+        &self.function
+    }
+
+    pub fn inputs(&self) -> &[ApplicationInput] {
+        &self.inputs
+    }
+
+    pub fn output(&self) -> &FunctionOutput {
+        &self.output
+    }
+
+    pub fn columns(&self) -> &BTreeMap<String, String> {
+        &self.columns
+    }
+
+    /// Initialization values supplied by this application, by field name.
+    pub fn initialization(&self) -> &BTreeMap<String, Value> {
+        &self.initialization
+    }
+    /// Whether a newer writer attached application fields this client cannot
+    /// validate. Such applications remain readable but must not be declared.
+    pub fn has_unknown_fields(&self) -> bool {
+        !self.unknown_fields.is_empty() || self.unknown_nested_fields
+    }
+
+    /// Decode a remote application after validating the Slice 1 literal domain.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let value: Value = from_json(json)?;
+        let has_unknown_nested_fields = application_has_unknown_nested_fields(&value);
+        let mut application: Self = serde_json::from_value(value).map_err(invalid_json)?;
+        application.unknown_nested_fields = has_unknown_nested_fields;
+        application
+            .inputs
+            .iter()
+            .try_for_each(|input| validate_literal(&input.value))?;
+        Ok(application)
+    }
+
+    /// Encode the application with bytewise-sorted JSON keys.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.inputs
+            .iter()
+            .try_for_each(|input| validate_literal(&input.value))?;
+        canonical_json(self)
+    }
+}
+
+/// Stable table input bound to a registered parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputBinding {
+    pub parameter: String,
+    pub field_id: i32,
+    pub field_path: String,
+    pub arrow_type: String,
+    pub nullable: bool,
+}
+
+/// Ordered result-field to table-field mapping for a Function binding.
+///
+/// `nullable` describes the logical Function result. Physical computed-column
+/// fields remain nullable while unassigned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputMapping {
+    pub result_field: String,
+    pub output_name: String,
+    pub output_field_id: i32,
+    pub output_ordinal: u32,
+    pub arrow_type: String,
+    pub nullable: bool,
+}
+
+/// Internal physical column preserving the parent validity of a flattened
+/// named-struct result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssignmentMapping {
+    pub output_name: String,
+    pub output_field_id: i32,
+}
+
+/// Immutable Function binding persisted by the Enterprise table service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionBinding {
+    binding_id: String,
+    function: FunctionVersionRef,
+    inputs: Vec<InputBinding>,
+    outputs: Vec<OutputMapping>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assignment: Option<AssignmentMapping>,
+    /// Exact Arrow schema presented to the Function, encoded with the Lance
+    /// Namespace Arrow JSON representation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_schema: Option<Value>,
+    /// Exact physical Arrow schema of the binding's table outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_schema: Option<Value>,
+    /// Standard base64 of the one-row Arrow IPC stream every instance of this
+    /// binding is created with, already validated against the Function's
+    /// initialization schema. Absent when the Function takes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initialization: Option<String>,
+}
+
+impl FunctionBinding {
+    pub fn binding_id(&self) -> &str {
+        &self.binding_id
+    }
+
+    pub fn function(&self) -> &FunctionVersionRef {
+        &self.function
+    }
+
+    pub fn inputs(&self) -> &[InputBinding] {
+        &self.inputs
+    }
+
+    pub fn outputs(&self) -> &[OutputMapping] {
+        &self.outputs
+    }
+
+    pub fn assignment(&self) -> Option<&AssignmentMapping> {
+        self.assignment.as_ref()
+    }
+
+    pub fn input_schema(&self) -> Option<&Value> {
+        self.input_schema.as_ref()
+    }
+
+    pub fn output_schema(&self) -> Option<&Value> {
+        self.output_schema.as_ref()
+    }
+
+    /// Base64 one-row Arrow IPC initialization stream, if the Function takes one.
+    pub fn initialization(&self) -> Option<&str> {
+        self.initialization.as_deref()
+    }
+}
+
+impl_json!(FunctionBinding);
+
+/// Stable terminal result of an expression-backed or Function-backed column
+/// refresh [`crate::Job`].
+///
+/// Local refresh jobs produce this value in process. LanceDB Cloud and
+/// Enterprise decode the same value from the durable job's terminal payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshColumnResult {
+    /// Rows assigned a value by this refresh.
+    pub rows_assigned: u64,
+    /// Rows whose computation failed.
+    pub rows_failed: u64,
+    /// Rows that still need a value when the job completes.
+    pub rows_remaining: u64,
+    /// Exact table version the refresh read.
+    pub source_version: u64,
+    /// Table version made visible by the refresh, when one was published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_version: Option<u64>,
+}
+
+/// Which per-row errors [`crate::Table::function_errors`] lists. Every
+/// filter is optional; the listing is table-addressed, so with none set it
+/// covers every refresh of every column.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FunctionErrorsRequest {
+    /// Only errors recorded by this job.
+    pub job_id: Option<String>,
+    /// Only errors on this column.
+    pub column: Option<String>,
+    /// At most this many records; the server default is 10000 and its cap
+    /// 100000. [`FunctionErrors::truncated`] says whether the cap was hit.
+    pub limit: Option<usize>,
+}
+
+impl FunctionErrorsRequest {
+    /// A request with no filter.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Only errors recorded by `job_id`.
+    pub fn job_id(mut self, job_id: impl Into<String>) -> Self {
+        self.job_id = Some(job_id.into());
+        self
+    }
+
+    /// Only errors on `column`.
+    pub fn column(mut self, column: impl Into<String>) -> Self {
+        self.column = Some(column.into());
+        self
+    }
+
+    /// At most `limit` records.
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+}
+
+/// One row a Function refresh skipped, as the server recorded it. The
+/// message carries the input that failed, which is why reading errors needs
+/// read access to the table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrorRecord {
+    /// The refresh job that recorded the error.
+    pub job_id: String,
+    /// The fragment holding the row.
+    pub fragment_id: u64,
+    /// The row's offset within the fragment; `None` when the fragment's
+    /// detail was capped and only the fragment summary remains.
+    #[serde(default)]
+    pub row_offset: Option<u32>,
+    /// The column being computed.
+    pub column: String,
+    /// The Function that failed.
+    pub function: String,
+    /// The Function's version.
+    pub function_version: String,
+    /// The table version the refresh read.
+    pub table_version: u64,
+    /// The error's class, as the executor reported it.
+    pub error_type: String,
+    /// The error's text.
+    pub error_message: String,
+    /// When the error was recorded, in milliseconds since the epoch.
+    pub created_at_millis: i64,
+}
+
+/// A fragment whose per-row detail was capped: `rows_skipped` rows failed,
+/// of which only `rows_recorded` have a [`FunctionErrorRecord`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrorFragment {
+    /// The refresh job that recorded the errors.
+    pub job_id: String,
+    /// The fragment.
+    pub fragment_id: u64,
+    /// Rows the refresh skipped in this fragment.
+    pub rows_skipped: u64,
+    /// Rows with a record of their own.
+    pub rows_recorded: u64,
+}
+
+/// A table's per-row Function errors; see [`crate::Table::function_errors`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionErrors {
+    /// The recorded rows, newest job first.
+    pub records: Vec<FunctionErrorRecord>,
+    /// Fragments whose detail was capped.
+    #[serde(default)]
+    pub fragments: Vec<FunctionErrorFragment>,
+    /// Whether the listing stopped at its limit.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+impl RefreshColumnResult {
+    /// Deprecated compatibility alias for `rows_assigned`.
+    pub fn rows_filled(&self) -> u64 {
+        self.rows_assigned
+    }
+
+    /// Deprecated compatibility alias for `published_version`.
+    pub fn version(&self) -> Option<u64> {
+        self.published_version
+    }
+}
+
+impl_json!(RefreshColumnResult);
+
+#[cfg(test)]
+mod conda_environment_tests {
+    use super::{PythonEnvironmentSpec, PythonRuntimeSpec};
+
+    #[test]
+    fn conda_channels_round_trip_and_pip_stays_bare() {
+        let conda: PythonEnvironmentSpec = serde_json::from_str(
+            r#"{"kind":"conda","packages":["numpy"],"channels":["conda-forge"]}"#,
+        )
+        .unwrap();
+        assert_eq!(conda.channels, ["conda-forge"]);
+        assert!(
+            serde_json::to_string(&conda)
+                .unwrap()
+                .contains(r#""channels":["conda-forge"]"#)
+        );
+
+        let pip: PythonEnvironmentSpec =
+            serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
+        assert!(!serde_json::to_string(&pip).unwrap().contains("channels"));
+    }
+
+    #[test]
+    fn gpu_python_runtime_marker_round_trips_and_validates() {
+        let runtime: PythonRuntimeSpec = serde_json::from_str(
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
+        )
+        .unwrap();
+        assert_eq!(runtime.kind(), "python_v2");
+        assert!(runtime.requires_gpu());
+        assert_eq!(
+            super::canonical_json(&runtime).unwrap(),
+            r#"{"environment":{"kind":"pip"},"gpu":true,"kind":"python_v2","python_version":"3.12"}"#
+        );
+
+        for invalid in [
+            r#"{"kind":"python","python_version":"3.12","environment":{"kind":"pip"},"gpu":true}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"}}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":1}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":false}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"true"}"#,
+            r#"{"kind":"python_v2","python_version":"3.12","environment":{"kind":"pip"},"gpu":"H100"}"#,
+        ] {
+            assert!(serde_json::from_str::<PythonRuntimeSpec>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn unknown_runtime_discards_payload_before_known_field_validation() {
+        for encoded in [
+            r#"{"kind":"python_v3","gpu":{"model":"H100"}}"#,
+            r#"{"kind":"python_v3","resources":[]}"#,
+            r#"{"kind":"python_v3","python_version":3.15,"environment":{"kind":[]}}"#,
+        ] {
+            let runtime: PythonRuntimeSpec = serde_json::from_str(encoded).unwrap();
+            assert_eq!(runtime.kind(), "python_v3");
+            assert_eq!(
+                super::canonical_json(&runtime).unwrap(),
+                r#"{"kind":"python_v3"}"#
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Canonical form is what the FunctionVersion hash is taken over, so key
+    /// order must come from the keys and not from however serde happened to
+    /// emit them. Nesting is included because the sort is recursive.
+    #[test]
+    fn canonical_json_sorts_keys_at_every_depth() {
+        let value = serde_json::json!({
+            "runtime": {"kind": "python", "env": {"B": "2", "A": "1"}},
+            "artifact": {"digest": "sha256:x"},
+            "name": "embed",
+        });
+        let mut out = String::new();
+        write_canonical_json(&value, &mut out).expect("canonical JSON");
+
+        assert_eq!(
+            out,
+            r#"{"artifact":{"digest":"sha256:x"},"name":"embed","runtime":{"env":{"A":"1","B":"2"},"kind":"python"}}"#
+        );
+    }
+
+    /// A Function is named by its parts, and a root one states no namespace.
+    #[test]
+    fn function_version_carries_its_namespace_as_a_separate_field() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let root = FunctionVersion::from_json(VERSION).unwrap();
+        assert!(root.namespace_path().is_empty());
+        assert_eq!(root.to_canonical_json().unwrap(), VERSION.trim_end());
+
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        document["namespace_path"] = serde_json::json!(["analytics", "features"]);
+        let nested = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(nested.name(), "embed");
+        assert_eq!(nested.namespace_path(), ["analytics", "features"]);
+        let reference = nested.reference();
+        assert_eq!(reference.name, "embed");
+        assert_eq!(reference.namespace_path, ["analytics", "features"]);
+        let reference: Value = serde_json::to_value(&reference).unwrap();
+        assert_eq!(
+            reference["namespace_path"],
+            serde_json::json!(["analytics", "features"])
+        );
+        let root_reference = serde_json::to_value(root.reference()).unwrap();
+        assert!(root_reference.get("namespace_path").is_none());
+
+        // An application carrying the namespace is not from a newer contract.
+        let application = serde_json::json!({
+            "function": reference,
+            "inputs": [],
+            "output": serde_json::to_value(nested.signature().output.clone()).unwrap(),
+        });
+        let application = FunctionApplication::from_json(&application.to_string()).unwrap();
+        assert!(!application.has_unknown_fields());
+        assert_eq!(
+            application.function().namespace_path,
+            ["analytics", "features"]
+        );
+    }
+
+    /// Arrays are ordered by the caller, so canonicalization must leave them
+    /// alone -- sorting them would change what a signature means.
+    #[test]
+    fn canonical_json_preserves_array_order() {
+        let value = serde_json::json!({"inputs": ["b", "a", "c"]});
+        let mut out = String::new();
+        write_canonical_json(&value, &mut out).expect("canonical JSON");
+
+        assert_eq!(out, r#"{"inputs":["b","a","c"]}"#);
+    }
+
+    /// A float has no single canonical spelling, so two clients could hash the
+    /// same literal differently. Rejected at any depth rather than rounded.
+    #[test]
+    fn validate_literal_rejects_floats_at_any_depth() {
+        for value in [
+            serde_json::json!(1.5),
+            serde_json::json!([1, [2, 3.5]]),
+            serde_json::json!({"a": {"b": 0.25}}),
+        ] {
+            let error = validate_literal(&value).expect_err("floats are not canonical");
+            assert!(
+                error.to_string().contains("floating-point"),
+                "unexpected error: {error}"
+            );
+        }
+
+        for value in [
+            serde_json::json!(1),
+            serde_json::json!("1.5"),
+            serde_json::json!([1, {"a": true}]),
+            serde_json::json!(null),
+        ] {
+            validate_literal(&value).expect("non-float literals are canonical");
+        }
+    }
+
+    /// A Function without initialization keeps its pre-initialization wire
+    /// form, so existing signatures and applications encode byte-identically.
+    #[test]
+    fn empty_initialization_is_omitted_from_the_wire() {
+        let signature: FunctionSignature = serde_json::from_str(
+            r#"{"inputs":[{"name":"x","arrow_type":"int64","nullable":true}],"output":{"kind":"scalar","arrow_type":"int64","nullable":false}}"#,
+        )
+        .unwrap();
+        assert!(signature.initialization.is_empty());
+        assert!(
+            !canonical_json(&signature)
+                .unwrap()
+                .contains("initialization")
+        );
+
+        let signature: FunctionSignature = serde_json::from_str(
+            r#"{"inputs":[],"output":{"kind":"scalar","arrow_type":"int64","nullable":false},"initialization":[{"name":"factor","arrow_type":"float64","nullable":false}]}"#,
+        )
+        .unwrap();
+        assert_eq!(signature.initialization[0].name, "factor");
+        assert!(
+            canonical_json(&signature)
+                .unwrap()
+                .contains(r#""initialization":[{"#)
+        );
+    }
+
+    /// Initialization values are transport JSON, validated and re-encoded as
+    /// Arrow by the service, so floats are accepted there while column-input
+    /// literals keep the Slice 1 domain.
+    #[test]
+    fn application_initialization_accepts_floats() {
+        let application = FunctionApplication::from_json(
+            r#"{"function":{"name":"scale","object_id":"o","location":"l","version":"1","manifest_digest":"sha256:x"},"inputs":[{"parameter":"x","kind":"column","value":{"path":"x"}}],"output":{"kind":"scalar","arrow_type":"float64","nullable":false},"initialization":{"factor":2.5,"label":"fast"}}"#,
+        )
+        .unwrap();
+        assert!(!application.has_unknown_fields());
+        assert_eq!(
+            application.initialization()["factor"],
+            serde_json::json!(2.5)
+        );
+        let encoded = application.to_canonical_json().unwrap();
+        assert!(encoded.contains(r#""initialization":{"factor":2.5,"label":"fast"}"#));
+    }
+
+    #[test]
+    fn binding_initialization_round_trips() {
+        let binding = FunctionBinding::from_json(
+            r#"{"binding_id":"fb_1","function":{"name":"scale","object_id":"o","location":"l","version":"1","manifest_digest":"sha256:x"},"inputs":[],"outputs":[],"initialization":"QUJD"}"#,
+        )
+        .unwrap();
+        assert_eq!(binding.initialization(), Some("QUJD"));
+        assert!(
+            binding
+                .to_canonical_json()
+                .unwrap()
+                .ends_with(r#""initialization":"QUJD","inputs":[],"outputs":[]}"#)
+        );
+    }
+
+    /// Unknown keys are how a newer server's payload reaches an older client,
+    /// so the check has to be exact about which level it is looking at.
+    #[test]
+    fn has_unknown_keys_only_inspects_the_level_it_is_given() {
+        let value = serde_json::json!({"name": "embed", "version": "fv_1"});
+        assert!(!has_unknown_keys(&value, &["name", "version"]));
+        assert!(has_unknown_keys(&value, &["name"]));
+
+        // A nested unknown is not this level's business.
+        let nested = serde_json::json!({"name": {"unexpected": 1}});
+        assert!(!has_unknown_keys(&nested, &["name"]));
+
+        // A non-object has no keys to be unknown.
+        assert!(!has_unknown_keys(&serde_json::json!("embed"), &["name"]));
+    }
+}

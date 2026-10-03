@@ -40,6 +40,10 @@ from utils import exception_output
 from importlib.util import find_spec
 
 
+# Legacy v1 blob columns are only writable at file version <= 2.1.
+LEGACY_BLOB_STORAGE_OPTIONS = {"new_table_data_storage_version": "2.1"}
+
+
 def _blob_query_data():
     return pa.table(
         {
@@ -119,13 +123,17 @@ def _assert_blob_bytes_projection(df):
 
 def _blob_query_table(db, name, blob_schema):
     if blob_schema == "v1":
-        return db.create_table(name, _blob_query_data())
+        return db.create_table(
+            name, _blob_query_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return _create_blob_v2_query_table(db, name)
 
 
 async def _blob_query_table_async(db, name, blob_schema):
     if blob_schema == "v1":
-        return await db.create_table(name, _blob_query_data())
+        return await db.create_table(
+            name, _blob_query_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return await _create_blob_v2_query_table_async(db, name)
 
 
@@ -275,7 +283,9 @@ async def test_query_to_pandas_kwargs(table, table_async):
 def test_plain_scan_query_to_pandas_blob_modes(tmp_db, blob_mode):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
-        f"test_query_to_pandas_blob_{blob_mode}", _blob_query_data()
+        f"test_query_to_pandas_blob_{blob_mode}",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
     df = (
@@ -322,7 +332,9 @@ def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
 ):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
-        "test_query_to_pandas_blob_no_arrow_collect", _blob_query_data()
+        "test_query_to_pandas_blob_no_arrow_collect",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
     query = table.search().where("id = 1").select(["id", "blob"])
 
@@ -347,7 +359,9 @@ def test_plain_scan_query_to_pandas_blob_descriptions_flatten_uses_scanner(
 ):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
-        "test_query_to_pandas_blob_desc_flatten", _blob_query_data()
+        "test_query_to_pandas_blob_desc_flatten",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
     query = table.search().where("id = 1").select(["id", "blob"])
 
@@ -365,7 +379,11 @@ def test_plain_scan_query_to_pandas_blob_descriptions_flatten_uses_scanner(
 def test_plain_scan_query_to_pandas_scanner_state(tmp_db):
     pytest.importorskip("lance")
     data = _blob_query_data()
-    table = tmp_db.create_table("test_query_to_pandas_scanner_state", data.slice(0, 2))
+    table = tmp_db.create_table(
+        "test_query_to_pandas_scanner_state",
+        data.slice(0, 2),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
     table.add(data.slice(2, 2))
 
     fragments = table.to_lance().get_fragments()
@@ -400,7 +418,9 @@ def test_plain_scan_query_to_pandas_scanner_state(tmp_db):
 async def test_async_plain_scan_query_to_pandas_blob_projection(tmp_db_async):
     pytest.importorskip("lance")
     table = await tmp_db_async.create_table(
-        "test_async_query_to_pandas_blob_projection", _blob_query_data()
+        "test_async_query_to_pandas_blob_projection",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
     lazy_df = await (
@@ -452,7 +472,9 @@ async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow
 ):
     pytest.importorskip("lance")
     table = await tmp_db_async.create_table(
-        "test_async_query_to_pandas_blob_no_arrow_collect", _blob_query_data()
+        "test_async_query_to_pandas_blob_no_arrow_collect",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
     query = table.query().where("id = 1").select(["id", "blob"])
 
@@ -474,7 +496,11 @@ async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow
 
 def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
     pytest.importorskip("lance")
-    table = tmp_db.create_table("test_vector_query_blob_mode", _blob_query_data())
+    table = tmp_db.create_table(
+        "test_vector_query_blob_mode",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
 
     with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
         table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
@@ -485,7 +511,9 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
 def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
-        "test_vector_query_blob_descriptions", _blob_query_data()
+        "test_vector_query_blob_descriptions",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
     with pytest.raises(RuntimeError, match="plain scan query"):
@@ -568,6 +596,15 @@ def test_query_builder(table):
     )
     assert rs[0]["id"] == 1
     assert all(np.array(rs[0]["vector"]) == [1, 2])
+
+
+def test_query_multiple_vectors(table):
+    results = table.search([np.array([1, 2]), np.array([4, 5])]).limit(1).to_list()
+
+    assert len(results) == 2
+    results_by_query = {result["query_index"]: result for result in results}
+    assert results_by_query[0]["id"] == 1
+    assert results_by_query[1]["id"] == 2
 
 
 def test_with_row_id(table: lancedb.table.Table):
@@ -664,6 +701,21 @@ def test_distance_range(table: lancedb.table.Table):
     res = table.search(q).distance_range(lower_bound=min_dist).to_arrow()
     assert len(res) == 2
     assert res["_distance"].to_pylist() == [min_dist, max_dist]
+
+
+@pytest.mark.parametrize("expression", ["1 - _distance", "1.0 - _distance"])
+def test_select_arithmetic_with_distance(table, expression):
+    result = (
+        table.search([10, 10])
+        .select({"similarity": expression, "_distance": "_distance"})
+        .distance_type("cosine")
+        .to_arrow()
+    )
+
+    assert result.schema.field("similarity").type == pa.float32()
+    assert result["similarity"].to_pylist() == pytest.approx(
+        [1 - distance for distance in result["_distance"].to_pylist()]
+    )
 
 
 @pytest.mark.asyncio
@@ -886,6 +938,23 @@ def test_query_builder_batches(table):
     rs_list = rs_list[0].to_pandas()
     assert rs_list["id"][0] == 1
     assert rs_list["id"][1] == 2
+
+
+def test_batch_vector_query_shares_filtered_flat_scan(table):
+    query = (
+        table.search([[1.0, 2.0], [3.0, 4.0]])
+        .where("id > 0", prefilter=True)
+        .limit(1)
+        .select(["id"])
+    )
+
+    plan = query.explain_plan(verbose=True)
+    assert "KNNVectorDistance: queries=2" in plan
+    assert "UnionExec" not in plan
+
+    results = query.to_arrow()
+    assert len(results) == 2
+    assert results["query_index"].to_pylist() == [0, 1]
 
 
 def test_dynamic_projection(table):
@@ -1881,6 +1950,21 @@ def test_take_queries(tmp_path):
         5,
         17,
     ]
+
+    # Duplicate offsets are occurrences, not set members. Ordering is unspecified.
+    assert sorted(table.take_offsets([5, 2, 5, 17]).to_pandas()["idx"].to_list()) == [
+        2,
+        5,
+        5,
+        17,
+    ]
+
+    # Converting a take builder to its serializable query representation must
+    # retain occurrence metadata and execute with the same multiplicity.
+    query = table.take_offsets([5, 2, 5, 17]).select(["idx"]).to_query_object()
+    assert query.take_offsets == [5, 2, 5, 17]
+    converted = table._execute_query(query).read_all()
+    assert sorted(converted["idx"].to_pylist()) == [2, 5, 5, 17]
 
     # Take by row id
     assert list(

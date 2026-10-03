@@ -3,10 +3,14 @@
 
 import * as http from "http";
 import { RequestListener } from "http";
+import packageJson = require("../package.json");
 import {
+  ClientAuthMethod,
   ClientConfig,
   Connection,
   ConnectionOptions,
+  OAuthConfig,
+  OAuthFlowType,
   TlsConfig,
   connect,
 } from "../lancedb";
@@ -70,11 +74,187 @@ async function withMockDatabase(
   try {
     await callback(db);
   } finally {
-    server.close();
+    // `close()` alone leaves the port bound until keep-alive sockets drain, so
+    // a single failing test would cascade into EADDRINUSE for every test after
+    // it. Destroy the connections and wait for the port to actually be free.
+    await new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      server.close(() => resolve());
+    });
   }
 }
 
 describe("remote connection", () => {
+  it("rejects the external blob opt-in without blocking regular adds", async () => {
+    let insertRequests = 0;
+    const describeRequests: string[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const requestPath = req.url ?? "";
+        if (requestPath.endsWith("/describe/")) {
+          describeRequests.push(requestPath);
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "items",
+              version: 1,
+              schema: {
+                fields: [
+                  {
+                    name: "id",
+                    type: { type: "int64" },
+                    nullable: true,
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        if (requestPath.endsWith("/insert/")) {
+          insertRequests++;
+          req.resume();
+          req.on("end", () => {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: insertRequests + 1 }));
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+
+        await expect(
+          table.add([{ id: 1n }], {
+            allowExternalBlobOutsideBases: true,
+          }),
+        ).rejects.toThrow("only supported on local tables");
+        expect(insertRequests).toBe(0);
+
+        await expect(table.add([{ id: 2n }])).resolves.toMatchObject({
+          version: 2,
+        });
+        await expect(
+          table.add([{ id: 3n }], {
+            allowExternalBlobOutsideBases: false,
+          }),
+        ).resolves.toMatchObject({ version: 3 });
+      },
+    );
+
+    expect(describeRequests.length).toBeGreaterThan(0);
+    expect(insertRequests).toBe(2);
+  });
+
+  it("lists materialized views through the namespace route", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("GET");
+        expect(req.url).toBe("/v1/namespace/$/materialized_view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["daily_sales"] }));
+      },
+      async (db) => {
+        expect(await db.listMaterializedViews()).toEqual(["daily_sales"]);
+      },
+    );
+  });
+
+  it("creates a view and decodes the schema it resolved to", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/analytics$adults/create");
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            name: "adults",
+            namespace: ["analytics"],
+            query: "SELECT name FROM people",
+            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
+            default_database: "db",
+            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
+            default_namespace: ["analytics"],
+            schema: {
+              fields: [
+                { name: "name", nullable: true, type: { type: "utf8" } },
+              ],
+            },
+          }),
+        );
+      },
+      async (db) => {
+        const view = await db.createView("adults", "SELECT name FROM people", [
+          "analytics",
+        ]);
+        expect(view.name).toBe("adults");
+        expect(view.namespacePath).toEqual(["analytics"]);
+        expect(view.query).toBe("SELECT name FROM people");
+        expect(view.defaultDatabase).toBe("db");
+        expect(view.defaultNamespacePath).toEqual(["analytics"]);
+        expect(view.schema.fields.map((f) => f.name)).toEqual(["name"]);
+      },
+    );
+  });
+
+  it("lists and drops views through their own routes", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/namespace/$/view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["adults"] }));
+      },
+      async (db) => {
+        expect(await db.listViews()).toEqual(["adults"]);
+      },
+    );
+
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+      },
+      async (db) => {
+        await db.dropView("adults");
+      },
+    );
+  });
+
+  it("reports the cleanup job when a view drop is accepted", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res
+          .writeHead(202, { "content-type": "application/json" })
+          .end('{"job_id": "j1-do-abc"}');
+      },
+      async (db) => {
+        const job = await db.dropViewAsync("adults");
+        expect(job.id).toBe("j1-do-abc");
+      },
+    );
+  });
+
+  it("reports a finished job when a view drop had nothing to delete", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+      },
+      async (db) => {
+        // A 200 means the name was not bound, so there is no cleanup to wait on.
+        const job = await db.dropViewAsync("adults");
+        expect(job.id).toBeNull();
+        await job.wait();
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",
@@ -112,7 +292,7 @@ describe("remote connection", () => {
       (req, res) => {
         expect(req.headers["x-api-key"]).toEqual("fake");
         expect(req.headers["user-agent"]).toEqual(
-          `LanceDB-Node-Client/${process.env.npm_package_version}`,
+          `LanceDB-Node-Client/${packageJson.version}`,
         );
 
         const body = JSON.stringify({ tables: [] });
@@ -168,6 +348,66 @@ describe("remote connection", () => {
         },
       },
     );
+  });
+
+  it("lists the rows a Function refresh skipped", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/errors") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              `{"records": [{"job_id": "j-7", "fragment_id": 3, "row_offset": 9,
+                "column": "embedding", "function": "embed", "function_version": "2",
+                "table_version": 11, "error_type": "ValueError",
+                "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
+                "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
+                "rows_recorded": 100}], "truncated": true}`,
+            );
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const errors = await table.functionErrors({
+          jobId: "j-7",
+          column: "embedding",
+          limit: 2,
+        });
+        expect(errors.truncated).toBe(true);
+        expect(errors.records.map((r) => r.errorMessage)).toEqual([
+          "bad input 'x'",
+        ]);
+        expect(errors.records[0].rowOffset).toBe(9);
+        expect(errors.fragments[0].rowsSkipped).toBe(500);
+        await table.functionErrors();
+        await expect(table.functionErrors({ limit: -1 })).rejects.toThrow(
+          "limit must be a non-negative integer",
+        );
+      },
+    );
+    expect(bodies).toEqual([
+      JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
+      {},
+    ]);
   });
 
   it("surfaces JSON server errors from remote table operations", async () => {
@@ -311,7 +551,7 @@ describe("remote connection", () => {
     expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
   });
 
-  it("diffs and merges remote branches", async () => {
+  it("diffs and cherry-picks remote branches", async () => {
     const sampleDiff = {
       fromBranch: "exp",
       parentVersion: 1,
@@ -333,10 +573,9 @@ describe("remote connection", () => {
       changedColumns: [],
       addedIndexes: [],
       removedIndexes: [],
-      mergeable: true,
-      mergeBlockers: [],
+      errors: [],
     };
-    const mergeBodies: Record<string, unknown>[] = [];
+    const cherryPickBodies: Record<string, unknown>[] = [];
 
     await withMockDatabase(
       (req, res) => {
@@ -366,17 +605,16 @@ describe("remote connection", () => {
               .end(JSON.stringify(sampleDiff));
             return;
           }
-          if (path.endsWith("/branches/merge/")) {
-            mergeBodies.push(body);
+          if (path.endsWith("/branches/cherry_pick/")) {
+            cherryPickBodies.push(body);
             const dryRun = body["dry_run"] === true;
             const response = {
-              status: dryRun ? "ready" : "rejected",
+              status: dryRun ? "ready" : "failed",
               diff: dryRun
                 ? sampleDiff
                 : {
                     ...sampleDiff,
-                    mergeable: false,
-                    mergeBlockers: [
+                    errors: [
                       { code: "baseMoved", message: "main has advanced" },
                     ],
                   },
@@ -398,24 +636,58 @@ describe("remote connection", () => {
 
         await expect(branches.diff("exp")).resolves.toEqual(sampleDiff);
 
-        const rejected = await branches.merge("exp");
-        expect(rejected.status).toBe("rejected");
-        expect(rejected.diff.mergeBlockers).toEqual([
+        const failed = await branches.cherryPick("exp");
+        expect(failed.status).toBe("failed");
+        expect(failed.diff.errors).toEqual([
           { code: "baseMoved", message: "main has advanced" },
         ]);
 
-        const preview = await branches.merge("exp", true);
+        const preview = await branches.cherryPick("exp", true);
         expect(preview.status).toBe("ready");
         expect(preview.preview.promotedColumns).toEqual(["tag"]);
       },
     );
 
-    expect(mergeBodies).toEqual([
+    expect(cherryPickBodies).toEqual([
       // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
       { from_branch: "exp", dry_run: false },
       // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
       { from_branch: "exp", dry_run: true },
     ]);
+  });
+
+  describe("OAuthConfig", () => {
+    it("should expose client auth method values", () => {
+      expect(ClientAuthMethod.None).toBe("none");
+      expect(ClientAuthMethod.ClientSecretBasic).toBe("client_secret_basic");
+      expect(ClientAuthMethod.ClientSecretPost).toBe("client_secret_post");
+    });
+
+    it("should accept a confidential client with basic auth", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        clientSecret: "secret",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        clientAuthMethod: ClientAuthMethod.ClientSecretBasic,
+      };
+
+      expect(config.clientAuthMethod).toBe(ClientAuthMethod.ClientSecretBasic);
+    });
+
+    it("should accept a public PKCE client without auth method or secret", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        usePkce: true,
+      };
+
+      expect(config.clientSecret).toBeUndefined();
+      expect(config.clientAuthMethod).toBeUndefined();
+    });
   });
 
   describe("TlsConfig", () => {
@@ -915,6 +1187,7 @@ describe("remote connection jobs surface", () => {
     const { tableFromArrays, tableToIPC } = await import("apache-arrow");
     const eventsTable = tableFromArrays({ state: ["created", "succeeded"] });
     const eventsBody = Buffer.from(tableToIPC(eventsTable, "stream"));
+    const queryEventsPayloads: Record<string, unknown>[] = [];
 
     await withMockDatabase(
       (req, res) => {
@@ -943,6 +1216,16 @@ describe("remote connection jobs surface", () => {
                 );
             }
           } else if (req.url === "/v1/jobs/describe") {
+            if (payload["job_id"] === "job-2") {
+              res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                  '{"job_id": "job-2", "job_type": "refresh_column", ' +
+                    '"job_state": "DONE", "creation_ms": 2000, ' +
+                    '"result": {"rows_assigned": 1000000}}',
+                );
+              return;
+            }
             if (payload["job_id"] !== "job-1") {
               res.writeHead(404).end("no such job");
               return;
@@ -963,7 +1246,26 @@ describe("remote connection jobs surface", () => {
             res
               .writeHead(200, { "Content-Type": "application/json" })
               .end('{"job_id": "job-1"}');
+          } else if (req.url === "/v1/jobs/pause") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end('{"job_id": "job-1", "paused": true}');
+          } else if (req.url === "/v1/jobs/resume") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(
+                '{"job_id": "job-1", "resumed": false, "still_pausing": true}',
+              );
           } else if (req.url === "/v1/jobs/query_events") {
+            queryEventsPayloads.push(payload);
             res
               .writeHead(200, {
                 "Content-Type": "application/vnd.apache.arrow.stream",
@@ -980,22 +1282,68 @@ describe("remote connection jobs surface", () => {
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
 
-        const description = await db.getJob("job-1");
-        expect(description?.state).toEqual("failed");
-        expect(JSON.parse(description?.specJson ?? "")).toEqual({
-          column: "vec",
-        });
-        expect(description?.failure?.message).toEqual("worker died");
-        expect(await db.getJob("missing")).toBeNull();
-
         expect(await db.cancelJob("job-1")).toBe(true);
         expect(await db.cancelJob("missing")).toBe(false);
 
-        const history = await db.jobHistory("job-1");
-        expect(history.numRows).toEqual(2);
+        expect(await db.pauseJob("job-1")).toEqual("pausing");
+        expect(await db.resumeJob("job-1")).toEqual("still_pausing");
 
-        const job = db.job("job-1");
+        // Opening a job hands back a populated handle; a missing one rejects.
+        await expect(db.openJob("missing")).rejects.toThrow("not found");
+        const finished = await db.openJob("job-2");
+        expect(finished.state).toEqual("finished");
+        expect(finished.result).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          rows_assigned: 1000000,
+        });
+
+        const job = await db.openJob("job-1");
         expect(job.id).toEqual("job-1");
+
+        // openJob already populated the handle; refresh() re-reads it.
+        expect(job.state).toEqual("failed");
+        await job.refresh();
+        expect(job.state).toEqual("failed");
+        expect(job.jobType).toEqual("create_index");
+        expect(job.creationMs).toEqual(1000);
+        expect(job.spec).toEqual({ column: "vec" });
+        expect(job.result).toBeNull();
+        expect(job.failure?.message).toEqual("worker died");
+
+        // The handle reaches its own events, supplying its job id.
+        const jobEvents = await job.events({
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+        expect(jobEvents.numRows).toEqual(2);
+        expect(queryEventsPayloads.pop()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          job_id: "job-1",
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+
+        // Printing lays every known field out on its own line, with the JSON
+        // payloads indented rather than crammed onto one line.
+        expect(`${job}`).toEqual(
+          [
+            "Job(",
+            '    id="job-1",',
+            '    state="failed",',
+            '    jobType="create_index",',
+            "    creationMs=1000,",
+            "    spec={",
+            '        "column": "vec"',
+            "    },",
+            "    failure={",
+            '        "phase": "execute",',
+            '        "message": "worker died",',
+            '        "retryable": true',
+            "    },",
+            ")",
+          ].join("\n"),
+        );
+
         expect(await job.status()).toEqual("failed");
         await expect(job.wait()).rejects.toThrow("worker died");
       },

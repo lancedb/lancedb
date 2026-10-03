@@ -7,7 +7,6 @@ import http.server
 import json
 import multiprocessing as mp
 import pickle
-import re
 import sys
 import threading
 
@@ -16,6 +15,7 @@ import pyarrow as pa
 import pytest
 from lancedb.permutation import Permutation, Permutations, permutation_builder
 from lancedb.util import tbl_to_tensor
+from utils import parse_in_list
 
 torch = pytest.importorskip("torch")
 
@@ -46,15 +46,9 @@ def _remote_schema_payload():
 
 
 def _offsets_from_filter(filter_sql: str | None) -> list[int]:
-    if filter_sql is None:
+    if filter_sql is None or "_rowoffset" not in filter_sql.lower():
         return REMOTE_ROWS
-    match = re.search(r"_rowoffset in \((.*?)\)", filter_sql)
-    if match is None:
-        return REMOTE_ROWS
-    raw_offsets = match.group(1).strip()
-    if raw_offsets == "":
-        return []
-    return [int(offset.strip()) for offset in raw_offsets.split(",")]
+    return parse_in_list(filter_sql)
 
 
 def _remote_dataset_handler(request):
@@ -74,17 +68,15 @@ def _remote_dataset_handler(request):
         body = json.loads(request.rfile.read(content_len))
         offsets = _offsets_from_filter(body.get("filter"))
         requested_columns = body.get("columns") or ["a"]
-        if isinstance(requested_columns, dict):
-            requested_columns = list(requested_columns)
+        if isinstance(requested_columns, list):
+            requested_columns = {column: column for column in requested_columns}
 
         data = {}
-        for column in requested_columns:
-            if column == "a":
+        for column, expression in requested_columns.items():
+            if expression == "a":
                 data[column] = [REMOTE_ROWS[offset] for offset in offsets]
-            elif column == "_rowoffset":
-                data[column] = offsets
-            elif column == "_rowid":
-                data[column] = offsets
+            elif expression in ("_rowoffset", "_rowid"):
+                data[column] = pa.array(offsets, type=pa.uint64())
 
         table = pa.table(data)
         request.send_response(200)
@@ -274,6 +266,7 @@ def test_remote_permutation_dataloader_multiprocessing():
         seen = 0
         for batch in dataloader:
             assert batch["a"].size(0) == 10
+            assert batch["a"].tolist() == list(range(seen, seen + 10))
             seen += batch["a"].size(0)
         assert seen == len(REMOTE_ROWS)
 
@@ -403,6 +396,7 @@ def _remote_multiworker_dataloader_target(port: int, result_queue):
     count = 0
     for batch in dataloader:
         assert batch["a"].size(0) == 10
+        assert batch["a"].tolist() == list(range(count * 10, (count + 1) * 10))
         count += 1
     result_queue.put(count)
 

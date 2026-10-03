@@ -17,6 +17,18 @@ updates:
     # newer minimum versions.
     versioning-strategy: lockfile-only
     groups:
+      # The arrow-rs and datafusion crates are released in lockstep and have to
+      # move together, so keep them in one PR instead of one per sub-crate.
+      # Listed first: a dependency joins the first group it matches.
+      arrow-datafusion:
+        patterns:
+          - arrow
+          - arrow-*
+          - parquet
+          - parquet-*
+          - datafusion
+          - datafusion-*
+          - object_store
       rust-minor-patch:
         update-types:
           - minor
@@ -30,5 +42,29 @@ updates:
     versioning-strategy: lockfile-only
     groups:
       python-deps:
+        patterns:
+          - "*"
+
+  # The npm ecosystem covers pnpm lockfiles. There are two separate installs:
+  # the bindings themselves and the examples, which have their own lockfile.
+  # As with cargo and pip above, only bump the lockfile — the version ranges
+  # in package.json are our consumers' constraints, not ours.
+  - package-ecosystem: npm
+    directory: /nodejs
+    schedule:
+      interval: weekly
+    versioning-strategy: lockfile-only
+    groups:
+      nodejs-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: /nodejs/examples
+    schedule:
+      interval: weekly
+    versioning-strategy: lockfile-only
+    groups:
+      nodejs-examples-deps:
         patterns:
           - "*"

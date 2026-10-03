@@ -12,6 +12,7 @@ use arrow_schema::{DataType, Field};
 use lance::index::DatasetIndexExt;
 use lance::index::vector::VectorIndexParams;
 use lance::index::vector::utils::infer_vector_dim;
+use lance_arrow::json::is_json_field;
 use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
@@ -27,8 +28,9 @@ pub(super) type PreparedIndex = (String, Box<dyn lance::index::IndexParams>, Ind
 use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
-    supported_bitmap_data_type, supported_btree_data_type, supported_fm_data_type,
-    supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
+    resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
+    supported_fm_data_type, supported_fts_data_type, supported_label_list_data_type,
+    supported_vector_data_type, supported_zonemap_data_type,
 };
 
 use super::NativeTable;
@@ -121,7 +123,20 @@ impl NativeTable {
         }
         self.dataset.ensure_mutable()?;
         let dataset = self.dataset.get().await?;
-        let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
+        let (column, field) = if let Index::FTS(params) = &opts.index {
+            let resolved = resolve_lance_fts_field_path(dataset.schema(), &opts.columns[0])?;
+            if params.get_document_granularity().is_list_element() && resolved.list_depth == 0 {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "FTS field path '{}' has no List layer and cannot use ListElement document granularity",
+                        resolved.canonical_path
+                    ),
+                });
+            }
+            (resolved.canonical_path, resolved.terminal_field)
+        } else {
+            Self::resolve_index_field(dataset.schema(), &opts.columns[0])?
+        };
         let params = self.make_index_params(&field, opts.index.clone()).await?;
         let index_type = self.get_index_type_for_field(&field, &opts.index);
         Ok((column, params, index_type))
@@ -145,6 +160,12 @@ impl NativeTable {
             builder = builder.name(name);
         }
         builder.await?;
+        // A writer already open was built before this index existed, so it has
+        // to pick it up here or a read needing it is refused until it reopens.
+        self.dataset
+            .shard_writer()
+            .refresh_maintained_indexes(&dataset)
+            .await;
         self.dataset.update(dataset);
         Ok(())
     }
@@ -219,6 +240,14 @@ impl NativeTable {
                 )))
             }
             Index::Bitmap(_) => {
+                if is_json_field(field) {
+                    return Err(Error::Schema {
+                        message: format!(
+                            "A BITMAP index cannot be created on the whole-document lance.json field `{}`. Create a JSON-path scalar index for structured equality or range predicates, or use FTS for document search",
+                            field.name()
+                        ),
+                    });
+                }
                 Self::validate_index_type(field, "Bitmap", supported_bitmap_data_type)?;
                 Ok(Box::new(ScalarIndexParams::for_builtin(
                     BuiltinIndexType::Bitmap,
@@ -235,6 +264,32 @@ impl NativeTable {
                 Ok(Box::new(ScalarIndexParams::for_builtin(
                     BuiltinIndexType::Fm,
                 )))
+            }
+            Index::ZoneMap(_) => {
+                Self::validate_index_type(field, "ZoneMap", supported_zonemap_data_type)?;
+                Ok(Box::new(ScalarIndexParams::for_builtin(
+                    BuiltinIndexType::ZoneMap,
+                )))
+            }
+            Index::NGram(_) => Ok(Box::new(ScalarIndexParams::for_builtin(
+                BuiltinIndexType::NGram,
+            ))),
+            Index::BloomFilter(params) => {
+                let params = serde_json::to_value(params).map_err(|e| Error::InvalidInput {
+                    message: format!("failed to serialize index params: {e}"),
+                })?;
+                Ok(Box::new(
+                    ScalarIndexParams::for_builtin(BuiltinIndexType::BloomFilter)
+                        .with_params(&params),
+                ))
+            }
+            Index::RTree(params) => {
+                let params = serde_json::to_value(params).map_err(|e| Error::InvalidInput {
+                    message: format!("failed to serialize index params: {e}"),
+                })?;
+                Ok(Box::new(
+                    ScalarIndexParams::for_builtin(BuiltinIndexType::RTree).with_params(&params),
+                ))
             }
             Index::FTS(fts_opts) => {
                 Self::validate_index_type(field, "FTS", supported_fts_data_type)?;
@@ -395,6 +450,10 @@ impl NativeTable {
             Index::Bitmap(_) => IndexType::Bitmap,
             Index::LabelList(_) => IndexType::LabelList,
             Index::Fm(_) => IndexType::Fm,
+            Index::ZoneMap(_) => IndexType::ZoneMap,
+            Index::NGram(_) => IndexType::NGram,
+            Index::BloomFilter(_) => IndexType::BloomFilter,
+            Index::RTree(_) => IndexType::RTree,
             Index::FTS(_) => IndexType::Inverted,
             Index::IvfFlat(_)
             | Index::IvfSq(_)
@@ -409,6 +468,7 @@ impl NativeTable {
 
 #[cfg(test)]
 mod tests {
+    use lance::index::DatasetIndexExt;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -416,7 +476,8 @@ mod tests {
     use arrow_array::record_batch;
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeListArray, Float32Array, Int32Array,
-        LargeBinaryArray, LargeStringArray, RecordBatch, StringArray, StructArray,
+        LargeBinaryArray, LargeStringArray, ListArray, RecordBatch, StringArray, StructArray,
+        UInt32Array,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
@@ -427,7 +488,8 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::index::Index;
     use crate::index::scalar::{
-        BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, FtsIndexBuilder,
+        BTreeIndexBuilder, BitmapIndexBuilder, DocumentGranularity, FmIndexBuilder,
+        FtsIndexBuilder, ZoneMapIndexBuilder,
     };
     use crate::index::vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
@@ -435,6 +497,7 @@ mod tests {
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::table::optimize::{CompactionOptions, OptimizeAction};
     use lance_index::scalar::FullTextSearchQuery;
+    use lance_index::scalar::inverted::query::{FtsQuery, MatchQuery};
 
     fn create_fixed_size_list<T: Array>(
         values: T,
@@ -542,6 +605,112 @@ mod tests {
         assert_eq!(table.list_indices().await.unwrap().len(), 1);
         // Cancelling a finished job is a no-op.
         job.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_validates_fts_input_before_starting_job() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch =
+            record_batch!(("id", Int32, [1, 2]), ("text", Utf8, ["alpha", "beta"])).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let missing = table
+            .create_index(&["missing"], Index::FTS(FtsIndexBuilder::default()))
+            .execute_async()
+            .await;
+        assert!(missing.is_err());
+
+        let invalid_type = table
+            .create_index(&["id"], Index::FTS(FtsIndexBuilder::default()))
+            .execute_async()
+            .await;
+        assert!(invalid_type.is_err());
+
+        let invalid_granularity = table
+            .create_index(
+                &["text"],
+                Index::FTS(
+                    FtsIndexBuilder::default()
+                        .document_granularity(DocumentGranularity::ListElement),
+                ),
+            )
+            .execute_async()
+            .await;
+        assert!(invalid_granularity.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_nested_list_fts_uses_deepest_document_coordinates() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let mut docs = ListBuilder::new(ListBuilder::new(StringBuilder::new()));
+
+        docs.values().values().append_value("alpha");
+        docs.values().values().append_value("beta");
+        docs.values().append(true);
+        docs.values().values().append_value("gamma");
+        docs.values().values().append_value("alpha delta");
+        docs.values().append(true);
+        docs.append(true);
+
+        docs.values().append(true);
+        docs.values().values().append_value("alpha");
+        docs.values().append(true);
+        docs.append(true);
+
+        let batch = RecordBatch::try_from_iter(vec![
+            ("id", Arc::new(Int32Array::from(vec![0, 1])) as ArrayRef),
+            ("docs", Arc::new(docs.finish()) as ArrayRef),
+        ])
+        .unwrap();
+        let table = conn.create_table("nested", batch).execute().await.unwrap();
+
+        let job = table
+            .create_index(
+                &["docs"],
+                Index::FTS(
+                    FtsIndexBuilder::default()
+                        .document_granularity(DocumentGranularity::ListElement),
+                ),
+            )
+            .execute_async()
+            .await
+            .unwrap();
+        job.wait().await.unwrap();
+
+        let query = FullTextSearchQuery::new_query(FtsQuery::Match(
+            MatchQuery::new("alpha".to_string())
+                .with_column(Some("docs".to_string()))
+                .with_document_granularity(DocumentGranularity::ListElement),
+        ));
+        let batches = table
+            .query()
+            .full_text_search(query)
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let mut hits = Vec::new();
+        for batch in batches {
+            let ids = batch["id"].as_any().downcast_ref::<Int32Array>().unwrap();
+            let coordinates = batch["_doc_index"]
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                let coordinate = coordinates.value(row);
+                let coordinate = coordinate.as_any().downcast_ref::<UInt32Array>().unwrap();
+                hits.push((ids.value(row), coordinate.values().to_vec()));
+            }
+        }
+        hits.sort_unstable();
+        assert_eq!(
+            hits,
+            vec![(0, vec![0, 0]), (0, vec![1, 1]), (1, vec![1, 0])]
+        );
     }
 
     /// Concurrent waiters, and a wait issued after the job settled, all
@@ -1067,6 +1236,307 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_zonemap_index() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("i", Int32, [1, 2, 3, 4, 5])).unwrap();
+        let table = conn
+            .create_table("zonemap_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["i"], Index::ZoneMap(ZoneMapIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .wait_for_index(&["i_idx"], Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::ZoneMap);
+        assert_eq!(index.columns, vec!["i".to_string()]);
+
+        let count = table
+            .query()
+            .only_if("i >= 2 AND i < 5")
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum::<usize>();
+        assert_eq!(count, 3);
+
+        let stats = table.index_stats("i_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 5);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::ZoneMap);
+        assert_eq!(stats.distance_type, None);
+    }
+
+    #[tokio::test]
+    async fn test_create_zonemap_index_on_wider_scalar_types() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("large_text", DataType::LargeUtf8, true),
+            Field::new("binary", DataType::Binary, true),
+            Field::new("large_binary", DataType::LargeBinary, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(LargeStringArray::from(vec![
+                    Some("alpha"),
+                    None,
+                    Some("omega"),
+                ])) as ArrayRef,
+                Arc::new(BinaryArray::from(vec![
+                    Some(b"aa".as_slice()),
+                    None,
+                    Some(b"zz".as_slice()),
+                ])) as ArrayRef,
+                Arc::new(LargeBinaryArray::from(vec![
+                    Some(b"left".as_slice()),
+                    None,
+                    Some(b"right".as_slice()),
+                ])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("zonemap_wider_scalar_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        for column in ["large_text", "binary", "large_binary"] {
+            table
+                .create_index(&[column], Index::ZoneMap(ZoneMapIndexBuilder::default()))
+                .execute()
+                .await
+                .unwrap();
+            let index_name = format!("{column}_idx");
+            table
+                .wait_for_index(&[&index_name], Duration::from_millis(10))
+                .await
+                .unwrap();
+        }
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 3);
+        for index in index_configs {
+            assert_eq!(index.index_type, crate::index::IndexType::ZoneMap);
+        }
+
+        let null_count = table
+            .query()
+            .only_if("large_text IS NULL")
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum::<usize>();
+        assert_eq!(null_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_builtin_scalar_index() {
+        for (index, index_type, predicate, invalid_column) in [
+            (
+                Index::NGram(Default::default()),
+                crate::index::IndexType::NGram,
+                "contains(text, 'abc')",
+                "id",
+            ),
+            (
+                Index::BloomFilter(Default::default()),
+                crate::index::IndexType::BloomFilter,
+                "text = 'abc'",
+                "flag",
+            ),
+            (
+                Index::BloomFilter(
+                    crate::index::scalar::BloomFilterIndexBuilder::default()
+                        .number_of_items(2)
+                        .unwrap()
+                        .probability(0.01)
+                        .unwrap(),
+                ),
+                crate::index::IndexType::BloomFilter,
+                "text = 'abc'",
+                "flag",
+            ),
+        ] {
+            let conn = connect("memory://").execute().await.unwrap();
+            let batch = record_batch!(
+                ("id", Int32, [1, 2, 3, 4]),
+                ("text", Utf8, [Some("abc"), Some("xyz"), None, Some("")]),
+                ("flag", Boolean, [true, false, true, false])
+            )
+            .unwrap();
+            let table = conn
+                .create_table("scalar", batch.clone())
+                .execute()
+                .await
+                .unwrap();
+            table.add(batch).execute().await.unwrap();
+
+            table
+                .create_index(&["text"], index.clone())
+                .name("text_search".into())
+                .train(false)
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(
+                table.list_indices().await.unwrap()[0].index_type,
+                index_type
+            );
+            assert!(
+                table
+                    .create_index(&["text"], index.clone())
+                    .name("text_search".into())
+                    .replace(false)
+                    .execute()
+                    .await
+                    .is_err()
+            );
+            table
+                .create_index(&["text"], index.clone())
+                .name("text_search".into())
+                .execute()
+                .await
+                .unwrap();
+
+            let stats = table.index_stats("text_search").await.unwrap().unwrap();
+            assert_eq!(stats.index_type, index_type);
+            assert_eq!(stats.num_indexed_rows, 8);
+            if let Index::BloomFilter(params) = &index {
+                let expected = serde_json::to_value(params).unwrap();
+                let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+                let stats: serde_json::Value =
+                    serde_json::from_str(&dataset.index_statistics("text_search").await.unwrap())
+                        .unwrap();
+                for (key, value) in expected.as_object().unwrap() {
+                    assert_eq!(&stats["indices"][0][key], value);
+                }
+            }
+            for (filter, expected_rows) in [(predicate, 2), ("text IS NULL", 2), ("text = ''", 2)] {
+                let query = table.query().only_if(filter);
+                let plan = query.explain_plan(false).await.unwrap();
+                if filter == predicate {
+                    assert!(plan.contains("ScalarIndexQuery"), "{plan}");
+                }
+                let batches = query
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+                    expected_rows
+                );
+            }
+            let error = table
+                .create_index(&[invalid_column], index)
+                .execute()
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().to_lowercase().contains(
+                    if index_type == crate::index::IndexType::NGram {
+                        "ngram"
+                    } else {
+                        "bloom"
+                    }
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[cfg(feature = "geo")]
+    #[tokio::test]
+    async fn test_create_rtree_index() {
+        let points = StructArray::new(
+            vec![
+                Field::new("x", DataType::Float64, false),
+                Field::new("y", DataType::Float64, false),
+            ]
+            .into(),
+            vec![
+                Arc::new(arrow_array::Float64Array::from(vec![0.0, 10.0, 0.0])),
+                Arc::new(arrow_array::Float64Array::from(vec![0.0, 10.0, 0.0])),
+            ],
+            Some(arrow_buffer::NullBuffer::from(vec![true, true, false])),
+        );
+        let field = Field::new("geometry", points.data_type().clone(), true).with_metadata(
+            std::collections::HashMap::from([
+                ("ARROW:extension:name".into(), "geoarrow.point".into()),
+                ("ARROW:extension:metadata".into(), "{}".into()),
+            ]),
+        );
+        let batch =
+            RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![Arc::new(points)])
+                .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn.create_table("spatial", batch).execute().await.unwrap();
+        table
+            .create_index(
+                &["geometry"],
+                Index::RTree(
+                    crate::index::scalar::RTreeIndexBuilder::default()
+                        .page_size(2)
+                        .unwrap(),
+                ),
+            )
+            .name("spatial_idx".into())
+            .execute()
+            .await
+            .unwrap();
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].index_type, crate::index::IndexType::RTree);
+        let stats = table.index_stats("spatial_idx").await.unwrap().unwrap();
+        assert_eq!(stats.index_type, crate::index::IndexType::RTree);
+        assert_eq!(stats.num_indexed_rows, 3);
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let stats: serde_json::Value =
+            serde_json::from_str(&dataset.index_statistics("spatial_idx").await.unwrap()).unwrap();
+        assert_eq!(stats["indices"][0]["page_size"], 2);
+        for predicate in [
+            "ST_Intersects(geometry, ST_GeomFromText('POLYGON ((-1 -1, 1 -1, 1 1, -1 1, -1 -1))'))",
+            "geometry IS NULL",
+        ] {
+            let query = table.query().only_if(predicate);
+            let plan = query.explain_plan(false).await.unwrap();
+            assert!(plan.contains("ScalarIndexQuery"), "{plan}");
+            let batches = query
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+        }
+    }
+
+    #[tokio::test]
     async fn test_create_index_nested_field_paths() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -1466,6 +1936,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_bitmap_index_rejects_lance_json() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![lance_arrow::json::json_field(
+            "metadata", true,
+        )]));
+        let table = conn
+            .create_empty_table("json_bitmap", schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let err = table
+            .create_index(&["metadata"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .expect_err("a whole-document lance.json field must not support a bitmap index");
+        let message = err.to_string();
+        assert!(
+            message.contains("lance.json"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("JSON-path scalar index"),
+            "unexpected error: {message}"
+        );
+        assert!(message.contains("FTS"), "unexpected error: {message}");
+    }
+
+    #[tokio::test]
     async fn test_create_label_list_index() {
         let conn = connect("memory://").execute().await.unwrap();
 
@@ -1583,6 +2082,50 @@ mod tests {
         let index = index_configs.into_iter().next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::LabelList);
         assert_eq!(index.columns, vec!["tags".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_indices_with_missing_fts_index_files() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("text", Utf8, ["alpha", "beta", "gamma"])
+        )
+        .unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        table
+            .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let fts_uuid = table
+            .list_indices()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|index| index.name == "text_idx")
+            .and_then(|index| index.index_uuid)
+            .unwrap();
+        std::fs::remove_dir_all(tmp_dir.path().join("t.lance/_indices").join(fts_uuid)).unwrap();
+
+        // A new connection, so the index cache cannot serve the deleted files.
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn.open_table("t").execute().await.unwrap();
+        let mut indices = table.list_indices().await.unwrap();
+        indices.sort_by(|a, b| a.name.cmp(&b.name));
+        let names = indices.iter().map(|i| i.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["id_idx", "text_idx"]);
+        assert_eq!(indices[1].index_type, crate::index::IndexType::FTS);
+        assert_eq!(indices[1].index_details, None);
+        assert!(indices[0].index_details.is_some());
     }
 
     #[tokio::test]

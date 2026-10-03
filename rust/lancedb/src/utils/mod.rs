@@ -19,10 +19,15 @@ use std::pin::Pin;
 use crate::error::{Error, Result};
 use datafusion_physical_plan::SendableRecordBatchStream;
 
-static TABLE_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
-static NAMESPACE_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
+/// The characters any object name may contain: a table, a namespace segment, a
+/// Secret, a materialized view.
+///
+/// No positional rule on top of it -- a name may begin with `_`, `-` or `.`,
+/// as LanceDB namespaces already do. `.` and `..` are excluded separately, by
+/// [`reject_relative_segment`]: that is a property of where a name sits in a
+/// URL, not of the name. Length is the service's to bound.
+static OBJECT_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]+$").unwrap());
 
 pub trait PatchStoreParam {
     fn patch_with_store_wrapper(
@@ -81,52 +86,113 @@ impl PatchReadParam for ReadParams {
     }
 }
 
-/// Validate table name.
-pub fn validate_table_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::InvalidTableName {
-            name: name.to_string(),
-            reason: "Table names cannot be empty strings".to_string(),
-        });
-    }
-    if !TABLE_NAME_REGEX.is_match(name) {
-        return Err(Error::InvalidTableName {
-            name: name.to_string(),
-            reason:
-                "Table names can only contain alphanumeric characters, underscores, hyphens, and periods"
-                    .to_string(),
+/// The reason `.` and `..` are refused wherever a name becomes a path segment.
+const RELATIVE_SEGMENT_REASON: &str =
+    "'.' and '..' are read as relative path segments and cannot address an object";
+
+/// Whether URL parsing would resolve this component away rather than keep it.
+///
+/// Exactly `.` and `..`, and their percent-encoded spellings -- resolution
+/// happens after decoding, so `%2E%2E` collapses as surely as `..` does, and
+/// `drop_table("..")` would reach `/v1/drop/`. No wider than that: `...` is an
+/// ordinary segment that addresses fine.
+fn is_relative_segment(value: &str) -> bool {
+    let decoded = value.replace("%2e", ".").replace("%2E", ".");
+    decoded == "." || decoded == ".."
+}
+
+/// Refuse a path component that URL parsing resolves as a relative segment.
+///
+/// Reachable on its own for an identifier with no other validator: a Function
+/// name has no client-side grammar, so this is the only rule that applies.
+pub(crate) fn reject_relative_segment(what: &str, value: &str) -> Result<()> {
+    if is_relative_segment(value) {
+        return Err(Error::InvalidInput {
+            message: format!("invalid {what} '{value}': {RELATIVE_SEGMENT_REASON}"),
         });
     }
     Ok(())
 }
 
-/// Validate a namespace name component
+/// Every rule an object name obeys: non-empty, inside [`OBJECT_NAME_REGEX`],
+/// and addressable as a path segment.
 ///
-/// Namespace names must:
-/// - Not be empty
-/// - Only contain alphanumeric characters, underscores, hyphens, and periods
-///
-/// # Arguments
-/// * `name` - A single namespace component (not the full path)
-///
-/// # Returns
-/// * `Ok(())` if the namespace name is valid
-/// * `Err(Error)` if the namespace name is invalid
-pub fn validate_namespace_name(name: &str) -> Result<()> {
+/// Returns the reason rather than an [`Error`], because the error type is each
+/// API's own -- a table reports [`Error::InvalidTableName`], the rest
+/// [`Error::InvalidInput`]. Sharing the rules but not the error keeps a table,
+/// a namespace segment and a Secret from drifting apart.
+fn check_object_name(name: &str) -> std::result::Result<(), &'static str> {
     if name.is_empty() {
-        return Err(Error::InvalidInput {
-            message: "Namespace names cannot be empty strings".to_string(),
-        });
+        return Err("it must not be empty");
     }
-    if !NAMESPACE_NAME_REGEX.is_match(name) {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "Invalid namespace name '{}': Namespace names can only contain alphanumeric characters, underscores, hyphens, and periods",
-                name
-            ),
-        });
+    if !OBJECT_NAME_REGEX.is_match(name) {
+        return Err(
+            "it may contain only alphanumeric characters, underscores, hyphens and periods",
+        );
+    }
+    if is_relative_segment(name) {
+        return Err(RELATIVE_SEGMENT_REASON);
     }
     Ok(())
+}
+
+/// Validate a table name.
+pub fn validate_table_name(name: &str) -> Result<()> {
+    check_object_name(name).map_err(|reason| Error::InvalidTableName {
+        name: name.to_string(),
+        reason: reason.to_string(),
+    })
+}
+
+/// Validate one component of a namespace path -- a single segment, not the
+/// whole path. [`validate_namespace`] covers a path.
+pub fn validate_namespace_name(name: &str) -> Result<()> {
+    check_object_name(name).map_err(|reason| Error::InvalidInput {
+        message: format!("invalid namespace name '{name}': {reason}"),
+    })
+}
+
+/// Validate one component of a Secret identifier: a Secret name, or one segment
+/// of the namespace path holding it.
+///
+/// The join decides identity, and the service only sees what the split
+/// produced. `"a$b"` is not a name the service accepts, but joined and split it
+/// reads as the namespace `a` and the name `b` -- a different Secret that may
+/// already exist. This is not a second opinion on the name; it is what lets the
+/// service have one.
+pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
+    check_object_name(value).map_err(|reason| Error::InvalidInput {
+        message: format!("invalid {what} '{value}': {reason}"),
+    })
+}
+
+/// Validate a Secret name and every segment of the namespace path holding it.
+pub fn validate_secret_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    for segment in namespace_path {
+        validate_secret_component("Secret namespace path segment", segment)?;
+    }
+    validate_secret_component("Secret name", name)
+}
+
+/// Validate a view name and every segment of the namespace path holding it.
+///
+/// Worded for a view rather than deferring to [`validate_table_name`]: a view
+/// is not a table, and a caller who mistypes one should not be told their
+/// table name is invalid. The rule is the same one every object name follows,
+/// which is what lets the `$`-joined identifier split back apart.
+pub fn validate_view_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    for segment in namespace_path {
+        validate_view_component("view namespace path segment", segment)?;
+    }
+    validate_view_component("view name", name)
+}
+
+/// Validate one component of a view identifier: a view name, or one segment of
+/// the namespace path holding it.
+pub fn validate_view_component(what: &str, value: &str) -> Result<()> {
+    check_object_name(value).map_err(|reason| Error::InvalidInput {
+        message: format!("invalid {what} '{value}': {reason}"),
+    })
 }
 
 /// Validate all components of a namespace
@@ -225,6 +291,159 @@ pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<
     Ok((canonical_path, Field::from(*field)))
 }
 
+pub(crate) struct ResolvedFtsField {
+    pub canonical_path: String,
+    pub terminal_field: Field,
+    pub list_depth: usize,
+}
+
+/// Canonicalize a public FTS field path while keeping Arrow list item names hidden.
+pub(crate) fn resolve_lance_fts_field_path(
+    schema: &lance_core::datatypes::Schema,
+    column: &str,
+) -> Result<ResolvedFtsField> {
+    let names =
+        lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
+            message: format!("Invalid field path `{}`: {}", column, e),
+        })?;
+    let (root_name, remaining_names) = names.split_first().ok_or_else(|| Error::InvalidInput {
+        message: "FTS field path cannot be empty".to_string(),
+    })?;
+    let mut field = schema
+        .fields
+        .iter()
+        .find(|field| field.name == *root_name)
+        .or_else(|| {
+            schema
+                .fields
+                .iter()
+                .find(|field| field.name.eq_ignore_ascii_case(root_name))
+        })
+        .ok_or_else(|| fts_field_not_found(schema, column))?;
+    let mut canonical_names = vec![field.name.clone()];
+    let mut list_depth = 0;
+
+    for name in remaining_names {
+        while matches!(
+            field.data_type(),
+            DataType::List(_) | DataType::LargeList(_)
+        ) {
+            list_depth += 1;
+            field = field.children.first().ok_or_else(|| Error::Schema {
+                message: format!(
+                    "FTS field path `{}` has a list without an item field",
+                    column
+                ),
+            })?;
+        }
+        if !matches!(field.data_type(), DataType::Struct(_)) {
+            return Err(fts_field_not_found(schema, column));
+        }
+        field = field
+            .children
+            .iter()
+            .find(|field| field.name == *name)
+            .or_else(|| {
+                field
+                    .children
+                    .iter()
+                    .find(|field| field.name.eq_ignore_ascii_case(name))
+            })
+            .ok_or_else(|| fts_field_not_found(schema, column))?;
+        canonical_names.push(field.name.clone());
+    }
+
+    let mut terminal = field;
+    while matches!(
+        terminal.data_type(),
+        DataType::List(_) | DataType::LargeList(_)
+    ) {
+        list_depth += 1;
+        terminal = terminal.children.first().ok_or_else(|| Error::Schema {
+            message: format!(
+                "FTS field path `{}` has a list without an item field",
+                column
+            ),
+        })?;
+    }
+
+    let canonical_path = lance_core::datatypes::format_field_path(
+        &canonical_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    Ok(ResolvedFtsField {
+        canonical_path,
+        terminal_field: Field::from(terminal),
+        list_depth,
+    })
+}
+
+fn fts_field_not_found(schema: &lance_core::datatypes::Schema, column: &str) -> Error {
+    Error::Schema {
+        message: format!(
+            "Field path `{}` not found in schema. Available field paths: {}",
+            column,
+            schema.field_paths().join(", ")
+        ),
+    }
+}
+
+fn find_public_fts_field_path_by_id(
+    field: &lance_core::datatypes::Field,
+    field_id: i32,
+    path: &mut Vec<String>,
+) -> bool {
+    if field.id == field_id {
+        return true;
+    }
+    match field.data_type() {
+        DataType::List(_) | DataType::LargeList(_) => field
+            .children
+            .first()
+            .is_some_and(|child| find_public_fts_field_path_by_id(child, field_id, path)),
+        DataType::Struct(_) => field.children.iter().any(|child| {
+            path.push(child.name.clone());
+            let found = find_public_fts_field_path_by_id(child, field_id, path);
+            if !found {
+                path.pop();
+            }
+            found
+        }),
+        _ => false,
+    }
+}
+
+pub(crate) fn public_fts_field_path_by_id(
+    schema: &lance_core::datatypes::Schema,
+    field_id: i32,
+) -> Result<String> {
+    for root in &schema.fields {
+        let mut path = vec![root.name.clone()];
+        if find_public_fts_field_path_by_id(root, field_id, &mut path) {
+            return Ok(lance_core::datatypes::format_field_path(
+                &path.iter().map(String::as_str).collect::<Vec<_>>(),
+            ));
+        }
+    }
+    Err(Error::Schema {
+        message: format!("Field id `{}` not found in schema", field_id),
+    })
+}
+
+pub(crate) fn resolve_arrow_fts_field_path(
+    schema: &Schema,
+    column: &str,
+) -> Result<(String, Field)> {
+    let lance_schema =
+        lance_core::datatypes::Schema::try_from(schema).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+    let resolved = resolve_lance_fts_field_path(&lance_schema, column)?;
+    Ok((resolved.canonical_path, resolved.terminal_field))
+}
+
 pub fn supported_btree_data_type(dtype: &DataType) -> bool {
     dtype.is_integer()
         || dtype.is_floating()
@@ -238,6 +457,14 @@ pub fn supported_btree_data_type(dtype: &DataType) -> bool {
                 | DataType::Date64
                 | DataType::Timestamp(_, _)
                 | DataType::FixedSizeBinary(_)
+        )
+}
+
+pub fn supported_zonemap_data_type(dtype: &DataType) -> bool {
+    supported_btree_data_type(dtype)
+        || matches!(
+            dtype,
+            DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
         )
 }
 
@@ -481,6 +708,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_public_fts_field_path_prefers_exact_case() {
+        let text_list = || {
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Struct(vec![Field::new("content", DataType::Utf8, true)].into()),
+                true,
+            )))
+        };
+        let schema = Schema::new(vec![
+            Field::new("Docs", text_list(), true),
+            Field::new("docs", text_list(), true),
+        ]);
+
+        let (path, field) = resolve_arrow_fts_field_path(&schema, "docs.content").unwrap();
+        assert_eq!(path, "docs.content");
+        assert_eq!(field.data_type(), &DataType::Utf8);
+
+        let lance_schema = lance_core::datatypes::Schema::try_from(&schema).unwrap();
+        let field_id = lance_schema
+            .resolve_case_insensitive("docs.item.content")
+            .unwrap()
+            .last()
+            .unwrap()
+            .id;
+        assert_eq!(
+            public_fts_field_path_by_id(&lance_schema, field_id).unwrap(),
+            "docs.content"
+        );
+    }
+
+    #[test]
     fn test_guess_default_column() {
         let schema_no_vector = Schema::new(vec![
             Field::new("id", DataType::Int16, true),
@@ -620,8 +878,11 @@ mod tests {
         assert!(validate_table_name("_12345table").is_ok());
         assert!(validate_table_name("table.12345").is_ok());
         assert!(validate_table_name("table.._dot_..12345").is_ok());
+        assert!(validate_table_name("...").is_ok());
 
         assert!(validate_table_name("").is_err());
+        assert!(validate_table_name(".").is_err());
+        assert!(validate_table_name("..").is_err());
         assert!(validate_table_name("my_table!").is_err());
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());

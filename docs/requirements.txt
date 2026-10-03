@@ -5,5 +5,5 @@ mkdocs-autorefs>=0.5,<=1.0
 mkdocstrings[python]>=0.24,<1.0
 griffe>=0.40,<1.0
 mkdocs-render-swagger-plugin>=0.1.0
-pydantic>=2.0,<3.0
+pydantic>=2.7.4,<3
 mkdocs-redirects>=1.2.0

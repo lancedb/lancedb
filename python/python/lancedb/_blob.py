@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional, Union
 import pyarrow as pa
 
 from .expr import Expr
-from .schema import blob_v2_column_paths
+from .schema import row_addressable_blob_v2_paths
 from .types import BlobMode, QueryProjection, QueryProjectionSpec
 
 if TYPE_CHECKING:
@@ -119,7 +119,7 @@ def blob_v2_projection_sources(
     schema: pa.Schema,
     projection: QueryProjection,
 ) -> dict[str, str]:
-    blob_columns = blob_v2_column_paths(schema)
+    blob_columns = row_addressable_blob_v2_paths(schema)
     if not blob_columns:
         return {}
     columns = set(blob_columns)
@@ -140,7 +140,9 @@ def v2_projection_needs_row_id(
 ) -> bool:
     if with_row_id:
         return False
-    return projection_includes_blob_column(projection, blob_v2_column_paths(schema))
+    return projection_includes_blob_column(
+        projection, row_addressable_blob_v2_paths(schema)
+    )
 
 
 def blob_auto_row_id_for_scan(
@@ -270,7 +272,8 @@ def _iter_projection_pairs(
             if isinstance(expr, str):
                 yield name, expr
             elif isinstance(expr, Expr):
-                yield name, expr.to_sql()
+                source = expr._column_name()
+                yield name, source if source is not None else expr.to_sql()
         return
     for column in projection:
         if isinstance(column, str):
@@ -280,7 +283,8 @@ def _iter_projection_pairs(
             if isinstance(expr, str):
                 yield name, expr
             elif isinstance(expr, Expr):
-                yield name, expr.to_sql()
+                source = expr._column_name()
+                yield name, source if source is not None else expr.to_sql()
 
 
 def _set_blob_column(tbl: pa.Table, output_name: str, blobs: pa.Array) -> pa.Table:

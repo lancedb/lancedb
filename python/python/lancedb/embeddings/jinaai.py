@@ -87,12 +87,13 @@ class JinaEmbeddings(EmbeddingFunction):
         if isinstance(image, bytes):
             image_dict = {"image": base64.b64encode(image).decode("utf-8")}
         elif isinstance(image, (str, Path)):
-            parsed = urlparse.urlparse(image)
-            # TODO handle drive letter on windows.
+            parsed = urlparse(str(image))
             PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
             if parsed.scheme == "file":
                 pil_image = PIL_Image.open(parsed.path)
-            elif parsed.scheme == "":
+            elif parsed.scheme == "" or (os.name == "nt" and len(parsed.scheme) == 1):
+                # A Windows drive letter parses as a one-character scheme
+                # ("C:\\img.png" -> scheme="c"), so treat it as a local path.
                 pil_image = PIL_Image.open(image if os.name == "nt" else parsed.path)
             elif parsed.scheme.startswith("http"):
                 pil_image = PIL_Image.open(io.BytesIO(url_retrieve(image)))

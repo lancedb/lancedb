@@ -21,6 +21,12 @@ import type { BaseTokenizer } from "./indices";
 import type { FtsToken } from "./table";
 
 // Re-export native header provider for use with connectWithHeaderProvider
+export {
+  MaterializedView,
+  MaterializedViewDefinition,
+  MaterializedViewSelect,
+} from "./materialized_view";
+export { ViewDescription } from "./view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 // OpenTelemetry metrics bridge. Only the high-level entry point is public; the
@@ -50,6 +56,12 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnResult,
+  FunctionErrors,
+  FunctionErrorsOptions,
+  FunctionErrorRecord,
+  FunctionErrorFragment,
+  RefreshMaterializedViewResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
   DeleteResult,
@@ -65,35 +77,38 @@ export {
 
 export {
   makeArrowTable,
+  makeJsonField,
   MakeArrowTableOptions,
   Data,
   VectorColumnOptions,
 } from "./arrow";
 
+export { blob, isBlobField, BlobFile } from "./blob";
+export type { BlobOptions, BlobRange, BlobReadOptions } from "./blob";
+
 export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
+  ListTablesOptions,
   OpenTableOptions,
   ListNamespacesOptions,
   CreateNamespaceOptions,
   DropNamespaceOptions,
   ListNamespacesResponse,
+  ListTablesResponse,
   CreateNamespaceResponse,
   DropNamespaceResponse,
   DescribeNamespaceResponse,
   RenameTableOptions,
 } from "./connection";
 
-export {
-  Job,
-  JobDescription,
-  JobFailureInfo,
-  JobInfo,
-  Session,
-} from "./native.js";
+export { JobFailureInfo, JobInfo, Session } from "./native.js";
+
+export { Job, JobEventsOptions } from "./job";
 
 export {
+  AutoQuery,
   ExecutableQuery,
   Query,
   QueryBase,
@@ -134,10 +149,10 @@ export {
   BranchColumnChange,
   BranchIndexSummary,
   BranchRowCountSummary,
-  MergeBlocker,
+  CherryPickError,
   BranchDiff,
-  MergePreview,
-  MergeBranchResult,
+  CherryPickPreview,
+  CherryPickResult,
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
@@ -146,6 +161,10 @@ export {
   FtsToken,
   TokenizeTableOptions,
   LsmWriteSpec,
+  LsmStats,
+  BucketStats,
+  GenerationStats,
+  MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
 } from "./table";
@@ -157,7 +176,15 @@ export {
   TokenResponse,
 } from "./header";
 
-export { OAuthConfig, OAuthFlowType } from "./oauth";
+export {
+  ClientAuthMethod,
+  OAuthConfig,
+  OAuthFlowType,
+  OAuthSession,
+  SessionLogout,
+  SessionStatus,
+  TokenCacheOptions,
+} from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 
@@ -168,6 +195,7 @@ export * as rerankers from "./rerankers";
 export {
   SchemaLike,
   TableLike,
+  DataTypeLike,
   FieldLike,
   RecordBatchLike,
   DataLike,
@@ -607,3 +635,10 @@ export async function connectNamespace(
   );
   return new LocalConnection(nativeConn);
 }
+
+export {
+  Catalog,
+  CatalogOptions,
+  ListDatabasesResponse,
+  connectCatalog,
+} from "./catalog";

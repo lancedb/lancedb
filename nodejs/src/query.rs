@@ -658,13 +658,18 @@ impl JsFullTextQuery {
             FtsQuery::Phrase(_) => "phrase".to_string(),
             FtsQuery::Boost(_) => "boost".to_string(),
             FtsQuery::MultiMatch(_) => "multi_match".to_string(),
+            FtsQuery::CombinedFields(_) => "combined_fields".to_string(),
             FtsQuery::Boolean(_) => "boolean".to_string(),
         }
     }
 }
 
 fn parse_fts_query(query: Object) -> napi::Result<FullTextSearchQuery> {
-    if let Ok(Some(query)) = query.get::<&JsFullTextQuery>("query") {
+    // `&JsFullTextQuery` recovers a native class reference through napi's borrow-tracked
+    // path, which is only usable from generated `#[napi]` argument conversion. This is a
+    // manual lookup on a nested `Object` property instead, so use `ClassInstance`, which
+    // unwraps the class without requiring a borrow scope.
+    if let Ok(Some(query)) = query.get::<ClassInstance<JsFullTextQuery>>("query") {
         Ok(FullTextSearchQuery::new_query(query.inner.clone()))
     } else if let Ok(Some(query_text)) = query.get::<String>("query") {
         let mut query_text = query_text;

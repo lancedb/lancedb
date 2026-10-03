@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Pydantic (v1 / v2) adapter for LanceDB"""
+"""Pydantic adapter for LanceDB."""
 
 from __future__ import annotations
 
@@ -14,9 +14,6 @@ from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
-    Generator,
     List,
     Type,
     Union,
@@ -24,17 +21,9 @@ from typing import (
     GenericAlias,
 )
 
-import numpy as np
 import pyarrow as pa
 import pydantic
-from packaging.version import Version
-
-PYDANTIC_VERSION = Version(pydantic.__version__)
-try:
-    from pydantic_core import CoreSchema, core_schema
-except ImportError:
-    if PYDANTIC_VERSION.major >= 2:
-        raise
+from pydantic_core import CoreSchema, core_schema
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
@@ -99,6 +88,17 @@ def Vector(
     ...     pa.field("url", pa.utf8(), False),
     ...     pa.field("embeddings", pa.list_(pa.float32(), 768))
     ... ])
+
+    Notes
+    -----
+    ``Vector`` creates a type dynamically, so calls such as ``Vector(768)`` are
+    not valid static type annotations. For an embedding field, use the standard
+    ``list[float]`` annotation when running mypy; ``VectorField`` supplies the
+    fixed dimension to LanceDB::
+
+        class MyModel(LanceModel):
+            text: str = embeddings.SourceField()
+            vector: list[float] = embeddings.VectorField()
     """
 
     # TODO: make a public parameterized type.
@@ -131,26 +131,16 @@ def Vector(
                 ),
             )
 
-        @classmethod
-        def __get_validators__(cls) -> Generator[Callable, None, None]:
-            yield cls.validate
-
-        # For pydantic v1
-        @classmethod
-        def validate(cls, v):
-            if not isinstance(v, (list, range, np.ndarray)) or len(v) != dim:
-                raise TypeError("A list of numbers or numpy.ndarray is needed")
-            return cls(v)
-
-        if PYDANTIC_VERSION.major < 2:
-
-            @classmethod
-            def __modify_schema__(cls, field_schema: Dict[str, Any]):
-                field_schema["items"] = {"type": "number"}
-                field_schema["maxItems"] = dim
-                field_schema["minItems"] = dim
-
     return FixedSizeList
+
+
+def _raise_bare_vector_error(*_args):
+    raise TypeError("Vector must be parameterized with a dimension, e.g. Vector(128).")
+
+
+# Pydantic otherwise inspects the bare factory as a field type and produces
+# misleading errors about its internal annotations.
+setattr(Vector, "__get_pydantic_core_schema__", _raise_bare_vector_error)
 
 
 def MultiVector(
@@ -223,31 +213,6 @@ def MultiVector(
                 ),
             )
 
-        @classmethod
-        def __get_validators__(cls) -> Generator[Callable, None, None]:
-            yield cls.validate
-
-        # For pydantic v1
-        @classmethod
-        def validate(cls, v):
-            if not isinstance(v, (list, range)):
-                raise TypeError("A list of vectors is needed")
-            for vec in v:
-                if not isinstance(vec, (list, range, np.ndarray)) or len(vec) != dim:
-                    raise TypeError(f"Each vector must be a list of {dim} numbers")
-            return cls(v)
-
-        if PYDANTIC_VERSION.major < 2:
-
-            @classmethod
-            def __modify_schema__(cls, field_schema: Dict[str, Any]):
-                field_schema["items"] = {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": dim,
-                    "maxItems": dim,
-                }
-
     return MultiVectorList
 
 
@@ -293,20 +258,10 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     )
 
 
-if PYDANTIC_VERSION.major < 2:
-
-    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-        return [
-            _pydantic_to_field(name, field) for name, field in model.__fields__.items()
-        ]
-
-else:
-
-    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-        return [
-            _pydantic_to_field(name, field)
-            for name, field in model.model_fields.items()
-        ]
+def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
+    return [
+        _pydantic_to_field(name, field) for name, field in model.model_fields.items()
+    ]
 
 
 def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
@@ -369,6 +324,10 @@ def _unwrap_optional_annotation(annotation: Any) -> Any | None:
 
 def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
+    embedding_vector_type = _embedding_vector_to_arrow_type(field)
+    if embedding_vector_type is not None:
+        return embedding_vector_type
+
     unwrapped = _unwrap_optional_annotation(field.annotation)
     if unwrapped is not None:
         return _pydantic_type_to_arrow_type(unwrapped, field)
@@ -382,8 +341,32 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     return _pydantic_type_to_arrow_type(field.annotation, field)
 
 
+def _embedding_vector_to_arrow_type(field: FieldInfo) -> pa.DataType | None:
+    """Infer a fixed-size vector type from ``VectorField`` metadata."""
+    if not _is_embedding_vector_annotation(field):
+        return None
+
+    function = get_extras(field, "vector_column_for")
+    return pa.list_(pa.float32(), function.ndims())
+
+
+def _is_embedding_vector_annotation(field: FieldInfo) -> bool:
+    if get_extras(field, "vector_column_for") is None:
+        return False
+
+    annotation = _unwrap_optional_annotation(field.annotation)
+    if annotation is None:
+        annotation = field.annotation
+
+    origin = getattr(annotation, "__origin__", None)
+    args = getattr(annotation, "__args__", ())
+    return origin is list and args == (float,)
+
+
 def is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
+    if _is_embedding_vector_annotation(field):
+        return True
     if _unwrap_optional_annotation(field.annotation) is not None:
         return True
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
@@ -499,8 +482,6 @@ class LanceModel(pydantic.BaseModel):
 
     @classmethod
     def safe_get_fields(cls):
-        if PYDANTIC_VERSION.major < 2:
-            return cls.__fields__
         return cls.model_fields
 
     @classmethod
@@ -538,23 +519,9 @@ def get_extras(field_info: FieldInfo, key: str) -> Any:
     """
     Get the extra metadata from a Pydantic FieldInfo.
     """
-    if PYDANTIC_VERSION.major >= 2:
-        return (field_info.json_schema_extra or {}).get(key)
-    return (field_info.field_info.extra or {}).get("json_schema_extra", {}).get(key)
+    return (field_info.json_schema_extra or {}).get(key)
 
 
-if PYDANTIC_VERSION.major < 2:
-
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
-        """
-        Convert a Pydantic model to a dictionary.
-        """
-        return model.dict()
-
-else:
-
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
-        """
-        Convert a Pydantic model to a dictionary.
-        """
-        return model.model_dump()
+def model_to_dict(model: pydantic.BaseModel) -> dict[str, Any]:
+    """Convert a Pydantic model to a dictionary."""
+    return model.model_dump()

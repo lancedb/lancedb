@@ -110,6 +110,81 @@ describe("Query outputSchema", () => {
   });
 });
 
+describe("Search pagination", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), false),
+      new Field("text", new Utf8(), false),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32())),
+        false,
+      ),
+    ]);
+    const data = makeArrowTable(
+      [
+        { id: 1n, text: "common", vector: [0, 0] },
+        { id: 2n, text: "common common", vector: [1, 1] },
+        { id: 3n, text: "common common common", vector: [2, 2] },
+        { id: 4n, text: "common common common common", vector: [3, 3] },
+      ],
+      { schema },
+    );
+    table = await db.createTable("test", data);
+  });
+
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("applies offset after the vector search limit", async () => {
+    const allResults = await table
+      .vectorSearch([0, 0])
+      .select(["id"])
+      .limit(4)
+      .toArray();
+    const secondPage = await table
+      .vectorSearch([0, 0])
+      .select(["id"])
+      .limit(2)
+      .offset(2)
+      .toArray();
+
+    expect(allResults).toHaveLength(4);
+    expect(secondPage).toHaveLength(2);
+    expect(secondPage.map((row) => row.id)).toEqual(
+      allResults.slice(2, 4).map((row) => row.id),
+    );
+  });
+
+  it("applies offset after the full-text search limit", async () => {
+    await table.createIndex("text", { config: Index.fts() });
+
+    const allResults = await table
+      .search("common", "fts")
+      .select(["id"])
+      .limit(4)
+      .toArray();
+    const secondPage = await table
+      .search("common", "fts")
+      .select(["id"])
+      .limit(2)
+      .offset(2)
+      .toArray();
+
+    expect(allResults).toHaveLength(4);
+    expect(secondPage).toHaveLength(2);
+    expect(secondPage.map((row) => row.id)).toEqual(
+      allResults.slice(2, 4).map((row) => row.id),
+    );
+  });
+});
+
 describe("Query orderBy", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;

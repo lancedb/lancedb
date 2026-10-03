@@ -5,10 +5,10 @@
 //! streaming dataloader.
 //!
 //! Normal sweep:
-//!   cargo run --release --example bench_streaming_dataloader
+//!   cargo run --profile release-with-debug --example bench_streaming_dataloader
 //!
 //! Flamegraph (self-contained, no perf/dtrace needed):
-//!   BENCH_PROFILE=1 BENCH_CHUNK=64 cargo run --release \
+//!   BENCH_PROFILE=1 BENCH_CHUNK=64 cargo run --profile release-with-debug \
 //!       --example bench_streaming_dataloader
 //!   # writes flamegraph.svg in the current directory
 //!
