@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::TryStreamExt;
 use http::StatusCode;
 use lance_io::object_store::StorageOptions;
 use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
