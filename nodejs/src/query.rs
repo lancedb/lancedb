@@ -15,6 +15,7 @@ use arrow_array::{
 };
 use arrow_buffer::ScalarBuffer;
 use half::f16;
+use lancedb::ApproxMode;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,
@@ -330,6 +331,13 @@ impl VectorQuery {
     #[napi]
     pub fn ef(&mut self, ef: u32) {
         self.inner = self.inner.clone().ef(ef as usize);
+    }
+
+    #[napi]
+    pub fn approx_mode(&mut self, approx_mode: String) -> napi::Result<()> {
+        let approx_mode = ApproxMode::try_from(approx_mode.as_str()).default_error()?;
+        self.inner = self.inner.clone().approx_mode(approx_mode);
+        Ok(())
     }
 
     #[napi]

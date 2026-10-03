@@ -101,6 +101,32 @@ AnalyzeExec verbose=true, metrics=[]
 
 ***
 
+### approxMode()
+
+```ts
+approxMode(approxMode): VectorQuery
+```
+
+Set the speed / accuracy tradeoff to use for approximate search
+
+This currently affects RQ-quantized indexes, such as IVF_RQ, and
+prefiltered search on HNSW indexes, where "fast" enables the ACORN
+traversal. Other index types ignore this setting.
+
+"fast" favors lower latency and may reduce recall, "normal" (the default)
+uses the index's default balance, and "accurate" favors higher recall and
+may increase latency.
+
+#### Parameters
+
+* **approxMode**: `"normal"` \| `"fast"` \| `"accurate"`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+***
+
 ### bypassVectorIndex()
 
 ```ts
