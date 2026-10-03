@@ -1549,6 +1549,23 @@ def test_head():
         assert data == pa.table({"id": [1, 2, 3]})
 
 
+def test_remote_take_row_ids_with_row_id():
+    bodies = []
+
+    def handler(body):
+        bodies.append(body)
+        return pa.table({"id": [1, 2], "_rowid": pa.array([0, 1], pa.uint64())})
+
+    with query_test_table(handler) as table:
+        result = table.take_row_ids([0, 1], with_row_id=True).to_arrow()
+        assert "_rowid" in result.column_names
+    assert bodies[-1]["with_row_id"] is True
+
+    with query_test_table(handler) as table:
+        table.take_row_ids([0, 1]).to_arrow()
+    assert "with_row_id" not in bodies[-1]
+
+
 def test_query_sync_minimal():
     def handler(body):
         assert body == {
