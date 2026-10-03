@@ -109,6 +109,7 @@ def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
         "user_agent": config.user_agent,
         "retry_config": _retry_config_to_dict(config.retry_config),
         "timeout_config": _timeout_config_to_dict(config.timeout_config),
+        "blob_request_concurrency": config.blob_request_concurrency,
         "extra_headers": config.extra_headers,
         "id_delimiter": config.id_delimiter,
         "tls_config": _tls_config_to_dict(config.tls_config),
