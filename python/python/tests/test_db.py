@@ -350,6 +350,40 @@ async def test_create_table_from_iterator_async(mem_db_async: lancedb.AsyncConne
     assert await table.count_rows() == 10
 
 
+def test_create_exist_ok_mode(tmp_db: lancedb.DBConnection):
+    db = tmp_db
+    data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
+    table = db.create_table("t1", data, mode="exist_ok")
+    assert table.count_rows() == 2
+    original = table.to_arrow()
+
+    reopened = db.create_table("t1", [{"vector": [9.0, 8.0]}], mode="exist_ok")
+    assert reopened.to_arrow().equals(original)
+
+
+def test_create_empty_exist_ok_mode(tmp_db: lancedb.DBConnection):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = tmp_db.create_table("empty", schema=schema, mode="exist_ok")
+    assert table.schema == schema
+    assert table.count_rows() == 0
+    table.add([{"id": 7}])
+
+    reopened = tmp_db.create_table("empty", schema=schema, mode="exist_ok")
+    assert reopened.to_arrow().to_pylist() == [{"id": 7}]
+
+    bad_schema = pa.schema([pa.field("other", pa.int64())])
+    with pytest.raises(ValueError):
+        tmp_db.create_table("empty", schema=bad_schema, mode="exist_ok")
+
+
+def test_create_table_invalid_mode(tmp_db: lancedb.DBConnection):
+    db = tmp_db
+    data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
+    with pytest.raises(ValueError, match="Invalid mode bogus"):
+        db.create_table("tb", data, mode="bogus")
+    assert "tb" not in db
+
+
 def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     from conftest import pandas_string_type
 
