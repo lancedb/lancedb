@@ -3751,6 +3751,24 @@ def test_empty_query(mem_db: DBConnection):
     assert df.num_rows == 42
 
 
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+@pytest.mark.parametrize("vector_column_name", [None, "vector"])
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+@pytest.mark.parametrize("multiple_vector_columns", [False, True])
+def test_search_empty_vector(
+    mem_db, query, vector_column_name, query_type, multiple_vector_columns
+):
+    fields = [pa.field("vector", pa.list_(pa.float32(), 8))]
+    if multiple_vector_columns:
+        fields.append(pa.field("vec2", pa.list_(pa.float32(), 4)))
+    table = mem_db.create_table("empty_vector_query", schema=pa.schema(fields))
+
+    with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+        table.search(
+            query, vector_column_name=vector_column_name, query_type=query_type
+        ).limit(3).to_arrow()
+
+
 def test_search_with_schema_inf_single_vector(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
