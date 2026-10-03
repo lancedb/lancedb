@@ -6905,9 +6905,11 @@ class AsyncTable:
         """
         versions = await self._inner.list_versions()
         for v in versions:
-            ts_nanos = v["timestamp"]
-            v["timestamp"] = datetime.fromtimestamp(ts_nanos // 1e9) + timedelta(
-                microseconds=(ts_nanos % 1e9) // 1e3
+            # Use integer math: float division on ~1e18 nanosecond
+            # values loses sub-millisecond precision.
+            seconds, nanos = divmod(v["timestamp"], 1_000_000_000)
+            v["timestamp"] = datetime.fromtimestamp(seconds) + timedelta(
+                microseconds=nanos // 1000
             )
 
         return versions

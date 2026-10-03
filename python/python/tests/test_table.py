@@ -967,6 +967,24 @@ def test_polars(mem_db: DBConnection):
     assert len(filtered_result) == 2
 
 
+@pytest.mark.asyncio
+async def test_list_versions_timestamp_precision():
+    # 2026-10-03T01:03:49.274Z in nanoseconds. Float math turns .274000 into
+    # .273999, so make sure the conversion is exact.
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = table_module.AsyncTable(FakeInner())
+    versions = await table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
+
+
 def test_versioning(mem_db: DBConnection):
     table = mem_db.create_table(
         "test",
