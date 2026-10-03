@@ -682,6 +682,7 @@ class RemoteDBConnection(DBConnection):
         if namespace_path is None:
             namespace_path = []
         validate_table_name(name)
+
         from .table import RemoteTable
 
         table = LOOP.run(

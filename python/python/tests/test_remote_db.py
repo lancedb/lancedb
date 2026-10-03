@@ -16,9 +16,8 @@ import uuid
 from packaging.version import Version
 
 import lancedb
-from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.embeddings import EmbeddingFunctionConfig
-from lancedb.index import HnswPq
+from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
+from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.query import ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
@@ -1241,17 +1240,22 @@ def remote_unsupported_handler(request):
     )
 
 
-REMOTE_UNSUPPORTED_OPERATIONS = [
-    ("uses_v2_manifest_paths", (), {}, "uses_v2_manifest_paths"),
-    ("migrate_v2_manifest_paths", (), {}, "migrate_manifest_paths_v2"),
-    ("set_unenforced_primary_key", (["id"],), {}, "set_unenforced_primary_key"),
-    ("fetch_blob_ranges", ("image", [(1, 0, 1)]), {}, "fetch_blob_ranges"),
-    ("optimize", (), {}, "optimize"),
-    ("create_index", ("vector",), {"config": HnswPq()}, "IVF_HNSW_PQ"),
-]
+def remote_unsupported_operations():
+    from lancedb.index import HnswPq
+
+    return [
+        ("uses_v2_manifest_paths", (), {}, "uses_v2_manifest_paths"),
+        ("migrate_v2_manifest_paths", (), {}, "migrate_manifest_paths_v2"),
+        ("set_unenforced_primary_key", (["id"],), {}, "set_unenforced_primary_key"),
+        ("fetch_blob_ranges", ("image", [(1, 0, 1)]), {}, "fetch_blob_ranges"),
+        ("optimize", (), {}, "optimize"),
+        ("create_index", ("vector",), {"config": HnswPq()}, "IVF_HNSW_PQ"),
+    ]
 
 
-@pytest.mark.parametrize("method,args,kwargs,operation", REMOTE_UNSUPPORTED_OPERATIONS)
+@pytest.mark.parametrize(
+    "method,args,kwargs,operation", remote_unsupported_operations()
+)
 def test_remote_unsupported_operations_sync(method, args, kwargs, operation):
     with mock_lancedb_connection(remote_unsupported_handler) as db:
         table = db.open_table("test")
@@ -1265,7 +1269,9 @@ def test_remote_unsupported_operations_sync(method, args, kwargs, operation):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method,args,kwargs,operation", REMOTE_UNSUPPORTED_OPERATIONS)
+@pytest.mark.parametrize(
+    "method,args,kwargs,operation", remote_unsupported_operations()
+)
 async def test_remote_unsupported_operations_async(method, args, kwargs, operation):
     async with mock_lancedb_connection_async(remote_unsupported_handler) as db:
         table = await db.open_table("test")
@@ -1334,7 +1340,7 @@ def test_remote_embedding_config_does_not_warn_or_drop_metadata(caplog):
     config = EmbeddingFunctionConfig(
         source_column="text",
         vector_column="vector",
-        function=MockTextEmbeddingFunction.create(),
+        function=MockNonNormTextEmbeddingFunction.create(),
     )
     schema = pa.schema(
         [pa.field("text", pa.string()), pa.field("vector", pa.list_(pa.float32(), 10))]
@@ -1343,9 +1349,10 @@ def test_remote_embedding_config_does_not_warn_or_drop_metadata(caplog):
         db.create_table("test", schema=schema, embedding_functions=[config])
     assert caplog.messages == []
     assert len(received_tables) == 1
-    metadata = json.loads(received_tables[0].schema.metadata[b"embedding_functions"])
-    assert metadata[0]["source_column"] == "text"
-    assert metadata[0]["vector_column"] == "vector"
+    metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata([config])
+    assert (
+        received_tables[0].schema.metadata == pa.schema([], metadata=metadata).metadata
+    )
 
 
 def test_table_wait_for_index_timeout():
