@@ -2617,6 +2617,10 @@ class Table(ABC):
                 to nullable. Currently, you cannot change a nullable column to
                 non-nullable.
 
+            Each alteration must specify at least one of "rename", "data_type",
+            or "nullable". The legacy key "name" is also accepted for renaming.
+            Unknown keys raise ValueError before any alterations are applied.
+
         Returns
         -------
         AlterColumnsResult
@@ -6873,6 +6877,10 @@ class AsyncTable:
                 nullability is not changed. Only non-nullable columns can be changed
                 to nullable. Currently, you cannot change a nullable column to
                 non-nullable.
+
+            Each alteration must specify at least one of "rename", "data_type",
+            or "nullable". The legacy key "name" is also accepted for renaming.
+            Unknown keys raise ValueError before any alterations are applied.
 
         Returns
         -------
