@@ -447,6 +447,91 @@ async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
 }
 
 #[tokio::test]
+async fn remote_refresh_twice_keeps_latest_selector() {
+    use crate::remote::client::test_utils::client_with_handler;
+    use crate::remote::table::RemoteTable;
+    use crate::table::BaseTable;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = futures::stream::try_unfold(listener, |listener| async {
+        let (socket, _) = listener.accept().await?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    });
+    let service = TestSqlService::default();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let sql_client = SqlClient::new(
+        "analytics".into(),
+        None,
+        "test-key".into(),
+        None,
+        Some(format!("grpc://{address}")),
+        ClientConfig::default(),
+    );
+    let selectors = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = selectors.clone();
+    let client = client_with_handler(move |request| {
+        let body = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+            .unwrap();
+        captured.lock().unwrap().push(body["version"].clone());
+        let text = match request.url().path() {
+            "/v1/table/ns$view/describe/" => r#"{"version": 42, "schema": {"fields": []}}"#,
+            "/v1/table/ns$view/count_rows/" => "2",
+            other => panic!("unexpected REST request: {other}"),
+        };
+        http::Response::builder()
+            .status(200)
+            .body(text.to_string())
+            .unwrap()
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "view".into(),
+        vec!["ns".into()],
+        "ns$view".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+
+    let first = table
+        .refresh_materialized_view_async(None)
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    let second = table
+        .refresh_materialized_view_async(None)
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+    assert_eq!(first.version, 42);
+    assert_eq!(second.version, 42);
+    assert!(
+        selectors
+            .lock()
+            .unwrap()
+            .iter()
+            .all(serde_json::Value::is_null)
+    );
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn submits_polls_fetches_cancels_and_reuses_client() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

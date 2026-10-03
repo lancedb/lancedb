@@ -2156,7 +2156,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let identifier = self.identifier.clone();
         let server_version = self.server_version.clone();
         let freshness = self.freshness.clone();
-        let version_cache = self.version.clone();
+        let freshness_request = self.snapshot_freshness_headers();
         Ok(Job::spawned(tokio::spawn(async move {
             let query = sql_client.submit(&statement, &namespace).await?;
             let mut reader = query.reader().await?;
@@ -2176,8 +2176,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 u64::try_from(table.count_rows(None).await?).map_err(|_| Error::Runtime {
                     message: "materialized-view row count exceeds u64".to_string(),
                 })?;
-            *version_cache.write().await = Some(version);
-            track_read_version(&freshness, version);
+            freshness_request.observe_version(&freshness, version);
             Ok(RefreshMaterializedViewResult {
                 mode: crate::materialized_view::RefreshMode::Rebuild,
                 rows_written,

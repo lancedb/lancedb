@@ -21,6 +21,9 @@ use futures::StreamExt;
 use lance::Dataset;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::transaction::{Operation, Transaction};
+use lance::dataset::write::merge_insert::inserted_rows::{
+    KeyExistenceFilter, KeyExistenceFilterBuilder, KeyValue,
+};
 use lance::dataset::{CommitBuilder, InsertBuilder, WriteDestination, WriteMode, WriteParams};
 use lance_datafusion::planner::Planner;
 use serde::{Deserialize, Serialize};
@@ -233,6 +236,7 @@ async fn replace_fragments(dataset: Dataset, stream: SendableRecordBatchStream) 
             message: "expected an append while staging replacement rows".into(),
         });
     };
+    let inserted_rows_filter = refresh_conflict_filter(&dataset)?;
     let committed = CommitBuilder::new(WriteDestination::Dataset(dataset))
         .execute(Transaction::new(
             read_version,
@@ -244,7 +248,7 @@ async fn replace_fragments(dataset: Dataset, stream: SendableRecordBatchStream) 
                 compacted_sstables: Vec::new(),
                 fields_for_preserving_frag_bitmap: Vec::new(),
                 update_mode: None,
-                inserted_rows_filter: None,
+                inserted_rows_filter: Some(inserted_rows_filter),
                 updated_fragment_offsets: None,
             },
             None,
@@ -260,6 +264,28 @@ async fn replace_fragments(dataset: Dataset, stream: SendableRecordBatchStream) 
         });
     }
     Ok(committed)
+}
+
+const REFRESH_TOKEN_ID: u64 = u64::MAX;
+
+fn refresh_conflict_filter(dataset: &Dataset) -> Result<KeyExistenceFilter> {
+    let field_id = dataset
+        .schema()
+        .fields
+        .first()
+        .map(|field| field.id)
+        .ok_or_else(|| Error::Runtime {
+            message: "a materialized view must have at least one field".into(),
+        })?;
+    let mut filter = KeyExistenceFilterBuilder::new(vec![field_id]);
+    filter
+        .insert(KeyValue::UInt64(REFRESH_TOKEN_ID))
+        .map_err(|error| Error::Runtime {
+            message: format!(
+                "failed to build the materialized-view refresh conflict filter: {error}"
+            ),
+        })?;
+    Ok(filter.build())
 }
 
 /// Reject MemWAL/LSM state because an ordinary dataset scan cannot see its
@@ -539,4 +565,105 @@ fn unnest_batch(batch: &RecordBatch, list_column: &str) -> Result<RecordBatch> {
         batch.schema().metadata().clone(),
     ));
     Ok(RecordBatch::try_new(schema, columns)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::record_batch;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+
+    use super::*;
+    use crate::connect;
+
+    #[tokio::test]
+    async fn raced_first_full_refresh_lands_one_result() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = connect(directory.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let source_batch = record_batch!(("x", Int32, [1, 2, 3])).unwrap();
+        connection
+            .create_table("src", source_batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let view = connection
+            .create_materialized_view("copy", "src")
+            .with_no_data(true)
+            .execute()
+            .await
+            .unwrap();
+        let schema = view.table().schema().await.unwrap();
+        let result_batch =
+            RecordBatch::try_new(schema.clone(), source_batch.columns().to_vec()).unwrap();
+        let planned = view
+            .table()
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .as_ref()
+            .clone();
+        assert!(planned.get_fragments().is_empty());
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let loser_batch = result_batch.clone();
+        let blocked = futures::stream::once(async move {
+            entered_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            Ok::<_, DataFusionError>(loser_batch)
+        });
+        let stream = Box::pin(RecordBatchStreamAdapter::new(schema.clone(), blocked));
+        let loser_table = view.table().clone();
+        let loser =
+            tokio::spawn(
+                async move { replace_materialized_view_fragments(&loser_table, stream).await },
+            );
+        entered_rx.await.unwrap();
+
+        let winner_stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::iter([Ok(result_batch)]),
+        ));
+        let planned = Arc::new(planned);
+        let staged = InsertBuilder::new(WriteDestination::Dataset(planned.clone()))
+            .with_params(&WriteParams {
+                mode: WriteMode::Append,
+                ..Default::default()
+            })
+            .execute_uncommitted_stream(winner_stream)
+            .await
+            .unwrap();
+        let Operation::Append { fragments } = staged.operation else {
+            panic!("expected append staging");
+        };
+        let filter = refresh_conflict_filter(&planned).unwrap();
+        CommitBuilder::new(WriteDestination::Dataset(planned.clone()))
+            .execute(Transaction::new(
+                planned.version().version,
+                Operation::Update {
+                    removed_fragment_ids: Vec::new(),
+                    updated_fragments: Vec::new(),
+                    new_fragments: fragments,
+                    fields_modified: Vec::new(),
+                    compacted_sstables: Vec::new(),
+                    fields_for_preserving_frag_bitmap: Vec::new(),
+                    update_mode: None,
+                    inserted_rows_filter: Some(filter),
+                    updated_fragment_offsets: None,
+                },
+                None,
+            ))
+            .await
+            .unwrap();
+        release_tx.send(()).unwrap();
+
+        loser.await.unwrap().unwrap_err();
+        let current = connection.open_table("copy").execute().await.unwrap();
+        assert_eq!(current.count_rows(None).await.unwrap(), 3);
+    }
 }
