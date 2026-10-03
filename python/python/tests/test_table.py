@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from time import sleep
 from typing import List
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import lancedb
 from lancedb import table as table_module
@@ -1640,6 +1640,51 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         name=None,
         train=True,
     )
+
+
+@pytest.mark.parametrize("api", ["legacy", "unified"])
+@pytest.mark.parametrize("cuda_failure", ["unavailable", "init_error"])
+def test_create_index_cuda_failure_suggests_cpu(
+    api, cuda_failure, mem_db: DBConnection
+):
+    table = mem_db.create_table(
+        f"test_cuda_unavailable_{api}",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = cuda_failure == "init_error"
+    if cuda_failure == "init_error":
+        torch.cuda.init.side_effect = RuntimeError("CUDA driver initialization failed")
+
+    with (
+        patch.dict(sys.modules, {"torch": torch}),
+        patch.object(table, "to_lance") as to_lance,
+    ):
+        if api == "legacy":
+            with (
+                pytest.warns(DeprecationWarning, match="create_index"),
+                pytest.raises(RuntimeError, match="accelerator=None.*CPU"),
+            ):
+                table.create_index(
+                    metric="dot",
+                    num_partitions=1,
+                    num_sub_vectors=1,
+                    vector_column_name="vector",
+                    accelerator="cuda",
+                )
+        else:
+            with pytest.raises(RuntimeError, match="accelerator=None.*CPU"):
+                table.create_index(
+                    "vector",
+                    config=IvfPq(
+                        distance_type="dot",
+                        num_partitions=1,
+                        num_sub_vectors=1,
+                        accelerator="cuda",
+                    ),
+                )
+
+    to_lance.return_value.create_index.assert_not_called()
 
 
 @patch("lancedb.table.AsyncTable.create_index")
