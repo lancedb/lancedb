@@ -1332,7 +1332,9 @@ export class LocalTable extends Table {
             new Error("No embedding functions are defined in the table"),
           );
         }
-        return await embeddingFunc.function.computeQueryEmbeddings(query);
+        return await embeddingFunc.function.computeQueryEmbeddingsWithRetry(
+          query,
+        );
       },
     );
 
