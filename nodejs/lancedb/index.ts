@@ -84,7 +84,14 @@ export {
 } from "./arrow";
 
 export { blob, isBlobField, BlobFile } from "./blob";
-export type { BlobOptions, BlobRange, BlobReadOptions } from "./blob";
+export type {
+  BlobData,
+  BlobInput,
+  BlobOptions,
+  BlobRange,
+  BlobReadOptions,
+  BlobUri,
+} from "./blob";
 
 export {
   Connection,

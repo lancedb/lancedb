@@ -12,7 +12,46 @@ const DEDICATED_SIZE_THRESHOLD_KEY =
 const PACK_FILE_SIZE_THRESHOLD_KEY =
   "lance-encoding:blob-pack-file-size-threshold";
 
-export type BlobInput = {
+/**
+ * Bytes accepted for a blob value. `ArrayBuffer` is wrapped without copying.
+ * `Blob` and `File` are read with `arrayBuffer()`, which only the async write
+ * paths ({@link Connection.createTable}, {@link Table.add},
+ * {@link Table.mergeInsert}) can do.
+ */
+export type BlobData = Buffer | Uint8Array | ArrayBuffer | Blob;
+
+/** A URI accepted for a blob value. A `URL` is stored as its `href`. */
+export type BlobUri = string | URL;
+
+/**
+ * A value accepted for a `lance.blob.v2` column (see {@link blob}).
+ *
+ * Either inline bytes, a URI pointing at external bytes, or a struct that sets
+ * exactly one of `data` or `uri`. `null` and `undefined` write a null blob.
+ *
+ * @example
+ * ```ts
+ * import { pathToFileURL } from "node:url";
+ * import type { BlobInput } from "@lancedb/lancedb";
+ *
+ * const rows: { id: bigint; image: BlobInput }[] = [
+ *   { id: 1n, image: await (await fetch(url)).arrayBuffer() },
+ *   { id: 2n, image: pathToFileURL("/data/cat.png") },
+ *   { id: 3n, image: { data: new Blob(["hello"]) } },
+ * ];
+ * await table.add(rows);
+ * ```
+ */
+export type BlobInput =
+  | BlobData
+  | BlobUri
+  | { data: BlobData; uri?: null }
+  | { data?: null; uri: BlobUri }
+  | null
+  | undefined;
+
+/** A blob value normalized to the columns of the blob struct. */
+export type BlobValue = {
   data: Buffer | Uint8Array | null;
   uri: string | null;
 };
@@ -248,7 +287,69 @@ export type BlobRange = {
   end: bigint;
 };
 
-export function coerceBlobValue(value: unknown): BlobInput | null {
+/**
+ * Rewrites the synchronous-only widenings of {@link BlobInput} (`ArrayBuffer`,
+ * `URL`) into `Uint8Array` and URI strings, keeping the value's shape. Other
+ * values are returned unchanged and validated later by {@link coerceBlobValue}.
+ *
+ * Throws on `Blob` / `File`, which must be read into bytes first.
+ */
+export function normalizeBlobInput(value: unknown): unknown {
+  if (blobToRead(value) !== undefined) {
+    throw new Error(
+      "Blob and File values must be read asynchronously. Pass them to " +
+        "createTable, add, or mergeInsert, or convert them with " +
+        "`new Uint8Array(await value.arrayBuffer())`",
+    );
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (value instanceof URL) {
+    return value.href;
+  }
+  if (isBlobStruct(value)) {
+    const out: Record<string, unknown> = { ...value };
+    let changed = false;
+    if (value.data instanceof ArrayBuffer) {
+      out.data = new Uint8Array(value.data);
+      changed = true;
+    }
+    if (value.uri instanceof URL) {
+      out.uri = value.uri.href;
+      changed = true;
+    }
+    return changed ? out : value;
+  }
+  return value;
+}
+
+/**
+ * Returns the `Blob` / `File` a blob value needs read, either the value itself
+ * or its `data` field, or `undefined` when there is nothing to read.
+ */
+export function blobToRead(value: unknown): Blob | undefined {
+  if (isBlobLike(value)) {
+    return value;
+  }
+  if (isBlobStruct(value) && isBlobLike(value.data)) {
+    return value.data;
+  }
+  return undefined;
+}
+
+/**
+ * Replaces the `Blob` that {@link blobToRead} found in `value` with `bytes`,
+ * keeping the value's shape.
+ */
+export function withBlobBytes(value: unknown, bytes: Uint8Array): unknown {
+  return isBlobLike(value)
+    ? bytes
+    : { ...(value as Record<string, unknown>), data: bytes };
+}
+
+export function coerceBlobValue(input: unknown): BlobValue | null {
+  const value = normalizeBlobInput(input);
   if (value == null) {
     return null;
   }
@@ -256,7 +357,9 @@ export function coerceBlobValue(value: unknown): BlobInput | null {
     return { data: value, uri: null };
   }
   if (ArrayBuffer.isView(value)) {
-    throw new Error("Blob data must be Buffer or Uint8Array");
+    throw new Error(
+      "Blob data must be Buffer, Uint8Array, ArrayBuffer, or Blob",
+    );
   }
   if (typeof value === "string") {
     if (value === "") {
@@ -276,11 +379,15 @@ export function coerceBlobValue(value: unknown): BlobInput | null {
       throw new Error("Blob uri cannot be empty");
     }
     if (uri != null && typeof uri !== "string") {
-      throw new Error(`Blob uri must be a string or null, got ${typeof uri}`);
+      throw new Error(
+        `Blob uri must be a string, URL, or null, got ${typeof uri}`,
+      );
     }
     const data = record.data;
     if (data != null && !isBlobBytes(data)) {
-      throw new Error("Blob data must be Buffer, Uint8Array, or null");
+      throw new Error(
+        "Blob data must be Buffer, Uint8Array, ArrayBuffer, Blob, or null",
+      );
     }
     const bytes = (data as Buffer | Uint8Array | null | undefined) ?? null;
     const uriValue = uri ?? null;
@@ -292,7 +399,22 @@ export function coerceBlobValue(value: unknown): BlobInput | null {
     return { data: bytes, uri: uriValue };
   }
   throw new Error(
-    "Blob column values must be Buffer, Uint8Array, a URI string, null, or { data?, uri? }",
+    "Blob column values must be Buffer, Uint8Array, ArrayBuffer, Blob, a URI string or URL, null, or { data?, uri? }",
+  );
+}
+
+function isBlobLike(value: unknown): value is Blob {
+  return typeof Blob !== "undefined" && value instanceof Blob;
+}
+
+function isBlobStruct(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    ("data" in value || "uri" in value)
   );
 }
 
