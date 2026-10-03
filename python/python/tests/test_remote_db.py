@@ -17,7 +17,7 @@ from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.query import ColumnOrdering
+from lancedb.query import AsyncQuery, ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -1521,6 +1521,46 @@ def test_query_sync_empty_query():
         assert data == expected
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_kwargs", [{}, {"query": None}])
+async def test_async_search_without_query(search_kwargs):
+    expected = pa.table({"id": [7, 8, 9]})
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        elif request.path == "/v1/table/test/query/":
+            body = json.loads(
+                request.rfile.read(int(request.headers["Content-Length"]))
+            )
+            assert body == {
+                "k": 3,
+                "filter": "id >= 7",
+                "vector": [],
+                "columns": ["id"],
+                "prefilter": True,
+                "version": None,
+            }
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, schema=expected.schema) as writer:
+                writer.write_table(expected)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = await table.search(**search_kwargs)
+        assert isinstance(query, AsyncQuery)
+        result = await query.where("id >= 7").select(["id"]).limit(3).to_arrow()
+        assert result == expected
+
+
 def test_query_sync_maximal():
     def handler(body):
         assert body == {
@@ -2192,15 +2232,46 @@ async def test_header_provider_overrides_static_headers():
 
 
 def test_close():
-    """Test that close() works without AttributeError."""
-    import asyncio
-
     def handler(req):
         req.send_response(200)
         req.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        asyncio.run(db.close())
+        assert db.close() is None
+        assert not db.is_open()
+        assert db.close() is None
+
+        with pytest.warns(DeprecationWarning, match="table_names"):
+            with pytest.raises(RuntimeError, match="Connection is closed"):
+                db.table_names()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.list_tables()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.open_table("test")
+
+
+@pytest.mark.parametrize("raise_error", [False, True])
+def test_sync_context_manager(raise_error):
+    def handler(req):
+        req.send_response(200)
+        req.send_header("Content-Type", "application/json")
+        req.end_headers()
+        req.wfile.write(b'{"tables": []}')
+
+    with mock_lancedb_connection(handler) as db:
+        with contextlib.ExitStack() as stack:
+            if raise_error:
+                stack.enter_context(pytest.raises(ValueError, match="test error"))
+            with db as conn:
+                assert conn is db
+                assert conn.is_open()
+                assert conn.list_tables().tables == []
+                if raise_error:
+                    raise ValueError("test error")
+
+        assert not db.is_open()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.list_tables()
 
 
 @pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])

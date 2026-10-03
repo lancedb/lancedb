@@ -41,26 +41,6 @@ export async function* RecordBatchIterator(
   }
 }
 
-class RecordBatchIterable<
-  NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
-> implements AsyncIterable<RecordBatch>
-{
-  private inner: NativeQueryType;
-  private options?: QueryExecutionOptions;
-
-  constructor(inner: NativeQueryType, options?: QueryExecutionOptions) {
-    this.inner = inner;
-    this.options = options;
-  }
-
-  // biome-ignore lint/suspicious/noExplicitAny: skip
-  [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
-    return RecordBatchIterator(
-      this.inner.execute(this.options?.maxBatchLength, this.options?.timeoutMs),
-    );
-  }
-}
-
 /**
  * Options that control the behavior of a particular query execution
  */
@@ -271,12 +251,19 @@ export class QueryBase<
     return RecordBatchIterator(this.nativeExecute());
   }
 
-  /** Collect the results as an Arrow @see {@link ArrowTable}. */
+  /**
+   * Collect the results as an Arrow @see {@link ArrowTable}.
+   *
+   * Empty results retain the query's output schema.
+   */
   async toArrow(options?: Partial<QueryExecutionOptions>): Promise<ArrowTable> {
     const batches = [];
-    const inner = await this.getInner();
-    for await (const batch of new RecordBatchIterable(inner, options)) {
+    const iterator = this.nativeExecute(options);
+    for await (const batch of RecordBatchIterator(iterator)) {
       batches.push(batch);
+    }
+    if (batches.length === 0) {
+      return tableFromIPC((await iterator).schema());
     }
     return new ArrowTable(batches);
   }

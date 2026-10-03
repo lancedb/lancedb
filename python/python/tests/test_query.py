@@ -24,6 +24,7 @@ from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import (
     AsyncFTSQuery,
     AsyncHybridQuery,
+    AsyncQuery,
     AsyncQueryBase,
     AsyncVectorQuery,
     ColumnOrdering,
@@ -1302,6 +1303,27 @@ async def test_query_to_polars_async(table_async: AsyncTable):
 
     df = await table_async.query().where("id < 0").to_polars()
     assert df.shape == (0, num_columns)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_kwargs", [{}, {"query": None}])
+@pytest.mark.parametrize("with_vector", [False, True])
+async def test_async_search_without_query(mem_db_async, search_kwargs, with_vector):
+    data = [{"id": i} for i in range(10)]
+    if with_vector:
+        for row in data:
+            row["vector"] = [float(row["id"]), 1.0]
+    table = await mem_db_async.create_table("test", data)
+
+    query = await table.search(**search_kwargs)
+    assert isinstance(query, AsyncQuery)
+    assert await query.limit(3).to_arrow() == await table.query().limit(3).to_arrow()
+
+    query = await table.search(**search_kwargs)
+    assert await query.where("id >= 8").select(["id"]).limit(3).to_list() == [
+        {"id": 8},
+        {"id": 9},
+    ]
 
 
 @pytest.mark.asyncio
