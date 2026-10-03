@@ -2391,6 +2391,27 @@ def blob_query_response_table():
     )
 
 
+def blob_descriptor_take_table():
+    """What `fetch_blob_files` reads for rows 10, 20, 30, and 40."""
+    queried = blob_query_response_table()
+    image_field = queried.schema.field("image")
+    images = pa.StructArray.from_arrays(
+        [
+            pa.array([0, 0, 0, 0], type=pa.uint8()),
+            pa.array([0, 0, 0, 0], type=pa.uint64()),
+            pa.array([5, 0, 5, 0], type=pa.uint64()),
+            pa.array([0, 0, 0, 0], type=pa.uint32()),
+            pa.array(["", "", "", ""], type=pa.string()),
+        ],
+        fields=image_field.type,
+        mask=pa.array([False, True, False, False]),
+    )
+    return pa.Table.from_arrays(
+        [images, pa.array([10, 20, 30, 40], type=pa.uint64())],
+        schema=pa.schema([image_field, pa.field("_rowid", pa.uint64())]),
+    )
+
+
 @contextlib.contextmanager
 def blob_remote_table(*, server_version=Version("0.5.0")):
     def handler(request):
@@ -2429,9 +2450,14 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
-            assert body["columns"] == ["id", "image"]
             assert body["with_row_id"] is True
-            response_table = blob_query_response_table()
+            if body["columns"] == ["image"]:
+                # fetch_blob_files sizes its handles from a descriptor take.
+                assert body["filter"].startswith("_rowid IN")
+                response_table = blob_descriptor_take_table()
+            else:
+                assert body["columns"] == ["id", "image"]
+                response_table = blob_query_response_table()
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()
