@@ -3195,3 +3195,112 @@ def test_streaming_dataset_over_remote_table():
     assert len(server.scans) == 1, "the permutation is built with one row-id scan"
     assert server.takes, "rows must be fetched with row-id takes"
     assert_server_safe_row_id_requests(server)
+
+
+# ---------------------------------------------------------------------------
+# Prebuilt Plan tests
+# ---------------------------------------------------------------------------
+
+def test_streaming_dataset_with_prebuilt_plan(lance_table, tmp_path):
+    """Providing a prebuilt plan prevents table scan and works as expected."""
+    from lancedb.permutation import permutation_builder
+    
+    # Pre-build a plan locally
+    plan = permutation_builder(lance_table).split_random(fixed=NUM_SPLITS, seed=SHUFFLE_SEED).execute()
+    
+    # Pass it as a plan
+    ds = StreamingDataset(
+        lance_table,
+        plan=plan,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        rank=0,
+        world_size=1,
+    )
+    
+    ids = [row["id"] for row in ds]
+    assert sorted(ids) == list(range(NUM_ROWS)), "Expected to see all rows from the prebuilt plan"
+
+
+def test_streaming_dataset_prebuilt_plan_validation(lance_table):
+    """Providing an incompatible plan raises ValueError."""
+    from lancedb.permutation import permutation_builder
+    
+    # In-memory plan has the correct split_names metadata
+    plan = permutation_builder(lance_table).split_random(fixed=NUM_SPLITS, split_names=[str(i) for i in range(NUM_SPLITS)]).execute()
+    
+    # Request different number of splits
+    with pytest.raises(ValueError, match="does not match plan table metadata split count"):
+        ds = StreamingDataset(
+            lance_table,
+            plan=plan,
+            num_splits=NUM_SPLITS * 2,
+            rank=0,
+            world_size=1,
+        )
+
+
+def test_streaming_dataset_plan_serialization(lance_table, tmp_path):
+    """A persisted plan table is serialized via its own pickle state and not Arrow."""
+    from lancedb.permutation import permutation_builder
+    import pyarrow as pa
+    
+    # Save a plan out to disk
+    db = lancedb.connect(tmp_path / "plan_db")
+    in_memory_plan = permutation_builder(lance_table).split_sequential(fixed=NUM_SPLITS).execute()
+    
+    # Must preserve the metadata so the validation works properly
+    persisted_plan = db.create_table("persisted_plan", in_memory_plan.to_arrow())
+    
+    ds = StreamingDataset(
+        lance_table,
+        plan=persisted_plan,
+        num_splits=NUM_SPLITS,
+        rank=0,
+        world_size=1,
+    )
+    
+    state = ds.__getstate__()
+    assert "_perm_table_state" in state
+    perm_state = state["_perm_table_state"]
+    assert perm_state["kind"] == "local"
+    assert perm_state["name"] == "persisted_plan"
+    
+    # Mock a worker process unpickling
+    import pickle
+    dumped = pickle.dumps(ds)
+    ds_worker = pickle.loads(dumped)
+    
+    ids = [row["id"] for row in ds_worker]
+    assert sorted(ids) == list(range(NUM_ROWS))
+
+
+def test_streaming_dataset_remote_table_with_local_plan(tmp_path):
+    """Can use a local plan with a remote base table."""
+    from lancedb.permutation import permutation_builder
+    
+    server = MockPermutationServer()
+
+    with mock_remote_table(server) as base_table:
+        # Build local plan
+        db = lancedb.connect(tmp_path / "plan_db")
+        in_memory_plan = permutation_builder(base_table).split_sequential(fixed=2).execute()
+        local_plan = db.create_table("local_plan", in_memory_plan.to_arrow())
+        
+        # We start counting scans now.
+        scans_before = len(server.scans)
+        
+        ds = StreamingDataset(
+            base_table,
+            plan=local_plan,
+            num_splits=2,
+            rank=0,
+            world_size=1,
+        )
+        
+        # It shouldn't scan the base table to plan!
+        assert len(server.scans) == scans_before, "Passing a plan must skip base-table planning scan"
+        
+        ids = [row["id"] for row in ds]
+        
+    assert sorted(ids) == list(range(server.num_rows))
