@@ -4144,12 +4144,63 @@ async def test_add_columns_with_schema(mem_db_async: AsyncConnection):
     )
 
 
-def test_alter_columns(mem_db: DBConnection):
+@pytest.mark.parametrize("rename_key", ["rename", "name"])
+def test_alter_columns(mem_db: DBConnection, rename_key):
     data = pa.table({"id": [0, 1]})
     table = mem_db.create_table("my_table", data=data)
-    alter_columns_res = table.alter_columns({"path": "id", "rename": "new_id"})
+    alter_columns_res = table.alter_columns({"path": "id", rename_key: "new_id"})
     assert alter_columns_res.version == 2
     assert table.to_arrow().column_names == ["new_id"]
+
+
+INVALID_COLUMN_ALTERATIONS = [
+    (({"path": "id"},), "One of rename, nullable or data_type"),
+    (({"path": "id", "nulable": False},), "Unknown column alteration key 'nulable'"),
+    (
+        ({"path": "id", "rename": "new_id", "nulable": False},),
+        "Unknown column alteration key 'nulable'",
+    ),
+    (
+        ({"path": "id", "rename": "new_id"}, {"path": "id"}),
+        "One of rename, nullable or data_type",
+    ),
+]
+
+
+def test_alter_columns_nullable_false(mem_db: DBConnection):
+    table = mem_db.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    result = table.alter_columns({"path": "id", "nullable": False})
+    assert result.version == 2
+    assert not table.schema.field("id").nullable
+
+
+@pytest.mark.parametrize("alterations, match", INVALID_COLUMN_ALTERATIONS)
+def test_alter_columns_rejects_invalid(mem_db: DBConnection, alterations, match):
+    table = mem_db.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    initial_version = table.version
+    initial_schema = table.schema
+
+    with pytest.raises(ValueError, match=match):
+        table.alter_columns(*alterations)
+
+    assert table.version == initial_version
+    assert table.schema == initial_schema
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alterations, match", INVALID_COLUMN_ALTERATIONS)
+async def test_alter_columns_rejects_invalid_async(
+    mem_db_async: AsyncConnection, alterations, match
+):
+    table = await mem_db_async.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    initial_version = await table.version()
+    initial_schema = await table.schema()
+
+    with pytest.raises(ValueError, match=match):
+        await table.alter_columns(*alterations)
+
+    assert await table.version() == initial_version
+    assert await table.schema() == initial_schema
 
 
 def test_update_field_metadata(mem_db: DBConnection):
@@ -4177,10 +4228,11 @@ def test_update_field_metadata(mem_db: DBConnection):
 
 
 @pytest.mark.asyncio
-async def test_alter_columns_async(mem_db_async: AsyncConnection):
+@pytest.mark.parametrize("rename_key", ["rename", "name"])
+async def test_alter_columns_async(mem_db_async: AsyncConnection, rename_key):
     data = pa.table({"id": [0, 1]})
     table = await mem_db_async.create_table("my_table", data=data)
-    alter_columns_res = await table.alter_columns({"path": "id", "rename": "new_id"})
+    alter_columns_res = await table.alter_columns({"path": "id", rename_key: "new_id"})
     assert alter_columns_res.version == 2
     assert (await table.to_arrow()).column_names == ["new_id"]
     alter_columns_res = await table.alter_columns(

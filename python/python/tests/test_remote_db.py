@@ -119,6 +119,67 @@ async def test_async_remote_db():
         assert table_names == []
 
 
+@pytest.mark.parametrize(
+    "alteration, match",
+    [
+        ({"path": "id"}, "One of rename, nullable or data_type"),
+        ({"path": "id", "nulable": False}, "Unknown column alteration key 'nulable'"),
+        (
+            {"path": "id", "rename": "new_id", "nulable": False},
+            "Unknown column alteration key 'nulable'",
+        ),
+    ],
+)
+def test_remote_alter_columns_rejects_invalid_before_request(alteration, match):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        requests.clear()
+
+        with pytest.raises(ValueError, match=match):
+            table.alter_columns(alteration)
+
+        assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "alteration, match",
+    [
+        ({"path": "id"}, "One of rename, nullable or data_type"),
+        ({"path": "id", "nulable": False}, "Unknown column alteration key 'nulable'"),
+    ],
+)
+async def test_async_remote_alter_columns_rejects_invalid_before_request(
+    alteration, match
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        requests.clear()
+
+        with pytest.raises(ValueError, match=match):
+            await table.alter_columns(alteration)
+
+        assert requests == []
+
+
 @pytest.mark.asyncio
 async def test_async_checkout():
     def handler(request):
