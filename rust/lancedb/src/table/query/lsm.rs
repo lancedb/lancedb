@@ -130,6 +130,10 @@ pub(super) async fn create_lsm_plan(
         .await?
     };
 
+    // Normalize cosine ANN arms before LSM merge and sort nodes compare their
+    // distances with exact SSTable and memtable arms.
+    let plan = super::normalize_cosine_ann_branches(plan).await?;
+
     // Lance appends the primary-key columns internally for dedup and keeps them in
     // the output; drop the ones the user did not request so the projection matches.
     restore_projection(plan, &query, &pk_columns)
