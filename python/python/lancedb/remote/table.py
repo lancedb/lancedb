@@ -63,6 +63,7 @@ from lancedb.table import _normalize_progress
 from ..query import (
     AnalyzePlanDistributedMetrics,
     DocumentGranularity,
+    FullTextQuery,
     LanceQueryBuilder,
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
@@ -77,6 +78,7 @@ from ..table import (
     Tags,
 )
 from ..types import BaseTokenizerType
+from ..util import infer_vector_column_name
 
 
 class RemoteTable(Table):
@@ -687,7 +689,7 @@ class RemoteTable(Table):
         vector_column_name: Optional[str] = None,
         query_type="auto",
         fts_columns: Optional[Union[str, List[str]]] = None,
-        fast_search: bool = False,
+        fast_search: Optional[bool] = None,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support
@@ -738,7 +740,7 @@ class RemoteTable(Table):
             Skip a flat search of unindexed data. This may improve
             search performance but search results will not include unindexed data.
 
-            - *default False*.
+            - *default None*, which leaves fast search disabled.
 
         Returns
         -------
@@ -753,12 +755,27 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if isinstance(query, FullTextQuery):
+            query_type = "fts"
+        elif (
+            query_type == "auto"
+            and isinstance(query, str)
+            and not self.embedding_functions
+        ):
+            query_type = "fts"
+        vector_column_name = infer_vector_column_name(
+            schema=self.schema,
+            query_type=query_type,
+            query=query,
+            vector_column_name=vector_column_name,
+        )
+
         return LanceQueryBuilder.create(
             self,
             query,
             query_type,
             vector_column_name=vector_column_name,
-            fts_columns=fts_columns,
+            fts_columns=fts_columns or [],
             fast_search=fast_search,
         )
 
