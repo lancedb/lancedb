@@ -491,6 +491,8 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 #### Inherited from
 
 `StandardQueryBase.toArrow`
