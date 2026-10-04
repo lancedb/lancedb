@@ -12,7 +12,7 @@ import warnings
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from time import sleep
 from typing import List
 from unittest.mock import patch
@@ -2553,6 +2553,51 @@ def test_update_with_arrow_scalar(mem_db: DBConnection):
 
     assert result.rows_updated == 1
     assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+@pytest.mark.parametrize("use_arrow_scalar", [False, True])
+@pytest.mark.parametrize(
+    "decimal_type, value",
+    [
+        (pa.decimal128(10, 2), "9.99"),
+        (pa.decimal128(10, 2), "-9.99"),
+        (pa.decimal128(10, 2), "0.00"),
+        (pa.decimal128(10, 2), "1.23E+5"),
+        (pa.decimal128(38, 18), "1E-18"),
+        (pa.decimal128(38, 18), "12345678901234567.123456789012345678"),
+        (pa.decimal128(38, 18), "12345678901234567890.123456789012345678"),
+        (pa.decimal128(38, 18), "-12345678901234567890.123456789012345678"),
+        (
+            pa.decimal256(76, 38),
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+        ),
+        (
+            pa.decimal256(76, 38),
+            "-12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+        ),
+    ],
+)
+def test_update_decimal(mem_db: DBConnection, decimal_type, value, use_arrow_scalar):
+    expected = Decimal(value)
+    table = mem_db.create_table(
+        "my_table",
+        pa.table(
+            {
+                "id": [1, 2],
+                "price": pa.array([Decimal("1"), expected], type=decimal_type),
+            }
+        ),
+    )
+    update = table.to_arrow()["price"][1] if use_arrow_scalar else expected
+    with localcontext() as context:
+        context.prec = 6
+        result = table.update(where="id = 1", values={"price": update})
+    assert result.rows_updated == 1
+    actual = table.to_arrow()
+    assert actual.schema.field("price").type == decimal_type
+    assert actual["price"].to_pylist() == [expected, expected]
 
 
 def test_update_types(mem_db: DBConnection):

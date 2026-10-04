@@ -4,6 +4,7 @@
 
 import os
 import pathlib
+from decimal import Decimal, localcontext
 from typing import Optional
 
 import lance
@@ -155,6 +156,41 @@ def test_value_to_sql_string(tmp_path):
     for value in values:
         table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
         assert table.to_pandas().query("search == @value")["replace"].item() == value
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("9.99", "'9.99'"),
+        ("-9.99", "'-9.99'"),
+        ("0", "'0'"),
+        ("-0.00", "'-0.00'"),
+        ("1.23E+5", "'123000'"),
+        ("1E-18", "'0.000000000000000001'"),
+        (
+            "12345678901234567890.123456789012345678",
+            "'12345678901234567890.123456789012345678'",
+        ),
+        (
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+            "'12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678'",
+        ),
+    ],
+)
+def test_value_to_sql_decimal(value, expected):
+    with localcontext() as context:
+        context.prec = 6
+        assert value_to_sql(Decimal(value)) == expected
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "NaN123456", "Infinity", "-Infinity"])
+def test_value_to_sql_decimal_non_finite(value):
+    with pytest.raises(
+        ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
+    ):
+        value_to_sql(Decimal(value))
 
 
 def test_value_to_sql_dict():
