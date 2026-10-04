@@ -985,6 +985,45 @@ async def test_list_versions_timestamp_precision():
     assert versions[0]["timestamp"].microsecond == 274000
 
 
+def test_list_versions_timestamp_precision_sync(mem_db: DBConnection):
+    # The sync LanceTable.list_versions delegates to AsyncTable.list_versions,
+    # which is the path the parity report hit.
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = mem_db.create_table("ts_precision", data=[{"id": 1}])
+    table._table = table_module.AsyncTable(FakeInner())
+    versions = table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
+
+
+def test_list_versions_timestamp_precision_remote():
+    # RemoteTable.list_versions also delegates to AsyncTable.list_versions.
+    from lancedb.remote.table import RemoteTable
+
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        def name(self):
+            return "ts_precision"
+
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = RemoteTable(table_module.AsyncTable(FakeInner()), "dev")
+    versions = table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
+
+
 def test_versioning(mem_db: DBConnection):
     table = mem_db.create_table(
         "test",
