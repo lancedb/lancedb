@@ -24,6 +24,7 @@ from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import (
     AsyncFTSQuery,
     AsyncHybridQuery,
+    AsyncQuery,
     AsyncQueryBase,
     AsyncVectorQuery,
     ColumnOrdering,
@@ -1153,6 +1154,19 @@ def test_query_builder_with_filter(table):
     assert all(np.array(rs[0]["vector"]) == [3, 4])
 
 
+@pytest.mark.parametrize("query_type", ["vector", "hybrid"])
+@pytest.mark.parametrize("nprobes", [0, -1])
+def test_nprobes_nonpositive_sync(table, query_type, nprobes):
+    if query_type == "hybrid":
+        query = table.search(query_type="hybrid").vector([0, 0]).text("a")
+    else:
+        query = table.search([0, 0])
+    with pytest.raises(
+        ValueError, match="^Invalid input, nprobes must be greater than 0$"
+    ):
+        query.nprobes(nprobes)
+
+
 def test_invalid_nprobes_sync(table):
     with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
         LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(0).to_list()
@@ -1182,6 +1196,18 @@ def test_multiple_nprobes_calls_works_sync(table):
     LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).maximum_nprobes(
         20
     ).minimum_nprobes(20).to_list()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_nprobes_zero_async(table_async: AsyncTable, hybrid):
+    query = table_async.query().nearest_to([0, 0])
+    if hybrid:
+        query = query.nearest_to_text("dog")
+    with pytest.raises(
+        ValueError, match="^Invalid input, nprobes must be greater than 0$"
+    ):
+        query.nprobes(0)
 
 
 @pytest.mark.asyncio
@@ -1456,6 +1482,27 @@ async def test_query_to_polars_async(table_async: AsyncTable):
 
     df = await table_async.query().where("id < 0").to_polars()
     assert df.shape == (0, num_columns)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_kwargs", [{}, {"query": None}])
+@pytest.mark.parametrize("with_vector", [False, True])
+async def test_async_search_without_query(mem_db_async, search_kwargs, with_vector):
+    data = [{"id": i} for i in range(10)]
+    if with_vector:
+        for row in data:
+            row["vector"] = [float(row["id"]), 1.0]
+    table = await mem_db_async.create_table("test", data)
+
+    query = await table.search(**search_kwargs)
+    assert isinstance(query, AsyncQuery)
+    assert await query.limit(3).to_arrow() == await table.query().limit(3).to_arrow()
+
+    query = await table.search(**search_kwargs)
+    assert await query.where("id >= 8").select(["id"]).limit(3).to_list() == [
+        {"id": 8},
+        {"id": 9},
+    ]
 
 
 @pytest.mark.asyncio
@@ -2268,6 +2315,12 @@ def test_ensure_vector_query_nested_empty_list():
     """Regression: ensure_vector_query used to return instead of raise ValueError."""
     with pytest.raises(ValueError, match="non-empty"):
         ensure_vector_query([[]])
+
+
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+def test_vector_query_builder_empty_vector(table, query):
+    with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+        LanceVectorQueryBuilder(table, query, "vector")
 
 
 def test_fast_search(tmp_path):

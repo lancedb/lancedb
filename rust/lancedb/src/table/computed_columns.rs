@@ -704,13 +704,7 @@ fn ensure_known_binding_shape(value: &Value) -> Result<()> {
         object
             .get("function")
             .ok_or_else(|| invalid_function("Function binding is missing its exact version"))?,
-        &[
-            "name",
-            "object_id",
-            "location",
-            "version",
-            "manifest_digest",
-        ],
+        crate::function::FUNCTION_VERSION_REF_FIELDS,
         "version reference",
     )?;
     for input in object
@@ -3758,6 +3752,20 @@ mod tests {
         ))
         .unwrap();
         ensure_known_binding_shape(&raw_binding).unwrap();
+    }
+
+    /// A binding names its Function by parts, so one declared against a
+    /// namespaced Function is part of the known contract too.
+    #[test]
+    fn test_namespaced_bindings_are_a_known_shape() {
+        let mut raw_binding: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_initialized_function_binding.json"
+        ))
+        .unwrap();
+        raw_binding["function"]["namespace_path"] = serde_json::json!(["analytics", "features"]);
+        ensure_known_binding_shape(&raw_binding).unwrap();
+        let binding = FunctionBinding::from_json(&raw_binding.to_string()).unwrap();
+        assert_eq!(binding.function().namespace_path, ["analytics", "features"]);
     }
 
     #[test]

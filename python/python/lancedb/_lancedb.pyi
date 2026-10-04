@@ -149,12 +149,20 @@ class Connection(object):
         limit: Optional[int],
     ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def open_job(self, job_id: str) -> Job: ...
-    async def create_function_async(self, request_json: str) -> Job: ...
-    async def get_function(self, name: str, version: str) -> str: ...
-    async def list_functions(self) -> List[str]: ...
-    async def drop_function(self, name: str, version: str) -> bool: ...
+    async def create_function_async(
+        self, request_json: str, namespace_path: Optional[List[str]] = None
+    ) -> Job: ...
+    async def get_function(
+        self, name: str, version: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    async def list_functions(
+        self, namespace_path: Optional[List[str]] = None
+    ) -> List[str]: ...
+    async def drop_function(
+        self, name: str, version: str, namespace_path: Optional[List[str]] = None
+    ) -> bool: ...
     async def drop_function_async(
-        self, name: str, version: str
+        self, name: str, version: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[bool, Job]: ...
     async def create_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
@@ -247,6 +255,8 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        *,
+        vector_source_json: Optional[str] = None,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
@@ -256,6 +266,8 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        *,
+        vector_source_json: Optional[str] = None,
     ) -> Job: ...
     async def list_materialized_views(self) -> List[str]: ...
     async def drop_materialized_view(

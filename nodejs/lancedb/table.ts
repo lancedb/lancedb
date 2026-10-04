@@ -17,7 +17,7 @@ import {
   tableFromIPC,
 } from "./arrow";
 
-import { BlobFile } from "./blob";
+import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
@@ -124,6 +124,17 @@ export interface AddDataOptions {
    * ```
    */
   progress: (progress: WriteProgress) => void;
+
+  /**
+   * Whether blob URIs outside registered external bases may be written.
+   *
+   * Defaults to `false`. This option is supported only for local/native
+   * tables; remote tables return an error when it is enabled. An enabled write
+   * stores the absolute URI reference without registering a base or copying
+   * the external object into the database. The object must remain accessible
+   * when the blob is read later.
+   */
+  allowExternalBlobOutsideBases?: boolean;
 }
 
 export interface UpdateOptions {
@@ -526,10 +537,15 @@ export abstract class Table {
    * Reads the table's current checkout. IDs from another version can fail after
    * compaction unless stable row ids are enabled. Results keep input order and
    * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   * Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+   * The client splits requests automatically and reads an individual larger
+   * blob through the Range route. This method still materializes all bytes in
+   * memory; use {@link Table.fetchBlobFiles} for large values.
    */
   abstract fetchBlobs(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(Buffer | null)[]>;
 
   /**
@@ -542,6 +558,7 @@ export abstract class Table {
   abstract fetchBlobFiles(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(BlobFile | null)[]>;
 
   /**
@@ -1091,7 +1108,12 @@ export class LocalTable extends Table {
           }
         }
       : undefined;
-    return await this.inner.add(buffer, mode, progress);
+    return await this.inner.add(
+      buffer,
+      mode,
+      progress,
+      options?.allowExternalBlobOutsideBases,
+    );
   }
 
   async update(
@@ -1228,8 +1250,11 @@ export class LocalTable extends Table {
   async fetchBlobs(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(Buffer | null)[]> {
-    const values = await this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds));
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds), signal),
+    );
     // N-API Option maps missing values to undefined. Collapse those to null.
     return values.map((value) => value ?? null);
   }
@@ -1237,10 +1262,10 @@ export class LocalTable extends Table {
   async fetchBlobFiles(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(BlobFile | null)[]> {
-    const files = await this.inner.fetchBlobFiles(
-      column,
-      rowIdsToBigInts(rowIds),
+    const files = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobFiles(column, rowIdsToBigInts(rowIds), signal),
     );
     // N-API Option maps missing values to undefined. Collapse those to null.
     return files.map((file) =>

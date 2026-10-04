@@ -15,6 +15,14 @@ import {
   connect,
 } from "../lancedb";
 import {
+  Table as ArrowTable,
+  Field,
+  Int64,
+  RecordBatch,
+  Schema,
+  tableToIPC,
+} from "../lancedb/arrow";
+import {
   HeaderProvider,
   OAuthHeaderProvider,
   StaticHeaderProvider,
@@ -85,6 +93,161 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it("rejects nprobes(0) before sending a query", async () => {
+    const requests: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        requests.push(req.url ?? "");
+        if (req.url === "/v1/table/test/describe/") {
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+        } else {
+          res.writeHead(404).end();
+        }
+      },
+      async (db) => {
+        const table = await db.openTable("test");
+        expect(() => table.vectorSearch([0, 0]).nprobes(0)).toThrow(
+          "Invalid input, nprobes must be greater than 0",
+        );
+        expect(() =>
+          table.query().nearestTo([0, 0]).fullTextSearch("dog").nprobes(0),
+        ).toThrow("Invalid input, nprobes must be greater than 0");
+        await expect(
+          table
+            .vectorSearch(Promise.resolve([0, 0]))
+            .nprobes(0)
+            .toArrow(),
+        ).rejects.toThrow("Invalid input, nprobes must be greater than 0");
+      },
+    );
+    expect(requests).toEqual(["/v1/table/test/describe/"]);
+  });
+
+  it.each([false, true])(
+    "preserves an empty query's schema with an empty batch: %s",
+    async (withEmptyBatch) => {
+      const schema = new Schema(
+        [new Field("doubled", new Int64(), false)],
+        new Map([["source", "query-output"]]),
+      );
+      const result = new ArrowTable(
+        schema,
+        withEmptyBatch ? [new RecordBatch(schema, undefined)] : [],
+      );
+      const response = Buffer.from(tableToIPC(result, "stream"));
+      let queryRequests = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.endsWith("/describe/")) {
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              JSON.stringify({
+                name: "items",
+                version: 1,
+                schema: {
+                  fields: [
+                    { name: "id", type: { type: "int64" }, nullable: false },
+                  ],
+                },
+              }),
+            );
+          } else if (req.url?.endsWith("/query/")) {
+            queryRequests++;
+            req.resume();
+            req.on("end", () => {
+              res
+                .writeHead(200, {
+                  "Content-Type": "application/vnd.apache.arrow.stream",
+                })
+                .end(response);
+            });
+          } else {
+            res.writeHead(404).end();
+          }
+        },
+        async (db) => {
+          const table = await db.openTable("items");
+          const result = await table
+            .query()
+            .where("id < 0")
+            .select({ doubled: "id * 2" })
+            .toArrow();
+
+          expect(result.numRows).toBe(0);
+          expect(result.schema).toEqual(schema);
+          expect(result.getChild("doubled")?.length).toBe(0);
+        },
+      );
+
+      expect(queryRequests).toBe(1);
+    },
+  );
+
+  it("rejects the external blob opt-in without blocking regular adds", async () => {
+    let insertRequests = 0;
+    const describeRequests: string[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const requestPath = req.url ?? "";
+        if (requestPath.endsWith("/describe/")) {
+          describeRequests.push(requestPath);
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "items",
+              version: 1,
+              schema: {
+                fields: [
+                  {
+                    name: "id",
+                    type: { type: "int64" },
+                    nullable: true,
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        if (requestPath.endsWith("/insert/")) {
+          insertRequests++;
+          req.resume();
+          req.on("end", () => {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: insertRequests + 1 }));
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+
+        await expect(
+          table.add([{ id: 1n }], {
+            allowExternalBlobOutsideBases: true,
+          }),
+        ).rejects.toThrow("only supported on local tables");
+        expect(insertRequests).toBe(0);
+
+        await expect(table.add([{ id: 2n }])).resolves.toMatchObject({
+          version: 2,
+        });
+        await expect(
+          table.add([{ id: 3n }], {
+            allowExternalBlobOutsideBases: false,
+          }),
+        ).resolves.toMatchObject({ version: 3 });
+      },
+    );
+
+    expect(describeRequests.length).toBeGreaterThan(0);
+    expect(insertRequests).toBe(2);
+  });
+
   it("lists materialized views through the namespace route", async () => {
     await withMockDatabase(
       (req, res) => {

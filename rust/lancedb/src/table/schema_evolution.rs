@@ -808,6 +808,29 @@ mod tests {
     // Alter Columns Tests
 
     #[tokio::test]
+    async fn test_alter_columns_rejects_missing_changes() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let table = conn.create_table("test", batch).execute().await.unwrap();
+        let initial_version = table.version().await.unwrap();
+        let initial_schema = table.schema().await.unwrap();
+
+        for alterations in [
+            vec![ColumnAlteration::new("id".into())],
+            vec![
+                ColumnAlteration::new("id".into()).rename("new_id".into()),
+                ColumnAlteration::new("id".into()),
+            ],
+        ] {
+            let err = table.alter_columns(&alterations).await.unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+            assert!(err.to_string().contains("path 'id'"));
+            assert_eq!(table.version().await.unwrap(), initial_version);
+            assert_eq!(table.schema().await.unwrap(), initial_schema);
+        }
+    }
+
+    #[tokio::test]
     async fn test_alter_column_rename() {
         let conn = connect("memory://").execute().await.unwrap();
 
