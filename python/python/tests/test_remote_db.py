@@ -16,6 +16,7 @@ import uuid
 from packaging.version import Version
 
 import lancedb
+import numpy as np
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.query import AsyncQuery, ColumnOrdering
 from lancedb.remote import ClientConfig
@@ -1590,6 +1591,20 @@ def test_query_sync_empty_query():
         data = table.search(None).where("true").select(["id"]).limit(10).to_list()
         expected = [{"id": 1}, {"id": 2}, {"id": 3}]
         assert data == expected
+
+
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+@pytest.mark.parametrize("vector_column_name", [None, "vector"])
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+def test_query_sync_empty_vector(query, vector_column_name, query_type):
+    def handler(body):
+        pytest.fail("An empty query vector must be rejected before sending a query")
+
+    with query_test_table(handler) as table:
+        with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+            table.search(
+                query, vector_column_name=vector_column_name, query_type=query_type
+            ).limit(3).to_arrow()
 
 
 @pytest.mark.asyncio

@@ -2138,6 +2138,12 @@ def test_ensure_vector_query_nested_empty_list():
         ensure_vector_query([[]])
 
 
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+def test_vector_query_builder_empty_vector(table, query):
+    with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+        LanceVectorQueryBuilder(table, query, "vector")
+
+
 def test_fast_search(tmp_path):
     db = lancedb.connect(tmp_path)
 
