@@ -1211,6 +1211,12 @@ describe("When creating an index", () => {
       .toArrow();
     expect(rst.numRows).toBe(2);
 
+    expect(() => tbl.vectorSearch(queryVec).nprobes(0)).toThrow(
+      "Invalid input, nprobes must be greater than 0",
+    );
+    expect(() =>
+      tbl.query().nearestTo(queryVec).fullTextSearch("dog").nprobes(0),
+    ).toThrow("Invalid input, nprobes must be greater than 0");
     expect(() => tbl.query().nearestTo(queryVec).minimumNprobes(0)).toThrow(
       "Invalid input, minimum_nprobes must be greater than 0",
     );
