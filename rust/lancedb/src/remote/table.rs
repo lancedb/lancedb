@@ -3626,16 +3626,25 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     value["rename"] = serde_json::Value::String(rename.clone());
                 }
                 if let Some(data_type) = &alteration.data_type {
-                    let json_data_type = JsonDataType::try_from(data_type).unwrap();
-                    let json_data_type = serde_json::to_value(&json_data_type).unwrap();
-                    value["data_type"] = json_data_type;
+                    let json_data_type =
+                        JsonDataType::try_from(data_type).map_err(|err| Error::InvalidInput {
+                            message: format!(
+                                "Cannot serialize data type for column '{}': {err}",
+                                alteration.path
+                            ),
+                        })?;
+                    value["data_type"] = serde_json::to_value(&json_data_type).map_err(|err| {
+                        Error::InvalidInput {
+                            message: format!("Cannot serialize column alteration: {err}"),
+                        }
+                    })?;
                 }
                 if let Some(nullable) = &alteration.nullable {
                     value["nullable"] = serde_json::Value::Bool(*nullable);
                 }
-                value
+                Ok(value)
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         let mut body = serde_json::json!({ "alterations": body });
         self.apply_branch_body(&mut body);
         let request = self
@@ -4711,6 +4720,24 @@ mod tests {
             assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
             assert!(err.to_string().contains("path 'id'"));
         }
+    }
+
+    #[rstest]
+    #[case::string_view(DataType::Utf8View)]
+    #[case::binary_view(DataType::BinaryView)]
+    #[case::nested_view(DataType::Struct(vec![Field::new("value", DataType::Utf8View, true)].into()))]
+    #[tokio::test]
+    async fn test_alter_columns_unsupported_type(#[case] data_type: DataType) {
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("an unserializable alteration must not reach the server")
+        });
+        let err = table
+            .alter_columns(&[ColumnAlteration::new("value".into()).cast_to(data_type)])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+        assert!(err.to_string().contains("value"));
+        assert!(err.to_string().contains("Unsupported type"));
     }
 
     #[rstest]
