@@ -995,8 +995,9 @@ impl VectorQuery {
         self.inner = self.inner.clone().refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner = self.inner.clone().nprobes(nprobe as usize).infer_error()?;
+        Ok(())
     }
 
     pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
@@ -1188,8 +1189,8 @@ impl HybridQuery {
         self.inner_vec.refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner_vec.nprobes(nprobe);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner_vec.nprobes(nprobe)
     }
 
     pub fn ef(&mut self, ef: u32) {

@@ -267,6 +267,8 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 #### Inherited from
 
 [`QueryBase`](QueryBase.md).[`toArrow`](QueryBase.md#toarrow)

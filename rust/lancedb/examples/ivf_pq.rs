@@ -142,7 +142,7 @@ async fn search_index(table: &Table) -> Result<()> {
         // Override the default of 10 to get more rows
         .limit(15)
         // Override the default of 20 to search more partitions
-        .nprobes(30)
+        .nprobes(30)?
         // Override the default of None to apply a refine step
         .refine_factor(1)
         .execute()

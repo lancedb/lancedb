@@ -1902,6 +1902,17 @@ impl Table {
         let alterations = alterations
             .iter()
             .map(|alteration| {
+                for key in alteration.keys().iter() {
+                    let key = key.extract::<String>()?;
+                    if !matches!(
+                        key.as_str(),
+                        "path" | "rename" | "name" | "nullable" | "data_type"
+                    ) {
+                        return Err(PyValueError::new_err(format!(
+                            "Unknown column alteration key '{key}'"
+                        )));
+                    }
+                }
                 let path = alteration
                     .get_item("path")?
                     .ok_or_else(|| PyValueError::new_err("Missing path"))?

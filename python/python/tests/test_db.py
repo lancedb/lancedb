@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import contextlib
 import inspect
 import re
 import sys
@@ -350,6 +351,40 @@ async def test_create_table_from_iterator_async(mem_db_async: lancedb.AsyncConne
     assert await table.count_rows() == 10
 
 
+def test_create_exist_ok_mode(tmp_db: lancedb.DBConnection):
+    db = tmp_db
+    data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
+    table = db.create_table("t1", data, mode="exist_ok")
+    assert table.count_rows() == 2
+    original = table.to_arrow()
+
+    reopened = db.create_table("t1", [{"vector": [9.0, 8.0]}], mode="exist_ok")
+    assert reopened.to_arrow().equals(original)
+
+
+def test_create_empty_exist_ok_mode(tmp_db: lancedb.DBConnection):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = tmp_db.create_table("empty", schema=schema, mode="exist_ok")
+    assert table.schema == schema
+    assert table.count_rows() == 0
+    table.add([{"id": 7}])
+
+    reopened = tmp_db.create_table("empty", schema=schema, mode="exist_ok")
+    assert reopened.to_arrow().to_pylist() == [{"id": 7}]
+
+    bad_schema = pa.schema([pa.field("other", pa.int64())])
+    with pytest.raises(ValueError):
+        tmp_db.create_table("empty", schema=bad_schema, mode="exist_ok")
+
+
+def test_create_table_invalid_mode(tmp_db: lancedb.DBConnection):
+    db = tmp_db
+    data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
+    with pytest.raises(ValueError, match="Invalid mode bogus"):
+        db.create_table("tb", data, mode="bogus")
+    assert "tb" not in db
+
+
 def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     from conftest import pandas_string_type
 
@@ -403,6 +438,49 @@ async def test_connect(tmp_path):
         tmp_path, read_consistency_interval=timedelta(seconds=5)
     )
     assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=5s)"
+
+
+@pytest.fixture(params=["memory", "local", "namespace", "from_inner"])
+def sync_db(request, tmp_path):
+    if request.param == "memory":
+        return lancedb.connect("memory://")
+    if request.param == "namespace":
+        return lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    db = lancedb.connect(tmp_path)
+    if request.param == "from_inner":
+        return lancedb.db.LanceDBConnection.from_inner(db._inner, None)
+    return db
+
+
+def test_sync_close(sync_db):
+    assert sync_db.is_open()
+    assert sync_db.close() is None
+    assert not sync_db.is_open()
+    assert sync_db.close() is None
+
+    with pytest.warns(DeprecationWarning, match="table_names"):
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            sync_db.table_names()
+    with pytest.raises(RuntimeError, match="Connection is closed"):
+        sync_db.list_tables()
+    with pytest.raises(RuntimeError, match="Connection is closed"):
+        sync_db.open_table("test")
+
+
+@pytest.mark.parametrize("raise_error", [False, True])
+def test_sync_context_manager(sync_db, raise_error):
+    with contextlib.ExitStack() as stack:
+        if raise_error:
+            stack.enter_context(pytest.raises(ValueError, match="test error"))
+        with sync_db as db:
+            assert db is sync_db
+            assert db.is_open()
+            if raise_error:
+                raise ValueError("test error")
+
+    assert not sync_db.is_open()
+    with pytest.raises(RuntimeError, match="Connection is closed"):
+        sync_db.list_tables()
 
 
 @pytest.mark.asyncio
@@ -493,6 +571,27 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
     # )
     # with pytest.raises(ValueError):
     #     await db.create_table("test", schema=bad_schema, exist_ok=True)
+
+
+@pytest.mark.parametrize("enable_v2_manifest_paths", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_create_table_deprecated_v2_manifest_paths(
+    tmp_path, enable_v2_manifest_paths, empty
+):
+    db = lancedb.connect(tmp_path)
+    data = None if empty else [{"id": 1}]
+
+    with pytest.warns(DeprecationWarning, match="enable_v2_manifest_paths"):
+        table = db.create_table(
+            "test",
+            data=data,
+            schema=pa.schema([("id", pa.int64())]),
+            enable_v2_manifest_paths=enable_v2_manifest_paths,
+        )
+
+    assert table.uses_v2_manifest_paths() == enable_v2_manifest_paths
+    assert table.to_arrow().to_pylist() == ([] if empty else data)
+    assert db.open_table("test").uses_v2_manifest_paths() == enable_v2_manifest_paths
 
 
 @pytest.mark.asyncio
