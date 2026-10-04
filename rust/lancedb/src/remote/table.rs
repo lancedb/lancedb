@@ -6137,6 +6137,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_query_vector_nprobes_zero() {
+        let table = Table::new_with_handler::<&str>("my_table", |_| {
+            panic!("invalid nprobes must be rejected before sending a request")
+        });
+        let result = table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .nprobes(0);
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput { message }) if message == "nprobes must be greater than 0"
+        ));
+    }
+
+    #[tokio::test]
     async fn test_query_vector_all_params() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
@@ -6209,6 +6225,7 @@ mod tests {
             .postfilter()
             .distance_type(crate::DistanceType::Cosine)
             .nprobes(12)
+            .unwrap()
             .refine_factor(2)
             .bypass_vector_index()
             .execute()

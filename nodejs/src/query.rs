@@ -289,8 +289,13 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> napi::Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .nprobes(nprobe as usize)
+            .default_error()?;
+        Ok(())
     }
 
     #[napi]
