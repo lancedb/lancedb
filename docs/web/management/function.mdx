@@ -6,6 +6,17 @@ icon: code
 keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
 ---
 
+import {
+    PyFunctionDefine as FunctionDefine,
+    PyFunctionLocalCall as FunctionLocalCall,
+    PyFunctionConnect as FunctionConnect,
+    PyFunctionCreateTable as FunctionCreateTable,
+    PyFunctionRegister as FunctionRegister,
+    PyFunctionApply as FunctionApply,
+    PyFunctionRefresh as FunctionRefresh,
+    PyFunctionInspect as FunctionInspect,
+} from '/snippets/function.mdx';
+
 <Badge color="red">Enterprise</Badge>
 
 Some columns cannot be written as a SQL expression: an embedding, a model call,
@@ -13,34 +24,108 @@ an image decode. A function is a Python callable registered with the database,
 versioned, and then applied as a column — the code runs where the data is
 rather than pulling rows to your process.
 
-Registration is a remote operation. On a local connection `create_function`
-raises `NotImplementedError`; use a
-[computed column](/feature-engineering/refresh-column) instead.
+Registering and running a function needs a LanceDB Enterprise connection. On a
+local connection `create_function` raises `NotImplementedError`; to derive a
+column locally, declare a
+[SQL computed column](/feature-engineering/add-computed-column) instead.
 
 <Note>
 In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl/function#create) and listed with [`SHOW FUNCTIONS`](/sql/ddl/function#show).
 </Note>
 
+The steps below take a column of numbers to a filled column of their doubles.
+
 ## Define a function {#define}
 
 `@udf` packages a scalar Python callable. Input and output types are inferred
-from annotations:
+from annotations, so `double` takes one non-nullable `float64` parameter,
+`value`, and returns a non-nullable `float64`:
 
-```python
-from lancedb import udf
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionDefine}
+</CodeBlock>
 
-@udf(pip=["numpy==2.2.0"])
-def score(value: float) -> float:
-    return value * 2
-```
+The decorated object stays callable. Calling it runs the original function in
+your process, without the database, so unit tests stay ordinary tests:
 
-The decorated object stays callable, so `score(1.5)` runs the original function
-locally and unit tests stay ordinary tests.
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionLocalCall}
+</CodeBlock>
 
 Where annotations cannot express the Arrow type precisely, pass `input_schema`
 and `output_schema` together — one without the other is rejected. Outputs must
 be non-nullable, because a physical NULL is what marks a computed-column row as
 unfilled.
+
+## Connect and create a table {#table}
+
+The remaining steps run against your Enterprise deployment. This connection
+reads its settings from environment variables, so no credential appears in the
+code:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionConnect}
+</CodeBlock>
+
+A column binds to a parameter only when their Arrow types and nullability
+match. `value: float` is non-nullable, so the table declares `value`
+non-nullable; annotate the parameter `Optional[float]` to bind a nullable
+column instead.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionCreateTable}
+</CodeBlock>
+
+## Register it {#register}
+
+Registration returns a job; the immutable version exists once the job succeeds.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionRegister}
+</CodeBlock>
+
+`create_function` is the blocking equivalent. A registered version is fetched
+with `db.get_function(name, version=...)`.
+
+<Note>
+**Enterprise job type:** `create_function`. Registration returns a job because
+the function is baked into an image before the version becomes usable.
+</Note>
+
+## Apply it as a column {#apply}
+
+Calling the registered version binds each parameter, by name, to a column with
+`col(...)`. `add_columns` declares the result as a new column:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionApply}
+</CodeBlock>
+
+The column is declared empty; the function has not run yet. A mapping with one
+function application keeps its scalar or named-struct result in the named
+column. A bare named-struct application expands its result fields as one atomic
+binding, with aliases from `rename(columns=...)`.
+
+## Fill the column {#refresh}
+
+A refresh runs the function on the cluster as a [job](/basics/jobs). `wait()`
+blocks until the job finishes and returns its result, including how many rows
+it filled:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionRefresh}
+</CodeBlock>
+
+The filled values are read like any other column:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionInspect}
+</CodeBlock>
+
+Filling then works as it does for a SQL computed column: a later refresh fills
+rows added since the last one and recomputes rows whose inputs changed, and
+leaves filled rows with unchanged inputs alone. See
+[Refresh a column](/feature-engineering/refresh-column).
 
 ## Declare the environment {#environment}
 
@@ -90,9 +175,10 @@ in the function definition: `@udf` takes no error-handling parameter, so a
 function that calls a flaky external service should handle that itself, inside
 the function body.
 
-Letting the job fail is the other option. Since
-[a refresh never revisits a filled row](/feature-engineering/refresh-column#idempotent),
-re-running after a partial failure costs only the rows that did not complete.
+Letting the job fail is the other option: fix the cause and refresh again. The
+next refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
+but how much of the failed job's work was kept is not guaranteed, so do not
+count on the retry costing only the rows that did not complete.
 
 ## What gets packaged {#packaging}
 
@@ -109,41 +195,6 @@ seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,
 In practice this means a function should be self-contained: take its inputs as
 arguments, import what it needs at module level, and avoid capturing state from
 the surrounding scope.
-
-<Note>
-**Enterprise job type:** `create_function`. Registration returns a job because
-the function is baked into an image before the version becomes usable -- see
-below.
-</Note>
-
-## Register it {#register}
-
-Registration returns a job; the immutable version exists once the job succeeds.
-
-```python
-job = db.create_function_async(score)
-version = job.wait()
-```
-
-`create_function` is the blocking equivalent. A registered version is fetched
-with `db.get_function(name, version=...)`.
-
-## Apply it as a column {#apply}
-
-A registered function is applied through `add_columns`, in the `transforms`
-mapping:
-
-```python
-table.add_columns(transforms={"doubled": score(table["value"])})
-```
-
-A mapping with one function application keeps its scalar or named-struct result
-in the named column. A bare named-struct application expands its result fields
-as one atomic binding, with aliases from `rename(columns=...)`.
-
-Filling then works exactly as it does for any computed column — see
-[Computed columns](/feature-engineering/refresh-column) for refresh
-semantics, including the rule that filled rows are never revisited.
 
 ## What to read next {#next}
 
