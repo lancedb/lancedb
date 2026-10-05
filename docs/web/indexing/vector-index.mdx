@@ -322,7 +322,7 @@ These fields are populated for local and embedded tables. On LanceDB Enterprise 
 </Note>
 #### Custom Index Names
 
-The `{column}_idx` suffix is the default naming convetion. 
+The `{column}_idx` suffix is the default naming convention. 
 Pass `name=...` to `create_index()` to override it. Once set, the custom name will be reflected in `list_indices()`, `index_stats(name)`, and `wait_for_index([name])`.
 
 <CodeGroup>
@@ -388,7 +388,7 @@ See this [blog post](https://lancedb.com/blog/feature-rabitq-quantization/) for 
 Scalar quantization quantizes each entry of a vector independently, by simply replacing it with the closest of a pre-defined set of values. 
 In practice, it often uses $8$ bits per dimension of a vector, and supports very fast encoding and decoding.
 
-For example, suppose we know all vector entires across our dataset lie in the range $[-128 \times 10^5, 127 \times 10^5]$. 
+For example, suppose we know all vector entries across our dataset lie in the range $[-128 \times 10^5, 127 \times 10^5]$. 
 In this case, we could quantize a given value $v$ as an $8$-bit representation of the integer $j$, where $j \times 10^5$ is the closest value to $v$
 among all integral multiples $\{j \times 10^5: -128 \leq j \leq 127 \}$.
 
