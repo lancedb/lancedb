@@ -65,7 +65,7 @@ then no error will be raised.
 ### mode
 
 ```ts
-mode: "overwrite" | "create";
+mode: "overwrite" | "create" | "exist_ok";
 ```
 
 The mode to use when creating the table.
@@ -75,6 +75,9 @@ an error will be thrown or, if existOk is true, then nothing will
 happen.  Any provided data will be ignored.
 
 If this is set to "overwrite" then any existing table will be replaced.
+
+If this is set to "exist_ok" then an existing table is opened and any
+provided data is ignored.
 
 ***
 
