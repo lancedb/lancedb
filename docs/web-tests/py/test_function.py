@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import lancedb
+import pyarrow as pa
 import pytest
 from lancedb import col
 from lancedb.functions import FunctionApplication, FunctionVersion
@@ -35,6 +36,11 @@ def double(value: float) -> float:
 
 
 # --8<-- [end:function_define]
+
+
+def describe(value: float):
+    return {"half": value / 2, "note": None}
+
 
 # A Function version as the service returns it after registration: the SDK's
 # shared golden reply, with the name and signature of the definition above.
@@ -90,6 +96,31 @@ def test_function_registration_request():
     version = request.runtime.python_version
     assert version == f"{sys.version_info.major}.{sys.version_info.minor}"
     assert request.runtime.environment.packages == ()
+
+
+def test_function_output_nullability():
+    inputs = pa.schema([pa.field("value", pa.float64(), nullable=False)])
+
+    # A named-struct output may declare nullable fields.
+    fields = [
+        pa.field("half", pa.float64(), nullable=False),
+        pa.field("note", pa.string(), nullable=True),
+    ]
+    struct = udf(input_schema=inputs, output_schema=pa.schema(fields))(describe)
+    output = struct.registration_request.signature.output
+    assert output.kind == "named_struct"
+    assert [(field.name, field.nullable) for field in output.fields] == [
+        ("half", False),
+        ("note", True),
+    ]
+
+    # A scalar output, and a struct declared as one nullable field, may not be.
+    for nullable in (
+        pa.field("result", pa.float64(), nullable=True),
+        pa.field("result", pa.struct(fields), nullable=True),
+    ):
+        with pytest.raises(ValueError, match="non-nullable"):
+            udf(input_schema=inputs, output_schema=nullable)(describe)
 
 
 def test_function_registration_is_remote(tmp_path):

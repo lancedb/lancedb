@@ -53,9 +53,12 @@ your process, without the database, so unit tests stay ordinary tests:
 </CodeBlock>
 
 Where annotations cannot express the Arrow type precisely, pass `input_schema`
-and `output_schema` together — one without the other is rejected. Outputs must
-be non-nullable, because a physical NULL is what marks a computed-column row as
-unfilled.
+and `output_schema` together — one without the other is rejected. A scalar
+output must be non-nullable, because a physical NULL is what marks a
+computed-column row as unfilled. A named-struct output may declare nullable
+fields: whether a row has a result at all is the struct's own validity, which
+Enterprise keeps in a separate internal column when it expands the result into
+sibling columns, so a null field is a value rather than a missing row.
 
 ## Connect and create a table {#table}
 
