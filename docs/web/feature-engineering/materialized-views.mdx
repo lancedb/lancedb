@@ -106,10 +106,11 @@ another view is refreshed by refreshing each in dependency order.
 
 ## Working with the view {#working-with-the-view}
 
-`view.table()` returns the underlying table for querying, indexing, or search.
-`view.definition()` returns the recorded query — the select list, predicate, and
+`view.table` is the underlying table, for querying, indexing, or search.
+`view.definition` is the recorded query — the select list, predicate, and
 limit — which is how you check what a view actually contains without inferring
-it from the rows.
+it from the rows. Both are properties; on an async view, the definition is read
+with `await view.definition()`.
 
 An existing view is reopened with `db.open_materialized_view(name)`.
 

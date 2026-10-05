@@ -76,10 +76,11 @@ That also means dropping one removes stored rows -- unlike dropping a
 
 ## Working with the view {#working}
 
-`view.table()` returns the underlying table, for querying, indexing, or search.
-`view.definition()` returns the recorded query -- select list, predicate, limit
+`view.table` is the underlying table, for querying, indexing, or search.
+`view.definition` is the recorded query -- select list, predicate, limit
 -- which is how you check what a view contains without inferring it from the
-rows.
+rows. Both are properties; on an async view, the definition is read with
+`await view.definition()`.
 
 ## Against a deployment {#deployment}
 
