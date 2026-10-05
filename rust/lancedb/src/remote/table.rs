@@ -4648,10 +4648,18 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
+    #[case::old_server("", 0, 0)]
+    #[case::rows_updated(r#"{"rows_updated": 5, "version": 43}"#, 5, 43)]
+    #[case::updated_rows(r#"{"updated_rows": 5, "version": 43}"#, 5, 43)]
+    #[case::zero_updated_rows(r#"{"updated_rows": 0, "version": 43}"#, 0, 43)]
+    #[case::missing_row_count(r#"{"version": 43}"#, 0, 43)]
     #[tokio::test]
-    async fn test_update(#[case] old_server: bool) {
+    async fn test_update(
+        #[case] response_body: &'static str,
+        #[case] expected_rows_updated: u64,
+        #[case] expected_version: u64,
+        #[values(true, false)] filtered: bool,
+    ) {
         let table = Table::new_with_handler("my_table", move |request| {
             if request.url().path() == "/v1/table/my_table/update/" {
                 assert_eq!(request.method(), "POST");
@@ -4676,32 +4684,29 @@ mod tests {
                     assert_eq!(col_name, "b");
                     assert_eq!(expression, "b - 1");
 
-                    let only_if = value.get("predicate").unwrap().as_str().unwrap();
-                    assert_eq!(only_if, "`B` > 10");
+                    assert_eq!(
+                        value.get("predicate").unwrap(),
+                        &serde_json::json!(if filtered { Some("`B` > 10") } else { None })
+                    );
                 }
 
-                if old_server {
-                    http::Response::builder().status(200).body("").unwrap()
-                } else {
-                    http::Response::builder()
-                        .status(200)
-                        .body(r#"{"rows_updated": 5, "version": 43}"#)
-                        .unwrap()
-                }
+                http::Response::builder()
+                    .status(200)
+                    .body(response_body)
+                    .unwrap()
             } else {
                 panic!("Unexpected request path: {}", request.url().path());
             }
         });
 
-        let update = table
-            .update()
-            .column("a", "a + 1")
-            .column("b", "b - 1")
-            .only_if(r#""B" > 10"#);
+        let mut update = table.update().column("a", "a + 1").column("b", "b - 1");
+        if filtered {
+            update = update.only_if(r#""B" > 10"#);
+        }
         let result = table.base_table().update(update).await.unwrap();
 
-        assert_eq!(result.version, if old_server { 0 } else { 43 });
-        assert_eq!(result.rows_updated, if old_server { 0 } else { 5 });
+        assert_eq!(result.version, expected_version);
+        assert_eq!(result.rows_updated, expected_rows_updated);
     }
 
     #[tokio::test]
