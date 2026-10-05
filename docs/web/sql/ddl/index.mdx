@@ -18,7 +18,7 @@ CREATE INDEX ON documents (title)
 SQL `CREATE INDEX` covers **one column** and takes **no user-chosen name** --
 the server names it. For a multi-column or explicitly-named index, or to
 choose the algorithm, use the SDK's
-[`create_index`](/indexing#choosing-an-index).
+[`create_index`](/indexing).
 </Note>
 
 <Note>
@@ -34,7 +34,7 @@ DROP INDEX documents.title_idx
 ```
 
 Takes the qualified `table.index` name. Find it with the SDK's
-[`list_indices`](/indexing#choosing-an-index) if you created the index without
+[`list_indices`](/indexing) if you created the index without
 naming it yourself.
 
 ## What to read next {#next}
