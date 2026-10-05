@@ -103,7 +103,10 @@ class SchemaInferrer {
       );
     }
 
-    const conflict = this.fields.set(path, field.type);
+    // A struct field seen first as a non-record (such as null) is stored as a
+    // leaf. Let a later record replace it, as a record seen first already
+    // ignores later nulls; the provided schema fixes the type either way.
+    const conflict = this.fields.set(path, field.type, () => true);
     if (conflict !== undefined) {
       throw branchConflictError(conflict, row, "Struct");
     }
