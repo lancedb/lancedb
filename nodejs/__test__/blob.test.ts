@@ -239,6 +239,35 @@ describe("makeArrowTable blob columns", () => {
     expect(input.image).toBe(image);
   });
 
+  it.each([
+    ["Uint8Array", new Uint8Array([104, 105]), "hi", null],
+    ["URI string", "s3://b/k", null, "s3://b/k"],
+    ["data struct", { data: new Uint8Array([104, 105]) }, "hi", null],
+  ])("accepts %s input after a null row", (_name, image, data, uri) => {
+    const schema = new Schema([blob("image")]);
+    const table = makeArrowTable([{ image: null }, { image }], { schema });
+    const column = table.getChild("image")!;
+    expect(column.nullCount).toBe(1);
+    expect(column.get(0)).toBeNull();
+    const bytes = column.getChild("data")!.get(1);
+    expect(bytes == null ? null : Buffer.from(bytes).toString()).toBe(data);
+    expect(column.getChild("uri")!.get(1)).toBe(uri);
+  });
+
+  it("accepts a null struct before one holding a blob", () => {
+    const schema = new Schema([
+      new Field("info", new Struct([blob("image")]), true),
+    ]);
+    const table = makeArrowTable(
+      [{ info: null }, { info: { image: new Uint8Array([97]) } }],
+      { schema },
+    );
+    const info = table.getChild("info")!;
+    expect(info.get(0)).toBeNull();
+    const image = (info.get(1) as { image: { data: Uint8Array } }).image;
+    expect(Buffer.from(image.data).toString()).toBe("a");
+  });
+
   it("accepts ArrayBuffer and URL inside lists and structs", () => {
     const schema = new Schema([
       new Field("images", new List(blob("image")), true),
