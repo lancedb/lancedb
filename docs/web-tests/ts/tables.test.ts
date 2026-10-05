@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-import { expect, test } from "@jest/globals";
+import { expect, jest, test } from "@jest/globals";
 import * as arrow from "apache-arrow";
 import * as lancedb from "@lancedb/lancedb";
 import { withTempDirectory } from "./util.ts";
@@ -191,6 +191,40 @@ test("table creation snippets (async)", async () => {
     await db.dropTable("my_table");
     // --8<-- [end:drop_table]
     expect(await db.tableNames()).not.toContain("my_table");
+  });
+});
+
+test("add progress snippet (async)", async () => {
+  await withTempDirectory(async (databaseDir) => {
+    const db = await lancedb.connect(databaseDir);
+    const table = await db.createTable("progress_table", [
+      { vector: [1.1, 1.2], item: "foo" },
+    ]);
+    const moreData = [
+      { vector: [2.1, 2.2], item: "bar" },
+      { vector: [3.1, 3.2], item: "baz" },
+    ];
+    const log = jest.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      // --8<-- [start:add_progress]
+      // Track ingestion progress as batches are written.
+      await table.add(moreData, {
+        progress: (p) => {
+          const total = p.totalRows ?? "?";
+          console.log(
+            `wrote ${p.outputRows}/${total} rows ` +
+              `(${p.outputBytes} bytes, ${p.elapsedSeconds.toFixed(1)}s, ` +
+              `${p.activeTasks}/${p.totalTasks} tasks active)` +
+              (p.done ? " \u2014 done" : ""),
+          );
+        },
+      });
+      // --8<-- [end:add_progress]
+      expect(log.mock.calls.at(-1)?.[0]).toMatch(/^wrote 2\/2 rows .* — done$/);
+    } finally {
+      log.mockRestore();
+    }
+    expect(await table.countRows()).toBe(3);
   });
 });
 

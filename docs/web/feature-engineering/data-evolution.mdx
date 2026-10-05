@@ -7,7 +7,7 @@ keywords: ["data evolution", "derived columns", "add_columns", "zero copy", "fea
 ---
 
 import {
-    PySchemaAddSetup as SchemaAddSetup,
+    PySchemaAddSetup,
     TsSchemaAddSetup as TsSchemaAddSetup,
     RsSchemaAddSetup as RsSchemaAddSetup,
     PyAddColumnsCalculated as AddColumnsCalculated,
@@ -34,7 +34,7 @@ In SQL this is [`ALTER TABLE ... ADD COLUMN ... AS`](/sql/ddl/table#computed-col
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {SchemaAddSetup}
+    {PySchemaAddSetup}
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">

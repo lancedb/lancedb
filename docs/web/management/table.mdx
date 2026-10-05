@@ -7,7 +7,7 @@ keywords: ["table", "create_table", "open_table", "clone", "rename", "drop"]
 ---
 
 import {
-    PySchemaAddSetup as SchemaAddSetup,
+    PySchemaAddSetup,
     TsSchemaAddSetup as TsSchemaAddSetup,
     RsSchemaAddSetup as RsSchemaAddSetup,
     PyAddColumnsDefaultValues as AddColumnsDefaultValues,
@@ -534,7 +534,7 @@ First, let's create a sample table with product data to demonstrate schema evolu
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {SchemaAddSetup}
+    {PySchemaAddSetup}
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
