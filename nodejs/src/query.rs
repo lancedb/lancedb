@@ -289,8 +289,13 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> napi::Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .nprobes(nprobe as usize)
+            .default_error()?;
+        Ok(())
     }
 
     #[napi]
@@ -658,6 +663,7 @@ impl JsFullTextQuery {
             FtsQuery::Phrase(_) => "phrase".to_string(),
             FtsQuery::Boost(_) => "boost".to_string(),
             FtsQuery::MultiMatch(_) => "multi_match".to_string(),
+            FtsQuery::CombinedFields(_) => "combined_fields".to_string(),
             FtsQuery::Boolean(_) => "boolean".to_string(),
         }
     }

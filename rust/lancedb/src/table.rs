@@ -330,7 +330,8 @@ pub use self::merge::MergeResult;
 /// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
-/// A fresh spec maintains every index on the table, resolved on install.
+/// A fresh spec maintains every index on the table, including ones created
+/// after it is installed.
 ///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
@@ -348,9 +349,8 @@ pub enum LsmWriteSpec {
         num_buckets: u32,
         /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
@@ -363,9 +363,8 @@ pub enum LsmWriteSpec {
         column: String,
         /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
@@ -374,9 +373,8 @@ pub enum LsmWriteSpec {
     Unsharded {
         /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
@@ -422,14 +420,15 @@ impl LsmWriteSpec {
 
     /// Set which indexes the MemWAL maintains.
     ///
-    /// `None` (the default) resolves to every index on the table at install,
-    /// failing if one cannot be maintained — name the set to install anyway. A
-    /// list is verbatim: each name must already exist and be maintainable, and
-    /// an empty list maintains nothing.
+    /// `None` (the default) is every index on the table, re-read as the table
+    /// changes, so an index created later is maintained too; one of a kind the
+    /// MemWAL cannot mirror is skipped rather than failing the table. A list is
+    /// verbatim: each name must already exist and be maintainable, and an empty
+    /// list maintains nothing.
     ///
     /// ```
     /// # use lancedb::table::LsmWriteSpec;
-    /// // Every index the table has when the spec is installed:
+    /// // Every index the table has, now and later:
     /// LsmWriteSpec::unsharded().with_maintained_indexes(None);
     /// // Exactly these:
     /// LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
@@ -1675,6 +1674,7 @@ impl Table {
     ///     .unwrap()
     ///     .refine_factor(5)
     ///     .nprobes(10)
+    ///     .unwrap()
     ///     .execute()
     ///     .await
     ///     .unwrap();
@@ -1920,11 +1920,28 @@ impl Table {
         self.inner.function_errors(&request).await
     }
 
-    /// Change a column's name or nullability.
+    /// Change a column's name, data type, or nullability.
+    ///
+    /// Each alteration must specify at least one of `rename`, `data_type`, or
+    /// `nullable`. Returns [`Error::InvalidInput`] before applying any changes
+    /// if an alteration does not specify any of these fields.
     pub async fn alter_columns(
         &self,
         alterations: &[ColumnAlteration],
     ) -> Result<AlterColumnsResult> {
+        for alteration in alterations {
+            if alteration.rename.is_none()
+                && alteration.nullable.is_none()
+                && alteration.data_type.is_none()
+            {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "One of rename, nullable or data_type must be specified for path '{}'",
+                        alteration.path
+                    ),
+                });
+            }
+        }
         self.inner.alter_columns(alterations).await
     }
 
@@ -1987,6 +2004,10 @@ impl Table {
     /// - [`LsmWriteSpec::bucket`] — hash-bucket writes by a scalar column.
     /// - [`LsmWriteSpec::identity`] — shard by the raw value of a scalar column.
     /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
+    ///
+    /// A table carries one spec: this fails while one is installed, since the
+    /// generations already written were homed under it.
+    /// [`Table::unset_lsm_write_spec`] removes one.
     ///
     /// # Example
     ///
@@ -3791,7 +3812,20 @@ impl BaseTable for NativeTable {
             let Some(segment) = segments.first() else {
                 continue;
             };
-            let params = load_segment_params(&dataset, segment).await?;
+            // The listing itself only needs the manifest. Missing index files must
+            // not hide every other index, or callers cannot find the one to repair.
+            let params = match load_segment_params(&dataset, segment).await {
+                Ok(params) => params,
+                Err(err) => {
+                    log::warn!(
+                        "Failed to read full text search configuration for index '{}': {}",
+                        index.name,
+                        err
+                    );
+                    index.index_details = None;
+                    continue;
+                }
+            };
             let details = serde_json::to_string(&params).map_err(|source| Error::Other {
                 message: format!(
                     "Failed to serialize full text search configuration for index '{}'",
@@ -5651,29 +5685,22 @@ mod tests {
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
         // Identity sharding round-trips (column recovered from the schema).
-        // A spec left at its default maintains every index on the table, so it
-        // reads back naming the one on the table rather than as "infer".
+        // A spec left at its default round-trips as the default: what is stored
+        // is the intent to maintain everything, not the set it resolves to now.
         let spec = LsmWriteSpec::identity("region");
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(
-            table.get_lsm_write_spec().await.unwrap(),
-            Some(spec.with_maintained_indexes(vec![idx_name.clone()]))
-        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
         table.unset_lsm_write_spec().await.unwrap();
 
         // Unsharded round-trips (no routing column).
         let spec = LsmWriteSpec::unsharded();
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(
-            table.get_lsm_write_spec().await.unwrap(),
-            Some(spec.with_maintained_indexes(vec![idx_name]))
-        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
     }
 
-    /// The maintained set defaults to every index on the table, resolved at
-    /// install. An index the memtable cannot build fails the install rather
-    /// than being dropped: maintaining it would take the table offline for
-    /// writes, dropping it would hide that from the caller.
+    /// The maintained set defaults to every index on the table. A named index
+    /// the memtable cannot build fails the install, because the caller asked
+    /// for it; an unnamed one is skipped, because it arrived by existing.
     #[tokio::test]
     async fn test_set_lsm_write_spec_infers_maintained_indexes() {
         let tmp_dir = tempdir().unwrap();
@@ -5726,19 +5753,27 @@ mod tests {
         );
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
-        // The default covers every index, so the bitmap fails it too.
-        let err = table
+        // The default names nothing, so the bitmap is skipped rather than
+        // refusing the table: it is maintained by existing, not by being asked
+        // for. The intent is what is stored, not the set it resolves to today.
+        table
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidInput { ref message }
-                if message.contains("tag_bitmap") && message.contains("maintained_indexes")),
-            "expected the inferred set to be rejected, got {err:?}"
+            .unwrap();
+        assert_eq!(
+            table
+                .get_lsm_write_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            None,
+            "an unnamed set is stored as the intent to maintain everything"
         );
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
-        // Naming the maintainable subset installs.
+        // Narrowing to a named subset: unset first, since an installed spec
+        // cannot be set over.
+        table.unset_lsm_write_spec().await.unwrap();
         table
             .set_lsm_write_spec(
                 LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
@@ -5769,6 +5804,28 @@ mod tests {
                 .unwrap()
                 .maintained_indexes(),
             Some([].as_slice())
+        );
+
+        // An installed spec is never set over, whatever the new one asks for,
+        // and the refused call leaves it alone.
+        let err = table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message }
+                if message.contains("already set")),
+            "expected the repeat to be refused, got {err:?}"
+        );
+        assert_eq!(
+            table
+                .get_lsm_write_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some([].as_slice()),
+            "a refused call changes nothing"
         );
     }
 

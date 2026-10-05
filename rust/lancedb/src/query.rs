@@ -1252,10 +1252,17 @@ impl VectorQuery {
     /// This method sets both the minimum and maximum number of partitions to search.
     /// For more fine-grained control see [`VectorQuery::minimum_nprobes`] and
     /// [`VectorQuery::maximum_nprobes`].
-    pub fn nprobes(mut self, nprobes: usize) -> Self {
+    ///
+    /// Returns an error if `nprobes` is not greater than 0.
+    pub fn nprobes(mut self, nprobes: usize) -> Result<Self> {
+        if nprobes == 0 {
+            return Err(Error::InvalidInput {
+                message: "nprobes must be greater than 0".to_string(),
+            });
+        }
         self.request.minimum_nprobes = nprobes;
         self.request.maximum_nprobes = Some(nprobes);
-        self
+        Ok(self)
     }
 
     /// Set the minimum number of partitions to search
@@ -2361,6 +2368,7 @@ mod tests {
             .nearest_to(&[9.8, 8.7])
             .unwrap()
             .nprobes(1000)
+            .unwrap()
             .postfilter()
             .distance_type(DistanceType::Cosine)
             .approx_mode(ApproxMode::Accurate)
@@ -2384,6 +2392,31 @@ mod tests {
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
         assert_eq!(query.request.approx_mode, Some(ApproxMode::Accurate));
         assert_eq!(query.request.refine_factor, Some(999));
+    }
+
+    #[tokio::test]
+    async fn test_nprobes_validation() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+        let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
+
+        assert!(matches!(
+            query.clone().nprobes(0),
+            Err(Error::InvalidInput { message }) if message == "nprobes must be greater than 0"
+        ));
+
+        // Fixed probe counts replace both bounds, even when moving below or
+        // above the previous range.
+        let mut query = query;
+        for nprobes in [30, 1, 50] {
+            query = query.nprobes(nprobes).unwrap();
+            assert_eq!(query.request.minimum_nprobes, nprobes);
+            assert_eq!(query.request.maximum_nprobes, Some(nprobes));
+        }
     }
 
     #[test]

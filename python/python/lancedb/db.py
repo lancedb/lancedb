@@ -122,7 +122,48 @@ def _view_description(
 
 
 class DBConnection(EnforceOverrides):
-    """An active LanceDB connection interface."""
+    """An active LanceDB connection interface.
+
+    Use [close][lancedb.db.DBConnection.close] to release the connection's
+    underlying resources, or use the connection as a context manager to close it
+    automatically when leaving the block, including when an exception is raised.
+
+    Examples
+    --------
+    >>> import lancedb
+    >>> with lancedb.connect("memory://") as db:
+    ...     assert db.is_open()
+    >>> db.is_open()
+    False
+    """
+
+    def __enter__(self) -> DBConnection:
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
+
+    @abstractmethod
+    def is_open(self) -> bool:
+        """Return True if the connection is open."""
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close the connection, releasing any underlying resources.
+
+        It is safe to call this method multiple times. Database operations on a
+        closed connection raise ``RuntimeError: Connection is closed``.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> db.close()
+        >>> db.is_open()
+        False
+        """
+        pass
 
     def list_namespaces(
         self,
@@ -368,9 +409,10 @@ class DBConnection(EnforceOverrides):
             - [LanceModel][lancedb.pydantic.LanceModel]
         mode: str; default "create"
             The mode to use when creating the table.
-            Can be either "create" or "overwrite".
+            Can be "create", "overwrite", or "exist_ok".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+            To open an existing table without adding data, use mode="exist_ok".
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
@@ -784,6 +826,7 @@ class DBConnection(EnforceOverrides):
         definition: UdfDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> FunctionVersion:
         """Build and register a scalar Python UDF, then return its version.
 
@@ -800,6 +843,9 @@ class DBConnection(EnforceOverrides):
             Function needs, each naming a Secret and the environment variable
             its value arrives in. The Function's source is unchanged by this;
             it reads the variable the way it already did.
+        namespace_path : list of str, optional
+            The namespace holding the Function. None or an empty list is the
+            root namespace.
 
         Examples
         --------
@@ -815,13 +861,16 @@ class DBConnection(EnforceOverrides):
         )
         ```
         """
-        return self.create_function_async(definition, secrets=secrets).wait()
+        return self.create_function_async(
+            definition, secrets=secrets, namespace_path=namespace_path
+        ).wait()
 
     def create_function_async(
         self,
         definition: UdfDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> Job[FunctionVersion]:
         """Submit a scalar Python UDF for building and registration.
 
@@ -833,17 +882,26 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def get_function(self, name: str, *, version: str) -> FunctionVersion:
+    def get_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
         )
 
-    def list_functions(self) -> List[FunctionVersion]:
-        """List every published immutable Function version.
+    def list_functions(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[FunctionVersion]:
+        """List every published immutable Function version in a namespace.
 
-        Results are ordered by Function name then version. Local connections
-        raise ``NotImplementedError``.
+        Functions in child namespaces are not included. Results are ordered by
+        Function name then version. Local connections raise
+        ``NotImplementedError``.
 
         Examples
         --------
@@ -857,7 +915,13 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def drop_function(self, name: str, *, version: str) -> bool:
+    def drop_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> bool:
         """Drop a Function name and the object it was bound to.
 
         The requested version must exist in the currently named object. Returns
@@ -870,7 +934,13 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def drop_function_async(self, name: str, *, version: str) -> Tuple[bool, Job]:
+    def drop_function_async(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, Job]:
         """Drop a Function name and return its cleanup job.
 
         The name is unbound before this returns; the object's content may still
@@ -1248,6 +1318,14 @@ class LanceDBConnection(DBConnection):
         return f"{self.__class__.__name__}(uri={self._conn.uri!r})"
 
     @override
+    def is_open(self) -> bool:
+        return self._conn.is_open()
+
+    @override
+    def close(self) -> None:
+        self._conn.close()
+
+    @override
     def serialize(self) -> str:
         import json
 
@@ -1469,8 +1547,6 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if mode.lower() not in ["create", "overwrite"]:
-            raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
         tbl = LanceTable.create(
@@ -1808,25 +1884,62 @@ class LanceDBConnection(DBConnection):
         definition: UdfDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> Job[FunctionVersion]:
-        job = LOOP.run(self._conn.create_function_async(definition, secrets=secrets))
+        job = LOOP.run(
+            self._conn.create_function_async(
+                definition, secrets=secrets, namespace_path=namespace_path
+            )
+        )
         return Job(job)
 
     @override
-    def get_function(self, name: str, *, version: str) -> FunctionVersion:
-        return LOOP.run(self._conn.get_function(name, version=version))
+    def get_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
+        return LOOP.run(
+            self._conn.get_function(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
 
     @override
-    def list_functions(self) -> List[FunctionVersion]:
-        return LOOP.run(self._conn.list_functions())
+    def list_functions(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[FunctionVersion]:
+        return LOOP.run(self._conn.list_functions(namespace_path=namespace_path))
 
     @override
-    def drop_function(self, name: str, *, version: str) -> bool:
-        return LOOP.run(self._conn.drop_function(name, version=version))
+    def drop_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> bool:
+        return LOOP.run(
+            self._conn.drop_function(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
 
     @override
-    def drop_function_async(self, name: str, *, version: str) -> Tuple[bool, Job]:
-        dropped, job = LOOP.run(self._conn.drop_function_async(name, version=version))
+    def drop_function_async(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, Job]:
+        dropped, job = LOOP.run(
+            self._conn.drop_function_async(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
         return dropped, Job(job)
 
     @override
@@ -2236,11 +2349,12 @@ class AsyncConnection(object):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
-        mode: Literal["create", "overwrite"]; default "create"
+        mode: Literal["create", "overwrite", "exist_ok"]; default "create"
             The mode to use when creating the table.
-            Can be either "create" or "overwrite".
+            Can be "create", "overwrite", or "exist_ok".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+            To open an existing table without adding data, use mode="exist_ok".
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
@@ -2787,6 +2901,7 @@ class AsyncConnection(object):
         definition: UdfDefinition,
         *,
         secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[FunctionVersion]:
         """Submit a scalar Python UDF for building and registration.
 
@@ -2794,36 +2909,60 @@ class AsyncConnection(object):
         artifact. Waiting on the job returns the immutable Function version.
         ``secrets`` is a sequence of
         [EnvVarSecret][lancedb.secrets.EnvVarSecret], each naming a Secret and
-        the environment variable its value arrives in. Local connections raise
-        ``NotImplementedError``.
+        the environment variable its value arrives in. ``namespace_path`` is
+        the namespace the Function is registered in; None or an empty list is
+        the root. Local connections raise ``NotImplementedError``.
         """
         if not isinstance(definition, UdfDefinition):
             raise TypeError("create_function_async requires a @udf definition")
         request = definition.bind_secrets(secrets)
-        inner = await self._inner.create_function_async(request.to_canonical_json())
+        inner = await self._inner.create_function_async(
+            request.to_canonical_json(), namespace_path
+        )
         return _typed_job(inner, FunctionVersion.from_json)
 
-    async def get_function(self, name: str, *, version: str) -> FunctionVersion:
+    async def get_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""
-        return FunctionVersion.from_json(await self._inner.get_function(name, version))
+        return FunctionVersion.from_json(
+            await self._inner.get_function(name, version, namespace_path)
+        )
 
-    async def list_functions(self) -> List[FunctionVersion]:
-        """List every published immutable Function version.
+    async def list_functions(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[FunctionVersion]:
+        """List every published immutable Function version in a namespace.
 
-        Results are ordered by Function name then version. Local connections
-        raise ``NotImplementedError``.
+        Functions in child namespaces are not included. Results are ordered by
+        Function name then version. Local connections raise
+        ``NotImplementedError``.
         """
         return [
             FunctionVersion.from_json(value)
-            for value in await self._inner.list_functions()
+            for value in await self._inner.list_functions(namespace_path)
         ]
 
-    async def drop_function(self, name: str, *, version: str) -> bool:
+    async def drop_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> bool:
         """Drop a Function name and the object it was bound to."""
-        return await self._inner.drop_function(name, version)
+        return await self._inner.drop_function(name, version, namespace_path)
 
     async def drop_function_async(
-        self, name: str, *, version: str
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, AsyncJob]:
         """Drop a Function name and return its cleanup job.
 
@@ -2831,7 +2970,9 @@ class AsyncConnection(object):
         be being deleted. Await :meth:`AsyncJob.wait` to wait for that to
         finish.
         """
-        dropped, job = await self._inner.drop_function_async(name, version)
+        dropped, job = await self._inner.drop_function_async(
+            name, version, namespace_path
+        )
         return dropped, AsyncJob(job)
 
     async def create_secret(

@@ -447,6 +447,8 @@ nprobes(nprobes): VectorQuery
 
 Set the number of partitions to search (probe)
 
+The number of probes must be greater than 0.
+
 This argument is only used when the vector column has an IVF PQ index.
 If there is no index then this value is ignored.
 
@@ -673,7 +675,7 @@ input to this method would be:
 
 #### Parameters
 
-* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -739,6 +741,8 @@ Collect the results as an Arrow
 #### See
 
 ArrowTable.
+
+Empty results retain the query's output schema.
 
 #### Inherited from
 

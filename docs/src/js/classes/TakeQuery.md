@@ -200,7 +200,7 @@ input to this method would be:
 
 #### Parameters
 
-* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -266,6 +266,8 @@ Collect the results as an Arrow
 #### See
 
 ArrowTable.
+
+Empty results retain the query's output schema.
 
 #### Inherited from
 
