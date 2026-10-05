@@ -37,7 +37,8 @@ are ordinary connections. Dropping a database requires it to be empty.
 
 ::: lancedb.catalog.Catalog
 
-::: lancedb.catalog.ListDatabasesResponse
+::: lancedb.catalog.DatabaseNames
+
 
 ## Remote SQL
 
@@ -439,6 +440,8 @@ latency on your workload before opting in.
 ::: lancedb.connect_catalog_async
 
 ::: lancedb.catalog.AsyncCatalog
+
+::: lancedb.catalog.AsyncDatabaseNames
 
 Connections represent a connection to a LanceDb database and
 can be used to create, list, or open tables.

@@ -114,7 +114,12 @@ impl Catalog {
         let mut request = ListDatabasesRequest::default();
         request.limit = limit;
         request.page_token = page_token;
-        let response = self.inner.list_databases(request).await.default_error()?;
+        let response = self
+            .inner
+            .catalog()
+            .list_databases(request)
+            .await
+            .default_error()?;
         Ok(ListDatabasesResponse {
             databases: response.databases,
             page_token: response.page_token,
