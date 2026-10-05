@@ -1455,6 +1455,12 @@ class Table(ABC):
         job returned by
         [create_index_async][lancedb.table.Table.create_index_async].
 
+        When replacing an existing index, ``wait_timeout`` and
+        ``wait_for_index`` may return before the new build finishes, because
+        they look the index up by name and the old index can still match. To
+        track a specific build, wait on the job returned by
+        [create_index_async][lancedb.table.Table.create_index_async].
+
         Examples
         --------
         New API (recommended):
@@ -5764,6 +5770,12 @@ class AsyncTable:
         index. To block until the index is ready, pass ``wait_timeout``, call
         [wait_for_index][lancedb.table.AsyncTable.wait_for_index], or wait on
         the job returned by
+        [create_index_async][lancedb.table.AsyncTable.create_index_async].
+
+        When replacing an existing index, ``wait_timeout`` and
+        ``wait_for_index`` may return before the new build finishes, because
+        they look the index up by name and the old index can still match. To
+        track a specific build, wait on the job returned by
         [create_index_async][lancedb.table.AsyncTable.create_index_async].
         """
         if config is not None:

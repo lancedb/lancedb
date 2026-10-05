@@ -358,6 +358,12 @@ ready, set [IndexOptions.waitTimeoutSeconds](../interfaces/IndexOptions.md#waitt
 [Table.waitForIndex](Table.md#waitforindex), or wait on the job returned by
 [Table.createIndexAsync](Table.md#createindexasync).
 
+When replacing an existing index, `waitTimeoutSeconds` and
+[Table.waitForIndex](Table.md#waitforindex) may return before the new build finishes,
+because they look the index up by name and the old index can still match.
+To track a specific build, wait on the job returned by
+[Table.createIndexAsync](Table.md#createindexasync).
+
 #### Parameters
 
 * **column**: `string`

@@ -375,6 +375,12 @@ export abstract class Table {
    * {@link Table.waitForIndex}, or wait on the job returned by
    * {@link Table.createIndexAsync}.
    *
+   * When replacing an existing index, `waitTimeoutSeconds` and
+   * {@link Table.waitForIndex} may return before the new build finishes,
+   * because they look the index up by name and the old index can still match.
+   * To track a specific build, wait on the job returned by
+   * {@link Table.createIndexAsync}.
+   *
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
