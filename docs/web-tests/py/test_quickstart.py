@@ -101,7 +101,7 @@ def test_quickstart(db_path_factory):
     # --8<-- [start:quickstart_multimodal_bytes]
     from pathlib import Path
 
-    image_path = Path("docs/static/assets/images/quickstart/sir-lancelot.jpg")
+    image_path = Path("docs/web/static/assets/images/quickstart/sir-lancelot.jpg")
     image_bytes = image_path.read_bytes()
 
     multimodal_table = db.create_table(

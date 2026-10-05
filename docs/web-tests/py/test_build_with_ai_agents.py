@@ -90,7 +90,7 @@ if __name__ == "__main__":
 
 def test_camelot_oss_ingestion(tmp_path):
     source = Path(
-        "docs/static/assets/tutorials/build-with-ai-agents/camelot/data/camelot.json"
+        "docs/web/static/assets/tutorials/build-with-ai-agents/camelot/data/camelot.json"
     )
     table = ingest_oss(
         source,
