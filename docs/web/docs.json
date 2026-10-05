@@ -545,7 +545,9 @@
           "demos/index",
           "demos/semantic-art",
           "demos/wikipedia-search",
-          "demos/video-search"
+          "demos/video-search",
+          "demos/fineweb-edu-search",
+          "demos/robot-data-curation"
         ]
       }
     ]
