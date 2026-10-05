@@ -1506,7 +1506,7 @@ def test_merge_insert_mixed_python_blobs_validates_external_uri(tmp_path, as_pan
         {"id": 2, "image": blob_path.as_uri()},
     ]
 
-    with pytest.raises(ValueError, match="allow_external_blob_outside_bases"):
+    with pytest.raises(ValueError, match="outside registered external bases"):
         (
             table.merge_insert("id")
             .when_matched_update_all()
