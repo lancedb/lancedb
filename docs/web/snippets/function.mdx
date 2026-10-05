@@ -4,7 +4,7 @@ export const PyFunctionApply = "from lancedb import col\n\ntable.add_columns({\"
 
 export const PyFunctionConnect = "import os\n\nimport lancedb\n\ndb = lancedb.connect(\n    uri=os.environ[\"LANCEDB_URI\"],  # db://your-database\n    api_key=os.environ[\"LANCEDB_API_KEY\"],\n    region=os.environ.get(\"LANCEDB_REGION\", \"us-east-1\"),\n    host_override=os.environ[\"LANCEDB_HOST_OVERRIDE\"],\n)\n";
 
-export const PyFunctionCreateTable = "import pyarrow as pa\n\nschema = pa.schema([pa.field(\"value\", pa.float64(), nullable=False)])\ntable = db.create_table(\n    \"function_demo\",\n    [{\"value\": 1.0}, {\"value\": 2.0}, {\"value\": 3.0}],\n    schema=schema,\n    mode=\"overwrite\",\n)\n";
+export const PyFunctionCreateTable = "import pyarrow as pa\n\nschema = pa.schema([pa.field(\"value\", pa.float64(), nullable=False)])\ntable = db.create_table(\n    \"function_demo\",\n    [{\"value\": 1.0}, {\"value\": 2.0}, {\"value\": 3.0}],\n    schema=schema,\n)\n";
 
 export const PyFunctionDefine = "from lancedb import udf\n\n\n@udf\ndef double(value: float) -> float:\n    return value * 2\n";
 

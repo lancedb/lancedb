@@ -7,8 +7,9 @@ Registering a Function and filling its column need a LanceDB Enterprise
 deployment, so `test_function_enterprise` runs only when the connection
 variables the Enterprise examples already use are set: LANCEDB_URI,
 LANCEDB_API_KEY and LANCEDB_HOST_OVERRIDE, plus LANCEDB_REGION if the
-deployment needs one. It creates the table `function_demo` and a version of
-the Function `double` in that database, and drops both when it finishes.
+deployment needs one. The walkthrough calls its table `function_demo` and its
+Function `double`; the test creates both under names unique to its run, never
+replaces an existing object, and drops only what it created.
 
 The other tests run locally and check the client side of the same code: what
 `@udf` sends for registration, how a registered version binds a column, and
@@ -18,6 +19,7 @@ where a local connection stops. They do not run a Function remotely.
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import lancedb
@@ -36,6 +38,10 @@ def double(value: float) -> float:
 
 
 # --8<-- [end:function_define]
+
+# The definition the walkthrough registers. The Enterprise test registers a copy
+# of it under a name that only its run uses.
+WALKTHROUGH_DOUBLE = double
 
 
 def describe(value: float):
@@ -153,7 +159,7 @@ def test_function_version_binds_a_column(tmp_path):
         table.add_columns({"doubled": application})
 
 
-def test_function_enterprise():
+def test_function_enterprise(monkeypatch):
     require_env("LANCEDB_URI")
     require_env("LANCEDB_API_KEY")
     require_env("LANCEDB_HOST_OVERRIDE")
@@ -171,6 +177,19 @@ def test_function_enterprise():
     )
     # --8<-- [end:function_connect]
 
+    # In a shared database `function_demo` or `double` may already exist, so
+    # this run creates both under names only it uses, and drops only those.
+    run = uuid.uuid4().hex[:12]
+    table_name = f"function_demo_{run}"
+    double = udf(name=f"double_{run}")(WALKTHROUGH_DOUBLE.__wrapped__)
+    create_table = db.create_table
+
+    def create_run_table(name, *args, **kwargs):
+        assert name == "function_demo"
+        return create_table(table_name, *args, **kwargs)
+
+    monkeypatch.setattr(db, "create_table", create_run_table)
+
     table = None
     version = None
     try:
@@ -182,7 +201,6 @@ def test_function_enterprise():
             "function_demo",
             [{"value": 1.0}, {"value": 2.0}, {"value": 3.0}],
             schema=schema,
-            mode="overwrite",
         )
         # --8<-- [end:function_create_table]
 
@@ -190,7 +208,7 @@ def test_function_enterprise():
         job = db.create_function_async(double)
         version = job.wait()
         # --8<-- [end:function_register]
-        assert version.name == "double"
+        assert version.name == f"double_{run}"
 
         # --8<-- [start:function_apply]
         from lancedb import col
@@ -219,6 +237,6 @@ def test_function_enterprise():
         ]
     finally:
         if table is not None:
-            db.drop_table("function_demo")
+            db.drop_table(table_name)
         if version is not None:
             db.drop_function(version.name, version=version.version)
