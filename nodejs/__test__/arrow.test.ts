@@ -812,6 +812,21 @@ describe.each(arrowVersions)("Arrow %#", (arrow: ApacheArrow) => {
       }
     });
 
+    it("will reject non-object values for struct fields in a schema", function () {
+      const schema = new Schema([
+        new Field("value", new Struct([new Field("nested", new Int32())])),
+      ]);
+      for (const records of [
+        [{ value: 5 }],
+        [{ value: 5 }, { value: { nested: 1 } }],
+        [{ value: { nested: 1 } }, { value: "oops" }],
+      ]) {
+        expect(() => makeArrowTable(records, { schema })).toThrow(
+          /Expected a struct value for field value at row \d, got/,
+        );
+      }
+    });
+
     it("will allow a schema to be provided", async function () {
       await checkTableCreation(
         async (records, _, schema) =>

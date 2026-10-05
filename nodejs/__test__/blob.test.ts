@@ -1,9 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Field, Int64, List, Schema, Struct, Utf8 } from "apache-arrow";
-import { makeArrowTable, resolveBlobInputs } from "../lancedb/arrow";
+import {
+  Field,
+  Float,
+  Float32,
+  Int32,
+  Int64,
+  List,
+  Schema,
+  Struct,
+  Utf8,
+} from "apache-arrow";
+import {
+  convertToTable,
+  makeArrowTable,
+  resolveBlobInputs,
+} from "../lancedb/arrow";
 import { BlobFile, blob, coerceBlobValue, isBlobField } from "../lancedb/blob";
+import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
+import { getRegistry } from "../lancedb/embedding/registry";
 
 describe("blob()", () => {
   it("marks the field as lance.blob.v2", () => {
@@ -46,6 +62,13 @@ describe("blob()", () => {
   });
 });
 
+class BlobStruct {
+  constructor(
+    public data?: unknown,
+    public uri?: unknown,
+  ) {}
+}
+
 describe("coerceBlobValue", () => {
   it.each([
     ["Buffer", Buffer.from("x"), { data: Buffer.from("x"), uri: null }],
@@ -85,6 +108,21 @@ describe("coerceBlobValue", () => {
       { uri: new URL("file:///tmp/a.png") },
       { data: null, uri: "file:///tmp/a.png" },
     ],
+    [
+      "class instance with Uint8Array data",
+      new BlobStruct(new Uint8Array([122])),
+      { data: new Uint8Array([122]), uri: null },
+    ],
+    [
+      "class instance with ArrayBuffer data",
+      new BlobStruct(new Uint8Array([122]).buffer),
+      { data: new Uint8Array([122]), uri: null },
+    ],
+    [
+      "class instance with URL uri",
+      new BlobStruct(undefined, new URL("s3://bucket/key")),
+      { data: null, uri: "s3://bucket/key" },
+    ],
     ["null", null, null],
   ])("accepts %s", (_name, input, expected) => {
     expect(coerceBlobValue(input)).toEqual(expected);
@@ -110,6 +148,27 @@ describe("coerceBlobValue", () => {
     ],
     ["Blob", new Blob(["x"]), /must be read asynchronously/],
     ["data struct with Blob", { data: new Blob(["x"]) }, /asynchronously/],
+    [
+      "class instance with Blob data",
+      new BlobStruct(new Blob(["x"])),
+      /asynchronously/,
+    ],
+    [
+      "unknown struct field",
+      { data: Buffer.from("y"), mime: "image/png" },
+      /Blob struct values only support 'data' and 'uri', got 'mime'/,
+    ],
+    [
+      "misspelled struct field",
+      { uri: "s3://bucket/key", dat: Buffer.from("y") },
+      /got 'dat'/,
+    ],
+    [
+      "SharedArrayBuffer",
+      new SharedArrayBuffer(2),
+      /Blob column values must be Buffer, Uint8Array, ArrayBuffer, Blob/,
+    ],
+    ["Date", new Date(0), /Blob column values must be/],
   ])("rejects %s", (_name, input, message) => {
     expect(() => coerceBlobValue(input)).toThrow(message);
   });
@@ -171,11 +230,73 @@ describe("resolveBlobInputs", () => {
     expect(resolved[2].image).toBe(first);
   });
 
+  it("reads a Blob held by a class instance", async () => {
+    const schema = new Schema([blob("image")]);
+    const [row] = await resolveBlobInputs(
+      [{ image: new BlobStruct(new Blob(["hi"])) }],
+      schema,
+    );
+    expect(
+      Buffer.from((row.image as { data: Uint8Array }).data).toString(),
+    ).toBe("hi");
+  });
+
   it("returns the input when there is nothing to read", async () => {
     const data = [{ image: Buffer.from("x") }];
     const schema = new Schema([blob("image")]);
     await expect(resolveBlobInputs(data, schema)).resolves.toBe(data);
     await expect(resolveBlobInputs(data)).resolves.toBe(data);
+  });
+});
+
+describe("convertToTable blob columns with embedding functions", () => {
+  // Embedding metadata routes rows through ensureNestedFieldsExist, which must
+  // leave blob values for the blob coercion instead of treating them as structs.
+  class LengthEmbedding extends EmbeddingFunction<string> {
+    ndims() {
+      return 2;
+    }
+    embeddingDataType(): Float {
+      return new Float32();
+    }
+    async computeSourceEmbeddings(data: string[]) {
+      return data.map((text) => [text.length, 1]);
+    }
+  }
+  getRegistry().register("blob-test-length")(LengthEmbedding);
+  const func = getRegistry().get<LengthEmbedding>("blob-test-length")!.create();
+  const embeddingSchema = LanceSchema({
+    text: func.sourceField(new Utf8()),
+    vector: func.vectorField(),
+  });
+  const schema = new Schema(
+    [...embeddingSchema.fields, blob("image")],
+    embeddingSchema.metadata,
+  );
+
+  it.each([
+    ["Uint8Array", new Uint8Array([104, 105]), "hi", null],
+    ["ArrayBuffer", new Uint8Array([104, 105]).buffer, "hi", null],
+    ["Blob", new Blob(["hi"]), "hi", null],
+    ["URI string", "s3://b/k", null, "s3://b/k"],
+    ["URL", new URL("s3://b/k"), null, "s3://b/k"],
+    ["data struct", { data: new Uint8Array([104, 105]) }, "hi", null],
+  ])("accepts %s input", async (_name, image, data, uri) => {
+    const table = await convertToTable([{ text: "a", image }], undefined, {
+      schema,
+    });
+    const column = table.getChild("image")!;
+    expect(column.nullCount).toBe(0);
+    const bytes = column.getChild("data")!.get(0);
+    expect(bytes == null ? null : Buffer.from(bytes).toString()).toBe(data);
+    expect(column.getChild("uri")!.get(0)).toBe(uri);
+  });
+
+  it("writes a missing blob as null", async () => {
+    const table = await convertToTable([{ text: "a" }], undefined, { schema });
+    const column = table.getChild("image")!;
+    expect(column.nullCount).toBe(1);
+    expect(column.get(0)).toBeNull();
   });
 });
 
@@ -266,6 +387,15 @@ describe("makeArrowTable blob columns", () => {
     expect(info.get(0)).toBeNull();
     const image = (info.get(1) as { image: { data: Uint8Array } }).image;
     expect(Buffer.from(image.data).toString()).toBe("a");
+  });
+
+  it("skips a missing blob column named like an Object.prototype member", () => {
+    const schema = new Schema([
+      new Field("id", new Int32(), true),
+      blob("constructor"),
+    ]);
+    const table = makeArrowTable([{ id: 1 }], { schema });
+    expect(table.schema.fields.map((f) => f.name)).toEqual(["id"]);
   });
 
   it("accepts ArrayBuffer and URL inside lists and structs", () => {
