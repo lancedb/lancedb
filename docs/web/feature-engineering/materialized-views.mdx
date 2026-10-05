@@ -6,9 +6,14 @@ icon: table
 keywords: ["materialized view", "create_materialized_view", "refresh", "incremental"]
 ---
 
+import {
+    PyMaterializedViewCreate as MaterializedViewCreate,
+    PyMaterializedViewRefresh as MaterializedViewRefresh,
+} from '/snippets/materialized_view.mdx';
+
 A materialized view is a lakehouse object: a table whose contents are defined by
-a query over another table. The query is recorded in the view's schema; a
-refresh computes the rows.
+a query over another table. The query is recorded in the view's schema;
+creating the view computes its rows, and a refresh brings them up to date.
 
 The result is an ordinary table. It can be queried, indexed, and searched, and
 it appears in `table_names()` — nothing about reading it is special.
@@ -19,27 +24,23 @@ In SQL this is [`REFRESH MATERIALIZED VIEW`](/sql/refresh#refresh-materialized-v
 
 ## Create and refresh {#create-and-refresh}
 
-```python
-import lancedb
+<CodeBlock filename="Python" language="Python" icon="python">
+{MaterializedViewCreate}
+</CodeBlock>
 
-db = lancedb.connect(
-    "./.lancedb",
-    storage_options={"new_table_enable_stable_row_ids": "true"},
-)
-table = db.create_table("people", [{"name": "ada", "age": 36},
-                                   {"name": "kid", "age": 7}])
+Creating the view computes its rows, so it is ready to read. Pass
+`with_no_data=True` to create it empty instead. Later changes to the source
+reach the view through a refresh:
 
-view = db.create_materialized_view(
-    "adults",
-    "people",
-    select=["name", ("shout", "upper(name)")],
-    where="age >= 18",
-)
+<CodeBlock filename="Python" language="Python" icon="python">
+{MaterializedViewRefresh}
+</CodeBlock>
 
-result = view.refresh()
-result.rows_written
-# 1
-```
+<Note>
+The view is computed on creation from SDK 0.40. In 0.39 and earlier,
+`create_materialized_view` always creates the view empty and the first
+`refresh()` writes every matching row, two in this example.
+</Note>
 
 `select` takes column names, `(alias, expression)` pairs, or a dict of the same.
 Omitting it selects every source column, expanded against the schema as it was
@@ -94,8 +95,8 @@ process -- and that SQL can drive it:
 REFRESH MATERIALIZED VIEW chunks
 ```
 
-`WITH (full = true)` recomputes every row instead of only the rows the source
-has added since the last refresh. `SHOW MATERIALIZED VIEWS` lists them, which is
+`WITH (full = true)` recomputes every row instead of reconciling what changed
+in the source since the last refresh. `SHOW MATERIALIZED VIEWS` lists them, which is
 cheaper than `list_materialized_views` -- that method finds views by reading
 every table's schema, so it costs one open per table.
 

@@ -7,8 +7,8 @@ keywords: ["materialized view", "create_materialized_view", "catalog", "ddl"]
 ---
 
 A materialized view is a table whose contents are defined by a query over
-another table. The query is recorded in the view's schema; a refresh computes
-the rows.
+another table. The query is recorded in the view's schema, and a refresh
+brings its stored rows up to date with the source.
 
 The result is an ordinary table -- queryable, indexable, searchable, and present
 in `table_names()`. Nothing about reading it is special.

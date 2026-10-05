@@ -74,8 +74,9 @@ on the bucket, which has no concept of a table.
 The names are close enough to mislead. Both are catalog objects defined by a
 query over other tables; the difference is when that query runs.
 
-- A **materialized view** stores its rows. A refresh computes them, and reads
-  are reads of stored data -- fast, and as current as the last refresh.
+- A **materialized view** stores its rows, and a refresh brings them up to
+  date. Reads are reads of stored data -- fast, and as current as the last
+  refresh.
 - A **view** stores only the query. Every read runs it, so a view is never stale
   and never faster than the query it wraps.
 
