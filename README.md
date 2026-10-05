@@ -1,3 +1,5 @@
+<div align="center">
+
 [![Reverie](docs/src/assets/reverie-banner.png)](https://www.reveriesummit.com)
 [![LanceDB](docs/src/assets/hero-header.png)](https://lancedb.com)
 [![Website](https://img.shields.io/badge/-Website-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://lancedb.com/)
