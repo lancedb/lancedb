@@ -164,6 +164,10 @@
       "destination": "/enterprise/deployment/index"
     },
     {
+      "source": "/search/sql",
+      "destination": "/sql"
+    },
+    {
       "source": "/search/sql/index",
       "destination": "/sql"
     },
