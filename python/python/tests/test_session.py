@@ -36,3 +36,13 @@ def test_session_cache_configuration(tmp_path):
     assert final_cache_size > initial_cache_size  # Cache should have grown
     assert final_cache_items >= initial_cache_items  # Items should not decrease
     assert initial_cache_size < index_cache_size + metadata_cache_size
+
+
+def test_connection_session_returns_supplied_session(tmp_path):
+    """Sync connections must expose the session they were opened with."""
+    db = lancedb.connect(tmp_path)
+    assert db.session is None
+
+    session = lancedb.Session()
+    db = lancedb.connect(tmp_path, session=session)
+    assert db.session is session
