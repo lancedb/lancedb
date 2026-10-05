@@ -51,8 +51,11 @@ export interface CreateTableOptions {
    * happen.  Any provided data will be ignored.
    *
    * If this is set to "overwrite" then any existing table will be replaced.
+   *
+   * If this is set to "exist_ok" then an existing table is opened and any
+   * provided data is ignored.
    */
-  mode: "create" | "overwrite";
+  mode: "create" | "overwrite" | "exist_ok";
   /**
    * If this is true and the table already exists and the mode is "create"
    * then no error will be raised.
