@@ -9,6 +9,7 @@ import * as tmp from "tmp";
 
 import {
   AutoQuery,
+  type BlobInput,
   Connection,
   MatchQuery,
   PhraseQuery,
@@ -2583,7 +2584,7 @@ describe("when dealing with blob columns", () => {
       new Field("id", new Int64(), true),
       blob("image"),
     ]);
-    const row = { id: 1n, image: new Uint8Array([104]).buffer };
+    const row = { id: 1n, image: new ReadableStream() };
 
     await expect(db.createTable("invalid", [row], { schema })).rejects.toThrow(
       /field image at row 0/,
@@ -2613,6 +2614,8 @@ describe("when dealing with blob columns", () => {
   it.each([
     ["URI string", (uri: string) => uri],
     ["URI struct", (uri: string) => ({ uri })],
+    ["URL", (uri: string) => new URL(uri)],
+    ["URL struct", (uri: string) => ({ uri: new URL(uri) })],
   ])(
     "round-trips an external blob from a %s after reopening",
     async (_label, blobValue) => {
@@ -2704,6 +2707,63 @@ describe("when dealing with blob columns", () => {
     expect(rows[0].id).toBe(2n);
     const bytes = await table.fetchBlobs("payload", [rows[0]._rowid as bigint]);
     expect(bytes[0]).toEqual(payload);
+  });
+
+  it("accepts ArrayBuffer, Blob, and File in createTable and add", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const rows: { id: bigint; image: BlobInput }[] = [
+      { id: 1n, image: new TextEncoder().encode("array-buffer").buffer },
+      { id: 2n, image: new Blob(["blob"]) },
+      { id: 3n, image: { data: new File(["file"], "f.txt") } },
+    ];
+    const table = await db.createTable("widened", rows.slice(0, 2), {
+      schema,
+    });
+    await table.add(rows.slice(2));
+
+    const results = await table.query().select(["id"]).withRowId().toArray();
+    results.sort((a, b) => Number(a.id - b.id));
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual([
+      "array-buffer",
+      "blob",
+      "file",
+    ]);
+  });
+
+  it("accepts Blob values in mergeInsert", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const table = await db.createTable(
+      "merge_blobs",
+      [{ id: 1n, image: Buffer.from("old") }],
+      { schema },
+    );
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { id: 1n, image: new Blob(["new"]) },
+        { id: 2n, image: new Uint8Array([104, 105]).buffer },
+      ]);
+    const results = await table.query().select(["id"]).withRowId().toArray();
+    results.sort((a, b) => Number(a.id - b.id));
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual(["new", "hi"]);
   });
 
   it("discovers blob columns", async () => {
