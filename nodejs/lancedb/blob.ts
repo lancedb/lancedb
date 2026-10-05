@@ -309,7 +309,13 @@ export function normalizeBlobInput(value: unknown): unknown {
     return value.href;
   }
   if (isBlobStruct(value)) {
-    const out: Record<string, unknown> = { ...value };
+    // Read `data` and `uri` explicitly: spreading a class instance would drop
+    // fields defined as getters on its prototype.
+    const out: Record<string, unknown> = {
+      ...value,
+      data: value.data,
+      uri: value.uri,
+    };
     let changed = false;
     if (value.data instanceof ArrayBuffer) {
       out.data = new Uint8Array(value.data);
@@ -343,9 +349,11 @@ export function blobToRead(value: unknown): Blob | undefined {
  * keeping the value's shape.
  */
 export function withBlobBytes(value: unknown, bytes: Uint8Array): unknown {
-  return isBlobLike(value)
-    ? bytes
-    : { ...(value as Record<string, unknown>), data: bytes };
+  if (isBlobLike(value)) {
+    return bytes;
+  }
+  const record = value as Record<string, unknown>;
+  return { ...record, uri: record.uri, data: bytes };
 }
 
 export function coerceBlobValue(input: unknown): BlobValue | null {
@@ -367,11 +375,21 @@ export function coerceBlobValue(input: unknown): BlobValue | null {
     }
     return { data: null, uri: value };
   }
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
+  if (isBlobStruct(value)) {
+    const record = value;
     if (!("data" in record) && !("uri" in record)) {
       throw new Error(
         "Blob struct values must include a 'data' or 'uri' field",
+      );
+    }
+    const unknownKeys = Object.keys(record).filter(
+      (key) => key !== "data" && key !== "uri",
+    );
+    if (unknownKeys.length > 0) {
+      throw new Error(
+        `Blob struct values only support 'data' and 'uri', got ${unknownKeys
+          .map((key) => `'${key}'`)
+          .join(", ")}`,
       );
     }
     const uri = record.uri;
@@ -407,14 +425,31 @@ function isBlobLike(value: unknown): value is Blob {
   return typeof Blob !== "undefined" && value instanceof Blob;
 }
 
+/**
+ * Whether `value` is a `{ data?, uri? }` struct: any plain object, or any
+ * other object with a `data` or `uri` field (such as a class instance), apart
+ * from the binary, `Blob`, and `URL` values that are blob inputs themselves.
+ */
 function isBlobStruct(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null) {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    ArrayBuffer.isView(value) ||
+    value instanceof ArrayBuffer ||
+    (typeof SharedArrayBuffer !== "undefined" &&
+      value instanceof SharedArrayBuffer) ||
+    isBlobLike(value) ||
+    value instanceof URL
+  ) {
     return false;
   }
   const prototype = Object.getPrototypeOf(value);
   return (
-    (prototype === Object.prototype || prototype === null) &&
-    ("data" in value || "uri" in value)
+    prototype === Object.prototype ||
+    prototype === null ||
+    "data" in value ||
+    "uri" in value
   );
 }
 

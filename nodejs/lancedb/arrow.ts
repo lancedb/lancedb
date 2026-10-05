@@ -565,7 +565,7 @@ function mapBlobFields(
 ): Record<string, unknown> {
   let out: Record<string, unknown> | undefined;
   for (const field of fields) {
-    if (!containsBlobField(field) || !(field.name in record)) {
+    if (!containsBlobField(field) || !Object.hasOwn(record, field.name)) {
       continue;
     }
     const value = record[field.name];
@@ -1524,7 +1524,7 @@ export function ensureNestedFieldsExist(
     for (const field of schema.fields) {
       if (field.name in row) {
         if (
-          field.type.constructor.name === "Struct" &&
+          isPlainStructField(field) &&
           row[field.name] !== null &&
           row[field.name] !== undefined
         ) {
@@ -1541,15 +1541,23 @@ export function ensureNestedFieldsExist(
       } else {
         // Keep a missing struct valid while filling each of its children with
         // null. This is distinct from an explicitly null struct value.
-        completeRow[field.name] =
-          field.type.constructor.name === "Struct"
-            ? ensureStructFieldsExist({}, field.type as Struct)
-            : null;
+        completeRow[field.name] = isPlainStructField(field)
+          ? ensureStructFieldsExist({}, field.type as Struct)
+          : null;
       }
     }
 
     return completeRow;
   });
+}
+
+/**
+ * Blob fields are Arrow structs, but their values are bytes, URIs, or
+ * `{ data } | { uri }` inputs that the blob coercion in `makeArrowTable`
+ * handles, so they must not be filled in like ordinary structs.
+ */
+function isPlainStructField(field: Field): boolean {
+  return field.type.constructor.name === "Struct" && !isBlobField(field);
 }
 
 /**
@@ -1565,7 +1573,7 @@ function ensureStructFieldsExist(
   for (const childField of structType.children) {
     if (childField.name in data) {
       if (
-        childField.type.constructor.name === "Struct" &&
+        isPlainStructField(childField) &&
         data[childField.name] !== null &&
         data[childField.name] !== undefined
       ) {
@@ -1581,10 +1589,9 @@ function ensureStructFieldsExist(
     } else {
       // Keep a missing struct valid while filling each of its children with
       // null. This is distinct from an explicitly null struct value.
-      completeStruct[childField.name] =
-        childField.type.constructor.name === "Struct"
-          ? ensureStructFieldsExist({}, childField.type as Struct)
-          : null;
+      completeStruct[childField.name] = isPlainStructField(childField)
+        ? ensureStructFieldsExist({}, childField.type as Struct)
+        : null;
     }
   }
 
