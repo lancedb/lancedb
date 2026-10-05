@@ -54,7 +54,7 @@ export const PyFrameworksAgnoSetup = "import os\nimport re\n\nfrom agno.agent im
 
 export const PyFrameworksLangchainAddImages = "image_uris = [\"./assets/image-1.png\", \"./assets/image-2.png\"]\nvector_store.add_images(uris=image_uris)\n# here image_uris are local fs paths to the images.\n";
 
-export const PyFrameworksLangchainAddTexts = "vector_store.add_texts(texts=[\"test_123\"], metadatas=[{\"source\": \"wiki\"}])\n\n# Additionaly, to explore the table you can load it into a df or save it in a csv file:\n\ntbl = vector_store.get_table()\nprint(\"tbl:\", tbl)\npd_df = tbl.to_pandas()\npd_df.to_csv(\"docsearch.csv\", index=False)\n\n# you can also create a new vector store object using an older connection object:\nvector_store = LanceDB(connection=tbl, embedding=embeddings)\n";
+export const PyFrameworksLangchainAddTexts = "vector_store.add_texts(texts=[\"test_123\"], metadatas=[{\"source\": \"wiki\"}])\n\n# Additionally, to explore the table you can load it into a df or save it in a csv file:\n\ntbl = vector_store.get_table()\nprint(\"tbl:\", tbl)\npd_df = tbl.to_pandas()\npd_df.to_csv(\"docsearch.csv\", index=False)\n\n# you can also create a new vector store object using an older connection object:\nvector_store = LanceDB(connection=tbl, embedding=embeddings)\n";
 
 export const PyFrameworksLangchainCreateIndex = "# for creating vector index\nvector_store.create_index(vector_col=\"vector\", metric=\"cosine\")\n\n# for creating scalar index(for non-vector columns)\nvector_store.create_index(col_name=\"text\")\n";
 

@@ -8,7 +8,7 @@ export const PyBlobApiToPandas = "# Default: blob columns come back lazily\ndf_l
 
 export const PyCreateDummyData = "# Create some dummy images\ndef create_dummy_image(color):\n    img = Image.new('RGB', (100, 100), color=color)\n    buf = io.BytesIO()\n    img.save(buf, format='PNG')\n    return buf.getvalue()\n\n# Create dataset with metadata, vectors, and image blobs\ndata = [\n    {\n        \"id\": 1,\n        \"filename\": \"red_square.png\",\n        \"vector\": np.random.rand(128).astype(np.float32),\n        \"image_blob\": create_dummy_image('red'),\n        \"label\": \"red\"\n    },\n    {\n        \"id\": 2,\n        \"filename\": \"blue_square.png\",\n        \"vector\": np.random.rand(128).astype(np.float32),\n        \"image_blob\": create_dummy_image('blue'),\n        \"label\": \"blue\"\n    }\n]\n";
 
-export const PyDefineSchema = "# Define schema explictly to ensure image_blob is treated as binary\nschema = pa.schema([\n    pa.field(\"id\", pa.int32()),\n    pa.field(\"filename\", pa.string()),\n    pa.field(\"vector\", pa.list_(pa.float32(), 128)),\n    pa.field(\"image_blob\", pa.binary()), # Important: Use pa.binary() for blobs\n    pa.field(\"label\", pa.string())\n])\n";
+export const PyDefineSchema = "# Define schema explicitly to ensure image_blob is treated as binary\nschema = pa.schema([\n    pa.field(\"id\", pa.int32()),\n    pa.field(\"filename\", pa.string()),\n    pa.field(\"vector\", pa.list_(pa.float32(), 128)),\n    pa.field(\"image_blob\", pa.binary()), # Important: Use pa.binary() for blobs\n    pa.field(\"label\", pa.string())\n])\n";
 
 export const PyIngestData = "tbl = db.create_table(\"images\", data=data, schema=schema, mode=\"overwrite\")\n";
 

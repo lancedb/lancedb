@@ -1163,7 +1163,7 @@ def test_frameworks_langchain_examples() -> None:
     # --8<-- [start:frameworks_langchain_add_texts]
     vector_store.add_texts(texts=["test_123"], metadatas=[{"source": "wiki"}])
 
-    # Additionaly, to explore the table you can load it into a df or save it in a csv file:
+    # Additionally, to explore the table you can load it into a df or save it in a csv file:
 
     tbl = vector_store.get_table()
     print("tbl:", tbl)

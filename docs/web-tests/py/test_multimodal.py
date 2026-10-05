@@ -54,7 +54,7 @@ def test_multimodal_ingestion(db_path_factory):
     # --8<-- [end:create_dummy_data]
 
     # --8<-- [start:define_schema]
-    # Define schema explictly to ensure image_blob is treated as binary
+    # Define schema explicitly to ensure image_blob is treated as binary
     schema = pa.schema([
         pa.field("id", pa.int32()),
         pa.field("filename", pa.string()),
