@@ -12,7 +12,7 @@ refresh gives values to the rows that lack them.
 <CodeGroup>
 ```python Python icon="python"
 table.refresh_column("doubled")
-# RefreshColumnResult(rows_filled=2, version=3)
+# RefreshColumnResult(rows_filled=2, version=4)
 
 table.to_arrow().sort_by("x").to_pandas()
 #    x  doubled
@@ -25,29 +25,32 @@ REFRESH COLUMN doubled ON my_table
 ```
 </CodeGroup>
 
-The refresh commits an ordinary table version, so
+The refresh commits ordinary table versions -- the values, then a
+metadata-only record of the inputs they were computed from -- so
 [versioning](/management/table#versioning) applies to it like any other write.
 
 <Note>
 The SQL form is [`REFRESH COLUMN`](/sql/refresh#refresh-column), with the same resource options.
 </Note>
 
-## It never revisits filled rows {#idempotent}
+## What a refresh recomputes {#idempotent}
 
-A refresh fills rows that have no value and leaves the rest alone. Two
-consequences follow, and both are load-bearing.
+A refresh fills rows that have no value and recomputes rows whose inputs
+changed since they were computed. Every other row is left alone, so a second
+refresh with nothing changed does nothing. Two consequences follow, and both
+are load-bearing.
 
 **Appending is cheap.** Rows added since the last refresh are filled by the
-next one; everything before it is skipped. Backfilling a column and then
-ingesting more data does not mean recomputing the backfill.
+next one; filled rows whose inputs are unchanged are skipped. Backfilling a
+column and then ingesting more data does not mean recomputing the backfill.
 
-**A filled value does not track its input.** If `doubled` derives from `x` and a
-row's `x` is later updated, `doubled` keeps the value computed when it was
-filled. Recomputing means dropping the column and declaring it again.
+**A filled value catches up with its input at the next refresh.** If `doubled`
+derives from `x` and a row's `x` is later updated, `doubled` keeps its old value
+until the next refresh recomputes it.
 
-That is what makes the call idempotent and safe to retry -- but it is the
-opposite of a spreadsheet formula, so be deliberate about which columns you
-derive this way.
+That is what makes the call idempotent and safe to retry -- but unlike a
+spreadsheet formula, nothing is recomputed until you refresh, so a derived
+column is stale between an update and the next refresh.
 
 ## Refreshing part of a table {#partial}
 
@@ -106,12 +109,14 @@ rather than failing the job.
 
 ## When a refresh fails {#failures}
 
-A failure is not a rollback. Rows filled before the failure keep their values,
-because each is committed as it completes.
+What a failure keeps depends on where the refresh ran. `refresh_column` in your
+process writes the column in one commit, so a failure leaves the column as it
+was. A refresh job on a deployment commits finished batches as it goes, so some
+values can remain after a failure.
 
-That makes recovery simple: run the refresh again. It skips everything already
-filled and costs only the rows that did not complete -- **a failed backfill is
-resumed, not restarted.**
+Either way, recover by fixing the cause and refreshing again. The new refresh
+fills only rows that are still empty or whose inputs changed, so values that
+were kept are not computed twice.
 
 For a column filled by a [function](/management/function), the usual cause is
 the worker environment rather than the data. See
