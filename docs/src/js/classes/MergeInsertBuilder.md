@@ -141,7 +141,7 @@ Currently this causes multiple copies of the row to be created
 but that behavior is subject to change.
 
 An optional condition may be specified.  If it is, then only
-matched rows that satisfy the condtion will be updated.  Any
+matched rows that satisfy the condition will be updated.  Any
 rows that do not satisfy the condition will be left as they
 are.  Failing to satisfy the condition does not cause a
 "matched row" to become a "not matched" row.

@@ -48,6 +48,7 @@ use crate::{
 };
 
 mod hybrid;
+pub(crate) mod wal_fusion; // WAL-PK-FUSION: delete with the module.
 
 pub(crate) const DEFAULT_TOP_K: usize = 10;
 
@@ -1251,10 +1252,17 @@ impl VectorQuery {
     /// This method sets both the minimum and maximum number of partitions to search.
     /// For more fine-grained control see [`VectorQuery::minimum_nprobes`] and
     /// [`VectorQuery::maximum_nprobes`].
-    pub fn nprobes(mut self, nprobes: usize) -> Self {
+    ///
+    /// Returns an error if `nprobes` is not greater than 0.
+    pub fn nprobes(mut self, nprobes: usize) -> Result<Self> {
+        if nprobes == 0 {
+            return Err(Error::InvalidInput {
+                message: "nprobes must be greater than 0".to_string(),
+            });
+        }
         self.request.minimum_nprobes = nprobes;
         self.request.maximum_nprobes = Some(nprobes);
-        self
+        Ok(self)
     }
 
     /// Set the minimum number of partitions to search
@@ -1299,7 +1307,7 @@ impl VectorQuery {
     /// This can be useful when there is a narrow filter to allow these queries to
     /// spend more time searching and avoid potential false negatives.
     ///
-    /// Set to None to search all partitions, if needed, to satsify the limit
+    /// Set to None to search all partitions, if needed, to satisfy the limit
     pub fn maximum_nprobes(mut self, maximum_nprobes: Option<usize>) -> Result<Self> {
         if let Some(maximum_nprobes) = maximum_nprobes {
             if maximum_nprobes == 0 {
@@ -1412,14 +1420,36 @@ impl VectorQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        // WAL-PK-FUSION: without the fallback, this body is `run_hybrid`'s,
+        // with its `pk_fusion` branches taken as `None`.
+        wal_fusion::with_pk_fallback(self, |pk_fusion| {
+            self.run_hybrid(pk_fusion, options.clone())
+        })
+        .await
+    }
+
+    async fn run_hybrid(
+        &self,
+        pk_fusion: Option<wal_fusion::PkFusion>,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
         let max_batch_length = options.max_batch_length as usize;
         let internal_options = options.without_output_batch_length_limit();
         // clone query and specify we want to include row IDs, which can be needed for reranking
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
-        fts_query = fts_query.with_row_id();
-
-        let mut vector_query = self.clone().with_row_id();
+        let mut vector_query = self.clone();
+        // WAL-PK-FUSION: without the fallback, keep only the `None` arm.
+        match &pk_fusion {
+            None => {
+                fts_query = fts_query.with_row_id();
+                vector_query = vector_query.with_row_id();
+            }
+            Some(pk_fusion) => {
+                pk_fusion.prepare_leg(&mut fts_query.request.select);
+                pk_fusion.prepare_leg(&mut vector_query.request.base.select);
+            }
+        }
 
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
@@ -1439,6 +1469,11 @@ impl VectorQuery {
         // concatenate all the batches together
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
         let mut vec_results = concat_batches(&vec_schema, vec_results.iter())?;
+
+        // WAL-PK-FUSION: delete.
+        if let Some(pk_fusion) = &pk_fusion {
+            (vec_results, fts_results) = pk_fusion.stamp(vec_results, fts_results)?;
+        }
 
         if matches!(self.request.base.norm, Some(NormalizeMethod::Rank)) {
             vec_results = hybrid::rank(vec_results, DIST_COL, None)?;
@@ -1475,8 +1510,14 @@ impl VectorQuery {
             results = results.slice(0, limit);
         }
 
-        if !self.request.base.with_row_id {
-            results = results.drop_column(ROW_ID)?;
+        // WAL-PK-FUSION: without the fallback, keep only the `None` arm.
+        match &pk_fusion {
+            None => {
+                if !self.request.base.with_row_id {
+                    results = results.drop_column(ROW_ID)?;
+                }
+            }
+            Some(pk_fusion) => results = pk_fusion.strip(results)?,
         }
 
         Ok(single_batch_stream(results, max_batch_length))
@@ -2327,6 +2368,7 @@ mod tests {
             .nearest_to(&[9.8, 8.7])
             .unwrap()
             .nprobes(1000)
+            .unwrap()
             .postfilter()
             .distance_type(DistanceType::Cosine)
             .approx_mode(ApproxMode::Accurate)
@@ -2350,6 +2392,31 @@ mod tests {
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
         assert_eq!(query.request.approx_mode, Some(ApproxMode::Accurate));
         assert_eq!(query.request.refine_factor, Some(999));
+    }
+
+    #[tokio::test]
+    async fn test_nprobes_validation() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+        let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
+
+        assert!(matches!(
+            query.clone().nprobes(0),
+            Err(Error::InvalidInput { message }) if message == "nprobes must be greater than 0"
+        ));
+
+        // Fixed probe counts replace both bounds, even when moving below or
+        // above the previous range.
+        let mut query = query;
+        for nprobes in [30, 1, 50] {
+            query = query.nprobes(nprobes).unwrap();
+            assert_eq!(query.request.minimum_nprobes, nprobes);
+            assert_eq!(query.request.maximum_nprobes, Some(nprobes));
+        }
     }
 
     #[test]

@@ -180,13 +180,13 @@ abstract createMaterializedView(
 
 Define a materialized view named `name` over the table `source`.
 
-The view is created empty, with the query recorded in its schema
-metadata; `view.refresh()` computes the rows. The view is a normal
-table: it can be queried, indexed and searched, and it appears in
-`tableNames`. The source table must have stable row ids (create it with
+The view is populated before creation returns. Set `withNoData` to create
+only its definition and empty backing table. The view is a normal table:
+it can be queried, indexed and searched, and it appears in `tableNames`.
+The source table must have stable row ids (create it with
 the `newTableEnableStableRowIds` storage option); they keep the view's
 provenance valid across source compactions and cannot be enabled after
-a table exists. Local databases only.
+a table exists.
 
 #### Parameters
 
@@ -201,6 +201,8 @@ a table exists. Local databases only.
 * **options.select?**: [`MaterializedViewSelect`](../type-aliases/MaterializedViewSelect.md)
 
 * **options.where?**: `string`
+
+* **options.withNoData?**: `boolean`
 
 #### Returns
 
@@ -317,6 +319,38 @@ Creates a new Table and initialize it with new data.
 
 ***
 
+### createView()
+
+```ts
+abstract createView(
+   name,
+   query,
+   namespacePath?): Promise<ViewDescription>
+```
+
+Create a view: a named query the database plans on every read.
+
+The query is planned once, at creation, so one that cannot be planned is
+rejected now rather than at the first read. A view holds no rows, and its
+readers see its sources as they are at read time.
+
+There is no replace: a name already taken is an error, and changing a
+view is a drop followed by a create.
+
+#### Parameters
+
+* **name**: `string`
+
+* **query**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
+
+***
+
 ### describeNamespace()
 
 ```ts
@@ -337,6 +371,27 @@ Describe a namespace, returning its properties.
 
 The namespace's properties
   (may be undefined if the namespace has none).
+
+***
+
+### describeView()
+
+```ts
+abstract describeView(name, namespacePath?): Promise<ViewDescription>
+```
+
+What this database records about the view named `name`: its defining
+query and the schema that query resolved to.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`ViewDescription`](../interfaces/ViewDescription.md)&gt;
 
 ***
 
@@ -370,6 +425,54 @@ Drop all tables in the database.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### dropMaterializedView()
+
+```ts
+abstract dropMaterializedView(name, namespacePath?): Promise<void>
+```
+
+Drop the materialized view named `name`.
+
+The view may become unavailable before physical cleanup finishes. Use
+[dropMaterializedViewAsync](Connection.md#dropmaterializedviewasync) to retain and wait for the cleanup job.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### dropMaterializedViewAsync()
+
+```ts
+abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping the materialized view named `name` and return its cleanup
+job without waiting for completion.
+
+Rejects a table that exists but is not a materialized view.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 
@@ -448,23 +551,50 @@ on the returned job to know when cleanup has finished.
 
 ***
 
-### getJob()
+### dropView()
 
 ```ts
-abstract getJob(jobId): Promise<null | JobDescription>
+abstract dropView(name, namespacePath?): Promise<void>
 ```
 
-Describe a single server-side job by id.
+Drop the view named `name` and wait for its definition to be deleted.
 
-Resolves to `null` when the server has no such job.
+The tables it reads are untouched: a view holds no rows of its own. Use
+[dropViewAsync](Connection.md#dropviewasync) to retain the cleanup job instead of waiting on it.
 
 #### Parameters
 
-* **jobId**: `string`
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
 
 #### Returns
 
-`Promise`&lt;`null` \| [`JobDescription`](../interfaces/JobDescription.md)&gt;
+`Promise`&lt;`void`&gt;
+
+***
+
+### dropViewAsync()
+
+```ts
+abstract dropViewAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping the view named `name` and return the job deleting its
+definition, without waiting for completion.
+
+The name is free before this resolves. When nothing was bound to it, the
+returned job is already finished and has no id.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
 
 ***
 
@@ -479,48 +609,6 @@ Return true if the connection has not been closed
 #### Returns
 
 `boolean`
-
-***
-
-### job()
-
-```ts
-abstract job(jobId): Job
-```
-
-A [Job](Job.md) handle for a server-side job by id.
-
-The handle is constructed without a server round trip; an unknown id
-surfaces when the handle is used. Dropping the handle has no effect on
-the job itself.
-
-#### Parameters
-
-* **jobId**: `string`
-
-#### Returns
-
-[`Job`](Job.md)
-
-***
-
-### jobHistory()
-
-```ts
-abstract jobHistory(jobId?): Promise<Table<any>>
-```
-
-The lifecycle event history of a server-side job, as an Arrow table.
-
-Lists history across all jobs when `jobId` is omitted.
-
-#### Parameters
-
-* **jobId?**: `string`
-
-#### Returns
-
-`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 ***
 
@@ -648,6 +736,50 @@ A page of table names and an
 
 ***
 
+### listViews()
+
+```ts
+abstract listViews(namespacePath?): Promise<string[]>
+```
+
+The names of the views in one namespace.
+
+Names only; a definition comes from [describeView](Connection.md#describeview).
+
+#### Parameters
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
+
+***
+
+### openJob()
+
+```ts
+abstract openJob(jobId): Promise<Job>
+```
+
+Open a server-side job by id, returning a handle with its record already
+populated. Rejects when the server has no such job, the way
+[Connection.openTable](Connection.md#opentable) does for a missing table.
+
+The returned [Job](Job.md) answers for its own state, specification,
+result, failure and event history, so there is no separate
+connection-level call for any of them.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### openMaterializedView()
 
 ```ts
@@ -691,6 +823,28 @@ abstract openTable(
 
 ***
 
+### pauseJob()
+
+```ts
+abstract pauseJob(jobId): Promise<string>
+```
+
+Pause a server-side job by id.
+
+The job's workers drain and it stays parked until resumed. Resolves to
+"pausing", "already_paused", or "committing" -- a job finalizing its
+results cannot be parked; retry shortly.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+***
+
 ### renameTable()
 
 ```ts
@@ -721,6 +875,28 @@ a "not supported" error.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### resumeJob()
+
+```ts
+abstract resumeJob(jobId): Promise<string>
+```
+
+Resume a paused server-side job by id.
+
+Its workers pick their work back up from checkpoints. Resolves to
+"resumed", "still_pausing" -- the pause's worker drain is not confirmed
+yet; retry shortly -- or "not_paused".
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
 
 ***
 

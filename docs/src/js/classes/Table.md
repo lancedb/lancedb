@@ -74,10 +74,10 @@ now: the column is committed with no values, and rows get them from
 [Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
 large table as on an empty one.
 
-A refresh does not revisit rows it has already filled, so mutating an
-input leaves the value computed at fill time; recomputing means dropping
-the column and declaring it again. While a declaration reads a column,
-that column cannot be renamed, retyped or dropped.
+A refresh also recomputes the rows whose inputs changed since they were
+computed, so a mutated input is reflected by the next refresh. While a
+declaration reads a column, that column cannot be renamed, retyped or
+dropped.
 
 On LanceDB Cloud and Enterprise the expression is planned by the
 server, and the refresh runs as a server job -- see
@@ -134,6 +134,20 @@ Alter the name or nullability of columns.
 
 A promise that resolves to an object
 containing the new version number of the table after altering the columns.
+
+***
+
+### blobColumns()
+
+```ts
+abstract blobColumns(): Promise<string[]>
+```
+
+Blob v2 columns, including nested dotted paths.
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
 
 ***
 
@@ -499,6 +513,68 @@ Drop an index from the table.
 
 ***
 
+### fetchBlobFiles()
+
+```ts
+abstract fetchBlobFiles(
+   column,
+   rowIds,
+   options?): Promise<(null | BlobFile)[]>
+```
+
+Opens lazy blob handles for `column` at the given row IDs using the
+table's current checkout.
+
+Preserves input order, duplicates, and nulls. Use this for large payloads.
+See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+
+#### Parameters
+
+* **column**: `string`
+
+* **rowIds**: readonly (`number` \| `bigint`)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;(`null` \| [`BlobFile`](BlobFile.md))[]&gt;
+
+***
+
+### fetchBlobs()
+
+```ts
+abstract fetchBlobs(
+   column,
+   rowIds,
+   options?): Promise<(null | Buffer)[]>
+```
+
+Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
+
+Reads the table's current checkout. IDs from another version can fail after
+compaction unless stable row ids are enabled. Results keep input order and
+duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+The client splits requests automatically and reads an individual larger
+blob through the Range route. This method still materializes all bytes in
+memory; use [Table.fetchBlobFiles](Table.md#fetchblobfiles) for large values.
+
+#### Parameters
+
+* **column**: `string`
+
+* **rowIds**: readonly (`number` \| `bigint`)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;(`null` \| `Buffer`)[]&gt;
+
+***
+
 ### flushLsm()
 
 ```ts
@@ -513,6 +589,41 @@ so this is safe to call repeatedly.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### functionErrors()
+
+```ts
+abstract functionErrors(options?): Promise<FunctionErrors>
+```
+
+The per-row errors Function refreshes recorded on this table.
+
+A refresh running under a skip policy records each row it skipped with
+the input that failed and the error. This lists those records, newest
+job first, plus a summary for any fragment whose per-row detail was
+capped. LanceDB Cloud and Enterprise only; reading errors needs read
+access to the table, since a message carries the value that failed.
+
+#### Parameters
+
+* **options?**: [`FunctionErrorsOptions`](../interfaces/FunctionErrorsOptions.md)
+    Optional filters: `jobId`,
+    `column`, and `limit` (server default 10000, cap 100000).
+
+#### Returns
+
+`Promise`&lt;[`FunctionErrors`](../interfaces/FunctionErrors.md)&gt;
+
+The records, the capped fragments,
+and whether the listing stopped at its limit.
+
+#### Example
+
+```ts
+const { records, truncated } = await table.functionErrors({ column: "embedding" });
+```
 
 ***
 
@@ -854,10 +965,10 @@ abstract refreshColumn(column): Promise<RefreshColumnResult>
 
 Fill the rows of a computed column that hold no value yet.
 
-Rows appended since the last refresh are filled by the next one; rows
-already filled are left as they are, so the call is idempotent and does
-not observe a mutated input. Local tables only: a remote refresh runs
-as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+Rows appended since the last refresh are filled by the next one, and
+rows whose inputs changed since they were computed are recomputed;
+everything else is left as it is. Local tables only: a remote refresh
+runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Parameters
 
@@ -1266,11 +1377,11 @@ value is 0")
 Note: if your condition is something like "some_id_column == 7" and
 you are updating many rows (with different ids) then you will get
 better performance with a single [`merge_insert`] call instead of
-repeatedly calilng this method.
+repeatedly calling this method.
 
 ##### Parameters
 
-* **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **updates**: `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
     the
     columns to update
 

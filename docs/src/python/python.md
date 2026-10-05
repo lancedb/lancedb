@@ -28,6 +28,70 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.Session
 
+## Catalogs (Synchronous)
+
+Remote catalogs manage databases through a server's root namespace. Opened databases
+are ordinary connections. Dropping a database requires it to be empty.
+
+::: lancedb.connect_catalog
+
+::: lancedb.catalog.Catalog
+
+::: lancedb.catalog.ListDatabasesResponse
+
+## Remote SQL
+
+Submit SQL against a remote LanceDB database through the connection.
+The connected database and `default_namespace_path=["public"]` are used for
+unqualified tables. Fully qualified references can still query other databases
+and namespaces available to the same deployment. `execute_query` returns a
+reader as soon as its initial result stream is available. `execute_query_async`
+returns a query handle immediately; use it to inspect progress, open a reader,
+or cancel the query. The SQL client is initialized by the first query and
+retained for the lifetime of the remote connection. Query ids are random,
+connection-scoped references rather than encoded SQL or durable resume tokens:
+
+```python
+import lancedb
+
+db = lancedb.connect(
+    "db://analytics",
+    api_key="ldb_...",
+    host_override="https://api.example.com",
+    sql_host_override="grpc+tls://sql.example.com:10026",
+)
+reader = db.execute_query(
+    """
+    SELECT events.id, accounts.name
+    FROM analytics.public.events AS events
+    JOIN users.public.accounts AS accounts ON events.user_id = accounts.id
+    """,
+    default_namespace_path=["public"],
+)
+for batch in reader:
+    print(batch.num_rows)
+
+query = db.execute_query_async("SELECT * FROM events")
+print(query.id)
+print(query.describe().status)
+for batch in query.reader():
+    print(batch.num_rows)
+
+# The async connection exposes the same lifecycle without blocking:
+# async_db = await lancedb.connect_async(
+#     "db://analytics",
+#     api_key="ldb_...",
+#     host_override="https://api.example.com",
+#     sql_host_override="grpc+tls://sql.example.com:10026",
+# )
+# reader = await async_db.execute_query("SELECT * FROM events")
+# query = await async_db.execute_query_async("SELECT * FROM events")
+# description = await async_db.describe_query(query.id)
+# async for batch in await query.reader():
+#     print(batch.num_rows)
+# await query.cancel()
+```
+
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
@@ -72,6 +136,10 @@ listing a storage directory.
 
 ::: lancedb.functions.UdfDefinition
 
+::: lancedb.secrets.EnvVarSecret
+
+::: lancedb.secrets.SecretInfo
+
 ::: lancedb.functions.FunctionRegistrationRequest
 
 ::: lancedb.functions.FunctionArtifactRequest
@@ -79,6 +147,8 @@ listing a storage directory.
 ::: lancedb.functions.FunctionArtifactContent
 
 ::: lancedb.functions.PythonAdapterSpec
+
+::: lancedb.functions.FunctionImage
 
 ::: lancedb.functions.FunctionVersion
 
@@ -94,19 +164,70 @@ listing a storage directory.
 
 ::: lancedb.functions.OutputMapping
 
+::: lancedb.functions.AssignmentMapping
+
 ::: lancedb.functions.FunctionBinding
 
 ::: lancedb.functions.RefreshColumnResult
 
+::: lancedb.FunctionErrors
+
+::: lancedb.FunctionErrorRecord
+
+::: lancedb.FunctionErrorFragment
+
 ::: lancedb.job.Job
 
 ::: lancedb.job.AsyncJob
+
+::: lancedb.job.JobInfo
+
+::: lancedb.job.JobDescription
+
+::: lancedb.job.JobFailureInfo
+
+::: lancedb.sql.Query
+
+::: lancedb.sql.AsyncQuery
+
+::: lancedb.sql.QueryDescription
 
 ## Materialized Views (Synchronous)
 
 ::: lancedb.materialized_view.MaterializedView
 
 ::: lancedb.materialized_view.MaterializedViewDefinition
+
+::: lancedb.vector_dedup
+
+::: lancedb.materialized_view.VectorDedupSource
+
+For an existing indexed source, declare and materialize a dedup result without
+writing SQL. Creation captures the source version once and waits for the complete
+result; remote connections use the service's MV jobs.
+
+```python
+from lancedb import vector_dedup
+
+view = db.create_materialized_view(
+    "images_clean",
+    vector_dedup("images", column="phash", distance_threshold=4),
+)
+cleaned = view.table
+```
+
+To submit without waiting, call `db.create_materialized_view_async(...)` with the
+same source expression and wait on the returned job. To declare only, pass
+`with_no_data=True`, then use `view.refresh_async().wait()` when ready. Pass
+`dataset_version=...` to `vector_dedup` for an explicit snapshot. The default
+policy retains direct representatives (A-B-C without A-C keeps A and C), preserves
+the source, and materializes its original columns. Only within-segment/partition
+pairs are covered, using the index's distance representation.
+
+
+## Views
+
+::: lancedb.view.ViewDescription
 
 ## Expressions
 
@@ -249,6 +370,12 @@ still work. Queries return descriptors. Call
 
 ::: lancedb.exceptions.MissingColumnError
 
+::: lancedb.exceptions.JobNotFoundError
+
+::: lancedb.exceptions.JobFailedError
+
+::: lancedb.exceptions.JobCancelledError
+
 ## Integrations
 
 ## Pydantic
@@ -279,12 +406,39 @@ still work. Queries return descriptors. Call
 
 ## Reranking
 
+`TypeSafeReranker` supports opt-in request batching:
+
+```python
+from lancedb.rerankers import TypeSafeReranker
+
+reranker = TypeSafeReranker(batch_size=40, max_concurrency=8)
+```
+
+The default `batch_size=1` keeps the query and document in request state and
+sends one request per non-null candidate. With `batch_size=40`, 80 non-null
+candidates require two requests. `max_concurrency` still limits simultaneous
+requests, and the SDK handles retries.
+
+In batched mode, state contains only `{"query": query}`. Each independent
+question contains `{"question": instructions, "document": document}` in its
+structured instructions, so it sees only its own document and the shared query.
+Custom instructions and criteria are kept verbatim: adapt prompts that explicitly
+reference request-state fields such as `state.document` before enabling batching.
+Null documents retain a zero score without an API call; empty strings are scored.
+API failures, mismatched answer IDs, and invalid probabilities raise errors.
+Batching changes the payload and can affect model scores; compare quality and
+latency on your workload before opting in.
+
 ::: lancedb.rerankers
     options:
       show_root_heading: false
       show_root_toc_entry: false
 
 ## Connections (Asynchronous)
+
+::: lancedb.connect_catalog_async
+
+::: lancedb.catalog.AsyncCatalog
 
 Connections represent a connection to a LanceDb database and
 can be used to create, list, or open tables.

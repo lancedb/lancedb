@@ -77,21 +77,36 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         let dataset = table.dataset.get().await?;
         if dataset.mem_wal_index_details().await?.is_some() {
             return Err(Error::InvalidInput {
-                message: "set_lsm_write_spec: an LSM write spec is already set on this table; mutation is not supported".into(),
+                message: "set_lsm_write_spec: an LSM write spec is already set on this \
+                          table and cannot be changed"
+                    .into(),
             });
         }
     }
 
-    // Before the builder borrows the dataset clone. `list_indices` merges an
-    // index's segments into one entry, so the result needs no dedup.
-    let maintained_indexes = {
-        let dataset = table.dataset.get().await?;
-        resolve_maintained_indexes(
-            &dataset,
-            &table.list_indices().await?,
-            spec.maintained_indexes(),
-        )
-        .await?
+    // A named set is checked against the table here, where the caller can still
+    // be told which names exist. An unnamed set is not resolved at all: it is an
+    // intent lance re-reads whenever it builds a MemTable, so an index created
+    // later is maintained without another call.
+    let maintained_indexes = match spec.maintained_indexes() {
+        Some(requested) => {
+            let indices = table.list_indices().await?;
+            for name in requested {
+                if !indices.iter().any(|index| &index.name == name) {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "maintained index '{}' does not exist on this table; it has {}",
+                            name,
+                            index_name_list(&indices),
+                        ),
+                    });
+                }
+            }
+            let dataset = table.dataset.get().await?;
+            validate_maintained_indexes(&dataset, requested).await?;
+            Some(requested.to_vec())
+        }
+        None => None,
     };
 
     table.checkout_latest().await?;
@@ -104,7 +119,7 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
                 .into(),
         });
     }
-    if crate::materialized_view::materialized_view_kind(&dataset.schema().metadata)?.is_some() {
+    if crate::materialized_view::read_definition(&dataset.schema().metadata)?.is_some() {
         return Err(Error::NotSupported {
             message: "an LSM write spec cannot be installed on a materialized view: \
                       rows in un-compacted tiers are invisible to refresh"
@@ -138,55 +153,15 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
             writer_config_defaults
         }
     };
-    builder = builder.maintained_indexes(maintained_indexes);
+    if let Some(maintained_indexes) = maintained_indexes {
+        builder = builder.maintained_indexes(maintained_indexes);
+    }
     for (key, value) in writer_config_defaults {
         builder = builder.add_writer_config_default(key, value);
     }
     builder.execute().await?;
     table.dataset.update(dataset);
     Ok(())
-}
-
-/// Resolve a spec's maintained-index selection against `indices`, as reported
-/// by [`Table::list_indices`](crate::Table::list_indices).
-///
-/// `None` means every index on the table, snapshotted now. Lance validates
-/// either selection against its shard-writer rules, so a spec that installs is
-/// one the MemWAL can open.
-///
-/// An unmaintainable index fails an inferred set rather than being dropped from
-/// it — dropping would leave the caller believing it is maintained.
-async fn resolve_maintained_indexes(
-    dataset: &Dataset,
-    indices: &[IndexConfig],
-    requested: Option<&[String]>,
-) -> Result<Vec<String>> {
-    let Some(requested) = requested else {
-        let all: Vec<String> = indices.iter().map(|index| index.name.clone()).collect();
-        validate_maintained_indexes(dataset, &all)
-            .await
-            .map_err(|source| Error::InvalidInput {
-                message: format!(
-                    "cannot maintain every index on this table: {source}. Set \
-                     maintained_indexes explicitly to choose from {}",
-                    index_name_list(indices),
-                ),
-            })?;
-        return Ok(all);
-    };
-    for name in requested {
-        if !indices.iter().any(|index| &index.name == name) {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "maintained index '{}' does not exist on this table; it has {}",
-                    name,
-                    index_name_list(indices),
-                ),
-            });
-        }
-    }
-    validate_maintained_indexes(dataset, requested).await?;
-    Ok(requested.to_vec())
 }
 
 /// Index names for an error message.
@@ -298,7 +273,9 @@ fn lsm_write_spec_from_details(
     };
 
     Ok(base
-        .with_maintained_indexes(details.maintained_indexes.clone())
+        .with_maintained_indexes(
+            (!details.maintain_all_indexes).then(|| details.maintained_indexes.clone()),
+        )
         .with_writer_config_defaults(details.writer_config_defaults.clone()))
 }
 
@@ -458,6 +435,55 @@ impl ShardWriterCache {
         let entry = Arc::new(ShardWriterEntry::new(writer));
         *guard = Some((shard_id, entry.clone()));
         Ok(entry)
+    }
+
+    /// Install `dataset`'s maintained index set on the cached writer, if one is
+    /// open, so a change reaches a table that is already being written to.
+    ///
+    /// Reported rather than propagated: the index is committed durably by the
+    /// time this runs, and the writer this process happens to hold may be fenced
+    /// or poisoned -- which is not a reason to fail creating an index. Any
+    /// writer opened afterwards reads the committed set.
+    ///
+    /// Holds the entry's read lock across the refresh, so a concurrent close
+    /// waits rather than retiring the writer mid-seal. Writes take the same
+    /// lock first, so the order matches theirs.
+    pub(crate) async fn refresh_maintained_indexes(&self, dataset: &Dataset) {
+        let entry = {
+            let guard = self.slot.read().await;
+            guard.as_ref().map(|(_, entry)| entry.clone())
+        };
+        let Some(entry) = entry else {
+            return;
+        };
+        let guard = entry.inner.read().await;
+        let Some(writer) = guard.as_ref() else {
+            return;
+        };
+        // Replacing the configs seals the active memtable so the next one carries
+        // the new indexes. The outgoing one keeps the set it was built with, so
+        // its flush has to land before a read: while it is still frozen, an
+        // indexed read sees a resident memtable that cannot answer and is
+        // refused.
+        let sealed = match dataset.refresh_mem_wal_index_configs(writer).await {
+            Ok(sealed) => sealed,
+            Err(error) => {
+                log::warn!(
+                    "the maintained index set changed but the open shard writer could \
+                     not be refreshed, so it keeps the set it opened with: {error}"
+                );
+                return;
+            }
+        };
+        if let Some(fence) = sealed
+            && let Err(error) = fence.wait().await
+        {
+            log::warn!(
+                "the shard writer took the new maintained index set, but the memtable \
+                 it sealed was not flushed, so an indexed read stays refused until \
+                 it is: {error}"
+            );
+        }
     }
 
     /// Snapshot the cached writer's shard for the LSM read path: its shard id,
@@ -904,7 +930,7 @@ fn unsharded_shard_id() -> Uuid {
 
 /// Build a [`ShardWriterConfig`] from the persisted `writer_config_defaults`.
 ///
-/// Unknown or unparseable keys are ignored; absent keys keep the
+/// Unknown or unparsable keys are ignored; absent keys keep the
 /// [`ShardWriterConfig`] default. The shard id is set by `mem_wal_writer`.
 fn shard_writer_config_from_defaults(defaults: &HashMap<String, String>) -> ShardWriterConfig {
     let mut config = ShardWriterConfig::default().with_shard_spec_id(SHARDING_SPEC_ID);

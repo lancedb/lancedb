@@ -8,7 +8,8 @@
 
 use std::sync::Arc;
 
-use lance::dataset::cleanup::RemovalStats;
+use chrono::{DateTime, Utc};
+use lance::dataset::cleanup::{CleanupPolicyBuilder, RemovalStats};
 use lance::dataset::optimize::{CompactionMetrics, IndexRemapperOptions, compact_files};
 use lance::index::DatasetIndexExt;
 use lance_index::optimize::OptimizeOptions;
@@ -134,9 +135,44 @@ pub(crate) async fn cleanup_old_versions(
 ) -> Result<RemovalStats> {
     table.dataset.ensure_mutable()?;
     let dataset = table.dataset.get().await?;
-    Ok(dataset
+    let stats = dataset
         .cleanup_old_versions(older_than, delete_unverified, error_if_tagged_old_versions)
-        .await?)
+        .await?;
+    // Computed-column signature sidecars live outside lance's directories;
+    // drop the ones the surviving versions no longer reference.
+    let removed =
+        super::freshness::prune_sidecars(&dataset, delete_unverified.unwrap_or(false)).await?;
+    if removed > 0 {
+        log::debug!("removed {removed} unreferenced computed-column signature sidecars");
+    }
+    Ok(stats)
+}
+
+/// Remove dataset versions committed before an absolute timestamp.
+pub(crate) async fn cleanup_old_versions_before(
+    table: &NativeTable,
+    before_timestamp: DateTime<Utc>,
+    delete_unverified: Option<bool>,
+    error_if_tagged_old_versions: Option<bool>,
+) -> Result<RemovalStats> {
+    table.dataset.ensure_mutable()?;
+    let dataset = table.dataset.get().await?;
+    let mut policy = CleanupPolicyBuilder::default().before_timestamp(before_timestamp);
+    if let Some(delete_unverified) = delete_unverified {
+        policy = policy.delete_unverified(delete_unverified);
+    }
+    if let Some(error_if_tagged_old_versions) = error_if_tagged_old_versions {
+        policy = policy.error_if_tagged_old_versions(error_if_tagged_old_versions);
+    }
+    let stats = dataset.cleanup_with_policy(policy.build()).await?;
+    // Computed-column signature sidecars live outside lance's directories;
+    // drop the ones the surviving versions no longer reference.
+    let removed =
+        super::freshness::prune_sidecars(&dataset, delete_unverified.unwrap_or(false)).await?;
+    if removed > 0 {
+        log::debug!("removed {removed} unreferenced computed-column signature sidecars");
+    }
+    Ok(stats)
 }
 
 /// Compact files in the dataset.

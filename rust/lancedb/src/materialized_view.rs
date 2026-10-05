@@ -5,10 +5,84 @@
 //!
 //! A materialized view is a table whose contents are defined by a query over
 //! one source table and maintained by refresh rather than by writes. Creation
-//! commits an empty table carrying the kind-tagged definition in schema
-//! metadata; a kind added later reads back as unrefreshable, not as a plain
-//! table. Queries, indexes and search work on the view unchanged.
+//! commits an empty table carrying the defining query in schema metadata; a
+//! query this version cannot maintain reads back as unrefreshable, not as a
+//! plain table. Queries, indexes and search work on the view unchanged.
 
+mod duplicate_pairs;
+mod grouped;
+mod grouped_units;
+mod partitioned;
+pub(crate) mod vector_dedup;
+pub use duplicate_pairs::{VectorSource, VectorSourceKind};
+pub use grouped::IVF_PARTITION;
+/// Refreshing a view grouped by [`IVF_PARTITION`] in units, one per index
+/// partition, so the work can be spread over several processes. The caller
+/// plans once, computes every unit of that plan wherever it likes, and
+/// commits the whole set; a unit is bound to the view and plan it was
+/// computed for, and the commit publishes all of them or none.
+///
+/// ```no_run
+/// # #![recursion_limit = "256"]
+/// # use lancedb::materialized_view::{
+/// #     commit_grouped_refresh, plan_grouped_refresh, write_grouped_unit, WrittenUnit,
+/// # };
+/// # use lancedb::materialized_view::MaterializedView;
+/// # async fn refresh_in_units(view: &MaterializedView) -> Result<(), Box<dyn std::error::Error>> {
+/// // The view this refresh was requested for. Every path below carries it,
+/// // including the fallbacks: a view dropped and recreated meanwhile is a
+/// // different view, and refreshing it in place of this one is the identity
+/// // crossing the units path refuses.
+/// let incarnation = view.incarnation().map(str::to_string);
+///
+/// async fn in_one_pass(view: &MaterializedView, incarnation: Option<&str>) -> lancedb::Result<()> {
+///     let mut refresh = view.refresh();
+///     if let Some(token) = incarnation {
+///         refresh = refresh.expect_incarnation(token);
+///     }
+///     refresh.execute().await?;
+///     Ok(())
+/// }
+///
+/// // No plan means this view cannot be refreshed in units: it is not
+/// // grouped by the partition of an indexed column, its index no longer
+/// // says which fragments it covers, or it carries no incarnation to bind
+/// // the units to.
+/// let Some(plan) = plan_grouped_refresh(view.table(), None).await? else {
+///     in_one_pass(view, incarnation.as_deref()).await?;
+///     return Ok(());
+/// };
+///
+/// // Each unit is independent; this loop stands in for dispatching them.
+/// // A unit whose view was dropped and recreated, or whose plan is stale,
+/// // fails here rather than producing rows for the wrong view.
+/// let mut units: Vec<WrittenUnit> = Vec::new();
+/// for unit in 0..plan.units {
+///     units.push(write_grouped_unit(view.table(), unit, &plan).await?);
+/// }
+///
+/// match commit_grouped_refresh(view.table(), &plan, units, incarnation.as_deref()).await {
+///     Ok(result) => println!("{} rows at version {}", result.rows_written, result.version),
+///     Err(err) => {
+///         // The refresh is unrecorded, but it is not necessarily inert: a
+///         // commit that raced a concurrent write can have landed without a
+///         // watermark. Refresh from scratch rather than assuming either.
+///         eprintln!("refresh in units unrecorded ({err}); refreshing in one pass");
+///         in_one_pass(view, incarnation.as_deref()).await?;
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub use grouped_units::{
+    GroupedRefreshPlan, WrittenUnit, commit_grouped_refresh, plan_grouped_refresh,
+    write_grouped_unit,
+};
+pub use partitioned::{
+    PartitionedRefreshPlan, WrittenPartition, commit_partitioned_refresh, plan_partitioned_refresh,
+    write_refresh_partition, write_refresh_partition_with_inputs,
+};
+mod query;
 pub mod refresh;
 
 #[cfg(test)]
@@ -27,14 +101,19 @@ use crate::connection::Connection;
 use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
 use crate::database::{CreateTableRequest, Database, OpenTableRequest};
 use crate::embeddings::EmbeddingDefinition;
+use crate::function::FunctionBinding;
+use crate::job::Job;
 use crate::table::Table;
-use crate::table::refresh::quote_identifier;
+use crate::table::computed_columns::{
+    FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,
+    ensure_declarations_are_planned, function_bindings_metadata,
+};
 use crate::table::{ColumnDefinition, ColumnKind};
 use crate::{Error, Result};
 
 pub use refresh::{RefreshMaterializedViewResult, RefreshMode};
 
-/// Schema metadata key holding the view definition, as kind-tagged JSON.
+/// Schema metadata key holding the view definition; see [`DEFINITION_FORMAT`].
 pub const DEFINITION_META_KEY: &str = "mv.definition";
 
 /// Schema metadata key holding the view's incarnation: a token minted at each
@@ -73,14 +152,36 @@ const EMBEDDING_FUNCTIONS_META_KEY: &str = "embedding_functions";
 /// produces, which is what lets a query embed its own text.
 const COLUMN_DEFINITIONS_META_KEY: &str = "lancedb::column_definitions";
 
-/// Value of the definition's `kind` tag for the projected `select` form.
-/// Reserved for root-namespace sources; see [`NAMESPACED_SELECT_KIND`].
+/// The newest layout this version reads under [`DEFINITION_META_KEY`]:
+/// `{"format": N, "query": "<SQL>"}`, the query as
+/// [`MaterializedViewDefinition::to_sql`] renders it. Format 3 identifies a
+/// native duplicate-pair source, format 4 a dedup result source, format 2 a query with `GROUP BY`, and
+/// format 1 an ordinary query. A reader refuses a newer format rather than
+/// guess at it. The layout also carries `"kind": "query"`, which readers
+/// older than the format number report as an unrefreshable view instead of
+/// failing to read the metadata.
+pub const DEFINITION_FORMAT: u64 = 4;
+
+/// The format `definition` is written in; see [`DEFINITION_FORMAT`].
+fn format_of(definition: &MaterializedViewDefinition) -> u64 {
+    if let Some(source) = &definition.vector_source {
+        match source.kind {
+            VectorSourceKind::Pairs => 3,
+            VectorSourceKind::Dedup => 4,
+        }
+    } else if definition.is_grouped() {
+        2
+    } else {
+        1
+    }
+}
+
+/// Legacy `kind` tag of the structured layout written before
+/// [`DEFINITION_FORMAT`] existed; still read, never written.
 pub const SELECT_KIND: &str = "select";
 
-/// The `select` form over a namespaced source: its own kind, because released
-/// readers drop unknown fields and resolve a `select` source at the root, so
-/// this routes them to the [`MaterializedViewKind::Unrecognized`] refusal
-/// instead of a wrong-table refresh.
+/// Legacy `kind` tag of the structured layout over a namespaced source;
+/// still read, never written.
 pub const NAMESPACED_SELECT_KIND: &str = "namespaced_select";
 
 /// Which view outputs each source column is projected to directly. A column
@@ -97,64 +198,276 @@ pub struct ViewProjection {
     pub expression: String,
 }
 
-/// The query that defines a materialized view.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MaterializedViewDefinition {
-    /// Name of the source table, in the same database as the view.
-    pub source_table: String,
-    /// Namespace path holding the source table; empty is the root namespace.
-    /// A definition written before namespaced sources reads as root.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub source_namespace: Vec<String>,
-    /// The projected output columns, in view schema order.
-    pub projections: Vec<ViewProjection>,
-    /// SQL predicate selecting the source rows the view holds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filter: Option<String>,
-    /// Cap on the number of rows the view holds, in materialization order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u64>,
-    /// Source columns the projections and filter read, derived at creation.
-    #[serde(default)]
-    pub inputs: Vec<String>,
+impl ViewProjection {
+    /// `SELECT *`: every source column, expanded when the view is planned.
+    /// A definition selecting it holds this projection alone.
+    ///
+    /// ```
+    /// use lancedb::materialized_view::{MaterializedViewDefinition, ViewProjection};
+    ///
+    /// let definition = MaterializedViewDefinition::from_sql("SELECT * FROM docs")?;
+    /// assert_eq!(definition.projections, [ViewProjection::star()]);
+    /// assert!(definition.selects_star());
+    /// # Ok::<(), lancedb::Error>(())
+    /// ```
+    pub fn star() -> Self {
+        Self {
+            output: "*".to_string(),
+            expression: "*".to_string(),
+        }
+    }
 }
 
-/// A view definition as read back from schema metadata. Non-exhaustive so a
-/// kind added later is additive.
+/// A `FROM` item computed per source row: each source row yields one view
+/// row per element, and projections read the element as `alias`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum MaterializedViewKind {
-    /// The projected `select` form.
-    Select(MaterializedViewDefinition),
-    /// A kind written by a newer version, reported so a caller can tell an
-    /// unrefreshable view apart from a plain table. Nothing produces this.
-    Unrecognized {
-        /// The kind as it was found in the metadata.
-        kind: String,
+pub struct ViewLateral {
+    /// Where the elements come from.
+    pub source: LateralSource,
+    /// The name the element is read through.
+    pub alias: String,
+}
+
+/// What a [`ViewLateral`] expands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LateralSource {
+    /// `UNNEST(column)`: a list column of the source table.
+    Unnest {
+        /// The list column.
+        column: String,
+    },
+    /// `name(args)`: a Function in `FROM` position, returning rows. The
+    /// server stages its output in a hidden table, recorded under
+    /// [`STAGING_META_KEY`]; a local database cannot refresh this form.
+    Function {
+        /// The Function's name.
+        name: String,
+        /// Its arguments, as SQL expressions over the source table.
+        args: Vec<String>,
     },
 }
 
-/// Serialize `definition` into the kind-tagged form stored under
-/// [`DEFINITION_META_KEY`].
-pub(crate) fn definition_to_metadata(definition: &MaterializedViewDefinition) -> Result<String> {
-    let mut value = serde_json::to_value(definition).map_err(|e| Error::Runtime {
-        message: format!("failed to serialize view definition: {e}"),
-    })?;
-    let kind = if definition.source_namespace.is_empty() {
-        SELECT_KIND
-    } else {
-        NAMESPACED_SELECT_KIND
-    };
-    value["kind"] = serde_json::Value::String(kind.to_string());
-    Ok(value.to_string())
+/// The engine's form of a [`ViewLateral`]: the list column it unnests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewUnnest {
+    pub column: String,
+    pub alias: String,
 }
 
-/// Read a view declaration off a schema metadata map, if it carries one.
-/// `Ok(None)` for a plain table; a declaration that does not parse is an
+/// Schema metadata key holding a [`StagingBinding`], present only on a view
+/// whose query calls a Function in `FROM` position.
+pub const STAGING_META_KEY: &str = "mv.staging";
+
+/// Where a Function in `FROM` position has its output staged: a hidden
+/// table carrying every source column plus `column`, the Function's list
+/// output. Refresh scans this table in place of the query's source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagingBinding {
+    /// The staging table's name.
+    pub table: String,
+    /// Its namespace path; empty is the root namespace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespace: Vec<String>,
+    /// The list column holding the Function's output.
+    pub column: String,
+}
+
+/// The list column refresh unnests for `definition`, given the staging its
+/// Function output lives in. `None` when the query has no lateral item.
+pub(crate) fn physical_unnest(
+    definition: &MaterializedViewDefinition,
+    staging: Option<&StagingBinding>,
+) -> Result<Option<ViewUnnest>> {
+    let Some(lateral) = &definition.lateral else {
+        return Ok(None);
+    };
+    let column = match (&lateral.source, staging) {
+        (LateralSource::Unnest { column }, _) => column.clone(),
+        (LateralSource::Function { .. }, Some(staging)) => staging.column.clone(),
+        (LateralSource::Function { name, .. }, None) => {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "'{name}' in FROM position is a Function; views over Function rows are \
+                     supported only on LanceDB Cloud and Enterprise"
+                ),
+            });
+        }
+    };
+    Ok(Some(ViewUnnest {
+        column,
+        alias: lateral.alias.clone(),
+    }))
+}
+
+/// Read the staging binding off a view's schema metadata, if it has one.
+pub fn read_staging(metadata: &HashMap<String, String>) -> Result<Option<StagingBinding>> {
+    metadata
+        .get(STAGING_META_KEY)
+        .map(|raw| {
+            serde_json::from_str(raw).map_err(|e| Error::Runtime {
+                message: format!("unreadable materialized view staging binding: {e}"),
+            })
+        })
+        .transpose()
+}
+
+/// The query that defines a materialized view, in the relational shape
+/// refresh maintains. Stored as SQL; see [`MaterializedViewDefinition::from_sql`]
+/// for the shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedViewDefinition {
+    /// A table-bound native vector source. It is never evaluated per source row.
+    pub vector_source: Option<Box<VectorSource>>,
+    /// Name of the source table, in the same database as the view.
+    pub source_table: String,
+    /// Namespace path holding the source table; empty is the root namespace.
+    pub source_namespace: Vec<String>,
+    /// The `FROM` item computed per source row, if any.
+    pub lateral: Option<ViewLateral>,
+    /// The projected output columns, in view schema order;
+    /// [`ViewProjection::star`] alone selects every source column. Empty is
+    /// a declaration that projects nothing yet, which
+    /// [`PreparedDeclaration::input_column`] can still add to.
+    pub projections: Vec<ViewProjection>,
+    /// SQL predicate selecting the rows the view holds.
+    pub filter: Option<String>,
+    /// `GROUP BY` expressions. A grouped view holds one row per group and is
+    /// recomputed in full whenever its source changes.
+    pub group_by: Vec<String>,
+    /// Cap on the number of rows the view holds, in materialization order.
+    pub limit: Option<u64>,
+}
+
+impl MaterializedViewDefinition {
+    /// Parse the defining query:
+    ///
+    /// ```sql
+    /// SELECT <column | expr AS name | *>, ...
+    /// FROM [ns.]table [, function(args) AS alias | , UNNEST(column) AS alias]
+    /// [WHERE predicate] [GROUP BY expr, ...] [LIMIT n]
+    /// ```
+    ///
+    /// A Function in `FROM` position yields one row per element it returns;
+    /// `CROSS JOIN [LATERAL]` spells the same relation. Any other clause is
+    /// refused: this engine cannot maintain it, and a definition it does not
+    /// fully understand must not be materialized.
+    ///
+    /// ```
+    /// use lancedb::materialized_view::MaterializedViewDefinition;
+    ///
+    /// let definition = MaterializedViewDefinition::from_sql(
+    ///     "select id, c.text from docs cross join lateral chunk(body) as c",
+    /// )?;
+    /// assert_eq!(definition.to_sql(), "SELECT id, c.text FROM docs, chunk(body) AS c");
+    /// # Ok::<(), lancedb::Error>(())
+    /// ```
+    pub fn from_sql(sql: &str) -> Result<Self> {
+        query::parse(sql)
+    }
+
+    /// The defining query in its canonical spelling, which is what is
+    /// stored and what [`Self::from_sql`] reads back equal.
+    pub fn to_sql(&self) -> String {
+        query::render(self)
+    }
+
+    /// The definition in its stored layout (see [`DEFINITION_FORMAT`]), as
+    /// the language bindings hand it across.
+    pub fn to_json(&self) -> Result<String> {
+        definition_to_metadata(self)
+    }
+
+    /// Whether the query has a `GROUP BY`.
+    pub fn is_grouped(&self) -> bool {
+        !self.group_by.is_empty()
+    }
+
+    /// Whether the query is `SELECT *`.
+    pub fn selects_star(&self) -> bool {
+        matches!(self.projections.as_slice(), [p] if *p == ViewProjection::star())
+    }
+}
+
+/// A view definition as read back from schema metadata. Non-exhaustive so
+/// a later outcome is additive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoredDefinition {
+    /// A query this version can maintain.
+    Query(MaterializedViewDefinition),
+    /// Written by a newer version, reported so a caller can tell an
+    /// unrefreshable view apart from a plain table. `format` is the tag as
+    /// found: a format number, or a legacy `kind`.
+    Newer {
+        /// The format tag as stored.
+        format: String,
+    },
+}
+
+/// The backend-independent metadata needed to open a materialized view.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedViewInfo {
+    /// The parsed view definition.
+    pub definition: MaterializedViewDefinition,
+    /// The current physical incarnation, when one has been minted.
+    pub incarnation: Option<String>,
+}
+
+/// The backend-independent request used to create a remote materialized view.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateMaterializedViewRequest {
+    /// Name of the new view.
+    pub name: String,
+    /// Namespace in which to create the view.
+    pub namespace_path: Vec<String>,
+    /// Defining SELECT query.
+    pub query: String,
+    /// Whether to skip the initial population job.
+    pub with_no_data: bool,
+}
+
+/// Prefix of the internal columns holding source columns a computed column
+/// reads without the view projecting them; see
+/// [`PreparedDeclaration::input_column`].
+pub const INPUT_COLUMN_PREFIX: &str = "__input_";
+
+/// The internal view column holding a copy of `source_column`; a nested
+/// path's separators become `__`, since a top-level name cannot hold `.`.
+pub fn input_column_name(source_column: &str) -> String {
+    format!("{INPUT_COLUMN_PREFIX}{}", source_column.replace('.', "__"))
+}
+
+/// The structured layout written before [`DEFINITION_FORMAT`]. Read only;
+/// refresh rewrites such a view in the current layout.
+#[derive(Deserialize)]
+struct LegacyDefinition {
+    source_table: String,
+    #[serde(default)]
+    source_namespace: Vec<String>,
+    projections: Vec<ViewProjection>,
+    #[serde(default)]
+    filter: Option<String>,
+    #[serde(default)]
+    limit: Option<u64>,
+}
+
+/// Serialize `definition` into the layout stored under
+/// [`DEFINITION_META_KEY`].
+pub(crate) fn definition_to_metadata(definition: &MaterializedViewDefinition) -> Result<String> {
+    Ok(serde_json::json!({
+        "kind": "query",
+        "format": format_of(definition),
+        "query": definition.to_sql(),
+    })
+    .to_string())
+}
+
+/// Read a view definition off a schema metadata map, if it carries one.
+/// `Ok(None)` for a plain table; a definition that does not parse is an
 /// error, because treating a view as plain would let it be rewritten.
-pub fn materialized_view_kind(
-    metadata: &HashMap<String, String>,
-) -> Result<Option<MaterializedViewKind>> {
+pub fn read_definition(metadata: &HashMap<String, String>) -> Result<Option<StoredDefinition>> {
     let Some(raw) = metadata.get(DEFINITION_META_KEY) else {
         return Ok(None);
     };
@@ -162,42 +475,111 @@ pub fn materialized_view_kind(
         message: format!("unreadable materialized view definition: {e}"),
     };
     let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| unreadable(&e))?;
+    if let Some(format) = value.get("format") {
+        let Some(format) = format.as_u64() else {
+            return Err(unreadable(&format!("format tag {format} is not a number")));
+        };
+        if format > DEFINITION_FORMAT {
+            return Ok(Some(StoredDefinition::Newer {
+                format: format.to_string(),
+            }));
+        }
+        let Some(sql) = value.get("query").and_then(|q| q.as_str()) else {
+            return Err(unreadable(&"missing query"));
+        };
+        let definition = MaterializedViewDefinition::from_sql(sql).map_err(|e| unreadable(&e))?;
+        // No correct writer tags a query below the format its shape needs.
+        if format < format_of(&definition) {
+            return Err(unreadable(&format!(
+                "format {format} cannot carry this query; it needs {}",
+                format_of(&definition)
+            )));
+        }
+        return Ok(Some(StoredDefinition::Query(definition)));
+    }
     let kind = value
         .get("kind")
         .and_then(|k| k.as_str())
-        .ok_or_else(|| unreadable(&"missing kind tag"))?;
+        .ok_or_else(|| unreadable(&"missing format tag"))?
+        .to_string();
     if kind != SELECT_KIND && kind != NAMESPACED_SELECT_KIND {
-        return Ok(Some(MaterializedViewKind::Unrecognized {
-            kind: kind.to_string(),
+        return Ok(Some(StoredDefinition::Newer {
+            format: format!("kind '{kind}'"),
         }));
     }
-    let kind = kind.to_string();
-    let definition: MaterializedViewDefinition =
-        serde_json::from_value(value).map_err(|e| unreadable(&e))?;
-    // No correct writer produces a kind that disagrees with its namespace.
-    if (kind == SELECT_KIND) != definition.source_namespace.is_empty() {
+    let legacy: LegacyDefinition = serde_json::from_value(value).map_err(|e| unreadable(&e))?;
+    // No correct writer produced a tag that disagrees with the definition.
+    if (kind == SELECT_KIND) != legacy.source_namespace.is_empty() {
         return Err(unreadable(&format!(
             "kind '{kind}' does not match its source namespace {:?}",
-            definition.source_namespace
+            legacy.source_namespace
         )));
     }
-    Ok(Some(MaterializedViewKind::Select(definition)))
+    Ok(Some(StoredDefinition::Query(MaterializedViewDefinition {
+        vector_source: None,
+        source_table: legacy.source_table,
+        source_namespace: legacy.source_namespace,
+        lateral: None,
+        projections: legacy.projections,
+        filter: legacy.filter,
+        group_by: Vec::new(),
+        limit: legacy.limit,
+    })))
+}
+
+pub(crate) fn materialized_view_info_from_metadata(
+    name: &str,
+    metadata: &HashMap<String, String>,
+) -> Result<MaterializedViewInfo> {
+    let incarnation = metadata.get(INCARNATION_META_KEY).cloned();
+    match read_definition(metadata)? {
+        Some(StoredDefinition::Query(definition)) => Ok(MaterializedViewInfo {
+            definition,
+            incarnation,
+        }),
+        Some(StoredDefinition::Newer { format }) => Err(Error::NotSupported {
+            message: format!(
+                "materialized view '{name}' is stored in format {format}, which this version \
+                 of lancedb cannot refresh"
+            ),
+        }),
+        None => Err(Error::NotAMaterializedView {
+            name: name.to_string(),
+        }),
+    }
 }
 
 /// Resolve a definition against the source schema into the view's projected
-/// fields, with `inputs` filled in. Everything statically checkable is
-/// checked here rather than at refresh time. Empty `projections` selects
-/// every source column as the schema stands now.
+/// fields, with `inputs` filled in and every expression in its canonical
+/// spelling. Everything statically checkable is checked here rather than at
+/// refresh time. Empty `projections` selects every column as the schema
+/// stands now.
+#[derive(Debug)]
+pub(crate) struct Planned {
+    /// The definition with every expression in its canonical spelling and
+    /// `SELECT *` expanded.
+    pub definition: MaterializedViewDefinition,
+    /// The view's projected fields, in order.
+    pub fields: Vec<ArrowField>,
+    pub lineage: Lineage,
+    /// Source columns the query reads; a read through the unnest alias is
+    /// recorded as the list column, which is what the source has and what
+    /// incremental refresh watches.
+    pub inputs: Vec<String>,
+}
+
 pub(crate) fn plan(
     source_schema: SchemaRef,
-    source_table: &str,
-    source_namespace: &[String],
-    projections: &[(String, String)],
-    filter: Option<&str>,
-    limit: Option<u64>,
-) -> Result<(MaterializedViewDefinition, Vec<ArrowField>, Lineage)> {
-    let filter = filter
-        .map(crate::expr::canonicalize_sql_predicate)
+    definition: &MaterializedViewDefinition,
+    staging: Option<&StagingBinding>,
+) -> Result<Planned> {
+    if definition.vector_source.is_some() {
+        return duplicate_pairs::plan(source_schema, definition);
+    }
+    let filter = definition
+        .filter
+        .as_deref()
+        .map(query::canonical_expr)
         .transpose()
         .map_err(|err| match err {
             Error::InvalidInput { message } => Error::InvalidInput {
@@ -205,18 +587,49 @@ pub(crate) fn plan(
             },
             err => err,
         })?;
-    let projections: Vec<(String, String)> = if projections.is_empty() {
+    if definition.is_grouped() {
+        return grouped::plan(source_schema, definition, filter);
+    }
+    // Projections are typed against the source, or for an unnested view
+    // against the source with the list column replaced by its element
+    // under the alias, where `c.chunk` is an ordinary nested path.
+    let unnest = physical_unnest(definition, staging)?;
+    let source_schema = match &unnest {
+        None => source_schema,
+        Some(unnest) => {
+            // A scan limit counts source rows, not the elements they expand to.
+            if definition.limit.is_some() {
+                return Err(Error::InvalidInput {
+                    message: "LIMIT is not supported together with UNNEST".to_string(),
+                });
+            }
+            flattened_schema(&source_schema, unnest)?
+        }
+    };
+    let projections: Vec<(String, String)> = if definition.selects_star() {
+        // `SELECT *`. A source that is itself a view carries its own
+        // provenance column; the new view records its own, not a copy.
         source_schema
             .fields()
             .iter()
-            // A source that is itself a view carries its own provenance
-            // column; the new view records its own, not a copy.
             .filter(|f| f.name() != SOURCE_ROW_ID_COLUMN)
-            .map(|f| (f.name().clone(), quote_identifier(f.name())))
+            .map(|f| (f.name().clone(), query::ident_sql(f.name())))
             .collect()
     } else {
-        projections.to_vec()
+        definition
+            .projections
+            .iter()
+            .map(|p| {
+                let expression =
+                    query::canonical_expr(&p.expression).map_err(|e| Error::InvalidExpression {
+                        column: p.output.clone(),
+                        message: e.to_string(),
+                    })?;
+                Ok((p.output.clone(), expression))
+            })
+            .collect::<Result<_>>()?
     };
+    let limit = definition.limit;
 
     // A scan takes the cap as i64. Rejecting it here keeps creation and
     // refresh from disagreeing about whether a view is valid.
@@ -288,9 +701,16 @@ pub(crate) fn plan(
                     message: e.to_string(),
                 })?;
 
-        // Always nullable: what a refresh appends must fit the declared field
-        // whatever nullability the evaluator reports for a given batch.
-        let mut field = ArrowField::new(output, data_type, true);
+        // A projected column keeps its nullability; a computed value is
+        // nullable whatever the evaluator reports for a given batch.
+        let nullable = match projected_path(&expr).as_deref() {
+            Some([column]) => source_schema
+                .field_with_name(column)
+                .map(|f| f.is_nullable())
+                .unwrap_or(true),
+            _ => true,
+        };
+        let mut field = ArrowField::new(output, data_type, nullable);
         // Identity projections keep descriptive field metadata (blob markers);
         // computed values carry none. Structural declarations never come along.
         if let Some(source_field) = projected_field(&expr, &source_schema) {
@@ -310,51 +730,113 @@ pub(crate) fn plan(
     }
 
     if let Some(filter) = filter.as_deref() {
-        let expr = planner
-            .parse_filter(filter)
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?;
-        ensure_immutable(&expr, |message| Error::InvalidInput {
-            message: format!("invalid view filter: {message}"),
-        })?;
-        let filter_inputs = resolve_inputs(&source_schema, &expr, |message| Error::InvalidInput {
-            message: format!("invalid view filter: {message}"),
-        })?;
-        // A committed filter has to be usable as a predicate.
-        let read_schema = project_schema(&source_schema, &filter_inputs);
-        let data_type = Planner::new(read_schema.clone())
-            .create_physical_expr(&expr)
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?
-            .data_type(read_schema.as_ref())
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?;
-        if data_type != DataType::Boolean {
-            return Err(Error::InvalidInput {
-                message: format!("view filter must be a boolean predicate, not {data_type}"),
-            });
-        }
-        inputs.extend(filter_inputs);
+        inputs.extend(plan_filter(&source_schema, filter)?);
     }
 
-    inputs.sort();
-    inputs.dedup();
-
     let definition = MaterializedViewDefinition {
-        source_table: source_table.to_string(),
-        source_namespace: source_namespace.to_vec(),
+        vector_source: None,
+        source_table: definition.source_table.clone(),
+        source_namespace: definition.source_namespace.clone(),
+        lateral: definition.lateral.clone(),
         projections: projections
             .into_iter()
             .map(|(output, expression)| ViewProjection { output, expression })
             .collect(),
         filter,
+        group_by: Vec::new(),
         limit,
-        inputs,
     };
-    Ok((definition, fields, lineage))
+    let mut inputs: Vec<String> = inputs
+        .iter()
+        .map(|input| recorded_input(unnest.as_ref(), input))
+        .collect();
+    inputs.sort();
+    inputs.dedup();
+    Ok(Planned {
+        definition,
+        fields,
+        lineage,
+        inputs,
+    })
+}
+
+/// Check that `filter` is an immutable boolean predicate over `source_schema`,
+/// returning the columns it reads.
+pub(crate) fn plan_filter(source_schema: &SchemaRef, filter: &str) -> Result<Vec<String>> {
+    let expr = Planner::new(source_schema.clone())
+        .parse_filter(filter)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?;
+    ensure_immutable(&expr, |message| Error::InvalidInput {
+        message: format!("invalid view filter: {message}"),
+    })?;
+    let filter_inputs = resolve_inputs(source_schema, &expr, |message| Error::InvalidInput {
+        message: format!("invalid view filter: {message}"),
+    })?;
+    // A committed filter has to be usable as a predicate.
+    let read_schema = project_schema(source_schema, &filter_inputs);
+    let data_type = Planner::new(read_schema.clone())
+        .create_physical_expr(&expr)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?
+        .data_type(read_schema.as_ref())
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?;
+    if data_type != DataType::Boolean {
+        return Err(Error::InvalidInput {
+            message: format!("view filter must be a boolean predicate, not {data_type}"),
+        });
+    }
+    Ok(filter_inputs)
+}
+
+/// The schema a projection over an unnested view is planned against: the
+/// source's, with the list column replaced by its element type under the
+/// alias.
+pub(crate) fn flattened_schema(
+    source_schema: &ArrowSchema,
+    unnest: &ViewUnnest,
+) -> Result<SchemaRef> {
+    let field = source_schema
+        .field_with_name(&unnest.column)
+        .map_err(|_| Error::InvalidInput {
+            message: format!(
+                "UNNEST column '{}' is not a column of the source",
+                unnest.column
+            ),
+        })?;
+    let DataType::List(element) = field.data_type() else {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "UNNEST column '{}' is {}, not a list",
+                unnest.column,
+                field.data_type()
+            ),
+        });
+    };
+    if source_schema.field_with_name(&unnest.alias).is_ok() {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "UNNEST alias '{}' collides with a source column",
+                unnest.alias
+            ),
+        });
+    }
+    let fields: Vec<ArrowField> = source_schema
+        .fields()
+        .iter()
+        .map(|f| {
+            if f.name() == &unnest.column {
+                ArrowField::new(&unnest.alias, element.data_type().clone(), true)
+            } else {
+                f.as_ref().clone()
+            }
+        })
+        .collect();
+    Ok(Arc::new(ArrowSchema::new(fields)))
 }
 
 /// Reject any function that is not immutable: a view definition has to
@@ -395,6 +877,28 @@ fn ensure_immutable(expr: &datafusion_expr::Expr, error: impl Fn(String) -> Erro
 /// The root of a possibly-dotted column path: `metadata.age` -> `metadata`.
 fn root(path: &str) -> &str {
     path.split('.').next().unwrap_or(path)
+}
+
+/// The field a dotted `path` names, walking struct children.
+fn field_at_path(schema: &ArrowSchema, path: &str) -> Option<ArrowField> {
+    let mut parts = path.split('.');
+    let mut field = schema.field_with_name(parts.next()?).ok()?.clone();
+    for part in parts {
+        let DataType::Struct(children) = field.data_type() else {
+            return None;
+        };
+        field = children.iter().find(|f| f.name() == part)?.as_ref().clone();
+    }
+    Some(field)
+}
+
+/// The source column recorded as read for `path`: for an unnested view a
+/// read through the alias is a read of the list column.
+fn recorded_input(unnest: Option<&ViewUnnest>, path: &str) -> String {
+    match unnest {
+        Some(unnest) if root(path) == unnest.alias => unnest.column.clone(),
+        _ => path.to_string(),
+    }
 }
 
 /// The columns `expr` reads, kept as the planner reports them (a nested
@@ -627,6 +1131,12 @@ fn project_schema(schema: &ArrowSchema, columns: &[String]) -> SchemaRef {
 pub struct PreparedDeclaration {
     schema: SchemaRef,
     definition: MaterializedViewDefinition,
+    /// The source schema and the projection lineage, for placing a computed
+    /// column's inputs; `internal_inputs` counts the projections
+    /// [`PreparedDeclaration::input_column`] added after the declared ones.
+    source_schema: SchemaRef,
+    lineage: Lineage,
+    internal_inputs: usize,
     /// The source's own database: the only place
     /// [`PreparedDeclaration::create`] will put the view, because refresh
     /// resolves the recorded source coordinate through the view's database.
@@ -645,6 +1155,212 @@ impl PreparedDeclaration {
     /// The query the declaration records.
     pub fn definition(&self) -> &MaterializedViewDefinition {
         &self.definition
+    }
+
+    /// The schema the view will have: the declared columns in order, any
+    /// internal projections added by [`PreparedDeclaration::input_column`],
+    /// then [`SOURCE_ROW_ID_COLUMN`].
+    pub fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+
+    /// The view column that holds `source_column` for a computed column to
+    /// read: the column the view projects it to, if any, otherwise an
+    /// internal projection added here, named by [`input_column_name`].
+    pub fn input_column(&mut self, source_column: &str) -> Result<String> {
+        if self.definition.vector_source.is_some() {
+            return Err(Error::InvalidInput {
+                message: "native vector views have no per-source-row inputs".into(),
+            });
+        }
+        // A grouped view's rows are groups; no source row carries a value into one.
+        if self.definition.is_grouped() {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "a computed column on a grouped view cannot read source column \
+                     '{source_column}'; declare it on a view over the grouped view"
+                ),
+            });
+        }
+        if let Some(output) = self.lineage.get(source_column).and_then(|o| o.first()) {
+            return Ok(output.clone());
+        }
+        let name = input_column_name(source_column);
+        let field = field_at_path(&self.source_schema, source_column).ok_or_else(|| {
+            Error::InvalidInput {
+                message: format!("the source has no column '{source_column}' to read"),
+            }
+        })?;
+        if self.schema.field_with_name(&name).is_ok() {
+            return Err(Error::ColumnAlreadyExists { name });
+        }
+        let row_id = self.row_id_index()?;
+        let mut fields: Vec<ArrowField> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields.insert(row_id, without_declarations(&field.with_name(name.clone())));
+        self.definition.projections.push(ViewProjection {
+            output: name.clone(),
+            expression: source_column
+                .split('.')
+                .map(query::ident_sql)
+                .collect::<Vec<_>>()
+                .join("."),
+        });
+        self.lineage
+            .entry(source_column.to_string())
+            .or_default()
+            .push(name.clone());
+        self.internal_inputs += 1;
+        let mut metadata = self.schema.metadata().clone();
+        rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
+        metadata.insert(
+            DEFINITION_META_KEY.to_string(),
+            definition_to_metadata(&self.definition)?,
+        );
+        self.schema = Arc::new(ArrowSchema::new_with_metadata(fields, metadata));
+        Ok(name)
+    }
+
+    /// Add computed columns, each at its position among the declared
+    /// columns, with the bindings any of them name.
+    ///
+    /// Refresh never computes such a column: every row it writes carries
+    /// NULL there, and the declaration's owner fills it, `refresh_column`
+    /// for a SQL declaration. A commit that fills only computed columns is
+    /// the one commit on a view refresh does not treat as drift. Declarations
+    /// are validated over the assembled schema, and read only columns the
+    /// view holds (see [`PreparedDeclaration::input_column`]).
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # use std::collections::HashMap;
+    /// # use arrow_schema::{DataType, Field};
+    /// # use lancedb::materialized_view::prepare_declaration;
+    /// # use lancedb::table::computed_columns::{
+    /// #     COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,
+    /// # };
+    /// # async fn declare(source: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut prepared = prepare_declaration(
+    ///     source,
+    ///     Some(&[("id".into(), "id".into())]),
+    ///     None,
+    ///     None,
+    /// )
+    /// .await?;
+    /// // `text` is not projected; the view holds it internally for the column to read.
+    /// let text = prepared.input_column("text")?;
+    /// let length = Field::new("length", DataType::Int32, true).with_metadata(HashMap::from([
+    ///     (COMPUTED_COLUMN_META_KEY.into(), "true".into()),
+    ///     (KIND_META_KEY.into(), SQL_KIND.into()),
+    ///     (EXPRESSION_META_KEY.into(), format!("length({text})")),
+    ///     (INPUTS_META_KEY.into(), format!("[\"{text}\"]")),
+    /// ]));
+    /// let view = prepared
+    ///     .with_computed_columns(vec![(1, length)], &[])?
+    ///     .create("lengths")
+    ///     .await?;
+    /// view.refresh().execute().await?; // rows land with `length` NULL
+    /// view.table().refresh_column("length").await?; // filled
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_computed_columns(
+        mut self,
+        columns: Vec<(usize, ArrowField)>,
+        bindings: &[FunctionBinding],
+    ) -> Result<Self> {
+        if self.definition.vector_source.is_some() {
+            return Err(Error::InvalidInput {
+                message: "computed columns on native vector views are not supported".into(),
+            });
+        }
+        let invalid = |message: String| Error::InvalidInput { message };
+        if columns.is_empty() {
+            return Err(invalid("at least one computed column is needed".into()));
+        }
+        if !computed_columns(&self.schema).is_empty() {
+            return Err(invalid(
+                "computed columns were already declared on this view".into(),
+            ));
+        }
+        if self.definition.projections.is_empty() {
+            return Err(invalid(
+                "a view of computed columns alone must read at least one source column".into(),
+            ));
+        }
+        let visible_count = self.visible_count();
+        let mut fields: Vec<ArrowField> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        let mut columns = columns;
+        columns.sort_by_key(|(position, _)| *position);
+        for (inserted, (position, field)) in columns.iter().enumerate() {
+            let name = field.name().as_str();
+            if name == SOURCE_ROW_ID_COLUMN
+                || name == ROW_ID
+                || name.starts_with(INPUT_COLUMN_PREFIX)
+            {
+                return Err(invalid(format!("view column name '{name}' is reserved")));
+            }
+            if fields.iter().any(|f| f.name() == name) {
+                return Err(Error::ColumnAlreadyExists {
+                    name: name.to_string(),
+                });
+            }
+            if !field.is_nullable() {
+                return Err(invalid(format!(
+                    "computed column '{name}' must be nullable until a refresh fills it"
+                )));
+            }
+            if computed_column_from_field(field).is_none() {
+                return Err(invalid(format!(
+                    "column '{name}' does not carry a computed-column declaration"
+                )));
+            }
+            let limit = visible_count + inserted;
+            if *position > limit {
+                return Err(invalid(format!(
+                    "computed column '{name}' is placed at {position}, past the view's {limit} columns"
+                )));
+            }
+            // Positions index the select list, which counts the computed
+            // columns already inserted before this one.
+            fields.insert(*position, field.clone());
+        }
+        let mut metadata = self.schema.metadata().clone();
+        if !bindings.is_empty() {
+            metadata.insert(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                function_bindings_metadata(bindings)?,
+            );
+        }
+        rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
+        let schema = ArrowSchema::new_with_metadata(fields, metadata);
+        ensure_declarations_are_planned(&schema)?;
+        self.schema = Arc::new(schema);
+        Ok(self)
+    }
+
+    fn row_id_index(&self) -> Result<usize> {
+        self.schema
+            .index_of(SOURCE_ROW_ID_COLUMN)
+            .map_err(|e| Error::Runtime {
+                message: e.to_string(),
+            })
+    }
+
+    /// Columns the declaration lists: everything before the internal
+    /// projections and the provenance column.
+    fn visible_count(&self) -> usize {
+        self.definition.projections.len() - self.internal_inputs
+            + computed_columns(&self.schema).len()
     }
 
     /// Create the view table and verify it, consuming the declaration.
@@ -717,40 +1433,215 @@ impl PreparedDeclaration {
     }
 }
 
-/// Validate a view declaration against its live source and hold what its
-/// creation needs. The declaration is canonicalized through the coordinate a
-/// refresh will resolve -- name and namespace both -- so a handle that does
-/// not resolve back to itself is rejected. Same creation-time checks as
-/// [`Connection::create_materialized_view`].
+/// Column definitions are positional over the view schema: carry each
+/// field's entry to its place in `fields`, physical for a field that had none.
+fn rewrite_column_definitions(
+    metadata: &mut HashMap<String, String>,
+    previous: &ArrowSchema,
+    fields: &[ArrowField],
+) -> Result<()> {
+    let Some(raw) = metadata.get(COLUMN_DEFINITIONS_META_KEY).cloned() else {
+        return Ok(());
+    };
+    let definitions: Vec<ColumnDefinition> =
+        serde_json::from_str(&raw).map_err(|e| Error::Runtime {
+            message: format!("unreadable column definitions on the view: {e}"),
+        })?;
+    let by_name: HashMap<&str, &ColumnDefinition> = previous
+        .fields()
+        .iter()
+        .zip(&definitions)
+        .map(|(field, definition)| (field.name().as_str(), definition))
+        .collect();
+    let rewritten: Vec<ColumnDefinition> = fields
+        .iter()
+        .map(|field| {
+            by_name
+                .get(field.name().as_str())
+                .map(|d| (*d).clone())
+                .unwrap_or(ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                })
+        })
+        .collect();
+    metadata.insert(
+        COLUMN_DEFINITIONS_META_KEY.to_string(),
+        serde_json::to_string(&rewritten).map_err(|e| Error::Runtime {
+            message: format!("failed to serialize column definitions: {e}"),
+        })?,
+    );
+    Ok(())
+}
+
+/// Validate a view declaration over `source`: `projections` as
+/// `(name, SQL expression)` pairs, `None` selecting every source column.
+/// See [`MaterializedViewDefinition::from_sql`] for the query shape;
+/// [`prepare_definition`] takes a parsed query directly.
+pub async fn prepare_declaration(
+    source: &Table,
+    projections: Option<&[(String, String)]>,
+    filter: Option<&str>,
+    limit: Option<u64>,
+) -> Result<PreparedDeclaration> {
+    let definition = MaterializedViewDefinition {
+        vector_source: None,
+        source_table: source.name().to_string(),
+        source_namespace: source.namespace().to_vec(),
+        lateral: None,
+        projections: match projections {
+            None => vec![ViewProjection::star()],
+            Some(projections) => projections
+                .iter()
+                .map(|(output, expression)| ViewProjection {
+                    output: output.clone(),
+                    expression: expression.clone(),
+                })
+                .collect(),
+        },
+        filter: filter.map(str::to_string),
+        group_by: Vec::new(),
+        limit,
+    };
+    prepare_definition(source, definition).await
+}
+
+/// Validate `definition` over `source`, the table it names. The declaration
+/// is planned against the source as refresh will reach it, and the result
+/// creates the view with [`PreparedDeclaration::create`]. A query calling a
+/// Function in `FROM` position needs [`prepare_staged_definition`].
 ///
-/// ```no_run
+/// ```
 /// # #![recursion_limit = "256"]
-/// # use lancedb::materialized_view::prepare_declaration;
-/// # async fn declare(source: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
-/// let prepared = prepare_declaration(
-///     source,
-///     &[("id".into(), "id".into()), ("double".into(), "value * 2".into())],
-///     Some("value > 0"),
-///     None,
-/// )
-/// .await?;
-/// let view = prepared.create("doubles").await?;
+/// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+///
+/// # async fn declare(events: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let definition = MaterializedViewDefinition::from_sql(
+///     "SELECT id, t.tag AS tag FROM events, UNNEST(tags) AS t WHERE id > 0",
+/// )?;
+/// let view = prepare_definition(events, definition)
+///     .await?
+///     .create("event_tags")
+///     .await?;
+/// view.refresh().execute().await?;
 /// # Ok(())
 /// # }
 /// ```
-pub async fn prepare_declaration(
+///
+/// A grouped view holds one row per group and is recomputed in full on
+/// every refresh after a source change:
+///
+/// ```
+/// # #![recursion_limit = "256"]
+/// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+///
+/// # async fn declare(events: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let definition = MaterializedViewDefinition::from_sql(
+///     "SELECT kind, count(*) AS n, array_agg(id) AS ids FROM events GROUP BY kind",
+/// )?;
+/// let view = prepare_definition(events, definition)
+///     .await?
+///     .create("events_by_kind")
+///     .await?;
+/// view.refresh().execute().await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// An indexed, pinned source can materialize retained original rows using the
+/// default greedy direct-representative policy. A row is removed only when it
+/// directly matches a retained row; an A-B-C chain keeps A and C. The source is
+/// unchanged. Hosts distribute this through [`plan_partitioned_refresh`] and
+/// [`write_refresh_partition_with_inputs`], with a barrier between selection
+/// tasks and source-fragment materialization tasks.
+///
+/// ```
+/// # #![recursion_limit = "256"]
+/// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+/// # async fn dedup(images: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let version = images.version().await?;
+/// let definition = MaterializedViewDefinition::from_sql(&format!(
+///     "SELECT * FROM vector_dedup('images', {version}, 'phash', 4)"
+/// ))?;
+/// let clean = prepare_definition(images, definition).await?.create("images_clean").await?;
+/// clean.refresh().execute().await?;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn prepare_definition(
     source: &Table,
-    projections: &[(String, String)],
-    filter: Option<&str>,
-    limit: Option<u64>,
+    definition: MaterializedViewDefinition,
+) -> Result<PreparedDeclaration> {
+    if definition.source_table != source.name() || definition.source_namespace != source.namespace()
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "the query reads '{}' in namespace {:?}, but the source handle is '{}' in {:?}",
+                definition.source_table,
+                definition.source_namespace,
+                source.name(),
+                source.namespace()
+            ),
+        });
+    }
+    prepare_with(source, definition, None).await
+}
+
+/// Validate a `definition` whose query calls a Function in `FROM` position,
+/// planned over `staging`: a table carrying every column of the query's
+/// source plus `column`, the Function's list output for that row. The view
+/// records the query as written and the staging under [`STAGING_META_KEY`];
+/// refresh scans the staging table and unnests `column`.
+///
+/// ```
+/// # #![recursion_limit = "256"]
+/// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_staged_definition};
+///
+/// // `staging` holds every column of `docs` plus `chunks`, the list
+/// // `chunk(body)` returned for each row.
+/// # async fn declare(staging: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let definition = MaterializedViewDefinition::from_sql(
+///     "SELECT id, c.text, c.ordinal FROM docs, chunk(body) AS c",
+/// )?;
+/// let view = prepare_staged_definition(staging, definition, "chunks")
+///     .await?
+///     .create("chunks")
+///     .await?;
+/// view.refresh().execute().await?;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn prepare_staged_definition(
+    staging: &Table,
+    definition: MaterializedViewDefinition,
+    column: impl Into<String>,
+) -> Result<PreparedDeclaration> {
+    if !matches!(
+        definition.lateral.as_ref().map(|l| &l.source),
+        Some(LateralSource::Function { .. })
+    ) {
+        return Err(Error::InvalidInput {
+            message: "only a query calling a Function in FROM position takes a staging table"
+                .into(),
+        });
+    }
+    let binding = StagingBinding {
+        table: staging.name().to_string(),
+        namespace: staging.namespace().to_vec(),
+        column: column.into(),
+    };
+    prepare_with(staging, definition, Some(binding)).await
+}
+
+async fn prepare_with(
+    source: &Table,
+    definition: MaterializedViewDefinition,
+    staging: Option<StagingBinding>,
 ) -> Result<PreparedDeclaration> {
     let Some(caller_native) = source.as_native() else {
         return Err(Error::NotSupported {
             message: "materialized views are supported only on local databases".into(),
         });
     };
-    // Refresh resolves the source at exactly this coordinate, so the
-    // definition records the namespace alongside the name.
     let source_namespace = source.namespace().to_vec();
     let database = source
         .database_opt()
@@ -791,7 +1682,9 @@ pub async fn prepare_declaration(
             ),
         });
     }
-    if !native.dataset.get().await?.manifest.uses_stable_row_ids() {
+    if definition.vector_source.is_none()
+        && !native.dataset.get().await?.manifest.uses_stable_row_ids()
+    {
         return Err(Error::InvalidInput {
             message: format!(
                 "materialized views require stable row ids on the source table; \
@@ -806,21 +1699,56 @@ pub async fn prepare_declaration(
         resolved.name(),
     )
     .await?;
-    let source_schema = resolved.schema().await?;
+    // The internal-input prefix belongs to the declaration alone; the
+    // replan at refresh sees those projections and must accept them.
+    if let Some(reserved) = definition
+        .projections
+        .iter()
+        .find(|p| p.output.starts_with(INPUT_COLUMN_PREFIX))
+    {
+        return Err(Error::InvalidInput {
+            message: format!("view column name '{}' is reserved", reserved.output),
+        });
+    }
+    let source_schema = if let Some(pairs) = &definition.vector_source {
+        let ds = native
+            .dataset
+            .get()
+            .await?
+            .checkout_version(pairs.dataset_version)
+            .await?;
+        crate::table::datafusion::udtf::duplicate_pairs::plan_duplicate_pairs(
+            Arc::new(ds.clone()),
+            &pairs.config()?,
+        )
+        .await?;
+        Arc::new(ArrowSchema::from(ds.schema()))
+    } else {
+        resolved.schema().await?
+    };
     let source_metadata = source_schema.metadata().clone();
-    let (definition, mut fields, lineage) = plan(
-        source_schema.clone(),
-        resolved.name(),
-        &source_namespace,
-        projections,
-        filter,
-        limit,
-    )?;
-    fields.push(ArrowField::new(
-        SOURCE_ROW_ID_COLUMN,
-        DataType::UInt64,
-        false,
-    ));
+    let Planned {
+        definition,
+        mut fields,
+        lineage,
+        ..
+    } = plan(source_schema.clone(), &definition, staging.as_ref())?;
+    if definition.is_grouped() {
+        grouped::check(native.dataset.get().await?.as_ref(), &definition).await?;
+    }
+    // What later projections (`input_column`) are planned against: for an
+    // unnested view the flattened schema, where the alias is a column.
+    let planning_schema = match physical_unnest(&definition, staging.as_ref())? {
+        None => source_schema.clone(),
+        Some(unnest) => flattened_schema(&source_schema, &unnest)?,
+    };
+    if definition.vector_source.is_none() {
+        fields.push(ArrowField::new(
+            SOURCE_ROW_ID_COLUMN,
+            DataType::UInt64,
+            false,
+        ));
+    }
     // Only column-describing metadata comes along: structural declarations
     // describe how a table is written, and a view is written by refresh alone.
     let mut metadata: HashMap<String, String> = HashMap::new();
@@ -838,32 +1766,22 @@ pub async fn prepare_declaration(
         DEFINITION_META_KEY.to_string(),
         definition_to_metadata(&definition)?,
     );
+    if let Some(staging) = &staging {
+        metadata.insert(
+            STAGING_META_KEY.to_string(),
+            serde_json::to_string(staging).map_err(|e| Error::Runtime {
+                message: format!("failed to serialize the staging binding: {e}"),
+            })?,
+        );
+    }
     Ok(PreparedDeclaration {
         schema: Arc::new(ArrowSchema::new_with_metadata(fields, metadata)),
         definition,
+        source_schema: planning_schema,
+        lineage,
+        internal_inputs: 0,
         database,
     })
-}
-
-/// One row of [`Connection::list_materialized_views`]: a view's name and its
-/// definition kind, which may be one this version cannot refresh.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializedViewEntry {
-    /// Name of the view's table.
-    pub name: String,
-    /// The view's definition as stored.
-    pub kind: MaterializedViewKind,
-}
-
-/// Materialized views are local-only; refuse a remote connection before any
-/// request is made.
-fn ensure_local(connection: &Connection) -> Result<()> {
-    if connection.uri().starts_with("db://") {
-        return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
-        });
-    }
-    Ok(())
 }
 
 /// Builds a materialized view. Created by
@@ -874,9 +1792,11 @@ pub struct CreateMaterializedViewBuilder {
     namespace: Vec<String>,
     source: String,
     source_namespace: Vec<String>,
+    vector_source: Option<VectorSource>,
     projections: Vec<(String, String)>,
     filter: Option<String>,
     limit: Option<u64>,
+    with_no_data: bool,
 }
 
 impl CreateMaterializedViewBuilder {
@@ -887,9 +1807,11 @@ impl CreateMaterializedViewBuilder {
             namespace: Vec::new(),
             source,
             source_namespace: Vec::new(),
+            vector_source: None,
             projections: Vec::new(),
             filter: None,
             limit: None,
+            with_no_data: false,
         }
     }
 
@@ -904,6 +1826,38 @@ impl CreateMaterializedViewBuilder {
     pub fn source_namespace(mut self, namespace_path: Vec<String>) -> Self {
         self.source_namespace = namespace_path;
         self
+    }
+
+    /// Read native pairs or retained original rows from a fixed indexed snapshot.
+    /// This source selects its full output schema and cannot be combined with
+    /// projections, filters or limits. Remote creation uses the ordinary MV
+    /// endpoint and its registry job; it does not execute a SQL query client-side.
+    pub fn vector_source(mut self, source: VectorSource) -> Self {
+        self.vector_source = Some(source);
+        self
+    }
+
+    fn native_definition(&self) -> Result<Option<MaterializedViewDefinition>> {
+        let Some(source) = &self.vector_source else {
+            return Ok(None);
+        };
+        source.config()?;
+        if !self.projections.is_empty() || self.filter.is_some() || self.limit.is_some() {
+            return Err(Error::InvalidInput {
+                message: "native vector sources cannot be combined with select, where or limit"
+                    .into(),
+            });
+        }
+        Ok(Some(MaterializedViewDefinition {
+            vector_source: Some(Box::new(source.clone())),
+            source_table: self.source.clone(),
+            source_namespace: self.source_namespace.clone(),
+            projections: vec![ViewProjection::star()],
+            filter: None,
+            lateral: None,
+            group_by: Vec::new(),
+            limit: None,
+        }))
     }
 
     /// The view's columns, as `(name, SQL expression)` pairs. Not calling
@@ -931,25 +1885,111 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Create the view: an empty table carrying the definition; refresh
-    /// computes the rows. The source must keep stable row ids -- they hold
-    /// provenance across compaction, and cannot be enabled later.
+    /// Create only the definition and empty backing table. By default create
+    /// also waits for the initial refresh so the returned view is populated.
+    pub fn with_no_data(mut self, with_no_data: bool) -> Self {
+        self.with_no_data = with_no_data;
+        self
+    }
+
+    fn query(&self) -> Result<String> {
+        if let Some(definition) = self.native_definition()? {
+            return Ok(definition.to_sql());
+        }
+        fn quote(name: &str) -> String {
+            format!("\"{}\"", name.replace('"', "\"\""))
+        }
+
+        let projection = if self.projections.is_empty() {
+            "*".to_string()
+        } else {
+            self.projections
+                .iter()
+                .map(|(output, expression)| format!("{expression} AS {}", quote(output)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let source = self
+            .source_namespace
+            .iter()
+            .chain(std::iter::once(&self.source))
+            .map(|part| quote(part))
+            .collect::<Vec<_>>()
+            .join(".");
+        let mut query = format!("SELECT {projection} FROM {source}");
+        if let Some(filter) = &self.filter {
+            query.push_str(" WHERE ");
+            query.push_str(filter);
+        }
+        if let Some(limit) = self.limit {
+            query.push_str(&format!(" LIMIT {limit}"));
+        }
+        Ok(query)
+    }
+
+    /// Submit creation and initial population, returning a [`Job`] that
+    /// settles when the view is ready. Ordinary sources must keep stable row
+    /// ids for provenance across compaction. Native vector sources also support
+    /// physical row IDs because their definitions pin the dataset version.
+    pub async fn execute_async(self) -> Result<Job> {
+        if self.connection.uri().starts_with("db://") {
+            return self
+                .connection
+                .database()
+                .create_materialized_view_async(CreateMaterializedViewRequest {
+                    name: self.name.clone(),
+                    namespace_path: self.namespace.clone(),
+                    query: self.query()?,
+                    with_no_data: self.with_no_data,
+                })
+                .await;
+        }
+        Ok(Job::spawned(tokio::spawn(async move {
+            self.execute_native().await.map(|_| ())
+        })))
+    }
+
+    /// Create and populate the view, waiting until it is ready.
     pub async fn execute(self) -> Result<MaterializedView> {
-        ensure_local(&self.connection)?;
+        if !self.connection.uri().starts_with("db://") {
+            return self.execute_native().await;
+        }
+        let connection = self.connection.clone();
+        let name = self.name.clone();
+        let namespace = self.namespace.clone();
+        self.execute_async().await?.wait().await?;
+        let table = connection
+            .open_table(name)
+            .namespace(namespace)
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await
+    }
+
+    async fn execute_native(self) -> Result<MaterializedView> {
+        let native_definition = self.native_definition()?;
         let source = self
             .connection
             .open_table(&self.source)
             .namespace(self.source_namespace.clone())
             .execute()
             .await?;
-        let prepared = prepare_declaration(
-            &source,
-            &self.projections,
-            self.filter.as_deref(),
-            self.limit,
-        )
-        .await?;
-        prepared.create_in(&self.namespace, &self.name).await
+        let prepared = if let Some(definition) = native_definition {
+            prepare_definition(&source, definition).await?
+        } else {
+            prepare_declaration(
+                &source,
+                (!self.projections.is_empty()).then_some(self.projections.as_slice()),
+                self.filter.as_deref(),
+                self.limit,
+            )
+            .await?
+        };
+        let view = prepared.create_in(&self.namespace, &self.name).await?;
+        if !self.with_no_data {
+            view.refresh().execute().await?;
+        }
+        Ok(view)
     }
 }
 
@@ -963,35 +2003,15 @@ pub struct MaterializedView {
 
 impl MaterializedView {
     /// Interpret `table` as a materialized view: [`Error::NotAMaterializedView`]
-    /// for a plain table, [`Error::NotSupported`] for a kind this version
+    /// for a plain table, [`Error::NotSupported`] for a query this version
     /// cannot refresh.
     pub async fn from_table(table: Table) -> Result<Self> {
-        // Same local-only boundary the connection-level entry points hold,
-        // applied before the schema read so a remote table costs no request.
-        if table.as_native().is_none() {
-            return Err(Error::NotSupported {
-                message: "materialized views are supported only on local databases".into(),
-            });
-        }
-        let schema = table.schema().await?;
-        let incarnation = schema.metadata().get(INCARNATION_META_KEY).cloned();
-        match materialized_view_kind(schema.metadata())? {
-            Some(MaterializedViewKind::Select(definition)) => Ok(Self {
-                table,
-                definition,
-                incarnation,
-            }),
-            Some(MaterializedViewKind::Unrecognized { kind }) => Err(Error::NotSupported {
-                message: format!(
-                    "materialized view '{}' is defined by '{kind}', which this version of \
-                     lancedb cannot refresh",
-                    table.name()
-                ),
-            }),
-            None => Err(Error::NotAMaterializedView {
-                name: table.name().to_string(),
-            }),
-        }
+        let info = table.base_table().materialized_view_info().await?;
+        Ok(Self {
+            table,
+            definition: info.definition,
+            incarnation: info.incarnation,
+        })
     }
 
     /// The view, as the table it is. Queries, indexes and search all apply.
@@ -1076,22 +2096,52 @@ impl RefreshMaterializedViewBuilder {
         self
     }
 
+    /// Submit the refresh and return a job that settles with its result.
+    pub async fn execute_async(self) -> Result<Job<RefreshMaterializedViewResult>> {
+        if self.view.table.as_native().is_none() {
+            return self
+                .view
+                .table
+                .base_table()
+                .refresh_materialized_view_async(
+                    self.full,
+                    self.source_version,
+                    self.expected_incarnation.as_deref(),
+                )
+                .await;
+        }
+        Ok(Job::spawned(tokio::spawn(async move {
+            refresh::execute_refresh(
+                &self.view.table,
+                self.full,
+                self.source_version,
+                self.expected_incarnation.as_deref(),
+            )
+            .await
+        })))
+    }
+
+    /// Refresh the view, waiting for the job to finish.
     pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
-        refresh::execute_refresh(
-            &self.view.table,
-            self.full,
-            self.source_version,
-            self.expected_incarnation.as_deref(),
-        )
-        .await
+        if self.view.table.as_native().is_some() {
+            return refresh::execute_refresh(
+                &self.view.table,
+                self.full,
+                self.source_version,
+                self.expected_incarnation.as_deref(),
+            )
+            .await;
+        }
+        self.execute_async().await?.wait().await
     }
 }
 
 impl Connection {
     /// Define a materialized view named `name` over `source`.
     ///
-    /// The view is created empty, with the definition recorded in its schema
-    /// metadata; refresh computes the rows. Local databases only.
+    /// The definition is recorded in schema metadata and the initial refresh
+    /// is completed before this method returns. Use
+    /// [`CreateMaterializedViewBuilder::with_no_data`] to skip population.
     ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
@@ -1103,7 +2153,7 @@ impl Connection {
     ///     .only_if("age >= 18")
     ///     .execute()
     ///     .await?;
-    /// view.refresh().execute().await?;
+    /// assert_eq!(view.table().count_rows(None).await?, 1);
     /// # Ok(())
     /// # }
     /// ```
@@ -1120,28 +2170,76 @@ impl Connection {
         &self,
         name: impl Into<String>,
     ) -> Result<MaterializedView> {
-        ensure_local(self)?;
         let table = self.open_table(name).execute().await?;
         MaterializedView::from_table(table).await
     }
 
-    /// The materialized views in this database, unrefreshable kinds included.
-    /// Costs a table open per table; one that cannot be opened is skipped
-    /// rather than failing the listing.
-    pub async fn list_materialized_views(&self) -> Result<Vec<MaterializedViewEntry>> {
-        ensure_local(self)?;
-        let names = self.table_names().execute().await?;
-        let mut views = Vec::new();
-        for name in names {
-            let Ok(table) = self.open_table(&name).execute().await else {
-                continue;
-            };
-            let schema = table.schema().await?;
-            if let Some(kind) = materialized_view_kind(schema.metadata())? {
-                views.push(MaterializedViewEntry { name, kind });
-            }
+    /// The names of materialized views in the root namespace.
+    pub async fn list_materialized_views(&self) -> Result<Vec<String>> {
+        self.database().list_materialized_views(&[]).await
+    }
+
+    /// Drop a materialized view.
+    ///
+    /// The view may become unavailable before its physical data is removed.
+    /// Use [`Connection::drop_materialized_view_async`] to retain the cleanup
+    /// job and wait for it explicitly.
+    pub async fn drop_materialized_view(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        let name = name.as_ref();
+        if self.uri().starts_with("db://") {
+            return self
+                .database()
+                .drop_materialized_view_async(name, namespace_path)
+                .await
+                .map(|_| ());
         }
-        Ok(views)
+        let table = self
+            .open_table(name)
+            .namespace(namespace_path.to_vec())
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await?;
+        self.drop_table(name, namespace_path).await
+    }
+
+    /// Start dropping a materialized view and return its cleanup job.
+    ///
+    /// This validates that the named resource is a materialized view rather
+    /// than an ordinary table. Call [`Job::wait`] before assuming physical
+    /// cleanup has finished. When the backend performs cleanup inline, the
+    /// returned job is already finished and has no job ID.
+    ///
+    /// ```no_run
+    /// # use lancedb::Connection;
+    /// # async fn drop_view(conn: &Connection) -> lancedb::Result<()> {
+    /// let job = conn.drop_materialized_view_async("daily_sales", &[]).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn drop_materialized_view_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let name = name.as_ref();
+        if self.uri().starts_with("db://") {
+            return self
+                .database()
+                .drop_materialized_view_async(name, namespace_path)
+                .await;
+        }
+        let table = self
+            .open_table(name)
+            .namespace(namespace_path.to_vec())
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await?;
+        self.drop_table_async(name, namespace_path).await
     }
 }
 
@@ -1205,6 +2303,7 @@ mod tests {
         assert_eq!(
             view.definition(),
             &MaterializedViewDefinition {
+                vector_source: None,
                 source_table: "people".into(),
                 source_namespace: Vec::new(),
                 projections: vec![
@@ -1218,8 +2317,9 @@ mod tests {
                     },
                 ],
                 filter: Some("age >= 18".into()),
+                group_by: Vec::new(),
                 limit: Some(10),
-                inputs: vec!["age".into(), "name".into()],
+                lateral: None,
             }
         );
 
@@ -1254,7 +2354,120 @@ mod tests {
                 .data_type(),
             &DataType::UInt64
         );
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_with_no_data_skips_initial_refresh() {
+        let conn = people_db().await;
+        let view = conn
+            .create_materialized_view("empty", "people")
+            .with_no_data(true)
+            .execute()
+            .await
+            .unwrap();
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_and_refresh_async_jobs() {
+        let conn = people_db().await;
+        let create_job = conn
+            .create_materialized_view("async_view", "people")
+            .with_no_data(true)
+            .execute_async()
+            .await
+            .unwrap();
+        assert!(create_job.id().is_none());
+        create_job.wait().await.unwrap();
+
+        let view = conn.open_materialized_view("async_view").await.unwrap();
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+
+        let refresh_job = view.refresh().execute_async().await.unwrap();
+        assert!(refresh_job.id().is_none());
+        let result = refresh_job.wait().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+        assert_eq!(result.rows_written, 3);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
+
+        let drop_job = conn
+            .drop_materialized_view_async("async_view", &[])
+            .await
+            .unwrap();
+        assert!(drop_job.id().is_none());
+        drop_job.wait().await.unwrap();
+        assert!(conn.open_table("async_view").execute().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_drop_materialized_view_rejects_plain_tables() {
+        let conn = people_db().await;
+        let error = conn
+            .drop_materialized_view("people", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NotAMaterializedView { .. }));
+
+        conn.create_materialized_view("drop_me", "people")
+            .with_no_data(true)
+            .execute()
+            .await
+            .unwrap();
+        conn.drop_materialized_view("drop_me", &[]).await.unwrap();
+        assert!(conn.open_table("drop_me").execute().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_remote_query_quotes_resource_identifiers() {
+        let conn = people_db().await;
+        let query = conn
+            .create_materialized_view("unused", "odd\"source")
+            .source_namespace(vec!["raw data".into()])
+            .select([("double\"age", "age * 2")])
+            .only_if("age >= 18")
+            .limit(10)
+            .query()
+            .unwrap();
+        assert_eq!(
+            query,
+            "SELECT age * 2 AS \"double\"\"age\" FROM \"raw data\".\"odd\"\"source\" WHERE age >= 18 LIMIT 10"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_vector_builder_preserves_source_and_rejects_extra_clauses() {
+        let conn = people_db().await;
+        let source = VectorSource {
+            kind: VectorSourceKind::Dedup,
+            dataset_version: 7,
+            column: "vector'field".into(),
+            distance_threshold: "4.0".into(),
+        };
+        let builder = || {
+            conn.create_materialized_view("clean", "odd.source'name")
+                .source_namespace(vec!["raw space".into()])
+                .vector_source(source.clone())
+        };
+        let query = builder().query().unwrap();
+        let definition = MaterializedViewDefinition::from_sql(&query).unwrap();
+        assert_eq!(definition.source_table, "odd.source'name");
+        assert_eq!(definition.source_namespace, ["raw space"]);
+        assert_eq!(definition.vector_source.as_deref(), Some(&source));
+        assert!(definition.selects_star());
+        assert!(builder().select([("id", "id")]).query().is_err());
+        assert!(builder().only_if("true").query().is_err());
+        assert!(builder().limit(1).query().is_err());
+        let invalid_source = VectorSource {
+            dataset_version: 0,
+            ..source
+        };
+        assert!(
+            conn.create_materialized_view("bad", "people")
+                .vector_source(invalid_source)
+                .query()
+                .is_err()
+        );
     }
 
     /// No projection selects every source column, expanded now: the schema
@@ -1275,7 +2488,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["name", "age"]
         );
-        assert_eq!(view.definition().inputs, vec!["age", "name"]);
     }
 
     #[tokio::test]
@@ -1404,14 +2616,9 @@ mod tests {
             .unwrap();
 
         let views = conn.list_materialized_views().await.unwrap();
-        assert_eq!(
-            views.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
-            vec!["adults"]
-        );
-        let MaterializedViewKind::Select(definition) = &views[0].kind else {
-            panic!("expected a select view");
-        };
-        assert_eq!(definition.filter.as_deref(), Some("age >= 18"));
+        assert_eq!(views, vec!["adults"]);
+        let view = conn.open_materialized_view("adults").await.unwrap();
+        assert_eq!(view.definition().filter.as_deref(), Some("age >= 18"));
     }
 
     /// The creation option outranks a connection configured to create
@@ -1484,7 +2691,6 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        assert_eq!(view.definition().inputs, vec!["metadata.age"]);
         let schema = view.table().schema().await.unwrap();
         assert_eq!(
             schema.field_with_name("age").unwrap().data_type(),
@@ -1494,7 +2700,7 @@ mod tests {
 
     /// A newer-kind view must not disappear from the listing.
     #[tokio::test]
-    async fn test_unrecognized_kind_is_listed_with_its_kind() {
+    async fn test_unrecognized_kind_is_listed_by_name() {
         let conn = people_db().await;
         conn.create_materialized_view("v", "people")
             .execute()
@@ -1512,36 +2718,7 @@ mod tests {
             .unwrap();
 
         let views = conn.list_materialized_views().await.unwrap();
-        assert_eq!(views.len(), 1);
-        assert_eq!(views[0].name, "v");
-        assert_eq!(
-            views[0].kind,
-            MaterializedViewKind::Unrecognized {
-                kind: "join".into()
-            }
-        );
-    }
-
-    /// Remote connections are refused before any request is made.
-    #[cfg(feature = "remote")]
-    #[tokio::test]
-    async fn test_remote_connection_is_refused_up_front() {
-        let conn = connect("db://nowhere")
-            .api_key("sk_test")
-            .region("us-east-1")
-            .execute()
-            .await
-            .unwrap();
-        let err = conn
-            .create_materialized_view("v", "src")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
-        let err = conn.open_materialized_view("v").await.unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
-        let err = conn.list_materialized_views().await.unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
+        assert_eq!(views, vec!["v"]);
     }
 
     /// A definition must evaluate identically across refreshes; anything
@@ -1648,7 +2825,16 @@ mod tests {
     /// declaration buried in a struct child binds as hard as one on top.
     #[tokio::test]
     async fn test_nested_projection_metadata_and_declarations() {
-        let conn = connect("memory://").execute().await.unwrap();
+        // The schema below carries the legacy v1 blob marker, which Lance only
+        // allows writing at file version <= 2.1.
+        let conn = connect("memory://")
+            .storage_options([(
+                crate::database::listing::OPT_NEW_TABLE_STORAGE_VERSION,
+                "2.1",
+            )])
+            .execute()
+            .await
+            .unwrap();
         let payload = crate::blob("payload", true).with_metadata(HashMap::from([
             ("lance-encoding:blob".to_string(), "true".to_string()),
             (
@@ -2076,7 +3262,7 @@ mod tests {
             ("id".to_string(), "id".to_string()),
             ("double".to_string(), "value * 2".to_string()),
         ];
-        let prepared = prepare_declaration(&source, &projections, Some("value > 0"), None)
+        let prepared = prepare_declaration(&source, Some(&projections), Some("value > 0"), None)
             .await
             .unwrap();
         assert_eq!(prepared.definition().source_table, "src");
@@ -2091,7 +3277,7 @@ mod tests {
         // external creation path cannot skip the check.
         conn.create_table("plain", batch).execute().await.unwrap();
         let plain = conn.open_table("plain").execute().await.unwrap();
-        let err = prepare_declaration(&plain, &[], None, None)
+        let err = prepare_declaration(&plain, None, None, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("stable row ids"), "{err}");
@@ -2113,7 +3299,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        let err = prepare_declaration(&masquerade, &[], None, None)
+        let err = prepare_declaration(&masquerade, None, None, None)
             .await
             .unwrap_err();
         assert!(
@@ -2134,7 +3320,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        let err = prepare_declaration(&custom, &[], None, None)
+        let err = prepare_declaration(&custom, None, None, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("custom_loc"), "{err}");
@@ -2183,6 +3369,7 @@ mod tests {
 
         let view = conn
             .create_materialized_view("adults", "people")
+            .with_no_data(true)
             .namespace(vec!["ns".to_string()])
             .source_namespace(vec!["ns".to_string()])
             .select([("name", "name")])
@@ -2200,76 +3387,895 @@ mod tests {
         assert_eq!(result.rows_written, 3);
     }
 
-    /// A definition stored before namespaced sources existed carries no
-    /// namespace key and must read as the root namespace.
-    #[test]
-    fn a_definition_without_a_namespace_reads_as_root() {
-        let stored =
-            r#"{"source_table":"people","projections":[{"output":"name","expression":"name"}]}"#;
-        let definition: MaterializedViewDefinition = serde_json::from_str(stored).unwrap();
-        assert!(definition.source_namespace.is_empty());
-    }
-
     fn definition(source_namespace: Vec<String>) -> MaterializedViewDefinition {
         MaterializedViewDefinition {
+            vector_source: None,
             source_table: "people".to_string(),
             source_namespace,
+            lateral: None,
             projections: vec![ViewProjection {
                 output: "name".to_string(),
                 expression: "name".to_string(),
             }],
             filter: None,
+            group_by: Vec::new(),
             limit: None,
-            inputs: vec!["name".to_string()],
         }
     }
 
-    /// A root definition keeps the pre-namespace `select` form byte-stably;
-    /// a namespaced one moves off `select`, which sends pre-namespace readers
-    /// to the `Unrecognized` refusal instead of a root resolve.
-    #[test]
-    fn a_namespaced_definition_is_refused_by_the_pre_namespace_reader() {
-        let root = definition_to_metadata(&definition(Vec::new())).unwrap();
-        let root: serde_json::Value = serde_json::from_str(&root).unwrap();
-        assert_eq!(root["kind"], "select");
-        assert!(
-            root.get("source_namespace").is_none(),
-            "a root definition must not grow new keys: {root}"
-        );
-
-        let stored = definition_to_metadata(&definition(vec!["ns".to_string()])).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&stored).unwrap();
-        // The pre-namespace discriminator is `kind == "select"`; anything
-        // else lands in its Unrecognized refusal rather than in a root open.
-        assert_eq!(value["kind"], "namespaced_select");
-
-        // The current reader round-trips the coordinate.
-        let metadata = HashMap::from([(DEFINITION_META_KEY.to_string(), stored)]);
-        match materialized_view_kind(&metadata).unwrap() {
-            Some(MaterializedViewKind::Select(read)) => {
-                assert_eq!(read.source_namespace, vec!["ns".to_string()])
-            }
-            other => panic!("expected the namespaced select form, got {other:?}"),
-        }
+    fn read(stored: impl Into<String>) -> Result<Option<StoredDefinition>> {
+        read_definition(&HashMap::from([(
+            DEFINITION_META_KEY.to_string(),
+            stored.into(),
+        )]))
     }
 
-    /// A kind that disagrees with its namespace is an error, not a view:
-    /// under `select` it is the shape old readers would resolve at the root.
+    /// What is stored is the query, under a format number; the same query
+    /// reads back whatever namespace the source sits in.
     #[test]
-    fn a_kind_namespace_mismatch_is_refused() {
-        for (kind, namespace) in [
-            (SELECT_KIND, vec!["ns".to_string()]),
-            (NAMESPACED_SELECT_KIND, Vec::new()),
+    fn the_stored_layout_is_the_canonical_query() {
+        for (namespace, query) in [
+            (Vec::new(), "SELECT name FROM people"),
+            (vec!["ns".to_string()], "SELECT name FROM ns.people"),
         ] {
-            let mut value = serde_json::to_value(definition(namespace)).unwrap();
-            value["kind"] = serde_json::Value::String(kind.to_string());
-            let metadata = HashMap::from([(DEFINITION_META_KEY.to_string(), value.to_string())]);
-            let err = materialized_view_kind(&metadata).unwrap_err();
+            let stored = definition_to_metadata(&definition(namespace.clone())).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&stored).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"kind": "query", "format": 1, "query": query})
+            );
+            assert_eq!(
+                read(stored).unwrap(),
+                Some(StoredDefinition::Query(definition(namespace)))
+            );
+        }
+    }
+
+    /// The structured layout written before the format number still reads,
+    /// under both of its kind tags, and a tag that disagrees with its
+    /// namespace is an error: under `select` old readers resolved it at root.
+    #[test]
+    fn legacy_layouts_read_back() {
+        let legacy = |kind: &str, namespace: Vec<&str>| {
+            serde_json::json!({
+                "kind": kind,
+                "source_table": "people",
+                "source_namespace": namespace,
+                "projections": [{"output": "name", "expression": "name"}],
+                "inputs": ["name"],
+            })
+            .to_string()
+        };
+        assert_eq!(
+            read(legacy(SELECT_KIND, vec![])).unwrap(),
+            Some(StoredDefinition::Query(definition(Vec::new())))
+        );
+        assert_eq!(
+            read(legacy(NAMESPACED_SELECT_KIND, vec!["ns"])).unwrap(),
+            Some(StoredDefinition::Query(definition(vec!["ns".into()])))
+        );
+        assert!(
+            read(r#"{"kind":"select","source_table":"people","projections":[]}"#)
+                .unwrap()
+                .is_some(),
+            "a pre-namespace definition carries no namespace key"
+        );
+        for (kind, namespace) in [(SELECT_KIND, vec!["ns"]), (NAMESPACED_SELECT_KIND, vec![])] {
+            let err = read(legacy(kind, namespace)).unwrap_err();
             assert!(
                 err.to_string()
                     .contains("does not match its source namespace"),
                 "kind '{kind}': {err}"
             );
         }
+    }
+
+    /// A newer writer's definition is reported as such, never guessed at,
+    /// and a definition that is not a definition at all is an error rather
+    /// than a plain table.
+    #[test]
+    fn a_newer_format_is_reported_not_guessed() {
+        assert_eq!(
+            read(r#"{"format":5,"query":"SELECT name FROM people"}"#).unwrap(),
+            Some(StoredDefinition::Newer { format: "5".into() })
+        );
+        assert_eq!(
+            read(r#"{"kind":"join"}"#).unwrap(),
+            Some(StoredDefinition::Newer {
+                format: "kind 'join'".into()
+            })
+        );
+        for stored in [
+            "{}",
+            r#"{"format":"one"}"#,
+            r#"{"format":1}"#,
+            r#"{"format":1,"query":"SELECT name FROM people GROUP BY name"}"#,
+            r#"{"format":2,"query":"SELECT name FROM people ORDER BY name"}"#,
+        ] {
+            assert!(read(stored).is_err(), "{stored}");
+        }
+    }
+
+    /// Planning records what the query reads of the source: a nested path
+    /// as itself, a read through an unnest alias as the list column.
+    #[test]
+    fn planning_records_the_source_columns_read() {
+        let element = DataType::Struct(
+            vec![
+                ArrowField::new("chunk", DataType::Utf8, true),
+                ArrowField::new("ordinal", DataType::Int32, true),
+            ]
+            .into(),
+        );
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int64, false),
+            ArrowField::new(
+                "meta",
+                DataType::Struct(vec![ArrowField::new("title", DataType::Utf8, true)].into()),
+                true,
+            ),
+            ArrowField::new(
+                "chunks",
+                DataType::List(Arc::new(ArrowField::new("item", element, true))),
+                true,
+            ),
+        ]));
+        let planned = plan(
+            schema.clone(),
+            &MaterializedViewDefinition::from_sql(
+                "SELECT id, meta.title, c.chunk FROM docs, UNNEST(chunks) AS c WHERE c.ordinal < 3",
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(planned.inputs, ["chunks", "id", "meta.title"]);
+        assert_eq!(
+            planned
+                .fields
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            ["id", "title", "chunk"]
+        );
+        assert_eq!(
+            planned.fields[2].data_type(),
+            &DataType::Utf8,
+            "the element's field is read through the alias"
+        );
+
+        let star = plan(
+            schema,
+            &MaterializedViewDefinition::from_sql("SELECT * FROM docs, UNNEST(chunks) AS c")
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            star.definition.to_sql(),
+            "SELECT id, meta, c FROM docs, UNNEST(chunks) AS c"
+        );
+        let err = plan(
+            Arc::new(ArrowSchema::new(vec![ArrowField::new(
+                "id",
+                DataType::Int64,
+                false,
+            )])),
+            &MaterializedViewDefinition::from_sql("SELECT id FROM docs, UNNEST(id) AS c").unwrap(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a list"), "{err}");
+    }
+
+    /// A binding as the server records it: one Utf8 input over `input`
+    /// bound to a nullable parameter, one Int32 output named `output`, with
+    /// the exact schemas the durable contract requires.
+    pub fn test_binding(binding_id: &str, input: &str, output: &str) -> FunctionBinding {
+        let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            ArrowField::new("text", DataType::Utf8, true),
+        ]))
+        .unwrap();
+        let output_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            ArrowField::new(output, DataType::Int32, true),
+        ]))
+        .unwrap();
+        let input_type = input_schema.fields[0].r#type.r#type.clone();
+        let output_type = output_schema.fields[0].r#type.r#type.clone();
+        FunctionBinding::from_json(
+            &serde_json::json!({
+                "binding_id": binding_id,
+                "function": {"name": "embed", "version": "1", "object_id": "fixture", "location": "memory:///fixture",
+                    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
+                "inputs": [{
+                    "parameter": "text", "field_id": -1, "field_path": input,
+                    "arrow_type": input_type, "nullable": true,
+                }],
+                "outputs": [{
+                    "result_field": "$value", "output_name": output, "output_field_id": -1,
+                    "output_ordinal": 0, "arrow_type": output_type, "nullable": false,
+                }],
+                "input_schema": serde_json::to_value(input_schema).unwrap(),
+                "output_schema": serde_json::to_value(output_schema).unwrap(),
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// A computed column as the server declares it on a table: bound to a
+    /// registered Function.
+    pub fn computed_field(name: &str, binding_id: &str, input: &str) -> ArrowField {
+        ArrowField::new(name, DataType::Int32, true).with_metadata(
+            crate::table::computed_columns::function_computed_column_metadata(
+                binding_id,
+                0,
+                &[input.to_string()],
+            ),
+        )
+    }
+
+    pub async fn people(conn: &Connection) -> Table {
+        let batch =
+            record_batch!(("id", Int32, [1, 2, 3]), ("name", Utf8, ["a", "b", "c"])).unwrap();
+        conn.create_table("people", batch)
+            .write_options(stable_row_ids())
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    /// `people` with both columns non-nullable, for nullability cases.
+    pub async fn strict_people(conn: &Connection) -> Table {
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("name", DataType::Utf8, false),
+        ]));
+        let batch = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1, 2, 3])),
+                Arc::new(arrow_array::StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        conn.create_table("people", batch)
+            .write_options(stable_row_ids())
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    async fn prepared_people(conn: &Connection) -> PreparedDeclaration {
+        let source = people(conn).await;
+        prepare_declaration(
+            &source,
+            Some(&[
+                ("id".to_string(), "id".to_string()),
+                ("name".to_string(), "name".to_string()),
+            ]),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_computed_column_is_declared_null_with_its_binding() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let view = prepared_people(&conn)
+            .await
+            .with_computed_columns(
+                vec![(2, computed_field("emb", "fb_1", "name"))],
+                &[test_binding("fb_1", "name", "emb")],
+            )
+            .unwrap()
+            .create("v")
+            .await
+            .unwrap();
+
+        let schema = view.table().schema().await.unwrap();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["id", "name", "emb", SOURCE_ROW_ID_COLUMN]);
+        let declared: Vec<String> = computed_columns(&schema)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(declared, ["emb"]);
+        let bindings = crate::table::computed_columns::function_bindings(&schema).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].binding_id(), "fb_1");
+        // The stored definition is the query alone; bindings live beside it.
+        let stored: serde_json::Value =
+            serde_json::from_str(&schema.metadata()[DEFINITION_META_KEY]).unwrap();
+        assert_eq!(stored["format"], 1);
+        assert_eq!(view.definition().projections.len(), 2);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+        assert_eq!(conn.open_materialized_view("v").await.unwrap().name(), "v");
+    }
+
+    #[tokio::test]
+    async fn computed_column_declarations_are_validated() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let prepared = prepared_people(&conn).await;
+        let binding = test_binding("fb_1", "name", "emb");
+        let fails = |prepared: PreparedDeclaration,
+                     columns: Vec<(usize, ArrowField)>,
+                     bindings: &[FunctionBinding]| {
+            prepared
+                .with_computed_columns(columns, bindings)
+                .err()
+                .map(|e| e.to_string())
+                .expect("the declaration should be refused")
+        };
+        let emb = |binding_id: &str| computed_field("emb", binding_id, "name");
+
+        let err = fails(
+            prepared.clone(),
+            vec![(2, emb("fb_1").with_nullable(false))],
+            std::slice::from_ref(&binding),
+        );
+        assert!(err.contains("must be nullable"), "{err}");
+
+        let plain = ArrowField::new("emb", DataType::Int32, true);
+        let err = fails(
+            prepared.clone(),
+            vec![(2, plain)],
+            std::slice::from_ref(&binding),
+        );
+        assert!(
+            err.contains("does not carry a computed-column declaration"),
+            "{err}"
+        );
+
+        // The rest is the computed-column contract: a binding the field does
+        // not name, an output the binding does not map to this field, an
+        // input the view does not hold.
+        let err = fails(
+            prepared.clone(),
+            vec![(2, emb("fb_other"))],
+            std::slice::from_ref(&binding),
+        );
+        assert!(err.contains("does not match binding 'fb_1'"), "{err}");
+        let err = fails(
+            prepared.clone(),
+            vec![(2, emb("fb_1"))],
+            &[test_binding("fb_1", "name", "different_output")],
+        );
+        assert!(err.contains("different_output"), "{err}");
+        let err = fails(
+            prepared.clone(),
+            vec![(2, emb("fb_1"))],
+            &[test_binding("fb_1", "bio", "emb")],
+        );
+        assert!(err.contains("'bio'"), "{err}");
+
+        let err = fails(
+            prepared.clone(),
+            vec![(2, computed_field("name", "fb_1", "name"))],
+            &[test_binding("fb_1", "name", "name")],
+        );
+        assert!(err.contains("already exists"), "{err}");
+        let err = fails(
+            prepared.clone(),
+            vec![(2, computed_field(SOURCE_ROW_ID_COLUMN, "fb_1", "name"))],
+            &[test_binding("fb_1", "name", SOURCE_ROW_ID_COLUMN)],
+        );
+        assert!(err.contains("reserved"), "{err}");
+        let err = fails(
+            prepared.clone(),
+            vec![(7, emb("fb_1"))],
+            std::slice::from_ref(&binding),
+        );
+        assert!(
+            err.contains("placed at 7, past the view's 2 columns"),
+            "{err}"
+        );
+        let err = fails(prepared, Vec::new(), std::slice::from_ref(&binding));
+        assert!(err.contains("at least one computed column"), "{err}");
+    }
+
+    /// A source column a computed column reads without the view projecting
+    /// it becomes an internal projection before the provenance column, with
+    /// the source's nullability; a projected column is read from its
+    /// projection.
+    /// `Some(&[])` is a declaration that projects nothing yet: a view of
+    /// computed columns alone, whose inputs `input_column` places. `None`
+    /// is `SELECT *`. The two must not collapse into each other.
+    #[tokio::test]
+    async fn an_empty_projection_list_is_not_a_star() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = strict_people(&conn).await;
+
+        let mut prepared = prepare_declaration(&source, Some(&[]), None, None)
+            .await
+            .unwrap();
+        assert!(prepared.definition().projections.is_empty());
+        assert_eq!(prepared.input_column("name").unwrap(), "__input_name");
+        let view = prepared
+            .with_computed_columns(
+                vec![(0, computed_field("emb", "fb_1", "__input_name"))],
+                &[test_binding("fb_1", "__input_name", "emb")],
+            )
+            .unwrap()
+            .create("only")
+            .await
+            .unwrap();
+        let schema = view.table().schema().await.unwrap();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["emb", "__input_name", SOURCE_ROW_ID_COLUMN]);
+        assert_eq!(
+            view.definition().to_sql(),
+            "SELECT name AS __input_name FROM people"
+        );
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.rows_written, 3);
+        let reopened = conn.open_materialized_view("only").await.unwrap();
+        assert_eq!(reopened.definition(), view.definition());
+
+        let all = prepare_declaration(&source, None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            !all.definition().selects_star(),
+            "planning expands the star"
+        );
+        let outputs: Vec<&str> = all
+            .definition()
+            .projections
+            .iter()
+            .map(|p| p.output.as_str())
+            .collect();
+        assert_eq!(outputs, ["id", "name"]);
+    }
+
+    #[tokio::test]
+    async fn an_unprojected_input_becomes_an_internal_projection() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = strict_people(&conn).await;
+        let mut prepared = prepare_declaration(
+            &source,
+            Some(&[("key".to_string(), "id".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.input_column("id").unwrap(), "key");
+        assert_eq!(prepared.input_column("name").unwrap(), "__input_name");
+        assert_eq!(prepared.input_column("name").unwrap(), "__input_name");
+        let err = prepared.input_column("missing").unwrap_err().to_string();
+        assert!(err.contains("no column 'missing'"), "{err}");
+
+        let view = prepared
+            .with_computed_columns(
+                vec![(1, computed_field("emb", "fb_1", "__input_name"))],
+                &[test_binding("fb_1", "__input_name", "emb")],
+            )
+            .unwrap()
+            .create("v")
+            .await
+            .unwrap();
+        let schema = view.table().schema().await.unwrap();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["key", "emb", "__input_name", SOURCE_ROW_ID_COLUMN]);
+        let input = schema.field_with_name("__input_name").unwrap();
+        assert_eq!(input.data_type(), &DataType::Utf8);
+        assert!(
+            !input.is_nullable(),
+            "the copy keeps the source's nullability"
+        );
+        assert!(!schema.field_with_name("key").unwrap().is_nullable());
+        let projections: Vec<(&str, &str)> = view
+            .definition()
+            .projections
+            .iter()
+            .map(|p| (p.output.as_str(), p.expression.as_str()))
+            .collect();
+        assert_eq!(projections, [("key", "id"), ("__input_name", "name")]);
+    }
+
+    /// Two outputs of one binding land at consecutive positions: each
+    /// insertion widens the range the next may take.
+    #[tokio::test]
+    async fn sibling_computed_columns_take_consecutive_positions() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = people(&conn).await;
+        let prepared = prepare_declaration(
+            &source,
+            Some(&[("id".to_string(), "id".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let metadata = |ordinal: u32| {
+            crate::table::computed_columns::function_computed_column_metadata(
+                "fb_pair",
+                ordinal,
+                &["id".to_string()],
+            )
+        };
+        let left = ArrowField::new("left", DataType::Int32, true).with_metadata(metadata(0));
+        let right = ArrowField::new("right", DataType::Int32, true).with_metadata(metadata(1));
+        let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            ArrowField::new("value", DataType::Int32, true),
+        ]))
+        .unwrap();
+        let output_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
+            ArrowField::new("left", DataType::Int32, true),
+            ArrowField::new("right", DataType::Int32, true),
+        ]))
+        .unwrap();
+        let int = input_schema.fields[0].r#type.r#type.clone();
+        let binding = FunctionBinding::from_json(
+            &serde_json::json!({
+                "binding_id": "fb_pair",
+                "function": {"name": "pair", "version": "1", "object_id": "fixture", "location": "memory:///fixture",
+                    "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
+                "inputs": [{"parameter": "value", "field_id": -1, "field_path": "id",
+                            "arrow_type": int, "nullable": true}],
+                "outputs": [
+                    {"result_field": "left", "output_name": "left", "output_field_id": -1,
+                     "output_ordinal": 0, "arrow_type": int, "nullable": false},
+                    {"result_field": "right", "output_name": "right", "output_field_id": -1,
+                     "output_ordinal": 1, "arrow_type": int, "nullable": false},
+                ],
+                "input_schema": serde_json::to_value(input_schema).unwrap(),
+                "output_schema": serde_json::to_value(output_schema).unwrap(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let view = prepared
+            .with_computed_columns(vec![(1, left), (2, right)], &[binding])
+            .unwrap()
+            .create("v")
+            .await
+            .unwrap();
+        let names: Vec<String> = view
+            .table()
+            .schema()
+            .await
+            .unwrap()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["id", "left", "right", SOURCE_ROW_ID_COLUMN]);
+    }
+
+    /// A SQL declaration as `add_columns().computed()` records it.
+    pub fn sql_field(
+        name: &str,
+        data_type: DataType,
+        expression: &str,
+        inputs: &str,
+    ) -> ArrowField {
+        use crate::table::computed_columns::{
+            COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,
+        };
+        ArrowField::new(name, data_type, true).with_metadata(HashMap::from([
+            (COMPUTED_COLUMN_META_KEY.to_string(), "true".to_string()),
+            (KIND_META_KEY.to_string(), SQL_KIND.to_string()),
+            (EXPRESSION_META_KEY.to_string(), expression.to_string()),
+            (INPUTS_META_KEY.to_string(), inputs.to_string()),
+        ]))
+    }
+
+    /// A SQL declaration is re-planned at admission: it must parse against
+    /// the view, yield the declared type, and read the inputs it declares.
+    #[tokio::test]
+    async fn a_sql_declaration_is_planned_at_admission() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let fails = |prepared: PreparedDeclaration, field: ArrowField| {
+            prepared
+                .with_computed_columns(vec![(1, field)], &[])
+                .err()
+                .map(|e| e.to_string())
+                .expect("the declaration should be refused")
+        };
+        let prepared = prepared_people(&conn).await;
+        let err = fails(
+            prepared.clone(),
+            sql_field("bad", DataType::Int32, "missing + 1", r#"["missing"]"#),
+        );
+        assert!(err.contains("missing"), "{err}");
+        let err = fails(
+            prepared.clone(),
+            sql_field("wide", DataType::Int64, "id + 1", r#"["id"]"#),
+        );
+        assert!(
+            err.contains("declared as Int64 but its expression yields Int32"),
+            "{err}"
+        );
+        let err = fails(
+            prepared.clone(),
+            sql_field("lying", DataType::Int32, "id + 1", r#"["name"]"#),
+        );
+        assert!(err.contains("declares inputs"), "{err}");
+
+        let view = prepared
+            .with_computed_columns(
+                vec![(1, sql_field("next", DataType::Int32, "id + 1", r#"["id"]"#))],
+                &[],
+            )
+            .unwrap()
+            .create("v")
+            .await
+            .unwrap();
+        let names: Vec<String> = view
+            .table()
+            .schema()
+            .await
+            .unwrap()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["id", "next", "name", SOURCE_ROW_ID_COLUMN]);
+    }
+
+    /// Creation persists a declaration only when it re-plans and the data
+    /// carries no values for it, whichever door created the table.
+    #[tokio::test]
+    async fn a_created_table_cannot_carry_computed_values() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("x", DataType::Int32, false),
+            sql_field("forged", DataType::Int32, "x + 1", r#"["x"]"#),
+        ]));
+        let filled = arrow_array::RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::from(vec![999])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("forged", filled)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be written directly"), "{err}");
+        assert!(
+            !conn
+                .table_names()
+                .execute()
+                .await
+                .unwrap()
+                .contains(&"forged".to_string())
+        );
+
+        let unfilled = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::new_null(1)),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("declared", unfilled)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.refresh_column("forged").await.unwrap().rows_filled, 1);
+
+        // A declaration with only its marker is broken, not absent.
+        let half = ArrowField::new("half", DataType::Int32, true).with_metadata(HashMap::from([(
+            crate::table::computed_columns::COMPUTED_COLUMN_META_KEY.to_string(),
+            "true".to_string(),
+        )]));
+        let batch = arrow_array::RecordBatch::try_new(
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("x", DataType::Int32, false),
+                half,
+            ])),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::from(vec![999])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("half", batch)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("incomplete computed-column declaration"),
+            "{err}"
+        );
+
+        let bogus = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("x", DataType::Int32, false),
+            sql_field("bad", DataType::Int32, "missing + 1", r#"["missing"]"#),
+        ]));
+        let batch = arrow_array::RecordBatch::new_empty(bogus);
+        let err = conn
+            .create_table("bogus", batch)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing"), "{err}");
+    }
+
+    /// The internal-input prefix is reserved for the declaration, like the
+    /// provenance column, so an alias cannot masquerade as an internal input.
+    #[tokio::test]
+    async fn the_internal_input_prefix_is_reserved() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = people(&conn).await;
+        let err = prepare_declaration(
+            &source,
+            Some(&[("__input_x".to_string(), "name".to_string())]),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("'__input_x' is reserved"), "{err}");
+    }
+
+    /// A computed column may not read another, through any path: a
+    /// Function bound to a child of a computed struct is refused like a SQL
+    /// declaration over it.
+    #[tokio::test]
+    async fn a_computed_column_cannot_read_a_computed_root() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let prepared = prepared_people(&conn).await;
+        let payload = sql_field(
+            "payload",
+            DataType::Struct(vec![ArrowField::new("value", DataType::Utf8, true)].into()),
+            "named_struct('value', name)",
+            r#"["name"]"#,
+        );
+        let err = prepared
+            .with_computed_columns(
+                vec![
+                    (2, payload),
+                    (3, computed_field("emb", "fb_dependent", "payload.value")),
+                ],
+                &[test_binding("fb_dependent", "payload.value", "emb")],
+            )
+            .err()
+            .map(|e| e.to_string())
+            .expect("a computed root as a Function input should be refused");
+        assert!(err.contains("reads computed column 'payload'"), "{err}");
+    }
+
+    /// The root check uses the canonical path parser: a quoted top-level
+    /// name containing a dot is one root, not two segments.
+    #[tokio::test]
+    async fn a_quoted_computed_root_is_still_refused() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let prepared = prepared_people(&conn).await;
+        let payload = sql_field(
+            "payload.dot",
+            DataType::Struct(vec![ArrowField::new("value", DataType::Utf8, true)].into()),
+            "named_struct('value', name)",
+            r#"["name"]"#,
+        );
+        let input = "`payload.dot`.value";
+        let err = prepared
+            .with_computed_columns(
+                vec![
+                    (2, payload),
+                    (3, computed_field("emb", "fb_dependent", input)),
+                ],
+                &[test_binding("fb_dependent", input, "emb")],
+            )
+            .err()
+            .map(|e| e.to_string())
+            .expect("a quoted computed root should be refused");
+        assert!(err.contains("reads computed column 'payload.dot'"), "{err}");
+    }
+
+    /// Namespace-backed creation admits declarations by the same rule, and
+    /// refuses before the namespace records the table.
+    #[tokio::test]
+    async fn a_namespace_created_table_cannot_carry_computed_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut properties = std::collections::HashMap::new();
+        properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
+        let conn = crate::connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+        let half = ArrowField::new("half", DataType::Int32, true).with_metadata(HashMap::from([(
+            crate::table::computed_columns::COMPUTED_COLUMN_META_KEY.to_string(),
+            "true".to_string(),
+        )]));
+        let batch = arrow_array::RecordBatch::try_new(
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("id", DataType::Int32, false),
+                half,
+            ])),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::from(vec![999])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("malformed", batch)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("incomplete computed-column declaration"),
+            "{err}"
+        );
+        assert!(conn.table_names().execute().await.unwrap().is_empty());
+
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            sql_field("next", DataType::Int32, "id + 1", r#"["id"]"#),
+        ]));
+        let filled = arrow_array::RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::from(vec![999])),
+            ],
+        )
+        .unwrap();
+        let err = conn
+            .create_table("forged", filled)
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be written directly"), "{err}");
+
+        let unfilled = arrow_array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1])),
+                Arc::new(arrow_array::Int32Array::new_null(1)),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("declared", unfilled)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.refresh_column("next").await.unwrap().rows_filled, 1);
+    }
+
+    /// A projected column keeps its nullability; a computed value is
+    /// nullable.
+    #[tokio::test]
+    async fn an_identity_projection_keeps_source_nullability() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = strict_people(&conn).await;
+        let prepared = prepare_declaration(
+            &source,
+            Some(&[
+                ("id".to_string(), "id".to_string()),
+                ("n".to_string(), "name".to_string()),
+                ("next".to_string(), "id + 1".to_string()),
+            ]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let nullable: Vec<bool> = prepared
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.is_nullable())
+            .collect();
+        assert_eq!(nullable, [false, false, true, false]);
     }
 }

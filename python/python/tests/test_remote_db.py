@@ -16,8 +16,9 @@ import uuid
 from packaging.version import Version
 
 import lancedb
+import numpy as np
 from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.query import ColumnOrdering
+from lancedb.query import AsyncQuery, ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -117,6 +118,77 @@ async def test_async_remote_db():
     async with mock_lancedb_connection_async(handler) as db:
         table_names = await db.table_names()
         assert table_names == []
+
+
+@pytest.mark.parametrize(
+    "alteration, match",
+    [
+        ({"path": "id"}, "One of rename, nullable or data_type"),
+        (
+            {"path": "id", "nulable": False},  # spellchecker:disable-line
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+        (
+            {
+                "path": "id",
+                "rename": "new_id",
+                "nulable": False,  # spellchecker:disable-line
+            },
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+    ],
+)
+def test_remote_alter_columns_rejects_invalid_before_request(alteration, match):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        requests.clear()
+
+        with pytest.raises(ValueError, match=match):
+            table.alter_columns(alteration)
+
+        assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "alteration, match",
+    [
+        ({"path": "id"}, "One of rename, nullable or data_type"),
+        (
+            {"path": "id", "nulable": False},  # spellchecker:disable-line
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+    ],
+)
+async def test_async_remote_alter_columns_rejects_invalid_before_request(
+    alteration, match
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        requests.clear()
+
+        with pytest.raises(ValueError, match=match):
+            await table.alter_columns(alteration)
+
+        assert requests == []
 
 
 @pytest.mark.asyncio
@@ -982,6 +1054,71 @@ def test_remote_refresh_async_returns_typed_terminal_result():
     assert result.version == 8
 
 
+def test_remote_function_errors_lists_the_rows_a_refresh_skipped():
+    listing = {
+        "records": [
+            {
+                "job_id": "j-7",
+                "fragment_id": 3,
+                "row_offset": 9,
+                "column": "embedding",
+                "function": "embed",
+                "function_version": "2",
+                "table_version": 11,
+                "error_type": "ValueError",
+                "error_message": "bad input 'x'",
+                "created_at_millis": 1700000000000,
+            }
+        ],
+        "fragments": [
+            {
+                "job_id": "j-7",
+                "fragment_id": 4,
+                "rows_skipped": 500,
+                "rows_recorded": 100,
+            }
+        ],
+        "truncated": True,
+    }
+    bodies = []
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/errors":
+            bodies.append(json.loads(body))
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(listing).encode())
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": []}}).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        errors = table.function_errors(job_id="j-7", column="embedding", limit=2)
+        everything = table.function_errors()
+
+    assert bodies == [{"job_id": "j-7", "column": "embedding", "limit": 2}, {}]
+    assert errors.truncated is True
+    assert [r.error_message for r in errors.records] == ["bad input 'x'"]
+    assert errors.records[0].row_offset == 9
+    assert errors.records[0].function_version == "2"
+    assert (errors.fragments[0].rows_skipped, errors.fragments[0].rows_recorded) == (
+        500,
+        100,
+    )
+    assert everything.truncated is True
+
+
 def test_remote_job_wait_raises_on_failure():
     from lancedb.exceptions import JobFailedError
     from lancedb.index import BTree
@@ -1456,6 +1593,60 @@ def test_query_sync_empty_query():
         assert data == expected
 
 
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+@pytest.mark.parametrize("vector_column_name", [None, "vector"])
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+def test_query_sync_empty_vector(query, vector_column_name, query_type):
+    def handler(body):
+        pytest.fail("An empty query vector must be rejected before sending a query")
+
+    with query_test_table(handler) as table:
+        with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+            table.search(
+                query, vector_column_name=vector_column_name, query_type=query_type
+            ).limit(3).to_arrow()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_kwargs", [{}, {"query": None}])
+async def test_async_search_without_query(search_kwargs):
+    expected = pa.table({"id": [7, 8, 9]})
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        elif request.path == "/v1/table/test/query/":
+            body = json.loads(
+                request.rfile.read(int(request.headers["Content-Length"]))
+            )
+            assert body == {
+                "k": 3,
+                "filter": "id >= 7",
+                "vector": [],
+                "columns": ["id"],
+                "prefilter": True,
+                "version": None,
+            }
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, schema=expected.schema) as writer:
+                writer.write_table(expected)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = await table.search(**search_kwargs)
+        assert isinstance(query, AsyncQuery)
+        result = await query.where("id >= 7").select(["id"]).limit(3).to_arrow()
+        assert result == expected
+
+
 def test_query_sync_maximal():
     def handler(body):
         assert body == {
@@ -1514,6 +1705,53 @@ def test_query_sync_maximal():
             .select(["id", "name"])
             .to_list()
         )
+
+
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_query_sync_nprobes_zero(hybrid):
+    query_requests = []
+
+    def handler(body):
+        query_requests.append(body)
+        return pa.table({"id": []})
+
+    with query_test_table(handler) as table:
+        if hybrid:
+            query = table.search(query_type="hybrid").vector([1, 2, 3]).text("dog")
+        else:
+            query = table.search([1, 2, 3])
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert query_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_query_async_nprobes_zero(hybrid):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        if request.path == "/v1/table/test/describe/":
+            send_json(request, {"version": 1, "schema": {"fields": []}})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = table.query().nearest_to([1, 2, 3])
+        if hybrid:
+            query = query.nearest_to_text("dog")
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert requests == ["/v1/table/test/describe/"]
 
 
 def test_query_sync_nprobes():
@@ -2080,15 +2318,46 @@ async def test_header_provider_overrides_static_headers():
 
 
 def test_close():
-    """Test that close() works without AttributeError."""
-    import asyncio
-
     def handler(req):
         req.send_response(200)
         req.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        asyncio.run(db.close())
+        assert db.close() is None
+        assert not db.is_open()
+        assert db.close() is None
+
+        with pytest.warns(DeprecationWarning, match="table_names"):
+            with pytest.raises(RuntimeError, match="Connection is closed"):
+                db.table_names()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.list_tables()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.open_table("test")
+
+
+@pytest.mark.parametrize("raise_error", [False, True])
+def test_sync_context_manager(raise_error):
+    def handler(req):
+        req.send_response(200)
+        req.send_header("Content-Type", "application/json")
+        req.end_headers()
+        req.wfile.write(b'{"tables": []}')
+
+    with mock_lancedb_connection(handler) as db:
+        with contextlib.ExitStack() as stack:
+            if raise_error:
+                stack.enter_context(pytest.raises(ValueError, match="test error"))
+            with db as conn:
+                assert conn is db
+                assert conn.is_open()
+                assert conn.list_tables().tables == []
+                if raise_error:
+                    raise ValueError("test error")
+
+        assert not db.is_open()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.list_tables()
 
 
 @pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])
@@ -2326,6 +2595,27 @@ def blob_query_response_table():
     )
 
 
+def blob_descriptor_take_table():
+    """What `fetch_blob_files` reads for rows 10, 20, 30, and 40."""
+    queried = blob_query_response_table()
+    image_field = queried.schema.field("image")
+    images = pa.StructArray.from_arrays(
+        [
+            pa.array([0, 0, 0, 0], type=pa.uint8()),
+            pa.array([0, 0, 0, 0], type=pa.uint64()),
+            pa.array([5, 0, 5, 0], type=pa.uint64()),
+            pa.array([0, 0, 0, 0], type=pa.uint32()),
+            pa.array(["", "", "", ""], type=pa.string()),
+        ],
+        fields=image_field.type,
+        mask=pa.array([False, True, False, False]),
+    )
+    return pa.Table.from_arrays(
+        [images, pa.array([10, 20, 30, 40], type=pa.uint64())],
+        schema=pa.schema([image_field, pa.field("_rowid", pa.uint64())]),
+    )
+
+
 @contextlib.contextmanager
 def blob_remote_table(*, server_version=Version("0.5.0")):
     def handler(request):
@@ -2338,9 +2628,14 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
         elif request.path.startswith("/v1/table/test/blob/image/"):
             path = request.path.partition("?")[0]
             row_id = int(path.split("/")[-2])
-            payload = {10: b"alpha", 20: None, 30: b"gamma"}[row_id]
+            payload = {10: b"alpha", 20: None, 30: b"gamma", 40: b""}[row_id]
             if payload is None:
                 request.send_response(204)
+                request.end_headers()
+                return
+            if not payload:
+                request.send_response(416)
+                request.send_header("Content-Range", "bytes */0")
                 request.end_headers()
                 return
             byte_range = request.headers["Range"].removeprefix("bytes=")
@@ -2351,14 +2646,22 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
             request.send_response(206)
             request.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
             request.send_header("Content-Length", str(len(chunk)))
+            request.send_header(
+                "x-lancedb-version", str(BLOB_DESCRIBE_RESPONSE["version"])
+            )
             request.end_headers()
             request.wfile.write(chunk)
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
-            assert body["columns"] == ["id", "image"]
             assert body["with_row_id"] is True
-            response_table = blob_query_response_table()
+            if body["columns"] == ["image"]:
+                # fetch_blob_files sizes its handles from a descriptor take.
+                assert body["filter"].startswith("_rowid IN")
+                response_table = blob_descriptor_take_table()
+            else:
+                assert body["columns"] == ["id", "image"]
+                response_table = blob_query_response_table()
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()
@@ -2394,17 +2697,25 @@ def test_remote_blob_columns_and_fetch():
 
 def test_remote_blob_files_are_lazy_seekable_handles():
     with blob_remote_table() as table:
-        files = table.fetch_blob_files("image", [10, 20, 30])
+        files = table.fetch_blob_files("image", [10, 20, 30, 40])
 
-        assert len(files) == 3
-        alpha, null_row, gamma = files
+        assert len(files) == 4
+        alpha, null_row, gamma, empty = files
         assert null_row is None
         assert alpha is not None
         assert gamma is not None
+        assert empty is not None
         assert alpha.size() == 5
         assert alpha.read_range(1, 3) == b"lph"
         gamma.seek(2)
         assert gamma.read() == b"mma"
+        assert empty.size() == 0
+        assert empty.read() == b""
+        assert empty.read_range(0, 0) == b""
+        alpha.close()
+        assert alpha.closed
+        with pytest.raises(RuntimeError, match="already closed"):
+            alpha.read_range(0, 1)
 
 
 def test_remote_blob_fetch_accepts_query_table():
@@ -2467,7 +2778,7 @@ def test_remote_blob_byte_apis_not_supported_on_old_server():
 
 
 def test_remote_connection_jobs_surface():
-    from lancedb.exceptions import JobFailedError
+    from lancedb.exceptions import JobFailedError, JobNotFoundError
 
     schema = pa.schema([("state", pa.string())])
     batch = pa.record_batch([pa.array(["created", "done"])], schema=schema)
@@ -2475,6 +2786,7 @@ def test_remote_connection_jobs_surface():
     with pa.ipc.new_stream(sink, schema) as writer:
         writer.write_batch(batch)
     events_body = sink.getvalue().to_pybytes()
+    query_events_payloads = []
 
     def handler(request):
         content_len = int(request.headers.get("Content-Length", 0))
@@ -2512,6 +2824,22 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
             request.wfile.write(json.dumps(rsp).encode())
         elif request.path == "/v1/jobs/describe":
+            if payload["job_id"] == "job-2":
+                request.send_response(200)
+                request.send_header("Content-Type", "application/json")
+                request.end_headers()
+                request.wfile.write(
+                    json.dumps(
+                        dict(
+                            job_id="job-2",
+                            job_type="refresh_column",
+                            job_state="DONE",
+                            creation_ms=2000,
+                            result=dict(rows_assigned=1000000, rows_failed=0),
+                        )
+                    ).encode()
+                )
+                return
             if payload["job_id"] != "job-1":
                 request.send_response(404)
                 request.end_headers()
@@ -2542,8 +2870,28 @@ def test_remote_connection_jobs_surface():
             request.send_header("Content-Type", "application/json")
             request.end_headers()
             request.wfile.write(b'{"job_id": "job-1"}')
+        elif request.path == "/v1/jobs/pause":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-1", "paused": true}')
+        elif request.path == "/v1/jobs/resume":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                b'{"job_id": "job-1", "resumed": false, "still_pausing": true}'
+            )
         elif request.path == "/v1/jobs/query_events":
-            assert payload["job_id"] == "job-1"
+            query_events_payloads.append(payload)
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
             request.end_headers()
@@ -2559,24 +2907,166 @@ def test_remote_connection_jobs_surface():
         assert jobs[0].table == "t1"
         assert jobs[1].state == "finished"
 
-        description = db.get_job("job-1")
-        assert description.job_type == "create_index"
-        assert description.state == "failed"
-        assert json.loads(description.spec_json) == {"column": "vec"}
-        assert description.failure.message == "worker died"
-        assert description.failure.retryable is True
-        assert db.get_job("missing") is None
-
         assert db.cancel_job("job-1") is True
         assert db.cancel_job("missing") is False
 
-        batches = db.job_history("job-1")
-        assert len(batches) == 1
-        assert batches[0].num_rows == 2
-        assert batches[0].column("state").to_pylist() == ["created", "done"]
+        assert db.pause_job("job-1") == "pausing"
+        assert db.resume_job("job-1") == "still_pausing"
 
-        job = db.job("job-1")
+        # Opening a job hands back a populated handle; a missing one fails.
+        with pytest.raises(JobNotFoundError, match="missing"):
+            db.open_job("missing")
+        finished = db.open_job("job-2")
+        assert finished.state == "finished"
+        assert finished.result == {"rows_assigned": 1000000, "rows_failed": 0}
+
+        job = db.open_job("job-1")
         assert job.id == "job-1"
+        # Opening already populated the handle.
+        assert job.state == "failed"
+        assert job.spec == {"column": "vec"}
+        assert job.failure.message == "worker died"
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
+
+
+def test_remote_job_handle_reports_its_own_detail():
+    schema = pa.schema([("state", pa.string())])
+    batch = pa.record_batch([pa.array(["claim_complete"])], schema=schema)
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, schema) as writer:
+        writer.write_batch(batch)
+    events_body = sink.getvalue().to_pybytes()
+    event_payloads = []
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        payload = json.loads(body) if body else {}
+        if request.path == "/v1/jobs/describe":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        job_id="job-1",
+                        job_type="refresh_column",
+                        job_state="DONE",
+                        creation_ms=2000,
+                        spec=dict(column="vec"),
+                        result=dict(rows_assigned=1000000),
+                    )
+                ).encode()
+            )
+        elif request.path == "/v1/jobs/query_events":
+            event_payloads.append(payload)
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.end_headers()
+            request.wfile.write(events_body)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        job = db.open_job("job-1")
+
+        # Opening populates the handle in the same round trip.
+        assert job.state == "finished"
+        job.refresh()
+        assert job.job_type == "refresh_column"
+        assert job.creation_ms == 2000
+        assert job.spec == {"column": "vec"}
+        assert job.result == {"rows_assigned": 1000000}
+        assert job.failure is None
+        # The JSON payloads stay reachable, but as internal APIs.
+        assert json.loads(job._spec_json) == {"column": "vec"}
+        assert json.loads(job._result_json) == {"rows_assigned": 1000000}
+
+        # print() shows everything the handle knows and nothing it does not.
+        # print() lays every known field out on its own line, with the JSON
+        # payloads indented rather than crammed onto one line.
+        assert repr(job) == "\n".join(
+            [
+                "Job(",
+                "    id='job-1',",
+                "    state='finished',",
+                "    job_type='refresh_column',",
+                "    creation_ms=2000,",
+                "    spec={",
+                '        "column": "vec"',
+                "    },",
+                "    result={",
+                '        "rows_assigned": 1000000',
+                "    },",
+                ")",
+            ]
+        )
+        # Nothing it does not know shows up.
+        assert "failure" not in repr(job)
+
+        events = job.events(filter="state = 'claim_complete'", limit=500)
+        assert isinstance(events, pa.Table)
+        assert events.column("state").to_pylist() == ["claim_complete"]
+        # The handle supplies job_id; the caller only narrows the query.
+        assert event_payloads[-1] == {
+            "job_id": "job-1",
+            "limit": 500,
+            "filter": "state = 'claim_complete'",
+        }
+
+
+def test_view_crud_addresses_its_own_routes():
+    # The view verbs are their own routes, and the schema comes back in the
+    # namespace spec's JSON encoding, decoded into a pyarrow schema.
+    paths = []
+
+    def handler(request):
+        paths.append((request.command, request.path))
+        if request.path.endswith("/view/list"):
+            body = {"views": ["adults"]}
+        elif request.path.endswith("/drop"):
+            body = {}
+        else:
+            body = {
+                "name": "adults",
+                "namespace": ["analytics"],
+                "query": "SELECT name FROM people",
+                "default_database": "dev",
+                "default_namespace": ["analytics"],
+                "schema": {
+                    "fields": [
+                        {"name": "name", "nullable": True, "type": {"type": "utf8"}}
+                    ]
+                },
+            }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(body).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        view = db.create_view(
+            "adults", "SELECT name FROM people", namespace_path=["analytics"]
+        )
+        assert view.name == "adults"
+        assert view.namespace_path == ["analytics"]
+        assert view.query == "SELECT name FROM people"
+        assert view.default_database == "dev"
+        assert view.default_namespace_path == ["analytics"]
+        assert view.schema == pa.schema([pa.field("name", pa.utf8(), nullable=True)])
+
+        described = db.describe_view("adults", namespace_path=["analytics"])
+        assert described.schema == view.schema
+
+        assert db.list_views(namespace_path=["analytics"]) == ["adults"]
+        db.drop_view("adults", namespace_path=["analytics"])
+
+    assert paths == [
+        ("POST", "/v1/view/analytics$adults/create"),
+        ("POST", "/v1/view/analytics$adults/describe"),
+        ("GET", "/v1/namespace/analytics/view/list"),
+        ("POST", "/v1/view/analytics$adults/drop"),
+    ]

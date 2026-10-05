@@ -180,6 +180,9 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             .expect("Failed to import namespace");
 
         match self.0 {
+            FtsQuery::CombinedFields(_) => Err(PyValueError::new_err(
+                "Combined-fields FTS queries are not yet supported in Python",
+            )),
             FtsQuery::Match(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boost", query.boost)?;
@@ -334,7 +337,7 @@ pub struct PyQueryRequest {
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
     pub minimum_nprobes: Option<usize>,
-    // None means user did not set it and default shoud be used (currenty 20)
+    // None means user did not set it and default should be used (currently 20)
     // Some(0) means user set it to None and there is no limit
     pub maximum_nprobes: Option<usize>,
     pub lower_bound: Option<f32>,
@@ -992,8 +995,9 @@ impl VectorQuery {
         self.inner = self.inner.clone().refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner = self.inner.clone().nprobes(nprobe as usize).infer_error()?;
+        Ok(())
     }
 
     pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
@@ -1185,8 +1189,8 @@ impl HybridQuery {
         self.inner_vec.refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner_vec.nprobes(nprobe);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner_vec.nprobes(nprobe)
     }
 
     pub fn ef(&mut self, ef: u32) {

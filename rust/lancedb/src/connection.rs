@@ -23,16 +23,25 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, JobDescription, JobInfo, OpenTableRequest,
-    ReadConsistency, TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, PauseJobStatus,
+    ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
-    db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
+    db::{
+        OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION,
+        OPT_REMOTE_SQL_HOST_OVERRIDE,
+    },
 };
+use crate::secrets::SecretInfo;
+use crate::utils::{
+    validate_namespace, validate_secret_component, validate_secret_reference,
+    validate_view_reference,
+};
+use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
 #[cfg(feature = "remote")]
@@ -322,6 +331,43 @@ pub struct CloneTableBuilder {
     request: CloneTableRequest,
 }
 
+/// Builder for asynchronously executing a SQL statement on a remote database.
+pub struct ExecuteQueryAsyncBuilder {
+    parent: Arc<dyn Database>,
+    query: String,
+    default_namespace_path: Vec<String>,
+}
+
+impl ExecuteQueryAsyncBuilder {
+    fn new(parent: Arc<dyn Database>, query: String) -> Self {
+        Self {
+            parent,
+            query,
+            default_namespace_path: vec!["public".to_string()],
+        }
+    }
+
+    /// Set the namespace used for unqualified table names.
+    ///
+    /// An empty path is treated as `public`, which is the SQL name for the
+    /// root Lance namespace.
+    pub fn default_namespace_path<I, S>(mut self, path: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Start the statement and return its asynchronous query handle.
+    pub async fn execute(self) -> Result<crate::sql::Query> {
+        self.parent
+            .execute_query_async(&self.query, &self.default_namespace_path)
+            .await
+    }
+}
+
 impl CloneTableBuilder {
     fn new(parent: Arc<dyn Database>, target_table_name: String, source_uri: String) -> Self {
         Self {
@@ -405,6 +451,51 @@ impl Connection {
         &self.internal
     }
 
+    /// Start executing SQL on a remote LanceDB database.
+    ///
+    /// The query can reference tables in other databases with SQL dot notation.
+    /// Use [`ExecuteQueryAsyncBuilder::default_namespace_path`] to avoid qualifying
+    /// tables in the default namespace. Local connections return
+    /// [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn query(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    ///
+    /// let query = db
+    ///     .execute_query_async("SELECT * FROM events LIMIT 10")
+    ///     .default_namespace_path(["public"])
+    ///     .execute()
+    ///     .await?;
+    /// println!("query id: {}", query.id());
+    /// let mut batches = query.reader().await?;
+    /// while let Some(batch) = batches.try_next().await? {
+    ///     println!("received {} rows", batch.num_rows());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn execute_query_async(&self, query: impl Into<String>) -> ExecuteQueryAsyncBuilder {
+        ExecuteQueryAsyncBuilder::new(self.internal.clone(), query.into())
+    }
+
+    /// Describe a submitted SQL query by its connection-scoped id.
+    ///
+    /// This performs one bounded status poll using state retained by this
+    /// connection. Running state with a live query handle is not evicted;
+    /// abandoned state has bounded retention, and server expiration is
+    /// honored. Terminal state is retained briefly.
+    /// Query ids are not portable to another connection. Local connections
+    /// return [`Error::NotSupported`].
+    pub async fn describe_query(
+        &self,
+        query_id: uuid::Uuid,
+    ) -> Result<crate::sql::QueryDescription> {
+        self.internal.describe_query(query_id).await
+    }
+
     /// Get the names of all tables in the database
     ///
     /// The names will be returned in lexicographical order (ascending)
@@ -477,6 +568,7 @@ impl Connection {
     /// Creates a new table by cloning from an existing source table.
     /// By default, this performs a shallow clone where the new table shares
     /// the underlying data files with the source table.
+    /// The target table name must be unused. An existing table is left unchanged.
     ///
     /// # Parameters
     /// - `target_table_name`: The name of the new table to create
@@ -496,16 +588,22 @@ impl Connection {
         )
     }
 
-    /// Register a Python callable as a new immutable Function version.
+    /// Build and register a Python callable as an immutable Function version
+    /// in `namespace_path`, which is empty for the root namespace.
     ///
-    /// Registration is remote-only and always asynchronous. Waiting on the
-    /// returned typed job yields the durable [`crate::function::FunctionVersion`].
+    /// The server-side job builds the OCI image, then registers the completed
+    /// artifact. Waiting on the returned typed job yields the durable
+    /// [`crate::function::FunctionVersion`]. Creation is remote-only.
     /// Local databases return [`Error::NotSupported`].
+    ///
     pub async fn create_function_async(
         &self,
         request: crate::function::FunctionRegistrationRequest,
+        namespace_path: &[String],
     ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
-        self.internal.create_function_async(request).await
+        self.internal
+            .create_function_async(request, namespace_path)
+            .await
     }
 
     /// Look up one exact immutable Function version in the remote catalog.
@@ -517,13 +615,15 @@ impl Connection {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        namespace_path: &[String],
     ) -> Result<crate::function::FunctionVersion> {
         self.internal
-            .get_function(name.as_ref(), version.as_ref())
+            .get_function(name.as_ref(), version.as_ref(), namespace_path)
             .await
     }
 
-    /// List every published immutable Function version in the remote catalog.
+    /// List every published immutable Function version in `namespace_path` of
+    /// the remote catalog. Functions in child namespaces are not included.
     ///
     /// Results are ordered by Function name then version. The client walks all
     /// server pages before returning. Local databases return
@@ -535,17 +635,20 @@ impl Connection {
     /// # async fn list_functions(
     /// #     connection: &lancedb::Connection,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// for function in connection.list_functions().await? {
+    /// for function in connection.list_functions(&[]).await? {
     ///     println!("{} {}", function.name(), function.version());
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list_functions(&self) -> Result<Vec<crate::function::FunctionVersion>> {
-        self.internal.list_functions().await
+    pub async fn list_functions(
+        &self,
+        namespace_path: &[String],
+    ) -> Result<Vec<crate::function::FunctionVersion>> {
+        self.internal.list_functions(namespace_path).await
     }
 
-    /// Drop one exact immutable Function version from the remote catalog.
+    /// Remove the current Function name binding, retaining the object history.
     ///
     /// Returns `true` when the server appended a Dropped transition and
     /// `false` for an idempotent replay. Local databases return
@@ -554,10 +657,225 @@ impl Connection {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        namespace_path: &[String],
     ) -> Result<bool> {
         self.internal
-            .drop_function(name.as_ref(), version.as_ref())
+            .drop_function(name.as_ref(), version.as_ref(), namespace_path)
             .await
+    }
+
+    /// Start dropping a Function and return its cleanup job.
+    ///
+    /// The name is unbound before this returns; the object's content may still be being
+    /// deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for that to finish. When
+    /// the server deletes inline, or when nothing was bound, the returned job is already
+    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    pub async fn drop_function_async(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<(bool, crate::job::Job)> {
+        self.internal
+            .drop_function_async(name.as_ref(), version.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Create a named Secret in this database.
+    ///
+    /// Fails if the name is taken, so a create can never silently become a
+    /// rotation. There is no API that reads a stored credential back; the only
+    /// consumer is a Function that binds the Secret by name. Local databases
+    /// return [`Error::NotSupported`].
+    pub async fn create_secret(
+        &self,
+        name: impl AsRef<str>,
+        value: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_secret(name.as_ref(), value.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Replace the credential behind an existing Secret.
+    ///
+    /// Fails if it does not exist. Every Function bound to the Secret resolves
+    /// the new value from its next execution, and no new Function version is
+    /// minted -- which is what lets a rotation reach columns pinned to a
+    /// version registered before it. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn alter_secret(
+        &self,
+        name: impl AsRef<str>,
+        value: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .alter_secret(name.as_ref(), value.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of every Secret in this database.
+    ///
+    /// Names only. No path in this API returns a stored credential, by
+    /// construction rather than by policy. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        for segment in namespace_path {
+            validate_secret_component("Secret namespace path segment", segment)?;
+        }
+        self.internal.list_secrets(namespace_path).await
+    }
+
+    /// Drop a Secret.
+    ///
+    /// Functions bound to it fail at their next job, naming the Secret; that
+    /// is the revocation path. The name becomes free to reuse, and a new
+    /// Secret under it is picked up by everything still bound to that name.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn drop_secret(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_secret(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// What this database records about one Secret: its name and timestamps.
+    ///
+    /// Never the value. The type it returns has no field for one, so this is a
+    /// property of the API rather than of what the caller chooses to read.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn describe_secret(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<SecretInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_secret(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Create a view: a named query the database plans on every read.
+    ///
+    /// The query is planned once, here, so one that cannot be planned is
+    /// refused now rather than at the first read. A view holds no rows, and
+    /// its readers see its sources as they are at read time.
+    ///
+    /// There is no replace: a name already taken is an error, and changing a
+    /// view is a drop followed by a create, each authorized against what it
+    /// actually touches. Local databases return [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn view_lifecycle(
+    /// #     connection: &lancedb::Connection,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let namespace = vec!["analytics".to_string()];
+    ///
+    /// let view = connection
+    ///     .create_view(
+    ///         "recent_orders",
+    ///         "SELECT id, total FROM orders WHERE total > 100",
+    ///         &namespace,
+    ///     )
+    ///     .await?;
+    /// println!("{} has {} columns", view.name, view.schema.fields().len());
+    ///
+    /// // The query comes back as it was recorded, with the defaults its
+    /// // unqualified names resolve against.
+    /// let described = connection.describe_view("recent_orders", &namespace).await?;
+    /// println!("{} in {:?}", described.query, described.default_namespace_path);
+    ///
+    /// let names = connection.list_views(&namespace).await?;
+    /// assert!(names.iter().any(|name| name == "recent_orders"));
+    ///
+    /// // Dropping the view leaves `orders` untouched.
+    /// connection.drop_view("recent_orders", &namespace).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_view(
+        &self,
+        name: impl AsRef<str>,
+        query: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_view(name.as_ref(), query.as_ref(), namespace_path)
+            .await
+    }
+
+    /// What this database records about one view: its defining query and the
+    /// schema that query resolved to.
+    ///
+    /// The schema is the one recorded at creation. A source altered since then
+    /// shows up when the view is read, not here. Local databases return
+    /// [`Error::NotSupported`].
+    pub async fn describe_view(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_view(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a view and wait for its definition to be deleted.
+    ///
+    /// The tables it reads are untouched: a view holds no rows of its own.
+    /// Use [`Connection::drop_view_async`] to get the cleanup job instead of
+    /// waiting on it. Local databases return [`Error::NotSupported`].
+    pub async fn drop_view(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal.drop_view(name.as_ref(), namespace_path).await
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    ///
+    /// The name is free before this returns; the definition dataset may still
+    /// be being deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for
+    /// that. When nothing was bound to the name, the returned job is already
+    /// finished and has no id. Local databases return [`Error::NotSupported`].
+    ///
+    /// ```no_run
+    /// # use lancedb::Connection;
+    /// # async fn drop(conn: &Connection) -> lancedb::Result<()> {
+    /// let job = conn.drop_view_async("recent_orders", &[]).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn drop_view_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        validate_view_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_view_async(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of the views in one namespace.
+    ///
+    /// Names only; a definition is query metadata and comes from
+    /// [`Self::describe_view`]. The client walks all server pages before
+    /// returning. Local databases return [`Error::NotSupported`].
+    pub async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        validate_namespace(namespace_path)?;
+        self.internal.list_views(namespace_path).await
     }
 
     /// Rename a table in the database.
@@ -585,25 +903,39 @@ impl Connection {
         self.internal.read_consistency().await
     }
 
-    /// A [`crate::job::Job`] handle for a server-side job by id, suitable for
-    /// waiting on or cancelling the job.
+    /// Open a server-side job by id, returning a handle with its record
+    /// already populated. Fails with [`crate::Error::JobNotFound`] when the
+    /// server has no such job, the way [`Connection::open_table`] does for a
+    /// missing table.
     ///
-    /// The handle is constructed without a server round trip; an unknown id
-    /// surfaces when the handle is used. Only server-backed databases support
-    /// job handles by id.
-    pub fn job(&self, job_id: impl AsRef<str>) -> Result<crate::job::Job> {
-        self.internal.job(job_id.as_ref())
+    /// This is the one way in: the returned [`crate::job::Job`] answers for
+    /// its own state, specification, result, failure and event history, so
+    /// there is no separate connection-level call for any of them.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use lancedb::job::JobEventsRequest;
+    /// # async fn open_job(
+    /// #     connection: &lancedb::Connection,
+    /// #     job_id: &str,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = connection.open_job(job_id).await?;
+    /// println!("{:?} {:?}", job.state(), job.result());
+    /// let done = job
+    ///     .events(JobEventsRequest::default().filter("state = 'claim_complete'"))
+    ///     .await?;
+    /// println!("{} completions", done.iter().map(|b| b.num_rows()).sum::<usize>());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn open_job(&self, job_id: impl AsRef<str>) -> Result<crate::job::Job> {
+        self.internal.open_job(job_id.as_ref()).await
     }
 
     /// List server-side jobs across the database's tables.
     pub async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
         self.internal.list_jobs().await
-    }
-
-    /// Describe a single server-side job by id. `None` when the server has no
-    /// such job.
-    pub async fn get_job(&self, job_id: impl AsRef<str>) -> Result<Option<JobDescription>> {
-        self.internal.get_job(job_id.as_ref()).await
     }
 
     /// Request cancellation of a server-side job by id. Returns true if the
@@ -612,10 +944,16 @@ impl Connection {
         self.internal.cancel_job(job_id.as_ref()).await
     }
 
-    /// The lifecycle event history of a server-side job (all jobs when
-    /// `job_id` is `None`), as recorded Arrow batches.
-    pub async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
-        self.internal.job_history(job_id).await
+    /// Pause a server-side job by id. Its workers drain and it stays parked
+    /// until resumed; see [`PauseJobStatus`] for the outcomes.
+    pub async fn pause_job(&self, job_id: impl AsRef<str>) -> Result<PauseJobStatus> {
+        self.internal.pause_job(job_id.as_ref()).await
+    }
+
+    /// Resume a paused server-side job by id. Its workers pick their work
+    /// back up from checkpoints; see [`ResumeJobStatus`] for the outcomes.
+    pub async fn resume_job(&self, job_id: impl AsRef<str>) -> Result<ResumeJobStatus> {
+        self.internal.resume_job(job_id.as_ref()).await
     }
 
     /// Drop a table in the database.
@@ -734,7 +1072,7 @@ impl Connection {
 pub struct ConnectRequest {
     /// Database URI
     ///
-    /// ### Accpeted URI formats
+    /// ### Accepted URI formats
     ///
     /// - `/path/to/database` - local database on file system.
     /// - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
@@ -860,6 +1198,19 @@ impl ConnectBuilder {
         self.request.options.insert(
             OPT_REMOTE_HOST_OVERRIDE.to_string(),
             host_override.to_string(),
+        );
+        self
+    }
+
+    /// Set the SQL service host override for a remote connection.
+    ///
+    /// The SQL client is initialized lazily when the connection first executes
+    /// SQL and is retained for the connection's lifetime.
+    #[cfg(feature = "remote")]
+    pub fn sql_host_override(mut self, sql_host_override: &str) -> Self {
+        self.request.options.insert(
+            OPT_REMOTE_SQL_HOST_OVERRIDE.to_string(),
+            sql_host_override.to_string(),
         );
         self
     }
@@ -1053,6 +1404,7 @@ impl ConnectBuilder {
 
         let mut merged_options = self.request.options.clone();
         Self::apply_env_defaults(&ENV_VARS_TO_STORAGE_OPTS, &mut merged_options);
+        let sql_host_override = merged_options.get(OPT_REMOTE_SQL_HOST_OVERRIDE).cloned();
         let options = RemoteDatabaseOptions::parse_from_map(&merged_options)?;
 
         let region = options.region.ok_or_else(|| Error::InvalidInput {
@@ -1094,11 +1446,15 @@ impl ConnectBuilder {
         }
 
         let storage_options = StorageOptions(options.storage_options.clone());
+        let host_overrides = crate::remote::db::RemoteHostOverrides {
+            rest: options.host_override,
+            sql: sql_host_override,
+        };
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.request.uri,
             &api_key,
             &region,
-            options.host_override,
+            host_overrides,
             client_config,
             storage_options.into(),
             self.request.read_consistency_interval,
@@ -1392,6 +1748,23 @@ mod tests {
         assert_eq!(tc.connection.uri(), tc.uri);
     }
 
+    #[tokio::test]
+    async fn test_local_connection_rejects_sql_queries() {
+        let directory = tempdir().unwrap();
+        let connection = connect(directory.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert!(matches!(
+            connection.execute_query_async("SELECT 1").execute().await,
+            Err(Error::NotSupported { .. })
+        ));
+        assert!(matches!(
+            connection.describe_query(uuid::Uuid::nil()).await,
+            Err(Error::NotSupported { .. })
+        ));
+    }
+
     #[cfg(feature = "remote")]
     #[test]
     fn test_apply_env_defaults() {
@@ -1417,7 +1790,11 @@ mod tests {
             client_secret: Some("secret".to_string()),
             scopes: vec!["scope".to_string()],
             flow: crate::remote::OAuthFlow::ClientCredentials,
+            client_auth_method: None,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
+            token_cache: None,
         };
 
         let result = ConnectBuilder::new("db://my-container/my-prefix")
@@ -1459,7 +1836,11 @@ mod tests {
             client_secret: Some("secret".to_string()),
             scopes: vec!["scope".to_string()],
             flow: crate::remote::OAuthFlow::ClientCredentials,
+            client_auth_method: None,
             refresh_buffer_secs: None,
+            resource: None,
+            audience: None,
+            token_cache: None,
         };
         let client_config = crate::remote::ClientConfig {
             header_provider: Some(
@@ -1811,6 +2192,63 @@ mod tests {
 
         let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables.len(), 0);
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn test_clone_table_target_already_exists(
+        #[values("source", "target")] target: &str,
+        #[values(false, true)] enable_v2_manifest_paths: bool,
+    ) {
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let options = ListingDatabaseOptions::builder()
+            .enable_v2_manifest_paths(enable_v2_manifest_paths)
+            .build();
+        let db = connect(tmp_dir.path().to_str().unwrap())
+            .database_options(&options)
+            .execute()
+            .await
+            .unwrap();
+        let source_data = arrow_array::record_batch!(("id", Int32, [0, 1, 2])).unwrap();
+        let target_data = arrow_array::record_batch!(("id", Int32, [10, 11])).unwrap();
+        db.create_table("source", source_data.clone())
+            .execute()
+            .await
+            .unwrap();
+        db.create_table("target", target_data.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let source_uri = tmp_dir.path().join("source.lance");
+        let err = db
+            .clone_table(target, source_uri.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TableAlreadyExists { name } if name == target),
+            "unexpected clone error: {err:?}"
+        );
+
+        // Reopen both tables to verify that the failed clone left their data and versions intact.
+        for (name, expected_data) in [("source", source_data), ("target", target_data)] {
+            let table = db.open_table(name).execute().await.unwrap();
+            assert_eq!(table.version().await.unwrap(), 1);
+            assert_eq!(table.list_versions().await.unwrap().len(), 1);
+            let batches = table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(batches, vec![expected_data]);
+        }
     }
 
     #[tokio::test]

@@ -26,6 +26,7 @@ export {
   MaterializedViewDefinition,
   MaterializedViewSelect,
 } from "./materialized_view";
+export { ViewDescription } from "./view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 // OpenTelemetry metrics bridge. Only the high-level entry point is public; the
@@ -56,6 +57,10 @@ export {
   AddResult,
   AddColumnsResult,
   RefreshColumnResult,
+  FunctionErrors,
+  FunctionErrorsOptions,
+  FunctionErrorRecord,
+  FunctionErrorFragment,
   RefreshMaterializedViewResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
@@ -72,10 +77,21 @@ export {
 
 export {
   makeArrowTable,
+  makeJsonField,
   MakeArrowTableOptions,
   Data,
   VectorColumnOptions,
 } from "./arrow";
+
+export { blob, isBlobField, BlobFile } from "./blob";
+export type {
+  BlobData,
+  BlobInput,
+  BlobOptions,
+  BlobRange,
+  BlobReadOptions,
+  BlobUri,
+} from "./blob";
 
 export {
   Connection,
@@ -94,13 +110,9 @@ export {
   RenameTableOptions,
 } from "./connection";
 
-export {
-  Job,
-  JobDescription,
-  JobFailureInfo,
-  JobInfo,
-  Session,
-} from "./native.js";
+export { JobFailureInfo, JobInfo, Session } from "./native.js";
+
+export { Job, JobEventsOptions } from "./job";
 
 export {
   AutoQuery,
@@ -171,7 +183,15 @@ export {
   TokenResponse,
 } from "./header";
 
-export { OAuthConfig, OAuthFlowType } from "./oauth";
+export {
+  ClientAuthMethod,
+  OAuthConfig,
+  OAuthFlowType,
+  OAuthSession,
+  SessionLogout,
+  SessionStatus,
+  TokenCacheOptions,
+} from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 
@@ -182,6 +202,7 @@ export * as rerankers from "./rerankers";
 export {
   SchemaLike,
   TableLike,
+  DataTypeLike,
   FieldLike,
   RecordBatchLike,
   DataLike,
@@ -621,3 +642,10 @@ export async function connectNamespace(
   );
   return new LocalConnection(nativeConn);
 }
+
+export {
+  Catalog,
+  CatalogOptions,
+  ListDatabasesResponse,
+  connectCatalog,
+} from "./catalog";

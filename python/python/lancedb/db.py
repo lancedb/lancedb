@@ -17,8 +17,11 @@ from typing import (
     List,
     Literal,
     Optional,
+    Sequence,
+    Tuple,
     Union,
 )
+from uuid import UUID
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -47,11 +50,22 @@ from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
 from .job import AsyncJob, Job, _typed_job
+from .sql import AsyncQuery as AsyncSqlQuery
+from .sql import Query as SqlQuery
+from .sql import QueryDescription
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
+    MaterializedViewSource,
+    VectorDedupSource,
     SelectArg,
     normalize_select,
+)
+from .secrets import (
+    EnvVarSecret,
+    SecretInfo,
+    validate_namespace_path,
+    validate_secret_name,
 )
 from .table import (
     AsyncTable,
@@ -63,15 +77,17 @@ from .util import (
     get_uri_scheme,
     validate_table_name,
 )
+from .view import ViewDescription
 
 import deprecation
 
 if TYPE_CHECKING:
     import pyarrow as pa
+    from .arrow import AsyncRecordBatchReader
     from .pydantic import LanceModel
 
     from ._lancedb import Connection as LanceDbConnection
-    from ._lancedb import JobDescription, JobInfo
+    from ._lancedb import JobInfo
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from ._lancedb import Session
@@ -83,8 +99,71 @@ from .namespace_utils import (
 )
 
 
+def _view_description(
+    described: Tuple[str, List[str], str, str, List[str], "pa.Schema"],
+) -> ViewDescription:
+    """Name the fields the binding returns positionally."""
+    (
+        name,
+        namespace_path,
+        query,
+        default_database,
+        default_namespace_path,
+        schema,
+    ) = described
+    return ViewDescription(
+        name=name,
+        query=query,
+        default_database=default_database,
+        schema=schema,
+        namespace_path=namespace_path,
+        default_namespace_path=default_namespace_path,
+    )
+
+
 class DBConnection(EnforceOverrides):
-    """An active LanceDB connection interface."""
+    """An active LanceDB connection interface.
+
+    Use [close][lancedb.db.DBConnection.close] to release the connection's
+    underlying resources, or use the connection as a context manager to close it
+    automatically when leaving the block, including when an exception is raised.
+
+    Examples
+    --------
+    >>> import lancedb
+    >>> with lancedb.connect("memory://") as db:
+    ...     assert db.is_open()
+    >>> db.is_open()
+    False
+    """
+
+    def __enter__(self) -> DBConnection:
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
+
+    @abstractmethod
+    def is_open(self) -> bool:
+        """Return True if the connection is open."""
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close the connection, releasing any underlying resources.
+
+        It is safe to call this method multiple times. Database operations on a
+        closed connection raise ``RuntimeError: Connection is closed``.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> db.close()
+        >>> db.is_open()
+        False
+        """
+        pass
 
     def list_namespaces(
         self,
@@ -330,9 +409,10 @@ class DBConnection(EnforceOverrides):
             - [LanceModel][lancedb.pydantic.LanceModel]
         mode: str; default "create"
             The mode to use when creating the table.
-            Can be either "create" or "overwrite".
+            Can be "create", "overwrite", or "exist_ok".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+            To open an existing table without adding data, use mode="exist_ok".
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
@@ -519,30 +599,35 @@ class DBConnection(EnforceOverrides):
     def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
-        The view is created empty, with the query recorded in its schema
-        metadata; ``view.refresh()`` computes the rows. The view is a normal
-        table: it can be queried, indexed and searched, and it appears in
-        ``table_names``. Local databases only.
+        The view is populated before creation returns. Pass
+        ``with_no_data=True`` to create only its definition and empty backing
+        table. The view is a normal table: it can be queried, indexed and
+        searched, and it appears in ``table_names``.
 
-        The source table must have stable row ids (create it with the
+        Ordinary source tables must have stable row ids (create them with the
         ``new_table_enable_stable_row_ids`` storage option): they keep the
         view's provenance valid across source compactions, and cannot be
-        enabled after a table exists.
+        enabled after a table exists. Native dedup sources also support physical
+        row IDs interpreted against their pinned snapshot.
 
         Parameters
         ----------
         name: str
             The name of the view.
-        source: str
-            The name of the source table, in this database.
+        source: str or VectorDedupSource
+            The name of the source table, or an indexed dedup source declared
+            with [vector_dedup][lancedb.vector_dedup]. Dedup sources capture a
+            fixed snapshot and preserve the source table. They accept no
+            additional select, where or limit options.
         select: list or dict, optional
             The view's columns: column names, ``(alias, SQL expression)``
             pairs, or a dict of the same. Omitting it selects every source
@@ -551,10 +636,33 @@ class DBConnection(EnforceOverrides):
             SQL predicate; only matching source rows appear in the view.
         limit: int, optional
             Cap the view at this many rows, in materialization order.
+        with_no_data: bool, default False
+            Skip the initial refresh and leave the backing table empty.
 
         Returns
         -------
         MaterializedView
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        """Submit materialized-view creation and return its job.
+
+        The job may already be complete for a local database. On LanceDB
+        Cloud and Enterprise, its ``id`` is the server job identifier from
+        the ``202 Accepted`` create response. Wait for the job before opening
+        or querying the view.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -575,6 +683,32 @@ class DBConnection(EnforceOverrides):
 
         Found by reading every table's schema, so this costs an open per
         table.
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized view.
+
+        The view may become unavailable before physical cleanup finishes. Use
+        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
+        job.
+        """
+        raise NotImplementedError(
+            "materialized views are not supported on this connection type"
+        )
+
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        """Start dropping a materialized view and return its cleanup job.
+
+        The job may already be complete for a local database. On LanceDB Cloud
+        and Enterprise, its ``id`` is the server job identifier from the
+        ``202 Accepted`` drop response.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -687,36 +821,87 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("serialize is not supported for this connection type")
 
-    def create_function(self, definition: UdfDefinition) -> FunctionVersion:
-        """Register a scalar Python UDF and wait for its immutable version.
+    def create_function(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
+        """Build and register a scalar Python UDF, then return its version.
 
+        The server builds the OCI image and registers the completed artifact.
         This is the blocking counterpart of :meth:`create_function_async`.
         Local connections raise ``NotImplementedError``.
+
+        Parameters
+        ----------
+        definition : UdfDefinition
+            A callable decorated with [udf][lancedb.udf].
+        secrets : sequence of EnvVarSecret, optional
+            One [EnvVarSecret][lancedb.secrets.EnvVarSecret] per credential the
+            Function needs, each naming a Secret and the environment variable
+            its value arrives in. The Function's source is unchanged by this;
+            it reads the variable the way it already did.
+        namespace_path : list of str, optional
+            The namespace holding the Function. None or an empty list is the
+            root namespace.
+
+        Examples
+        --------
+        ```python
+        db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
+        db.create_function(
+            analyze_caption,
+            secrets=[
+                EnvVarSecret(
+                    secret_name="openai-prod", env_variable="OPENAI_API_KEY"
+                )
+            ],
+        )
+        ```
         """
-        return self.create_function_async(definition).wait()
+        return self.create_function_async(
+            definition, secrets=secrets, namespace_path=namespace_path
+        ).wait()
 
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        """Register a scalar Python UDF through the remote Function catalog.
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Job[FunctionVersion]:
+        """Submit a scalar Python UDF for building and registration.
 
-        Submission returns a typed job. The immutable Function version becomes
-        available only when :meth:`Job.wait` succeeds. Local connections raise
-        ``NotImplementedError``.
+        The server-side job builds the OCI image, then registers the completed
+        artifact. Waiting on the job returns the immutable Function version.
+        Local connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
         )
 
-    def get_function(self, name: str, *, version: str) -> FunctionVersion:
+    def get_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
         )
 
-    def list_functions(self) -> List[FunctionVersion]:
-        """List every published immutable Function version.
+    def list_functions(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[FunctionVersion]:
+        """List every published immutable Function version in a namespace.
 
-        Results are ordered by Function name then version. Local connections
-        raise ``NotImplementedError``.
+        Functions in child namespaces are not included. Results are ordered by
+        Function name then version. Local connections raise
+        ``NotImplementedError``.
 
         Examples
         --------
@@ -730,35 +915,201 @@ class DBConnection(EnforceOverrides):
             "Function catalog operations are not supported for this connection type"
         )
 
-    def drop_function(self, name: str, *, version: str) -> bool:
-        """Drop one exact immutable Function version from the remote catalog.
+    def drop_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> bool:
+        """Drop a Function name and the object it was bound to.
 
-        Returns True when the version changed to Dropped and False for an
-        idempotent replay. Local connections raise NotImplementedError.
+        The requested version must exist in the currently named object. Returns
+        True when the name was removed and False when it was absent. The
+        object's content is deleted with it, which may finish after this
+        returns; use :meth:`drop_function_async` to wait for that. Local
+        connections raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
         )
 
-    def job(self, job_id: str) -> Job:
-        """A [Job][lancedb.job.Job] handle for a server-side job by id.
+    def drop_function_async(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, Job]:
+        """Drop a Function name and return its cleanup job.
 
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+        The name is unbound before this returns; the object's content may still
+        be being deleted. Call :meth:`Job.wait` to wait for that to finish. When
+        the server deletes inline, or when nothing was bound, the returned job
+        is already finished and has no id. Local connections raise
+        NotImplementedError.
         """
-        raise NotImplementedError("job is not supported for this connection type")
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
+
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Create a named Secret in this database.
+
+        Fails if the name is taken, so a create never silently becomes a
+        rotation. Nothing reads the value back: it is bound to a Function by
+        name and resolved by the service when that Function runs. Local
+        connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Replace the credential behind an existing Secret.
+
+        Fails if it does not exist. Every Function bound to the Secret uses the
+        new value from its next job, and no new Function version is created --
+        which is how a rotation reaches columns pinned to a version registered
+        before it. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        """The names of every Secret in this database.
+
+        Names only. No method returns a stored credential, by construction
+        rather than by policy. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a Secret.
+
+        Functions bound to it fail at their next job, naming the Secret; that
+        is the revocation path. The name becomes free to reuse, and a new
+        Secret under it is picked up by everything still bound to that name.
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        """What this database records about a Secret: name and timestamps.
+
+        Never the value -- there is no code path that could return one. Local
+        connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Secret operations are not supported for this connection type"
+        )
+
+    def create_view(
+        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        """Create a view: a named query the database plans on every read.
+
+        The query is planned once, at creation, so one that cannot be planned
+        is refused now rather than at the first read. A view holds no rows, and
+        its readers see its sources as they are at read time.
+
+        There is no replace: a name already taken is an error, and changing a
+        view is a drop followed by a create. Local connections raise
+        ``NotImplementedError``.
+
+        >>> import lancedb
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> view = db.create_view(
+        ...     "adults", "SELECT name FROM people WHERE age >= 18"
+        ... )  # doctest: +SKIP
+        >>> view.schema  # doctest: +SKIP
+        name: string
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def describe_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        """What this database records about a view: its defining query and the
+        schema that query resolved to.
+
+        The schema is the one recorded at creation; a source altered since then
+        shows up when the view is read. Local connections raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a view and wait for its definition to be deleted.
+
+        The tables it reads are untouched: a view holds no rows of its own. Use
+        :meth:`drop_view_async` to get the cleanup job instead of waiting on it.
+        Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def drop_view_async(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> "Job[None]":
+        """Start dropping a view and return the job deleting its definition.
+
+        The name is free before this returns. Call :meth:`Job.wait` to wait for
+        the definition dataset to be deleted. When nothing was bound to the
+        name, the returned job is already finished and has no id. Local
+        connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        """The names of the views in one namespace.
+
+        Names only; a definition comes from
+        [describe_view][lancedb.db.DBConnection.describe_view]. Local
+        connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "View operations are not supported for this connection type"
+        )
+
+    def open_job(self, job_id: str) -> Job:
+        """Open a server-side job by id, returning a handle with its record
+        already populated.
+
+        The returned [Job][lancedb.job.Job] answers for its own state,
+        specification, result, failure and event history, so there is no
+        separate connection-level call for any of them.
+
+        Raises `JobNotFoundError` when the server has no such job, the way
+        `open_table` does for a missing table.
+        """
+        raise NotImplementedError("open_job is not supported for this connection type")
 
     def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
         raise NotImplementedError("list_jobs is not supported for this connection type")
-
-    def get_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Returns None when the server has no such job.
-        """
-        raise NotImplementedError("get_job is not supported for this connection type")
 
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -771,14 +1122,58 @@ class DBConnection(EnforceOverrides):
             "cancel_job is not supported for this connection type"
         )
 
-    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
 
-        Lists history across all jobs when `job_id` is None.
+        The job's workers drain and it stays parked until resumed. Returns
+        "pausing", "already_paused", or "committing" -- a job finalizing its
+        results cannot be parked; retry shortly.
+        """
+        raise NotImplementedError("pause_job is not supported for this connection type")
+
+    def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Its workers pick their work back up from checkpoints. Returns
+        "resumed", "still_pausing" -- the pause's worker drain is not
+        confirmed yet; retry shortly -- or "not_paused".
         """
         raise NotImplementedError(
-            "job_history is not supported for this connection type"
+            "resume_job is not supported for this connection type"
         )
+
+    def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> pa.RecordBatchReader:
+        """Execute SQL and return a blocking Arrow reader.
+
+        This submits through :meth:`execute_query_async` and waits until the
+        initial result stream is readable. It does not wait for the full query
+        to finish.
+        """
+        return self.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        ).reader()
+
+    def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> SqlQuery:
+        """Start executing SQL and return its query handle.
+
+        Local connections do not support SQL.
+        """
+        raise NotImplementedError("SQL is not supported for this connection type")
+
+    def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        raise NotImplementedError("SQL is not supported for this connection type")
 
 
 class LanceDBConnection(DBConnection):
@@ -875,6 +1270,7 @@ class LanceDBConnection(DBConnection):
                 None,
                 None,
                 None,
+                None,
                 read_consistency_interval_secs,
                 None,
                 storage_options,
@@ -920,6 +1316,14 @@ class LanceDBConnection(DBConnection):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(uri={self._conn.uri!r})"
+
+    @override
+    def is_open(self) -> bool:
+        return self._conn.is_open()
+
+    @override
+    def close(self) -> None:
+        self._conn.close()
 
     @override
     def serialize(self) -> str:
@@ -1143,8 +1547,6 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if mode.lower() not in ["create", "overwrite"]:
-            raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
         tbl = LanceTable.create(
@@ -1238,11 +1640,12 @@ class LanceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -1263,16 +1666,43 @@ class LanceDBConnection(DBConnection):
         ...     select=["name", ("shout", "upper(name)")],
         ...     where="age >= 18",
         ... )
-        >>> result = view.refresh()
-        >>> result.rows_written
+        >>> view.table.count_rows()
         1
         """
         LOOP.run(
             self._conn.create_materialized_view(
-                name, source, select=select, where=where, limit=limit
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
             )
         )
         return MaterializedView(self.open_table(name))
+
+    @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._conn.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+            )
+        )
+        return Job(job)
 
     @override
     def open_materialized_view(self, name: str) -> MaterializedView:
@@ -1285,6 +1715,25 @@ class LanceDBConnection(DBConnection):
     def list_materialized_views(self) -> List[str]:
         """The names of the materialized views in this database."""
         return LOOP.run(self._conn.list_materialized_views())
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_materialized_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._conn.drop_materialized_view_async(name, namespace_path=namespace_path)
+        )
+        return Job(job)
 
     def clone_table(
         self,
@@ -1423,44 +1872,140 @@ class LanceDBConnection(DBConnection):
         )
 
     @override
-    def job(self, job_id: str) -> Job:
-        """A [Job][lancedb.job.Job] handle for a server-side job by id.
-
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+    def open_job(self, job_id: str) -> Job:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        return Job(self._conn.job(job_id))
+        return Job(LOOP.run(self._conn.open_job(job_id)))
 
     @override
-    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
-        job = LOOP.run(self._conn.create_function_async(definition))
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Job[FunctionVersion]:
+        job = LOOP.run(
+            self._conn.create_function_async(
+                definition, secrets=secrets, namespace_path=namespace_path
+            )
+        )
         return Job(job)
 
     @override
-    def get_function(self, name: str, *, version: str) -> FunctionVersion:
-        return LOOP.run(self._conn.get_function(name, version=version))
+    def get_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
+        return LOOP.run(
+            self._conn.get_function(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
 
     @override
-    def list_functions(self) -> List[FunctionVersion]:
-        return LOOP.run(self._conn.list_functions())
+    def list_functions(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[FunctionVersion]:
+        return LOOP.run(self._conn.list_functions(namespace_path=namespace_path))
 
     @override
-    def drop_function(self, name: str, *, version: str) -> bool:
-        return LOOP.run(self._conn.drop_function(name, version=version))
+    def drop_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> bool:
+        return LOOP.run(
+            self._conn.drop_function(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def drop_function_async(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, Job]:
+        dropped, job = LOOP.run(
+            self._conn.drop_function_async(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
+        return dropped, Job(job)
+
+    @override
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.alter_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_secrets(namespace_path=namespace_path))
+
+    @override
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_secret(name, namespace_path=namespace_path))
+
+    @override
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
+
+    @override
+    def create_view(
+        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        return LOOP.run(
+            self._conn.create_view(name, query, namespace_path=namespace_path)
+        )
+
+    @override
+    def describe_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        return LOOP.run(self._conn.describe_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_view_async(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> "Job[None]":
+        return Job(
+            LOOP.run(self._conn.drop_view_async(name, namespace_path=namespace_path))
+        )
+
+    @override
+    def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+        return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
         return LOOP.run(self._conn.list_jobs())
-
-    @override
-    def get_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Returns None when the server has no such job.
-        """
-        return LOOP.run(self._conn.get_job(job_id))
 
     @override
     def cancel_job(self, job_id: str) -> bool:
@@ -1473,12 +2018,20 @@ class LanceDBConnection(DBConnection):
         return LOOP.run(self._conn.cancel_job(job_id))
 
     @override
-    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
 
-        Lists history across all jobs when `job_id` is None.
+        Returns "pausing", "already_paused", or "committing".
         """
-        return LOOP.run(self._conn.job_history(job_id))
+        return LOOP.run(self._conn.pause_job(job_id))
+
+    @override
+    def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Returns "resumed", "still_pausing", or "not_paused".
+        """
+        return LOOP.run(self._conn.resume_job(job_id))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -1796,11 +2349,12 @@ class AsyncConnection(object):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
-        mode: Literal["create", "overwrite"]; default "create"
+        mode: Literal["create", "overwrite", "exist_ok"]; default "create"
             The mode to use when creating the table.
-            Can be either "create" or "overwrite".
+            Can be "create", "overwrite", or "exist_ok".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+            To open an existing table without adding data, use mode="exist_ok".
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
@@ -2064,27 +2618,82 @@ class AsyncConnection(object):
             await tbl.checkout(version)
         return tbl
 
+    async def _materialized_view_source(
+        self,
+        source: MaterializedViewSource,
+        select: SelectArg,
+        where: Optional[str],
+        limit: Optional[int],
+    ) -> Tuple[str, Dict[str, str]]:
+        if not isinstance(source, VectorDedupSource):
+            return source, {}
+        if select is not None or where is not None or limit is not None:
+            raise ValueError(
+                "vector_dedup cannot be combined with select, where or limit"
+            )
+        version = source.dataset_version
+        if version is None:
+            table = await self.open_table(source.source)
+            version = await table.version()
+        return source.source, {
+            "vector_source_json": source._native_source_json(version)
+        }
+
     async def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: SelectArg = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
+        source, native_options = await self._materialized_view_source(
+            source, select, where, limit
+        )
         inner = await self._inner.create_materialized_view(
             name,
             source,
             projections=normalize_select(select),
             filter=where,
             limit=limit,
+            with_no_data=with_no_data,
+            **native_options,
         )
         return AsyncMaterializedView(AsyncTable(inner))
+
+    async def create_materialized_view_async(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+    ) -> AsyncJob[None]:
+        """Submit materialized-view creation and return its job.
+
+        Wait for the returned job before opening or querying the view.
+        """
+        source, native_options = await self._materialized_view_source(
+            source, select, where, limit
+        )
+        inner = await self._inner.create_materialized_view_async(
+            name,
+            source,
+            projections=normalize_select(select),
+            filter=where,
+            limit=limit,
+            with_no_data=with_no_data,
+            **native_options,
+        )
+        return AsyncJob(inner)
 
     async def open_materialized_view(self, name: str) -> AsyncMaterializedView:
         """Open the materialized view named ``name``.
@@ -2092,10 +2701,6 @@ class AsyncConnection(object):
         Raises ``ValueError`` if the table exists but is not a materialized
         view.
         """
-        if self.uri.startswith("db://"):
-            raise NotImplementedError(
-                "materialized views are supported only on local databases"
-            )
         view = AsyncMaterializedView(await self.open_table(name))
         await view.definition()
         return view
@@ -2107,6 +2712,41 @@ class AsyncConnection(object):
         table.
         """
         return await self._inner.list_materialized_views()
+
+    async def drop_materialized_view(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> None:
+        """Drop a materialized view.
+
+        The view may become unavailable before physical cleanup finishes. Use
+        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
+        job.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+
+    async def drop_materialized_view_async(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncJob[None]:
+        """Start dropping a materialized view and return its cleanup job.
+
+        Await :meth:`AsyncJob.wait` before assuming physical cleanup has
+        finished.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return AsyncJob(
+            await self._inner.drop_materialized_view_async(
+                name, namespace_path=namespace_path
+            )
+        )
 
     async def clone_table(
         self,
@@ -2250,60 +2890,205 @@ class AsyncConnection(object):
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
 
-    def job(self, job_id: str) -> AsyncJob:
-        """An [AsyncJob][lancedb.job.AsyncJob] handle for a server-side job
-        by id.
-
-        The handle is constructed without a server round trip; an unknown id
-        surfaces when the handle is used. Dropping the handle has no effect
-        on the job itself.
+    async def open_job(self, job_id: str) -> AsyncJob:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
         """
-        return AsyncJob(self._inner.job(job_id))
+        return AsyncJob(await self._inner.open_job(job_id))
 
     async def create_function_async(
-        self, definition: UdfDefinition
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[FunctionVersion]:
-        """Register a scalar Python UDF through the remote Function catalog.
+        """Submit a scalar Python UDF for building and registration.
 
-        The returned typed job resolves to the immutable Function version.
-        Local connections raise ``NotImplementedError``.
+        The server-side job builds the OCI image, then registers the completed
+        artifact. Waiting on the job returns the immutable Function version.
+        ``secrets`` is a sequence of
+        [EnvVarSecret][lancedb.secrets.EnvVarSecret], each naming a Secret and
+        the environment variable its value arrives in. ``namespace_path`` is
+        the namespace the Function is registered in; None or an empty list is
+        the root. Local connections raise ``NotImplementedError``.
         """
         if not isinstance(definition, UdfDefinition):
             raise TypeError("create_function_async requires a @udf definition")
+        request = definition.bind_secrets(secrets)
         inner = await self._inner.create_function_async(
-            definition.registration_request.to_canonical_json()
+            request.to_canonical_json(), namespace_path
         )
         return _typed_job(inner, FunctionVersion.from_json)
 
-    async def get_function(self, name: str, *, version: str) -> FunctionVersion:
+    async def get_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""
-        return FunctionVersion.from_json(await self._inner.get_function(name, version))
+        return FunctionVersion.from_json(
+            await self._inner.get_function(name, version, namespace_path)
+        )
 
-    async def list_functions(self) -> List[FunctionVersion]:
-        """List every published immutable Function version.
+    async def list_functions(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[FunctionVersion]:
+        """List every published immutable Function version in a namespace.
 
-        Results are ordered by Function name then version. Local connections
-        raise ``NotImplementedError``.
+        Functions in child namespaces are not included. Results are ordered by
+        Function name then version. Local connections raise
+        ``NotImplementedError``.
         """
         return [
             FunctionVersion.from_json(value)
-            for value in await self._inner.list_functions()
+            for value in await self._inner.list_functions(namespace_path)
         ]
 
-    async def drop_function(self, name: str, *, version: str) -> bool:
-        """Drop one exact immutable Function version from the remote catalog."""
-        return await self._inner.drop_function(name, version)
+    async def drop_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> bool:
+        """Drop a Function name and the object it was bound to."""
+        return await self._inner.drop_function(name, version, namespace_path)
+
+    async def drop_function_async(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, AsyncJob]:
+        """Drop a Function name and return its cleanup job.
+
+        The name is unbound before this returns; the object's content may still
+        be being deleted. Await :meth:`AsyncJob.wait` to wait for that to
+        finish.
+        """
+        dropped, job = await self._inner.drop_function_async(
+            name, version, namespace_path
+        )
+        return dropped, AsyncJob(job)
+
+    async def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Create a named Secret in this database.
+
+        Fails if the name is taken, so a create never silently becomes a
+        rotation. Nothing reads the value back.
+        """
+        await self._inner.create_secret(
+            validate_secret_name(name),
+            value,
+            list(validate_namespace_path(namespace_path)),
+        )
+
+    async def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Replace the credential behind an existing Secret.
+
+        Fails if it does not exist. Bound Functions use the new value from
+        their next job, with no new Function version.
+        """
+        await self._inner.alter_secret(
+            validate_secret_name(name),
+            value,
+            list(validate_namespace_path(namespace_path)),
+        )
+
+    async def list_secrets(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of every Secret in this database. Names only."""
+        return await self._inner.list_secrets(
+            list(validate_namespace_path(namespace_path))
+        )
+
+    async def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a Secret. Bound Functions fail at their next job."""
+        await self._inner.drop_secret(
+            validate_secret_name(name), list(validate_namespace_path(namespace_path))
+        )
+
+    async def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        """What this database records about a Secret. Never the value."""
+        name, created_at_millis, updated_at_millis = await self._inner.describe_secret(
+            validate_secret_name(name),
+            list(validate_namespace_path(namespace_path)),
+        )
+        return SecretInfo(
+            name=name,
+            created_at_millis=created_at_millis,
+            updated_at_millis=updated_at_millis,
+        )
+
+    async def create_view(
+        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        """Create a view: a named query the database plans on every read.
+
+        See
+        [DBConnection.create_view][lancedb.DBConnection.create_view].
+        """
+        return _view_description(
+            await self._inner.create_view(name, query, list(namespace_path or []))
+        )
+
+    async def describe_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        """What this database records about a view: query and schema."""
+        return _view_description(
+            await self._inner.describe_view(name, list(namespace_path or []))
+        )
+
+    async def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a view and wait for its definition to be deleted.
+
+        The tables it reads are untouched. Use :meth:`drop_view_async` to get
+        the cleanup job instead of waiting on it.
+        """
+        await self._inner.drop_view(name, list(namespace_path or []))
+
+    async def drop_view_async(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncJob[None]:
+        """Start dropping a view and return the job deleting its definition.
+
+        The name is free before this returns. Await :meth:`AsyncJob.wait` before
+        assuming the definition dataset is gone.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return AsyncJob(
+            await self._inner.drop_view_async(name, namespace_path=namespace_path)
+        )
+
+    async def list_views(
+        self, *, namespace_path: Optional[List[str]] = None
+    ) -> List[str]:
+        """The names of the views in one namespace."""
+        return await self._inner.list_views(list(namespace_path or []))
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""
         return await self._inner.list_jobs()
-
-    async def get_job(self, job_id: str) -> Optional[JobDescription]:
-        """Describe a single server-side job by id.
-
-        Returns None when the server has no such job.
-        """
-        return await self._inner.get_job(job_id)
 
     async def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -2314,12 +3099,63 @@ class AsyncConnection(object):
         """
         return await self._inner.cancel_job(job_id)
 
-    async def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
-        """The lifecycle event history of a server-side job, as Arrow batches.
+    async def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
 
-        Lists history across all jobs when `job_id` is None.
+        The job's workers drain and it stays parked until resumed. Returns
+        "pausing", "already_paused", or "committing" -- a job finalizing its
+        results cannot be parked; retry shortly.
         """
-        return await self._inner.job_history(job_id)
+        return await self._inner.pause_job(job_id)
+
+    async def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Its workers pick their work back up from checkpoints. Returns
+        "resumed", "still_pausing" -- retry shortly -- or "not_paused".
+        """
+        return await self._inner.resume_job(job_id)
+
+    async def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute SQL and return an asynchronous Arrow reader.
+
+        This submits through :meth:`execute_query_async` and waits until the
+        initial result stream is readable. It does not wait for the full query
+        to finish.
+        """
+        submitted = await self.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+        )
+        return await submitted.reader()
+
+    async def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+    ) -> AsyncSqlQuery:
+        """Start executing SQL and return its query handle.
+
+        The database from ``connect_async`` is used for unqualified database
+        references. The namespace defaults to ``["public"]``. Local
+        connections raise ``NotImplementedError``.
+        """
+        return AsyncSqlQuery(
+            await self._inner.execute_query_async(
+                query,
+                default_namespace_path=default_namespace_path,
+            )
+        )
+
+    async def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

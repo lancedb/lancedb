@@ -24,6 +24,7 @@ from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import (
     AsyncFTSQuery,
     AsyncHybridQuery,
+    AsyncQuery,
     AsyncQueryBase,
     AsyncVectorQuery,
     ColumnOrdering,
@@ -38,6 +39,10 @@ from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 from lancedb.table import AsyncTable, LanceTable
 from utils import exception_output
 from importlib.util import find_spec
+
+
+# Legacy v1 blob columns are only writable at file version <= 2.1.
+LEGACY_BLOB_STORAGE_OPTIONS = {"new_table_data_storage_version": "2.1"}
 
 
 def _blob_query_data():
@@ -119,13 +124,17 @@ def _assert_blob_bytes_projection(df):
 
 def _blob_query_table(db, name, blob_schema):
     if blob_schema == "v1":
-        return db.create_table(name, _blob_query_data())
+        return db.create_table(
+            name, _blob_query_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return _create_blob_v2_query_table(db, name)
 
 
 async def _blob_query_table_async(db, name, blob_schema):
     if blob_schema == "v1":
-        return await db.create_table(name, _blob_query_data())
+        return await db.create_table(
+            name, _blob_query_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
     return await _create_blob_v2_query_table_async(db, name)
 
 
@@ -275,7 +284,9 @@ async def test_query_to_pandas_kwargs(table, table_async):
 def test_plain_scan_query_to_pandas_blob_modes(tmp_db, blob_mode):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
-        f"test_query_to_pandas_blob_{blob_mode}", _blob_query_data()
+        f"test_query_to_pandas_blob_{blob_mode}",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
     df = (
@@ -322,7 +333,9 @@ def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
 ):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
-        "test_query_to_pandas_blob_no_arrow_collect", _blob_query_data()
+        "test_query_to_pandas_blob_no_arrow_collect",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
     query = table.search().where("id = 1").select(["id", "blob"])
 
@@ -347,7 +360,9 @@ def test_plain_scan_query_to_pandas_blob_descriptions_flatten_uses_scanner(
 ):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
-        "test_query_to_pandas_blob_desc_flatten", _blob_query_data()
+        "test_query_to_pandas_blob_desc_flatten",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
     query = table.search().where("id = 1").select(["id", "blob"])
 
@@ -365,7 +380,11 @@ def test_plain_scan_query_to_pandas_blob_descriptions_flatten_uses_scanner(
 def test_plain_scan_query_to_pandas_scanner_state(tmp_db):
     pytest.importorskip("lance")
     data = _blob_query_data()
-    table = tmp_db.create_table("test_query_to_pandas_scanner_state", data.slice(0, 2))
+    table = tmp_db.create_table(
+        "test_query_to_pandas_scanner_state",
+        data.slice(0, 2),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
     table.add(data.slice(2, 2))
 
     fragments = table.to_lance().get_fragments()
@@ -400,7 +419,9 @@ def test_plain_scan_query_to_pandas_scanner_state(tmp_db):
 async def test_async_plain_scan_query_to_pandas_blob_projection(tmp_db_async):
     pytest.importorskip("lance")
     table = await tmp_db_async.create_table(
-        "test_async_query_to_pandas_blob_projection", _blob_query_data()
+        "test_async_query_to_pandas_blob_projection",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
     lazy_df = await (
@@ -452,7 +473,9 @@ async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow
 ):
     pytest.importorskip("lance")
     table = await tmp_db_async.create_table(
-        "test_async_query_to_pandas_blob_no_arrow_collect", _blob_query_data()
+        "test_async_query_to_pandas_blob_no_arrow_collect",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
     query = table.query().where("id = 1").select(["id", "blob"])
 
@@ -474,7 +497,11 @@ async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow
 
 def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
     pytest.importorskip("lance")
-    table = tmp_db.create_table("test_vector_query_blob_mode", _blob_query_data())
+    table = tmp_db.create_table(
+        "test_vector_query_blob_mode",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
 
     with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
         table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
@@ -485,7 +512,9 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
 def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
-        "test_vector_query_blob_descriptions", _blob_query_data()
+        "test_vector_query_blob_descriptions",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
     with pytest.raises(RuntimeError, match="plain scan query"):
@@ -946,6 +975,19 @@ def test_query_builder_with_filter(table):
     assert all(np.array(rs[0]["vector"]) == [3, 4])
 
 
+@pytest.mark.parametrize("query_type", ["vector", "hybrid"])
+@pytest.mark.parametrize("nprobes", [0, -1])
+def test_nprobes_nonpositive_sync(table, query_type, nprobes):
+    if query_type == "hybrid":
+        query = table.search(query_type="hybrid").vector([0, 0]).text("a")
+    else:
+        query = table.search([0, 0])
+    with pytest.raises(
+        ValueError, match="^Invalid input, nprobes must be greater than 0$"
+    ):
+        query.nprobes(nprobes)
+
+
 def test_invalid_nprobes_sync(table):
     with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
         LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(0).to_list()
@@ -975,6 +1017,18 @@ def test_multiple_nprobes_calls_works_sync(table):
     LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).maximum_nprobes(
         20
     ).minimum_nprobes(20).to_list()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_nprobes_zero_async(table_async: AsyncTable, hybrid):
+    query = table_async.query().nearest_to([0, 0])
+    if hybrid:
+        query = query.nearest_to_text("dog")
+    with pytest.raises(
+        ValueError, match="^Invalid input, nprobes must be greater than 0$"
+    ):
+        query.nprobes(0)
 
 
 @pytest.mark.asyncio
@@ -1249,6 +1303,27 @@ async def test_query_to_polars_async(table_async: AsyncTable):
 
     df = await table_async.query().where("id < 0").to_polars()
     assert df.shape == (0, num_columns)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_kwargs", [{}, {"query": None}])
+@pytest.mark.parametrize("with_vector", [False, True])
+async def test_async_search_without_query(mem_db_async, search_kwargs, with_vector):
+    data = [{"id": i} for i in range(10)]
+    if with_vector:
+        for row in data:
+            row["vector"] = [float(row["id"]), 1.0]
+    table = await mem_db_async.create_table("test", data)
+
+    query = await table.search(**search_kwargs)
+    assert isinstance(query, AsyncQuery)
+    assert await query.limit(3).to_arrow() == await table.query().limit(3).to_arrow()
+
+    query = await table.search(**search_kwargs)
+    assert await query.where("id >= 8").select(["id"]).limit(3).to_list() == [
+        {"id": 8},
+        {"id": 9},
+    ]
 
 
 @pytest.mark.asyncio
@@ -2061,6 +2136,12 @@ def test_ensure_vector_query_nested_empty_list():
     """Regression: ensure_vector_query used to return instead of raise ValueError."""
     with pytest.raises(ValueError, match="non-empty"):
         ensure_vector_query([[]])
+
+
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+def test_vector_query_builder_empty_vector(table, query):
+    with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+        LanceVectorQueryBuilder(table, query, "vector")
 
 
 def test_fast_search(tmp_path):
