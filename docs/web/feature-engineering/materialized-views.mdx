@@ -37,9 +37,10 @@ reach the view through a refresh:
 </CodeBlock>
 
 <Note>
-The view is computed on creation from SDK 0.40. In 0.39 and earlier,
-`create_materialized_view` always creates the view empty and the first
-`refresh()` writes every matching row, two in this example.
+These results were verified with the development SDK 0.40.0b12, built from
+lancedb main. With the published 0.39.0, `create_materialized_view` creates the
+view empty and has no `with_no_data`, so the first `refresh()` writes every
+matching row, two in this example.
 </Note>
 
 `select` takes column names, `(alias, expression)` pairs, or a dict of the same.
