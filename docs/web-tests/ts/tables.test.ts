@@ -210,13 +210,11 @@ test("add progress snippet (async)", async () => {
       // Track ingestion progress as batches are written.
       await table.add(moreData, {
         progress: (p) => {
-          const total = p.totalRows ?? "?";
-          console.log(
-            `wrote ${p.outputRows}/${total} rows ` +
-              `(${p.outputBytes} bytes, ${p.elapsedSeconds.toFixed(1)}s, ` +
-              `${p.activeTasks}/${p.totalTasks} tasks active)` +
-              (p.done ? " \u2014 done" : ""),
-          );
+          const rows = `${p.outputRows}/${p.totalRows ?? "?"} rows`;
+          const size = `${p.outputBytes} bytes, ${p.elapsedSeconds.toFixed(1)}s`;
+          const tasks = `${p.activeTasks}/${p.totalTasks} tasks active`;
+          const done = p.done ? " \u2014 done" : "";
+          console.log(`wrote ${rows} (${size}, ${tasks})${done}`);
         },
       });
       // --8<-- [end:add_progress]

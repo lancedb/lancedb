@@ -148,7 +148,7 @@ export const TsAddColumnsNullable = "// Add a nullable timestamp column\nawait s
 
 export const TsAddFeatureColumnsSql = "await schemaAddTable.addColumns([\n  {\n    name: \"price_per_id\",\n    valueSql: \"cast(price / id as float)\",\n  },\n  {\n    name: \"price_log\",\n    valueSql: \"ln(price)\",\n  },\n  {\n    name: \"price_score\",\n    valueSql: \"cast(price / (price + 100.0) as float)\",\n  },\n]);\n";
 
-export const TsAddProgress = "// Track ingestion progress as batches are written.\nawait table.add(moreData, {\n  progress: (p) => {\n    const total = p.totalRows ?? \"?\";\n    console.log(\n      `wrote ${p.outputRows}/${total} rows ` +\n        `(${p.outputBytes} bytes, ${p.elapsedSeconds.toFixed(1)}s, ` +\n        `${p.activeTasks}/${p.totalTasks} tasks active)` +\n        (p.done ? \" \\u2014 done\" : \"\"),\n    );\n  },\n});\n";
+export const TsAddProgress = "// Track ingestion progress as batches are written.\nawait table.add(moreData, {\n  progress: (p) => {\n    const rows = `${p.outputRows}/${p.totalRows ?? \"?\"} rows`;\n    const size = `${p.outputBytes} bytes, ${p.elapsedSeconds.toFixed(1)}s`;\n    const tasks = `${p.activeTasks}/${p.totalTasks} tasks active`;\n    const done = p.done ? \" \\u2014 done\" : \"\";\n    console.log(`wrote ${rows} (${size}, ${tasks})${done}`);\n  },\n});\n";
 
 export const TsAlterColumnsDataType = "// Change price from int32 to int64 for larger numbers\nawait schemaAlterTable.alterColumns([\n  { path: \"price\", dataType: new arrow.Int64() },\n]);\n";
 
