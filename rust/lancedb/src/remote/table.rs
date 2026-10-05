@@ -3523,7 +3523,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self
             .send_with_freshness(request, true, freshness_request)
             .await?;
-        let response = self.check_table_response(&request_id, response).await?;
+        // A Function declaration can return 404 for the Function rather than the table.
+        let response = self
+            .client
+            .check_response(&request_id, response)
+            .await
+            .inspect_err(|error| self.handle_error_invalidation(error))?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
         if body.trim().is_empty() {
@@ -3563,7 +3568,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .post(&format!("/v1/table/{}/backfill_column", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
-        let response = self.check_table_response(&request_id, response).await?;
+        // Preserve dependency errors: a deleted bound Function also returns 404.
+        let response = self
+            .client
+            .check_response(&request_id, response)
+            .await
+            .inspect_err(|error| self.handle_error_invalidation(error))?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
         #[derive(serde::Deserialize)]
@@ -4057,7 +4067,7 @@ mod tests {
             ))
         };
 
-        // All endpoints should translate 404 to TableNotFound.
+        // These table operations should translate 404 to TableNotFound.
         let results: Vec<BoxFuture<'_, Result<()>>> = vec![
             Box::pin(table.version().map_ok(|_| ())),
             Box::pin(table.schema().map_ok(|_| ())),
@@ -8791,6 +8801,73 @@ mod tests {
                 if message.contains("refresh_column_async")),
             "{err:?}"
         );
+    }
+
+    #[rstest]
+    #[case(false, "Function is unavailable")]
+    #[case(true, "Function name was not found")]
+    #[tokio::test]
+    async fn test_function_column_operations_preserve_dependency_not_found(
+        #[case] declare_column: bool,
+        #[case] message: &'static str,
+    ) {
+        let schema_requests = Arc::new(AtomicUsize::new(0));
+        let requests = schema_requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"version":1,"schema":{"fields":[{"name":"description","nullable":true,"type":{"type":"string"}}]}}"#.to_string(),
+                        )
+                        .unwrap()
+                }
+                "/v1/table/my_table/backfill_column" | "/v1/table/my_table/add_columns/" => {
+                    http::Response::builder()
+                        .status(404)
+                        .body(json!({"code": 4, "error": message}).to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            }
+        });
+        table.schema().await.unwrap();
+        assert_eq!(schema_requests.load(Ordering::SeqCst), 1);
+
+        let error = if declare_column {
+            let fixture: serde_json::Value = serde_json::from_str(include_str!(
+                "../../tests/fixtures/first_class_functions/v1/remote_fixed_size_declaration_request.json"
+            ))
+            .unwrap();
+            let application = crate::function::FunctionApplication::from_json(
+                &fixture["function"]["application"].to_string(),
+            )
+            .unwrap();
+            table
+                .add_columns()
+                .function_as("embedding", application)
+                .execute()
+                .await
+                .unwrap_err()
+        } else {
+            table.refresh_column_async("embedding").await.unwrap_err()
+        };
+        let Error::Http {
+            source,
+            status_code,
+            request_id,
+        } = error
+        else {
+            panic!("dependency 404 was misclassified: {error:?}");
+        };
+        assert_eq!(status_code, Some(StatusCode::NOT_FOUND));
+        assert!(source.to_string().contains(message));
+        assert!(!request_id.is_empty());
+
+        table.schema().await.unwrap();
+        assert_eq!(schema_requests.load(Ordering::SeqCst), 2);
     }
 
     /// The error listing is table-addressed with optional job and column
