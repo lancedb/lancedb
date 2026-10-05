@@ -196,6 +196,14 @@ In practice this means a function should be self-contained: take its inputs as
 arguments, import what it needs at module level, and avoid capturing state from
 the surrounding scope.
 
+## Drop it {#drop}
+
+`db.drop_function(name, version=...)` drops the function's name and the object
+it is bound to; `version` must be a version that exists. It returns `False` if
+the name was already gone. Deleting the object's content can finish after the
+call returns, as a [background job](/maintenance/background-jobs).
+`drop_function_async` returns that job with the result, so you can wait for it.
+
 ## What to read next {#next}
 
 <CardGroup cols={2}>
