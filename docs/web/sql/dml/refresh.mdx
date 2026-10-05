@@ -25,9 +25,10 @@ REFRESH COLUMN doubled ON my_table
 REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 ```
 
-A refresh gives values to rows that lack them and **leaves filled rows alone**.
-That makes it idempotent, cheap to repeat as data arrives, and resumable after a
-failure -- re-running costs only the rows that did not complete.
+A refresh gives values to rows that lack them, recomputes rows whose inputs
+changed, and **leaves other filled rows alone**. That makes it idempotent, cheap
+to repeat as data arrives, and safe to re-run after a failure -- though a re-run
+can recompute values the failed run had already written.
 
 `WHERE` scopes the refresh, which is how you fill a slice and check it before
 committing to the whole table.

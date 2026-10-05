@@ -397,10 +397,10 @@ characters.refresh_column("power_score")
 # RefreshColumnResult(rows_filled=3, version=4)
 ```
 
-A refresh only gives values to rows that have none, so appending more characters
-and refreshing again fills just the new ones -- it does not recompute the rows
-already done. That is what makes a backfill safe to retry and cheap to repeat as
-data arrives.
+A refresh gives values to rows that have none and recomputes only rows whose
+inputs changed, so appending more characters and refreshing again fills just
+the new ones -- it does not recompute the rows that are already current. That
+is what makes a backfill safe to retry and cheap to repeat as data arrives.
 
 On a deployment the same refresh runs server-side, on a cluster, as a
 [job](/basics/jobs) you can walk away from:

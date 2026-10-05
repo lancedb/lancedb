@@ -79,17 +79,21 @@ versions, widen the window before running it, not after.
 
 ## Jobs {#jobs}
 
-**A refresh never revisits a filled row.** It gives values to rows that lack
-them and leaves the rest alone. Two consequences, both relied on elsewhere:
+**A refresh recomputes only what changed.** It gives values to rows that lack
+them and recomputes rows whose inputs changed since they were computed; it
+leaves the rest alone. Two consequences, both relied on elsewhere:
 
-- **Retrying is safe and cheap.** A failed backfill is resumed, not restarted —
-  re-running costs only the rows that did not complete.
-- **A filled value does not track its input.** If a column derives from `price`
-  and a row's `price` later changes, the derived value stays as computed.
-  Recomputing means dropping the column and declaring it again.
+- **Retrying is safe.** Re-running a refresh fills what is still empty or stale.
+  It is not guaranteed to cost only the rows that did not complete: a retry can
+  recompute values that were already written.
+- **A filled value catches up at the next refresh.** If a column derives from
+  `price` and a row's `price` later changes, the derived value keeps its old
+  value until the next refresh recomputes it.
 
-**A failure is not a rollback.** Rows filled before a failure keep their values,
-because each commits as it completes.
+**What a failure keeps depends on where the refresh ran.** `refresh_column` in
+your process commits the column once, so a failure keeps none of its values. A
+refresh job on a deployment commits finished batches as it goes, so some values
+can remain.
 
 **Cancellation is a request.** `cancel()` asks a job to stop; it does not
 guarantee it stops before doing more work, and cancelling a finished job does

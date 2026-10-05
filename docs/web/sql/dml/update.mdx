@@ -18,8 +18,9 @@ clause every row is updated.
 
 <Warning>
 An update does not recompute [computed columns](/feature-engineering/add-computed-column)
-that derive from the column you changed. A filled value keeps what it was
-computed from -- see [Guarantees](/basics/guarantees#jobs).
+that derive from the column you changed. Those rows keep the value computed from
+the old input until the next refresh recomputes them -- see
+[Guarantees](/basics/guarantees#jobs).
 </Warning>
 
 Commits a new table version, so [versioning](/management/table#versioning) and

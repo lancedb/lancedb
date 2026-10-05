@@ -115,8 +115,11 @@ was. A refresh job on a deployment commits finished batches as it goes, so some
 values can remain after a failure.
 
 Either way, recover by fixing the cause and refreshing again. The new refresh
-fills only rows that are still empty or whose inputs changed, so values that
-were kept are not computed twice.
+fills rows that are still empty or whose inputs changed, and normally skips
+values that were kept. That is not guaranteed: a refresh can recompute values
+that were already written -- for example when the record of the inputs they
+were computed from was not saved -- so do not count on a retry costing only the
+rows that did not complete.
 
 For a column filled by a [function](/management/function), the usual cause is
 the worker environment rather than the data. See

@@ -31,16 +31,16 @@ separation is the point:
 - Filling is a separate call you control, can retry, and -- against a deployment
   -- can hand to the server as a [job](/basics/jobs) rather than waiting on.
 
-**Filling never revisits work it has already done.** A refresh gives values to
-rows that lack them and leaves the rest alone, so calling it twice is not twice
-the work, and appending rows means the next refresh handles only the new ones.
+**Filling does not redo current work.** A refresh gives values to rows that
+lack them and recomputes rows whose inputs changed since they were computed. It
+leaves the rest alone, so calling it twice is not twice the work, and appending
+rows means the next refresh handles only the new ones.
 
-The corollary is worth stating plainly: **a filled value is not recomputed when
-its inputs change.** If a column derives from `price` and a row's `price` is
-later updated, the derived value stays as it was computed. Recomputing means
-dropping the column and declaring it again. That is a deliberate trade -- it is
-what makes refreshes idempotent and cheap -- but it will surprise you if you
-expect a spreadsheet.
+The corollary is worth stating plainly: **a filled value catches up with its
+inputs only when you refresh.** If a column derives from `price` and a row's
+`price` is later updated, the derived value keeps its old value until the next
+refresh recomputes it. That is a deliberate trade -- it is what makes refreshes
+idempotent and cheap -- but it will surprise you if you expect a spreadsheet.
 
 ## Which one to reach for {#which-one}
 
@@ -85,16 +85,18 @@ That relocation is the main thing to understand about Enterprise feature
 engineering. The API is the same; what changes is that the code runs somewhere
 else, which is also why a function must declare the environment it needs.
 
-## Failure is resumable {#failures}
+## Recovering from a failure {#failures}
 
 A function that raises fails the job. There is no per-row retry or skip policy
 in the function definition, so a function calling a flaky external service
 should handle that itself, inside the function body.
 
-The alternative is to let the job fail and run the refresh again. Since a
-refresh never revisits a filled row, re-running after a partial failure costs
-only the rows that did not complete -- **a failed backfill is resumed, not
-restarted.**
+The alternative is to let the job fail, fix the cause, and run the refresh
+again. The new refresh fills what is still empty or stale. How much of the
+failed run was kept depends on where it ran (see
+[Refresh a column](/feature-engineering/refresh-column#failures)), and a retry
+can recompute values that were already written, so do not count on it costing
+only the rows that did not complete.
 
 ## Where to go next {#next}
 
