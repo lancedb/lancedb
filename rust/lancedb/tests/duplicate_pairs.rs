@@ -168,7 +168,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
         let ctx =
             SessionContext::new_with_config_rt(datafusion::prelude::SessionConfig::new(), runtime);
         ctx.register_udtf(
-            "vector_duplicate_pairs",
+            "duplicate_pairs",
             Arc::new(DuplicatePairsTableFunction::new(resolver.clone())),
         );
         ctx.register_udtf(
@@ -192,7 +192,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
                     .try_collect::<Vec<_>>()
                     .await?;
             let sql = format!(
-                "SELECT * FROM vector_duplicate_pairs('source', {version}, 'vector', {threshold})"
+                "SELECT * FROM duplicate_pairs('source', {version}, 'vector', {threshold})"
             );
             let actual = ctx.sql(&sql).await?.collect().await?;
             assert_eq!(pairs(&actual), pairs(&expected));
@@ -361,7 +361,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
         table.delete("id = 1").await?;
         let actual = ctx
             .sql(&format!(
-                "SELECT * FROM vector_duplicate_pairs('source', {version}, 'vector', 1.0)"
+                "SELECT * FROM duplicate_pairs('source', {version}, 'vector', 1.0)"
             ))
             .await?
             .collect()
@@ -369,7 +369,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
         assert_eq!(pairs(&actual).len(), 8);
         assert!(
             ctx.sql(&format!(
-                "SELECT * FROM vector_duplicate_pairs('source', {version}, 'missing', 1.0)"
+                "SELECT * FROM duplicate_pairs('source', {version}, 'missing', 1.0)"
             ))
             .await?
             .collect()
