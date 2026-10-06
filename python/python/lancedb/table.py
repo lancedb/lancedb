@@ -5414,10 +5414,12 @@ class AsyncTable:
         via [`set_unenforced_primary_key`]; bucket sharding additionally
         requires it to be the single column being bucketed.
 
-        By default the MemWAL maintains every index the table has, including
-        ones created later, and skips a kind it cannot maintain. Name the set
-        with ``with_maintained_indexes`` to pin an exact one (a still-building
-        index is rejected, not omitted); ``[]`` maintains none.
+        By default the MemWAL maintains every index on the table, resolved
+        here — a snapshot, so an index created afterwards needs the spec unset
+        and set again. This fails if one cannot be maintained; name the set
+        with ``with_maintained_indexes`` to install anyway. That pins an exact
+        set (a still-building index is rejected, not omitted); ``[]`` maintains
+        none.
 
         Parameters
         ----------
@@ -5443,11 +5445,16 @@ class AsyncTable:
     async def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
         """Read the LsmWriteSpec currently installed on this table.
 
-        Returns ``None`` when the MemWAL LSM write path is not enabled (no
-        spec has been set, or it was removed with `unset_lsm_write_spec`).
-        The spec is the one installed, including its maintained-index
-        selection: ``None`` for every index the table has, an empty list for
-        none.
+        Returns ``None`` when the LSM write path is not enabled at all — no
+        spec has been set, or one was removed with `unset_lsm_write_spec`.
+        That is a different answer from a spec whose ``maintained_indexes``
+        is ``None``, which is an installed spec selecting indexes
+        automatically.
+
+        The spec read back is the one that was installed, selection
+        included: ``None`` maintains every supported index the table has now
+        or gains later, ``[]`` maintains none, and a non-empty list maintains
+        exactly those. All three round-trip.
         """
         return await self._inner.get_lsm_write_spec()
 

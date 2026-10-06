@@ -244,6 +244,32 @@ public class LanceDbTableLsmTest {
     assertEquals(Collections.emptyList(), spec.get().maintainedIndexes());
   }
 
+  /**
+   * Null is the automatic selection, so anything that is neither null nor an array has to be
+   * rejected: reading a string or an object as null would turn a malformed response into a policy.
+   */
+  @Test
+  public void testGetLsmWriteSpecRejectsANonArrayMaintainedIndexes() {
+    enqueue(
+        "get_lsm_write_spec",
+        200,
+        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+            + "\"maintained_indexes\":\"id_idx\",\"writer_config_defaults\":{}}}");
+
+    assertThrows(IllegalStateException.class, () -> lsm.getLsmWriteSpec());
+  }
+
+  @Test
+  public void testGetLsmWriteSpecRejectsNonStringIndexNames() {
+    enqueue(
+        "get_lsm_write_spec",
+        200,
+        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+            + "\"maintained_indexes\":[7],\"writer_config_defaults\":{}}}");
+
+    assertThrows(IllegalStateException.class, () -> lsm.getLsmWriteSpec());
+  }
+
   @Test
   public void testGetLsmWriteSpecAbsent() {
     enqueue("get_lsm_write_spec", 200, "{\"lsm_write_spec\":null}");

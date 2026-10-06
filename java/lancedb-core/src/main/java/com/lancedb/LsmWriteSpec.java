@@ -36,6 +36,8 @@ import java.util.Map;
  */
 public class LsmWriteSpec {
 
+  private static final String CONTEXT = "get_lsm_write_spec response";
+
   /** How writes are routed to MemWAL shards. */
   public enum Sharding {
     /** Hash-bucket writes by a scalar column. */
@@ -175,8 +177,10 @@ public class LsmWriteSpec {
   }
 
   /**
-   * The indexes the MemWAL maintains, or null to have the server resolve every maintainable index
-   * on install. An empty list means none.
+   * Which indexes the MemWAL maintains.
+   *
+   * <p>Null selects automatically: every supported index the table has now or gains later. An empty
+   * list maintains none. A non-empty list maintains exactly those.
    */
   public List<String> maintainedIndexes() {
     return maintainedIndexes == null ? null : Collections.unmodifiableList(maintainedIndexes);
@@ -223,11 +227,19 @@ public class LsmWriteSpec {
     Integer numBuckets =
         shardingNode.hasNonNull("num_buckets") ? shardingNode.get("num_buckets").asInt() : null;
 
-    JsonNode indexesNode = node.get("maintained_indexes");
+    // Absent or null is the automatic selection; anything else has to be an
+    // array of names. Reading a string or an object as automatic would turn a
+    // malformed response into "maintain every index", which is a policy, not a
+    // parse failure.
+    JsonNode indexesNode = JsonFields.optionalArray(node, "maintained_indexes", CONTEXT);
     List<String> maintainedIndexes = null;
-    if (indexesNode != null && indexesNode.isArray()) {
+    if (indexesNode != null) {
       maintainedIndexes = new ArrayList<String>();
       for (JsonNode index : indexesNode) {
+        if (!index.isTextual()) {
+          throw new IllegalStateException(
+              CONTEXT + ": maintained_indexes must hold index names, got " + index);
+        }
         maintainedIndexes.add(index.asText());
       }
     }
