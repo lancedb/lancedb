@@ -140,6 +140,10 @@
       "destination": "/training/data-loading"
     },
     {
+      "source": "/training/lerobot",
+      "destination": "/integrations/lerobotdataset"
+    },
+    {
       "source": "/build-with-ai-agents",
       "destination": "/basics/agentic-skills"
     },
