@@ -210,8 +210,8 @@ public class LsmWriteSpec {
   /**
    * Rebuild a spec from a {@code get_lsm_write_spec} response body.
    *
-   * <p>The server always reports a concrete maintained-index list, so a null selection never
-   * round-trips.
+   * <p>A null {@code maintained_indexes} is the selection "every index the table has", which is a
+   * different setting from an empty list. Both round-trip.
    */
   static LsmWriteSpec fromJson(JsonNode node) {
     JsonNode shardingNode = node.get("sharding");
@@ -224,9 +224,10 @@ public class LsmWriteSpec {
     Integer numBuckets =
         shardingNode.hasNonNull("num_buckets") ? shardingNode.get("num_buckets").asInt() : null;
 
-    List<String> maintainedIndexes = new ArrayList<String>();
     JsonNode indexesNode = node.get("maintained_indexes");
+    List<String> maintainedIndexes = null;
     if (indexesNode != null && indexesNode.isArray()) {
+      maintainedIndexes = new ArrayList<String>();
       for (JsonNode index : indexesNode) {
         maintainedIndexes.add(index.asText());
       }

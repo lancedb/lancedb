@@ -798,10 +798,9 @@ export abstract class Table {
    *
    * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
    * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
-   * The returned spec mirrors what was passed to
-   * {@link Table#setLsmWriteSpec}, except that `maintainedIndexes` always
-   * reports the concrete list resolved when the spec was set — `undefined`
-   * never round-trips.
+   * The spec read back is the one that was installed, selection included:
+   * an absent `maintainedIndexes` asks for every index the table has, which is
+   * a different setting from an empty array, and both round-trip.
    * @returns {Promise<LsmWriteSpec | undefined>}
    */
   abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;

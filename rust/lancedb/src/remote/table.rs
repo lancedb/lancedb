@@ -3281,8 +3281,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         #[derive(Deserialize)]
         struct LsmWriteSpecBody {
             sharding: Sharding,
+            /// `null` is the selection "every index the table has", which is a
+            /// different setting from `[]`. Deserializing it into a `Vec` would
+            /// read one as the other, so the option is carried through.
             #[serde(default)]
-            maintained_indexes: Vec<String>,
+            maintained_indexes: Option<Vec<String>>,
             #[serde(default)]
             writer_config_defaults: std::collections::HashMap<String, String>,
         }
@@ -9611,6 +9614,44 @@ mod tests {
             }
             other => panic!("expected a bucket spec, got {:?}", other),
         }
+    }
+
+    /// `null` and `[]` are different selections — every index the table has,
+    /// against none of them — so reading one as the other silently changes the
+    /// table's maintenance policy.
+    #[rstest::rstest]
+    #[case::every_index(serde_json::Value::Null, None)]
+    #[case::no_index(serde_json::json!([]), Some(vec![]))]
+    #[case::named(serde_json::json!(["id_idx"]), Some(vec!["id_idx".to_string()]))]
+    #[tokio::test]
+    async fn test_get_lsm_write_spec_round_trips_the_selection(
+        #[case] reported: serde_json::Value,
+        #[case] expected: Option<Vec<String>>,
+    ) {
+        let table = Table::new_with_handler("my_table", move |_| {
+            let response = serde_json::json!({
+                "lsm_write_spec": {
+                    "sharding": { "mode": "unsharded" },
+                    "maintained_indexes": reported,
+                    "writer_config_defaults": {},
+                }
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let spec = table
+            .get_lsm_write_spec()
+            .await
+            .unwrap()
+            .expect("a spec should be reported");
+        assert_eq!(
+            spec.maintained_indexes().map(<[String]>::to_vec),
+            expected,
+            "the selection the server reported must survive the read"
+        );
     }
 
     #[tokio::test]

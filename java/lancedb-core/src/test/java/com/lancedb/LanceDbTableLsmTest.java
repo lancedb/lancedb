@@ -215,6 +215,38 @@ public class LanceDbTableLsmTest {
     assertEquals("true", spec.get().writerConfigDefaults().get("durable_write"));
   }
 
+  /**
+   * Null and empty are different selections — every index the table has, against none of them — so
+   * reading one as the other silently changes the table's maintenance policy.
+   */
+  @Test
+  public void testGetLsmWriteSpecRoundTripsEveryIndexSelection() {
+    enqueue(
+        "get_lsm_write_spec",
+        200,
+        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+            + "\"maintained_indexes\":null,\"writer_config_defaults\":{}}}");
+
+    Optional<LsmWriteSpec> spec = lsm.getLsmWriteSpec();
+
+    assertTrue(spec.isPresent());
+    assertNull(spec.get().maintainedIndexes());
+  }
+
+  @Test
+  public void testGetLsmWriteSpecRoundTripsNoIndexSelection() {
+    enqueue(
+        "get_lsm_write_spec",
+        200,
+        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+            + "\"maintained_indexes\":[],\"writer_config_defaults\":{}}}");
+
+    Optional<LsmWriteSpec> spec = lsm.getLsmWriteSpec();
+
+    assertTrue(spec.isPresent());
+    assertEquals(Collections.emptyList(), spec.get().maintainedIndexes());
+  }
+
   @Test
   public void testGetLsmWriteSpecAbsent() {
     enqueue("get_lsm_write_spec", 200, "{\"lsm_write_spec\":null}");

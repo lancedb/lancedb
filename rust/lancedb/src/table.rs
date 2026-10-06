@@ -2038,10 +2038,9 @@ impl Table {
     ///
     /// Returns `Ok(None)` when the MemWAL LSM write path is not enabled (no
     /// spec has been set, or it was removed with [`Table::unset_lsm_write_spec`]).
-    /// The returned spec mirrors what was passed to
-    /// [`Table::set_lsm_write_spec`], except that
-    /// [`LsmWriteSpec::maintained_indexes`] always reports the concrete list
-    /// resolved when the spec was set — `None` never round-trips.
+    /// The spec read back is the one that was installed, selection included:
+    /// `None` asks for every index the table has, which is a different setting
+    /// from an empty list, and both round-trip.
     ///
     /// # Example
     ///
