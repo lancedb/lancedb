@@ -67,7 +67,7 @@ reader usually expects:
 
 | Value | Meaning |
 | --- | --- |
-| unset (null) | Maintain **every** index the MemWAL can, resolved on install |
+| unset (null) | Maintain **every** index the table has, including ones created later |
 | `Collections.emptyList()` | Maintain **none** |
 | `Arrays.asList("id_idx")` | Maintain exactly those |
 
