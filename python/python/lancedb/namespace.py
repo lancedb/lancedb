@@ -20,7 +20,8 @@ else:
     from overrides import override
 
 if TYPE_CHECKING:
-    from lancedb.query import Query
+    from lancedb.listing import AsyncListing, Listing
+from lancedb.query import Query
 
 from datetime import timedelta
 import pyarrow as pa
@@ -698,9 +699,20 @@ class LanceNamespaceDBConnection(DBConnection):
         return view
 
     @override
-    def list_materialized_views(self) -> List[str]:
-        """The names of the materialized views in the root namespace."""
-        return LOOP.run(self._inner.list_materialized_views())
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[str]:
+        """The names of the materialized views in the root namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
 
     @override
     def drop_materialized_view(
@@ -1297,9 +1309,20 @@ class AsyncLanceNamespaceDBConnection:
         await view.definition()
         return view
 
-    async def list_materialized_views(self) -> List[str]:
-        """The names of the materialized views in the root namespace."""
-        return await self._inner.list_materialized_views()
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> AsyncListing[str]:
+        """The names of the materialized views in the root namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
 
     async def drop_materialized_view(
         self, name: str, namespace_path: Optional[List[str]] = None

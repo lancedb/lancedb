@@ -112,7 +112,7 @@ describe("materialized views", () => {
     await db.createMaterializedView("adults", "people", {
       where: "age >= 18",
     });
-    expect(await db.listMaterializedViews()).toEqual(["adults"]);
+    expect(await collect(db.listMaterializedViews())).toEqual(["adults"]);
     await expect(db.openMaterializedView("people")).rejects.toThrow(
       "not a materialized view",
     );
@@ -121,7 +121,7 @@ describe("materialized views", () => {
     );
 
     await db.dropMaterializedView("adults");
-    expect(await db.listMaterializedViews()).toEqual([]);
+    expect(await collect(db.listMaterializedViews())).toEqual([]);
   });
 
   it("returns a job when dropping a view asynchronously", async () => {
@@ -130,7 +130,7 @@ describe("materialized views", () => {
     const job = await db.dropMaterializedViewAsync("adults");
     expect(job.id).toBeNull();
     await job.wait();
-    expect(await db.listMaterializedViews()).toEqual([]);
+    expect(await collect(db.listMaterializedViews())).toEqual([]);
   });
 
   it("rejects an invalid expression at create time", async () => {
@@ -147,7 +147,7 @@ describe("materialized views", () => {
         db.createMaterializedView("bad", "people", { limit }),
       ).rejects.toThrow("non-negative integer");
     }
-    expect(await db.listMaterializedViews()).toEqual([]);
+    expect(await collect(db.listMaterializedViews())).toEqual([]);
 
     const view = await db.createMaterializedView("copy", "people");
     for (const sourceVersion of [-1, 1.5, Infinity, NaN]) {
@@ -173,3 +173,9 @@ describe("materialized views", () => {
     expect(await view.table().countRows()).toBe(1);
   });
 });
+
+async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
+  const result: T[] = [];
+  for await (const item of items) result.push(item);
+  return result;
+}

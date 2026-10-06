@@ -1499,7 +1499,7 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
-        db.list_functions()
+        list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
 
@@ -1720,7 +1720,7 @@ def test_remote_secret_verbs_round_trip():
         )
         assert db.create_secret("openai-prod", "sk-live-0001") is None
         assert db.alter_secret("openai-prod", "sk-live-0002") is None
-        assert db.list_secrets() == ["openai-prod", "hf-prod"]
+        assert list(db.list_secrets()) == ["openai-prod", "hf-prod"]
         assert db.drop_secret("openai-prod") is None
 
     routes = [path for path, _ in state["requests"]]
@@ -1781,7 +1781,7 @@ def test_remote_list_functions_paginates_and_returns_typed_versions():
         )
         created = db.create_function(normalize_score)
         state["requests"].clear()
-        functions = db.list_functions()
+        functions = list(db.list_functions())
 
     assert functions == [created]
     assert state["requests"] == [
@@ -1805,7 +1805,7 @@ async def test_async_remote_list_functions_returns_typed_versions():
         registration = await db.create_function_async(normalize_score)
         created = await registration.wait()
         state["requests"].clear()
-        functions = await db.list_functions()
+        functions = [item async for item in db.list_functions()]
 
     assert functions == [created]
     assert [path for path, _ in state["requests"]] == [
@@ -1878,7 +1878,7 @@ def test_remote_function_verbs_address_a_namespace_in_the_path():
         assert reopened(value=lancedb.col("score")).function.namespace_path == tuple(
             namespace
         )
-        db.list_functions(namespace_path=namespace)
+        list(db.list_functions(namespace_path=namespace))
         assert (
             db.drop_function(
                 "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
@@ -1918,7 +1918,7 @@ async def test_async_remote_function_verbs_address_a_namespace_in_the_path():
         await db.get_function(
             "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
         )
-        await db.list_functions(namespace_path=namespace)
+        [item async for item in db.list_functions(namespace_path=namespace)]
         assert (
             await db.drop_function(
                 "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
@@ -1947,6 +1947,6 @@ def test_a_function_namespace_path_must_be_a_list_of_segments():
             client_config={"retry_config": {"retries": 0}},
         )
         with pytest.raises(TypeError):
-            db.list_functions(namespace_path="analytics")
+            list(db.list_functions(namespace_path="analytics"))
 
     assert state["requests"] == []

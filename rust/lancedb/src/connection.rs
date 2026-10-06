@@ -28,6 +28,7 @@ use crate::database::{
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::listing::{Listing, ListingOptions};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
@@ -625,8 +626,7 @@ impl Connection {
     /// List every published immutable Function version in `namespace_path` of
     /// the remote catalog. Functions in child namespaces are not included.
     ///
-    /// Results are ordered by Function name then version. The client walks all
-    /// server pages before returning. Local databases return
+    /// Results are ordered by Function name then version. Local databases return
     /// [`Error::NotSupported`].
     ///
     /// # Example
@@ -635,17 +635,30 @@ impl Connection {
     /// # async fn list_functions(
     /// #     connection: &lancedb::Connection,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// for function in connection.list_functions(&[]).await? {
+    /// use futures::TryStreamExt;
+    /// let mut functions = connection.list_functions(&[], Default::default());
+    /// while let Some(function) = functions.try_next().await? {
     ///     println!("{} {}", function.name(), function.version());
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list_functions(
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    pub fn list_functions(
         &self,
         namespace_path: &[String],
-    ) -> Result<Vec<crate::function::FunctionVersion>> {
-        self.internal.list_functions(namespace_path).await
+        options: ListingOptions,
+    ) -> Listing<crate::function::FunctionVersion> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move { database.list_functions(&namespace_path, options).await }
+        })
     }
 
     /// Remove the current Function name binding, retaining the object history.
@@ -723,11 +736,37 @@ impl Connection {
     /// Names only. No path in this API returns a stored credential, by
     /// construction rather than by policy. Local databases return
     /// [`Error::NotSupported`].
-    pub async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        for segment in namespace_path {
-            validate_secret_component("Secret namespace path segment", segment)?;
-        }
-        self.internal.list_secrets(namespace_path).await
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_secrets(&[], Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_secrets(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                for segment in &namespace_path {
+                    validate_secret_component("Secret namespace path segment", segment)?;
+                }
+                database.list_secrets(&namespace_path, options).await
+            }
+        })
     }
 
     /// Drop a Secret.
@@ -795,7 +834,8 @@ impl Connection {
     /// let described = connection.describe_view("recent_orders", &namespace).await?;
     /// println!("{} in {:?}", described.query, described.default_namespace_path);
     ///
-    /// let names = connection.list_views(&namespace).await?;
+    /// use futures::TryStreamExt;
+    /// let names: Vec<_> = connection.list_views(&namespace, Default::default()).try_collect().await?;
     /// assert!(names.iter().any(|name| name == "recent_orders"));
     ///
     /// // Dropping the view leaves `orders` untouched.
@@ -871,11 +911,36 @@ impl Connection {
     /// The names of the views in one namespace.
     ///
     /// Names only; a definition is query metadata and comes from
-    /// [`Self::describe_view`]. The client walks all server pages before
-    /// returning. Local databases return [`Error::NotSupported`].
-    pub async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        validate_namespace(namespace_path)?;
-        self.internal.list_views(namespace_path).await
+    /// [`Self::describe_view`]. Local databases return [`Error::NotSupported`].
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_views(&[], Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_views(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database.list_views(&namespace_path, options).await
+            }
+        })
     }
 
     /// Rename a table in the database.
@@ -934,8 +999,26 @@ impl Connection {
     }
 
     /// List server-side jobs across the database's tables.
-    pub async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
-        self.internal.list_jobs().await
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_jobs(Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_jobs(&self, options: ListingOptions) -> Listing<JobInfo> {
+        let database = self.database().clone();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            async move { database.list_jobs(options).await }
+        })
     }
 
     /// Request cancellation of a server-side job by id. Returns true if the

@@ -26,6 +26,14 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.db.DBConnection
 
+Resource listings (`list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
+`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
+collect synchronous results, or `[name async for name in db.list_views()]` with
+an asynchronous connection. `page_limit` controls each request, and `page_token`
+resumes a listing. Drain the iterator's cached results before saving its token.
+
+::: lancedb.listing.Listing
+
 ::: lancedb.Session
 
 ## Catalogs (Synchronous)
@@ -422,6 +430,8 @@ can be used to create, list, or open tables.
 ::: lancedb.connect_async
 
 ::: lancedb.db.AsyncConnection
+
+::: lancedb.listing.AsyncListing
 
 ## Namespaces (Asynchronous)
 
