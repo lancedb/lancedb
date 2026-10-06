@@ -124,9 +124,8 @@ public class LsmWriteSpec {
   /**
    * Set the indexes the MemWAL keeps up to date as rows are appended.
    *
-   * <p>Pass {@code null} — the default for a fresh spec — to maintain every index the MemWAL can,
-   * resolved when the spec is installed. That is a snapshot: indexes created later are not
-   * maintained until the spec is unset and set again. Pass an empty list to maintain none.
+   * <p>Pass {@code null} — the default for a fresh spec — to maintain every index the table has,
+   * including ones created later. Pass an empty list to maintain none.
    *
    * <p>Note that {@code null} and the empty list mean opposite things here.
    */
@@ -210,8 +209,8 @@ public class LsmWriteSpec {
   /**
    * Rebuild a spec from a {@code get_lsm_write_spec} response body.
    *
-   * <p>A null {@code maintained_indexes} is the selection "every index the table has", which is a
-   * different setting from an empty list. Both round-trip.
+   * <p>A null {@code maintained_indexes} selects every index the table has; an empty list selects
+   * none.
    */
   static LsmWriteSpec fromJson(JsonNode node) {
     JsonNode shardingNode = node.get("sharding");

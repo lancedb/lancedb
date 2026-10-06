@@ -215,10 +215,7 @@ public class LanceDbTableLsmTest {
     assertEquals("true", spec.get().writerConfigDefaults().get("durable_write"));
   }
 
-  /**
-   * Null and empty are different selections — every index the table has, against none of them — so
-   * reading one as the other silently changes the table's maintenance policy.
-   */
+  /** A null selection, every index the table has, reads back as null rather than an empty list. */
   @Test
   public void testGetLsmWriteSpecRoundTripsEveryIndexSelection() {
     enqueue(

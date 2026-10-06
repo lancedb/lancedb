@@ -3281,9 +3281,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         #[derive(Deserialize)]
         struct LsmWriteSpecBody {
             sharding: Sharding,
-            /// `null` is the selection "every index the table has", which is a
-            /// different setting from `[]`. Deserializing it into a `Vec` would
-            /// read one as the other, so the option is carried through.
+            /// `null` selects every index the table has; `[]` selects none.
             #[serde(default)]
             maintained_indexes: Option<Vec<String>>,
             #[serde(default)]
@@ -9616,9 +9614,8 @@ mod tests {
         }
     }
 
-    /// `null` and `[]` are different selections — every index the table has,
-    /// against none of them — so reading one as the other silently changes the
-    /// table's maintenance policy.
+    /// Every selection reads back as the server reported it: every index
+    /// (`null`), none (`[]`), and a named list.
     #[rstest::rstest]
     #[case::every_index(serde_json::Value::Null, None)]
     #[case::no_index(serde_json::json!([]), Some(vec![]))]
