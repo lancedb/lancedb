@@ -225,9 +225,8 @@ export interface LsmWriteSpec {
   /** Bucket variant: the number of buckets, in `[1, 1024]`. */
   numBuckets?: number;
   /**
-   * Indexes the MemWAL keeps up to date. Omit to maintain every supported
-   * index, resolved on install — a snapshot, so indexes created later are not
-   * maintained. Pass `[]` for none.
+   * Indexes the MemWAL keeps up to date. Omit for every index the table has,
+   * including ones created later. Pass `[]` for none.
    */
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
@@ -767,8 +766,8 @@ export abstract class Table {
    * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
    * requires it to be the single column being bucketed.
    *
-   * Omitting `maintainedIndexes` maintains every index on the table, resolved
-   * here, failing if one cannot be maintained — name them to install anyway.
+   * Omitting `maintainedIndexes` maintains every index the table has,
+   * including ones created later, and skips a kind the MemWAL cannot maintain.
    * Naming them pins an exact set, and a still-building index is rejected
    * rather than quietly omitted.
    * @param {LsmWriteSpec} spec The sharding spec to install.
@@ -796,15 +795,11 @@ export abstract class Table {
   /**
    * Read the {@link LsmWriteSpec} currently installed on this table.
    *
-   * Resolves to `undefined` when the LSM write path is not enabled at all — no
-   * spec has been set, or one was removed with {@link Table#unsetLsmWriteSpec}.
-   * That is a different answer from a spec whose `maintainedIndexes` is absent,
-   * which is an installed spec selecting indexes automatically.
-   *
-   * The spec read back is the one that was installed, selection included: an
-   * absent `maintainedIndexes` maintains every supported index the table has
-   * now or gains later, `[]` maintains none, and a non-empty array maintains
-   * exactly those. All three round-trip.
+   * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
+   * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
+   * The spec is the one installed, including its maintained-index selection:
+   * an absent `maintainedIndexes` for every index the table has, an empty
+   * array for none.
    * @returns {Promise<LsmWriteSpec | undefined>}
    */
   abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;
