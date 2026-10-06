@@ -351,14 +351,6 @@
             ]
           },
           {
-            "group": "Security",
-            "pages": [
-              "enterprise/authentication",
-              "governance/authorization",
-              "enterprise/security"
-            ]
-          },
-          {
             "group": "Deployment",
             "pages": [
               "enterprise/index",
@@ -369,6 +361,14 @@
               "enterprise/deployment/azure",
               "enterprise/benchmarks",
               "deployment/support"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "enterprise/authentication",
+              "governance/authorization",
+              "enterprise/security"
             ]
           },
           {
