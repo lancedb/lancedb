@@ -98,11 +98,14 @@ Two things to know before editing:
 
 **Code examples are not written into the pages.** They live in real tests under
 `docs/web-tests/{py,ts,rs}`, are extracted into `docs/web/snippets/`, and are
-imported by the pages. Edit the test, then regenerate:
+imported by the pages. Edit the test, then regenerate from the repository root:
 
 ```bash
-uv run docs/web-tests/mdx_snippets_gen.py -s docs/web-tests/py
+uv run docs/web-tests/mdx_snippets_gen.py -s docs/web-tests/py -s docs/web-tests/ts -s docs/web-tests/rs -o docs/web/snippets
 ```
+
+Review the diff before committing: a few modules currently regenerate with
+unrelated changes, so commit only the snippets for the examples you changed.
 
 An example that stops compiling fails the pull request that broke it.
 
