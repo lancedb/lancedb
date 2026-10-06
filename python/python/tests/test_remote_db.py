@@ -16,8 +16,9 @@ import uuid
 from packaging.version import Version
 
 import lancedb
+import numpy as np
 from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.query import ColumnOrdering
+from lancedb.query import AsyncQuery, ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -117,6 +118,77 @@ async def test_async_remote_db():
     async with mock_lancedb_connection_async(handler) as db:
         table_names = await db.table_names()
         assert table_names == []
+
+
+@pytest.mark.parametrize(
+    "alteration, match",
+    [
+        ({"path": "id"}, "One of rename, nullable or data_type"),
+        (
+            {"path": "id", "nulable": False},  # spellchecker:disable-line
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+        (
+            {
+                "path": "id",
+                "rename": "new_id",
+                "nulable": False,  # spellchecker:disable-line
+            },
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+    ],
+)
+def test_remote_alter_columns_rejects_invalid_before_request(alteration, match):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        requests.clear()
+
+        with pytest.raises(ValueError, match=match):
+            table.alter_columns(alteration)
+
+        assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "alteration, match",
+    [
+        ({"path": "id"}, "One of rename, nullable or data_type"),
+        (
+            {"path": "id", "nulable": False},  # spellchecker:disable-line
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+    ],
+)
+async def test_async_remote_alter_columns_rejects_invalid_before_request(
+    alteration, match
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        requests.clear()
+
+        with pytest.raises(ValueError, match=match):
+            await table.alter_columns(alteration)
+
+        assert requests == []
 
 
 @pytest.mark.asyncio
@@ -1521,6 +1593,60 @@ def test_query_sync_empty_query():
         assert data == expected
 
 
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+@pytest.mark.parametrize("vector_column_name", [None, "vector"])
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+def test_query_sync_empty_vector(query, vector_column_name, query_type):
+    def handler(body):
+        pytest.fail("An empty query vector must be rejected before sending a query")
+
+    with query_test_table(handler) as table:
+        with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+            table.search(
+                query, vector_column_name=vector_column_name, query_type=query_type
+            ).limit(3).to_arrow()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_kwargs", [{}, {"query": None}])
+async def test_async_search_without_query(search_kwargs):
+    expected = pa.table({"id": [7, 8, 9]})
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        elif request.path == "/v1/table/test/query/":
+            body = json.loads(
+                request.rfile.read(int(request.headers["Content-Length"]))
+            )
+            assert body == {
+                "k": 3,
+                "filter": "id >= 7",
+                "vector": [],
+                "columns": ["id"],
+                "prefilter": True,
+                "version": None,
+            }
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, schema=expected.schema) as writer:
+                writer.write_table(expected)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = await table.search(**search_kwargs)
+        assert isinstance(query, AsyncQuery)
+        result = await query.where("id >= 7").select(["id"]).limit(3).to_arrow()
+        assert result == expected
+
+
 def test_query_sync_maximal():
     def handler(body):
         assert body == {
@@ -1579,6 +1705,53 @@ def test_query_sync_maximal():
             .select(["id", "name"])
             .to_list()
         )
+
+
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_query_sync_nprobes_zero(hybrid):
+    query_requests = []
+
+    def handler(body):
+        query_requests.append(body)
+        return pa.table({"id": []})
+
+    with query_test_table(handler) as table:
+        if hybrid:
+            query = table.search(query_type="hybrid").vector([1, 2, 3]).text("dog")
+        else:
+            query = table.search([1, 2, 3])
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert query_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_query_async_nprobes_zero(hybrid):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        if request.path == "/v1/table/test/describe/":
+            send_json(request, {"version": 1, "schema": {"fields": []}})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = table.query().nearest_to([1, 2, 3])
+        if hybrid:
+            query = query.nearest_to_text("dog")
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert requests == ["/v1/table/test/describe/"]
 
 
 def test_query_sync_nprobes():
@@ -2145,15 +2318,46 @@ async def test_header_provider_overrides_static_headers():
 
 
 def test_close():
-    """Test that close() works without AttributeError."""
-    import asyncio
-
     def handler(req):
         req.send_response(200)
         req.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        asyncio.run(db.close())
+        assert db.close() is None
+        assert not db.is_open()
+        assert db.close() is None
+
+        with pytest.warns(DeprecationWarning, match="table_names"):
+            with pytest.raises(RuntimeError, match="Connection is closed"):
+                db.table_names()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.list_tables()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.open_table("test")
+
+
+@pytest.mark.parametrize("raise_error", [False, True])
+def test_sync_context_manager(raise_error):
+    def handler(req):
+        req.send_response(200)
+        req.send_header("Content-Type", "application/json")
+        req.end_headers()
+        req.wfile.write(b'{"tables": []}')
+
+    with mock_lancedb_connection(handler) as db:
+        with contextlib.ExitStack() as stack:
+            if raise_error:
+                stack.enter_context(pytest.raises(ValueError, match="test error"))
+            with db as conn:
+                assert conn is db
+                assert conn.is_open()
+                assert conn.list_tables().tables == []
+                if raise_error:
+                    raise ValueError("test error")
+
+        assert not db.is_open()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.list_tables()
 
 
 @pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])
@@ -2391,6 +2595,27 @@ def blob_query_response_table():
     )
 
 
+def blob_descriptor_take_table():
+    """What `fetch_blob_files` reads for rows 10, 20, 30, and 40."""
+    queried = blob_query_response_table()
+    image_field = queried.schema.field("image")
+    images = pa.StructArray.from_arrays(
+        [
+            pa.array([0, 0, 0, 0], type=pa.uint8()),
+            pa.array([0, 0, 0, 0], type=pa.uint64()),
+            pa.array([5, 0, 5, 0], type=pa.uint64()),
+            pa.array([0, 0, 0, 0], type=pa.uint32()),
+            pa.array(["", "", "", ""], type=pa.string()),
+        ],
+        fields=image_field.type,
+        mask=pa.array([False, True, False, False]),
+    )
+    return pa.Table.from_arrays(
+        [images, pa.array([10, 20, 30, 40], type=pa.uint64())],
+        schema=pa.schema([image_field, pa.field("_rowid", pa.uint64())]),
+    )
+
+
 @contextlib.contextmanager
 def blob_remote_table(*, server_version=Version("0.5.0")):
     def handler(request):
@@ -2429,9 +2654,14 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
-            assert body["columns"] == ["id", "image"]
             assert body["with_row_id"] is True
-            response_table = blob_query_response_table()
+            if body["columns"] == ["image"]:
+                # fetch_blob_files sizes its handles from a descriptor take.
+                assert body["filter"].startswith("_rowid IN")
+                response_table = blob_descriptor_take_table()
+            else:
+                assert body["columns"] == ["id", "image"]
+                response_table = blob_query_response_table()
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()

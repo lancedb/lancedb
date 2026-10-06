@@ -21,7 +21,10 @@ use super::*;
 use crate::database::Database;
 use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
+use crate::remote::client::test_utils::client_with_handler;
 use crate::remote::db::RemoteDatabase;
+use crate::remote::table::RemoteTable;
+use crate::table::BaseTable;
 
 #[derive(Debug, Default)]
 struct DelayedHeaderProvider {
@@ -73,6 +76,7 @@ struct TestSqlService {
     first_continuation_count: Arc<AtomicUsize>,
     transient_poll_failures: Arc<AtomicUsize>,
     headers: Arc<std::sync::Mutex<Vec<CapturedHeaders>>>,
+    gate_refresh_release: Arc<Notify>,
     result: RecordBatch,
     large_result: RecordBatch,
     dictionary_result: RecordBatch,
@@ -121,6 +125,7 @@ impl Default for TestSqlService {
             first_continuation_count: Arc::new(AtomicUsize::new(0)),
             transient_poll_failures: Arc::new(AtomicUsize::new(0)),
             headers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            gate_refresh_release: Arc::new(Notify::new()),
             result,
             large_result,
             dictionary_result,
@@ -279,6 +284,7 @@ impl FlightService for TestSqlService {
     ) -> std::result::Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.do_get_count.fetch_add(1, Ordering::SeqCst);
         let ticket = request.get_ref().ticket.as_ref();
+        let gate_refresh = ticket == b"REFRESH MATERIALIZED VIEW \"cancel_view\"";
         let empty = ticket == b"SELECT empty";
         let slow = ticket == b"SELECT slow get";
         let large = ticket == b"SELECT large message";
@@ -290,7 +296,11 @@ impl FlightService for TestSqlService {
             self.result.clone()
         };
         let schema = result.schema();
+        let gate_refresh_release = self.gate_refresh_release.clone();
         let input = futures::stream::once(async move {
+            if gate_refresh {
+                gate_refresh_release.notified().await;
+            }
             if slow {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
@@ -442,6 +452,147 @@ async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
             assert!(header.database_prefix.is_empty());
         }
     }
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn remote_refresh_twice_keeps_latest_selector() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = futures::stream::try_unfold(listener, |listener| async {
+        let (socket, _) = listener.accept().await?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    });
+    let service = TestSqlService::default();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let sql_client = SqlClient::new(
+        "analytics".into(),
+        None,
+        "test-key".into(),
+        None,
+        Some(format!("grpc://{address}")),
+        ClientConfig::default(),
+    );
+    let selectors = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = selectors.clone();
+    let client = client_with_handler(move |request| {
+        let body = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+            .unwrap();
+        captured.lock().unwrap().push(body["version"].clone());
+        let text = match request.url().path() {
+            "/v1/table/ns$view/describe/" => r#"{"version": 42, "schema": {"fields": []}}"#,
+            "/v1/table/ns$view/count_rows/" => "2",
+            other => panic!("unexpected REST request: {other}"),
+        };
+        http::Response::builder()
+            .status(200)
+            .body(text.to_string())
+            .unwrap()
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "view".into(),
+        vec!["ns".into()],
+        "ns$view".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+
+    let first = table
+        .refresh_materialized_view_async(None)
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    let second = table
+        .refresh_materialized_view_async(None)
+        .await
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+
+    assert_eq!(first.version, 42);
+    assert_eq!(second.version, 42);
+    assert!(
+        selectors
+            .lock()
+            .unwrap()
+            .iter()
+            .all(serde_json::Value::is_null)
+    );
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_remote_refresh_cancels_sql_query() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let incoming = futures::stream::try_unfold(listener, |listener| async {
+        let (socket, _) = listener.accept().await?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    });
+    let service = TestSqlService::default();
+    let cancel_count = service.cancel_count.clone();
+    let do_get_count = service.do_get_count.clone();
+    let gate_refresh_release = service.gate_refresh_release.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async {
+                let _ = shutdown_rx.await;
+            }),
+    );
+    let sql_client = SqlClient::new(
+        "analytics".into(),
+        None,
+        "test-key".into(),
+        None,
+        Some(format!("grpc://{address}")),
+        ClientConfig::default(),
+    );
+    let client = client_with_handler(|request| -> http::Response<String> {
+        panic!(
+            "cancelled refresh must not read result metadata: {}",
+            request.url().path()
+        );
+    });
+    let table = RemoteTable::new_with_sql_client(
+        client,
+        "cancel_view".into(),
+        vec![],
+        "cancel_view".into(),
+        Default::default(),
+        Some(sql_client),
+    );
+    let job = table.refresh_materialized_view_async(None).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while do_get_count.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    job.cancel().await.unwrap();
+    assert!(matches!(job.wait().await, Err(Error::JobCancelled { .. })));
+    assert_eq!(cancel_count.load(Ordering::SeqCst), 1);
+
+    gate_refresh_release.notify_one();
     shutdown_tx.send(()).unwrap();
     server.await.unwrap().unwrap();
 }

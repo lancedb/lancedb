@@ -442,13 +442,9 @@ pub trait FixedSizeBinaryArrayExt {
     /// let int_values = UInt8Array::from_iter(0..10);
     /// let fixed_size_list_arr = FixedSizeBinaryArray::try_new_from_values(&int_values, 2).unwrap();
     /// assert_eq!(fixed_size_list_arr,
-    ///     FixedSizeBinaryArray::from(vec![
-    ///         Some(vec![0, 1].as_slice()),
-    ///         Some(vec![2, 3].as_slice()),
-    ///         Some(vec![4, 5].as_slice()),
-    ///         Some(vec![6, 7].as_slice()),
-    ///         Some(vec![8, 9].as_slice())
-    /// ]))
+    ///     FixedSizeBinaryArray::try_from_iter(
+    ///         [[0u8, 1], [2, 3], [4, 5], [6, 7], [8, 9]].into_iter()
+    ///     ).unwrap())
     /// ```
     fn try_new_from_values(values: &UInt8Array, stride: i32) -> Result<FixedSizeBinaryArray>;
 }
@@ -3035,7 +3031,8 @@ mod tests {
             vec![Some(b"1".as_slice()), Some(b"23".as_slice())]
         );
 
-        let fixed_size = FixedSizeBinaryArray::from(vec![b"abcd", b"efgh"]);
+        let fixed_size =
+            FixedSizeBinaryArray::try_from_iter([b"abcd", b"efgh"].into_iter()).unwrap();
         assert_eq!(
             iter_binary_array(&fixed_size).unwrap().collect::<Vec<_>>(),
             vec![Some(b"abcd".as_slice()), Some(b"efgh".as_slice())]

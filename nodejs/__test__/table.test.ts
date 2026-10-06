@@ -7,13 +7,9 @@ import { pathToFileURL } from "node:url";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import * as arrow15 from "apache-arrow-15";
-import * as arrow16 from "apache-arrow-16";
-import * as arrow17 from "apache-arrow-17";
-import * as arrow18 from "apache-arrow-18";
-
 import {
   AutoQuery,
+  type BlobInput,
   Connection,
   MatchQuery,
   PhraseQuery,
@@ -56,19 +52,21 @@ import {
   instanceOfFullTextQuery,
 } from "../lancedb/query";
 import { LocalTable } from "../lancedb/table";
+import {
+  type ApacheArrow,
+  arrow18,
+  arrowVersions,
+  latestArrow,
+} from "./arrow_versions";
 
-describe.each([arrow15, arrow16, arrow17, arrow18])(
+describe.each(arrowVersions)(
   "Given a table",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
     let tmpDir: tmp.DirResult;
     let table: Table;
 
-    const schema:
-      | import("apache-arrow-15").Schema
-      | import("apache-arrow-16").Schema
-      | import("apache-arrow-17").Schema
-      | import("apache-arrow-18").Schema = new arrow.Schema([
+    const schema: InstanceType<ApacheArrow["Schema"]> = new arrow.Schema([
       new arrow.Field("id", new arrow.Float64(), true),
     ]);
 
@@ -742,6 +740,114 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 );
 
 // https://github.com/lancedb/lancedb/issues/1963
+// These types were added in Arrow 21, so they are built with a second copy of
+// that release rather than the per-version matrix above, and reading them back
+// needs the library's own Arrow to know them too.
+const hostArrowSupportsViewTypes =
+  typeof (arrow as unknown as Record<string, unknown>).Utf8View === "function";
+(hostArrowSupportsViewTypes ? it : it.skip)(
+  "creates and adds tables with LargeList, Utf8View and BinaryView columns",
+  async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    const makeData = () =>
+      new latestArrow.Table({
+        id: latestArrow.vectorFromArray([1, 2], new latestArrow.Int32()),
+        tags: latestArrow.vectorFromArray(
+          [["a", "b"], ["c"]],
+          new latestArrow.LargeList(
+            new latestArrow.Field("item", new latestArrow.Utf8(), true),
+          ),
+        ),
+        text: latestArrow.vectorFromArray(
+          ["short", "a string that is longer than the twelve inline bytes"],
+          new latestArrow.Utf8View(),
+        ),
+        bytes: latestArrow.vectorFromArray(
+          [new Uint8Array([1, 2, 3]), new Uint8Array(20).fill(7)],
+          new latestArrow.BinaryView(),
+        ),
+      });
+    const table = await db.createTable("views", makeData());
+    await table.add(makeData());
+
+    const schema = await table.schema();
+    // Take the enum from the Arrow 21 copy: the host Arrow may predate
+    // `Type.LargeList`, and this file still has to type-check there.
+    expect(schema.fields.map((f) => f.type.typeId)).toEqual([
+      latestArrow.Type.Int,
+      latestArrow.Type.LargeList,
+      // Lance stores the view types as their offset-based equivalents.
+      latestArrow.Type.Utf8,
+      latestArrow.Type.Binary,
+    ]);
+    const rows = await table.query().toArrow();
+    expect(rows.numRows).toBe(4);
+    const row = rows.get(1)!.toJSON();
+    expect(row.id).toBe(2);
+    expect(row.tags.toJSON()).toEqual(["c"]);
+    expect(row.text).toBe(
+      "a string that is longer than the twelve inline bytes",
+    );
+    expect(Array.from(row.bytes)).toEqual(Array(20).fill(7));
+
+    // Arrow JS 21 serializes a *sliced* view column with a truncated views
+    // buffer; the library rebuilds view columns as Utf8/Binary so this works.
+    const sliced = makeData().slice(1, 2);
+    expect(sliced.getChild("text")!.data[0].offset).toBe(1);
+    const slicedTable = await db.createTable("views_sliced", sliced);
+    await slicedTable.add(sliced);
+    const slicedRows = await slicedTable.query().toArrow();
+    expect(slicedRows.numRows).toBe(2);
+    for (const i of [0, 1]) {
+      const r = slicedRows.get(i)!.toJSON();
+      expect(r.id).toBe(2);
+      expect(r.text).toBe(
+        "a string that is longer than the twelve inline bytes",
+      );
+      expect(Array.from(r.bytes)).toEqual(Array(20).fill(7));
+    }
+
+    // Regression: a field with an integer-like name. JavaScript enumerates
+    // such keys first, so a key-ordered rebuild would pair "1" with the text
+    // column's values. The batches are built explicitly to pin field order.
+    const numericSchema = new latestArrow.Schema([
+      new latestArrow.Field("text", new latestArrow.Utf8View(), true),
+      new latestArrow.Field("1", new latestArrow.Utf8View(), true),
+      new latestArrow.Field("n", new latestArrow.Int32(), true),
+    ]);
+    const column = (
+      values: unknown[],
+      type: InstanceType<typeof latestArrow.DataType>,
+    ) => latestArrow.vectorFromArray(values, type).data[0];
+    const numericBatch = new latestArrow.RecordBatch(
+      numericSchema,
+      latestArrow.makeData({
+        type: new latestArrow.Struct(numericSchema.fields),
+        length: 3,
+        nullCount: 0,
+        children: [
+          column(["t0", "t1", "t2"], new latestArrow.Utf8View()),
+          column(["one0", "one1", "one2"], new latestArrow.Utf8View()),
+          column([0, 1, 2], new latestArrow.Int32()),
+        ],
+      }),
+    );
+    const numericData = new latestArrow.Table(numericSchema, [numericBatch]);
+    const numericTable = await db.createTable("views_numeric", numericData);
+    await numericTable.add(numericData.slice(1));
+    const numericRows = (await numericTable.query().toArrow()).toArray();
+    expect(numericRows.map((r) => r.toJSON())).toEqual([
+      { text: "t0", "1": "one0", n: 0 },
+      { text: "t1", "1": "one1", n: 1 },
+      { text: "t2", "1": "one2", n: 2 },
+      { text: "t1", "1": "one1", n: 1 },
+      { text: "t2", "1": "one2", n: 2 },
+    ]);
+    tmpDir.removeCallback();
+  },
+);
+
 it("should query documents with LangChain PDF metadata", async () => {
   const tmpDir = tmp.dirSync({ unsafeCleanup: true });
   try {
@@ -1106,6 +1212,12 @@ describe("When creating an index", () => {
       .toArrow();
     expect(rst.numRows).toBe(2);
 
+    expect(() => tbl.vectorSearch(queryVec).nprobes(0)).toThrow(
+      "Invalid input, nprobes must be greater than 0",
+    );
+    expect(() =>
+      tbl.query().nearestTo(queryVec).fullTextSearch("dog").nprobes(0),
+    ).toThrow("Invalid input, nprobes must be greater than 0");
     expect(() => tbl.query().nearestTo(queryVec).minimumNprobes(0)).toThrow(
       "Invalid input, minimum_nprobes must be greater than 0",
     );
@@ -2472,7 +2584,7 @@ describe("when dealing with blob columns", () => {
       new Field("id", new Int64(), true),
       blob("image"),
     ]);
-    const row = { id: 1n, image: new Uint8Array([104]).buffer };
+    const row = { id: 1n, image: new ReadableStream() };
 
     await expect(db.createTable("invalid", [row], { schema })).rejects.toThrow(
       /field image at row 0/,
@@ -2502,6 +2614,8 @@ describe("when dealing with blob columns", () => {
   it.each([
     ["URI string", (uri: string) => uri],
     ["URI struct", (uri: string) => ({ uri })],
+    ["URL", (uri: string) => new URL(uri)],
+    ["URL struct", (uri: string) => ({ uri: new URL(uri) })],
   ])(
     "round-trips an external blob from a %s after reopening",
     async (_label, blobValue) => {
@@ -2593,6 +2707,63 @@ describe("when dealing with blob columns", () => {
     expect(rows[0].id).toBe(2n);
     const bytes = await table.fetchBlobs("payload", [rows[0]._rowid as bigint]);
     expect(bytes[0]).toEqual(payload);
+  });
+
+  it("accepts ArrayBuffer, Blob, and File in createTable and add", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const rows: { id: bigint; image: BlobInput }[] = [
+      { id: 1n, image: new TextEncoder().encode("array-buffer").buffer },
+      { id: 2n, image: new Blob(["blob"]) },
+      { id: 3n, image: { data: new File(["file"], "f.txt") } },
+    ];
+    const table = await db.createTable("widened", rows.slice(0, 2), {
+      schema,
+    });
+    await table.add(rows.slice(2));
+
+    const results = await table.query().select(["id"]).withRowId().toArray();
+    results.sort((a, b) => Number(a.id - b.id));
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual([
+      "array-buffer",
+      "blob",
+      "file",
+    ]);
+  });
+
+  it("accepts Blob values in mergeInsert", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const table = await db.createTable(
+      "merge_blobs",
+      [{ id: 1n, image: Buffer.from("old") }],
+      { schema },
+    );
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { id: 1n, image: new Blob(["new"]) },
+        { id: 2n, image: new Uint8Array([104, 105]).buffer },
+      ]);
+    const results = await table.query().select(["id"]).withRowId().toArray();
+    results.sort((a, b) => Number(a.id - b.id));
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual(["new", "hi"]);
   });
 
   it("discovers blob columns", async () => {
@@ -3203,7 +3374,7 @@ it("passes cleanupOlderThan to the native binding as an absolute timestamp", asy
   expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true);
 });
 
-describe.each([arrow15, arrow16, arrow17, arrow18])(
+describe.each(arrowVersions)(
   "when optimizing a dataset",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
