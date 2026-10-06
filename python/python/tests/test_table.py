@@ -2612,6 +2612,57 @@ def test_update_with_arrow_scalar(mem_db: DBConnection):
     assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_api", [False, True])
+@pytest.mark.parametrize("entries", [[("o'brien", 4), ("nil", None)], [], None])
+async def test_update_map_arrow_scalar(tmp_path, async_api, entries):
+    map_type = pa.map_(pa.string(), pa.int64())
+    data = pa.table(
+        {
+            "id": [1, 2],
+            "attrs": pa.array([[("original", 1)], entries], type=map_type),
+        }
+    )
+    if async_api:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("maps", data)
+        source = await table.query().where("id = 2").to_arrow()
+        result = await table.update({"attrs": source["attrs"][0]}, where="id = 1")
+        actual = await table.query().to_arrow()
+    else:
+        db = lancedb.connect(tmp_path)
+        table = db.create_table("maps", data)
+        source = table.search().where("id = 2").to_arrow()
+        result = table.update(values={"attrs": source["attrs"][0]}, where="id = 1")
+        actual = table.to_arrow()
+    assert result.rows_updated == 1
+    assert actual.schema.field("attrs").type == map_type
+    assert actual.sort_by("id")["attrs"].to_pylist() == [entries, entries]
+
+
+@pytest.mark.parametrize(
+    "map_type, entries",
+    [
+        (pa.map_(pa.int64(), pa.string()), []),
+        (
+            pa.map_(pa.string(), pa.map_(pa.string(), pa.int64())),
+            [("outer", [("inner", 3)]), ("null", None)],
+        ),
+    ],
+)
+def test_update_typed_map_arrow_scalar(mem_db: DBConnection, map_type, entries):
+    table = mem_db.create_table(
+        "maps",
+        pa.table({"id": [1, 2], "attrs": pa.array([None, entries], type=map_type)}),
+    )
+    scalar = table.search().where("id = 2").to_arrow()["attrs"][0]
+    result = table.update(values={"attrs": scalar}, where="id = 1")
+    actual = table.to_arrow().sort_by("id")["attrs"]
+    assert result.rows_updated == 1
+    assert actual.type == map_type
+    assert actual.to_pylist() == [entries, entries]
+
+
 def test_update_types(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
