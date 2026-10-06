@@ -115,7 +115,7 @@ Filter with SQL over any feature, using the indexes built at conversion:
 
 From here it is standard LanceDB. The examples below are from our DROID walkthrough, all on the table the trainer reads.
 
-**Feature engineering costs nothing until you use it.** A new column is a [declaration](/feature-engineering/add-computed-column): `add_columns` registers the expression or [function](/management/function) and computes nothing, and a [refresh](/feature-engineering/refresh-column) materializes it in parallel when you want it. No copy of the dataset, and the videos are never touched:
+**Derived columns are added without rewriting existing data.** With [Geneva](/geneva/udfs/udfs), `add_columns` registers a Python function and its input columns as a new derived column. No values are computed at that point. `backfill` computes and stores the derived values later, in parallel, without rewriting the existing columns or video blobs:
 
 ```python
 @udf(data_type=pa.float32(), input_columns=["action_joint_velocity"])
