@@ -62,7 +62,6 @@ from .namespace import (
 from .catalog import (
     AsyncCatalog,
     Catalog,
-    ListDatabasesResponse,
     connect_catalog,
     connect_catalog_async,
 )
@@ -578,7 +577,6 @@ async def connect_async(
 __all__ = [
     "Catalog",
     "AsyncCatalog",
-    "ListDatabasesResponse",
     "connect_catalog",
     "connect_catalog_async",
     "AsyncMaterializedView",
