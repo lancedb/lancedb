@@ -300,7 +300,7 @@ async fn main() {
     use arrow_schema::{DataType, Field, Schema};
 
     let image_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/static/assets/images/quickstart/sir-lancelot.jpg");
+        .join("../../web/static/assets/images/quickstart/sir-lancelot.jpg");
     let image_bytes = std::fs::read(image_path).unwrap();
 
     let image_schema = Arc::new(Schema::new(vec![

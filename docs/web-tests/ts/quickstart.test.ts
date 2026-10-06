@@ -106,8 +106,9 @@ test("quickstart example (async)", async () => {
     const path = await import("node:path");
     const { readFile } = await import("node:fs/promises");
 
-    const imagePath = path.resolve(
-      "../../docs/static/assets/images/quickstart/sir-lancelot.jpg",
+    const imagePath = path.join(
+      __dirname,
+      "../../web/static/assets/images/quickstart/sir-lancelot.jpg",
     );
     const imageBytes = await readFile(imagePath);
     const imageSchema = new arrow.Schema([
