@@ -832,6 +832,21 @@ fn function_input_nullability(resolved: &ResolvedFieldPath<'_>, path: &str) -> R
     Ok(!function_input_is_computed(resolved.root, path)? && resolved.leaf.is_nullable())
 }
 
+/// The metadata a Function parameter carries from the column it binds: the
+/// column's semantic Arrow metadata, such as a Blob v2 extension, without its
+/// computed-column declaration or refresh stamps. A binding's input schema is
+/// immutable, and a refresh of a computed input rewrites those stamps, so
+/// they cannot be part of it. A plain column carries none of them, so its
+/// parameter keeps every key.
+pub fn function_input_metadata(field: &ArrowField) -> HashMap<String, String> {
+    field
+        .metadata()
+        .iter()
+        .filter(|(key, _)| !is_declaration_key(key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
 /// The input paths of `binding` that read a computed column. A Function
 /// refresh computes a row only where every one of them holds a value; see
 /// [`function_input_is_computed`].
@@ -1167,7 +1182,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
             field.data_type().clone(),
             input.nullable,
         )
-        .with_metadata(field.metadata().clone());
+        .with_metadata(function_input_metadata(field));
         let json = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
             parameter_field.clone(),
         ]))
@@ -1397,7 +1412,7 @@ pub(crate) fn plan_function_application(
         let field = resolved.leaf;
         let parameter_field =
             ArrowField::new(input.parameter.clone(), field.data_type().clone(), nullable)
-                .with_metadata(field.metadata().clone());
+                .with_metadata(function_input_metadata(field));
         let input_schema = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
             parameter_field.clone(),
         ]))
@@ -4461,6 +4476,65 @@ mod tests {
             assert_eq!(plan.input_bindings[0].field_path, path);
             assert!(!plan.input_bindings[0].nullable, "{path}");
         }
+    }
+
+    /// A refresh of a computed input rewrites its freshness stamps; the
+    /// downstream binding's immutable input schema must not record them, or
+    /// the first upstream refresh strands the table.
+    #[tokio::test]
+    async fn test_computed_input_survives_upstream_refresh() {
+        use arrow_array::{Int32Array, Int64Array, RecordBatch};
+
+        let base = ArrowSchema::new(vec![ArrowField::new("x", DataType::Int32, true)]);
+        let mut fields = base.fields().to_vec();
+        fields.extend(
+            plan(Arc::new(base), &[("doubled".into(), "x * 2".into())])
+                .unwrap()
+                .into_iter()
+                .map(Arc::new),
+        );
+        let schema = ArrowSchema::new(fields);
+        let downstream = plan_function_application(
+            &schema,
+            &single_input_application("doubled"),
+            Some("inspected"),
+        )
+        .unwrap();
+        assert!(
+            downstream.input_schema.fields[0]
+                .metadata
+                .as_ref()
+                .is_none_or(|metadata| !metadata.keys().any(|key| is_declaration_key(key)))
+        );
+        let schema = Arc::new(declare_plan(&schema, &downstream, "fb_downstream"));
+        ensure_declarations_are_planned(&schema).unwrap();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(Int32Array::from(vec![None])),
+                Arc::new(Int64Array::from(vec![None])),
+            ],
+        )
+        .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("upstream_refresh", batch)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            table.refresh_column("doubled").await.unwrap().rows_filled,
+            1
+        );
+
+        ensure_supported_function_metadata(&table.schema().await.unwrap()).unwrap();
+        table
+            .add(record_batch!(("x", Int32, [2])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        table.drop_columns(&["inspected"]).await.unwrap();
     }
 
     #[test]
