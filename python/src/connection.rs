@@ -407,8 +407,7 @@ impl Connection {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, *, vector_source_json=None))]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -417,17 +416,10 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
-        vector_source_json: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
-            if let Some(source) = vector_source_json {
-                builder = builder.vector_source(
-                    serde_json::from_str(&source)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
-                );
-            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -443,8 +435,7 @@ impl Connection {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, *, vector_source_json=None))]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -453,17 +444,10 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
-        vector_source_json: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
-            if let Some(source) = vector_source_json {
-                builder = builder.vector_source(
-                    serde_json::from_str(&source)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
-                );
-            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }

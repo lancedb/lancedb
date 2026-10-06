@@ -57,7 +57,6 @@ from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewSource,
-    VectorDedupSource,
     SelectArg,
     normalize_select,
 )
@@ -409,9 +408,10 @@ class DBConnection(EnforceOverrides):
             - [LanceModel][lancedb.pydantic.LanceModel]
         mode: str; default "create"
             The mode to use when creating the table.
-            Can be either "create" or "overwrite".
+            Can be "create", "overwrite", or "exist_ok".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+            To open an existing table without adding data, use mode="exist_ok".
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
@@ -612,21 +612,12 @@ class DBConnection(EnforceOverrides):
         table. The view is a normal table: it can be queried, indexed and
         searched, and it appears in ``table_names``.
 
-        Ordinary source tables must have stable row ids (create them with the
-        ``new_table_enable_stable_row_ids`` storage option): they keep the
-        view's provenance valid across source compactions, and cannot be
-        enabled after a table exists. Native dedup sources also support physical
-        row IDs interpreted against their pinned snapshot.
-
         Parameters
         ----------
         name: str
             The name of the view.
-        source: str or VectorDedupSource
-            The name of the source table, or an indexed dedup source declared
-            with [vector_dedup][lancedb.vector_dedup]. Dedup sources capture a
-            fixed snapshot and preserve the source table. They accept no
-            additional select, where or limit options.
+        source: str
+            The name of the source table.
         select: list or dict, optional
             The view's columns: column names, ``(alias, SQL expression)``
             pairs, or a dict of the same. Omitting it selects every source
@@ -1546,8 +1537,6 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if mode.lower() not in ["create", "overwrite"]:
-            raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
         tbl = LanceTable.create(
@@ -1655,10 +1644,7 @@ class LanceDBConnection(DBConnection):
         Examples
         --------
         >>> import lancedb
-        >>> db = lancedb.connect(
-        ...     "./.lancedb",
-        ...     storage_options={"new_table_enable_stable_row_ids": "true"},
-        ... )
+        >>> db = lancedb.connect("./.lancedb")
         >>> data = [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
         >>> table = db.create_table("people", data)
         >>> view = db.create_materialized_view(
@@ -2350,11 +2336,12 @@ class AsyncConnection(object):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
-        mode: Literal["create", "overwrite"]; default "create"
+        mode: Literal["create", "overwrite", "exist_ok"]; default "create"
             The mode to use when creating the table.
-            Can be either "create" or "overwrite".
+            Can be "create", "overwrite", or "exist_ok".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+            To open an existing table without adding data, use mode="exist_ok".
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
@@ -2625,19 +2612,7 @@ class AsyncConnection(object):
         where: Optional[str],
         limit: Optional[int],
     ) -> Tuple[str, Dict[str, str]]:
-        if not isinstance(source, VectorDedupSource):
-            return source, {}
-        if select is not None or where is not None or limit is not None:
-            raise ValueError(
-                "vector_dedup cannot be combined with select, where or limit"
-            )
-        version = source.dataset_version
-        if version is None:
-            table = await self.open_table(source.source)
-            version = await table.version()
-        return source.source, {
-            "vector_source_json": source._native_source_json(version)
-        }
+        return source, {}
 
     async def create_materialized_view(
         self,

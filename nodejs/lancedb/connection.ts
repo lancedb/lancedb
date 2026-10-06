@@ -8,6 +8,7 @@ import {
   fromTableToStreamBuffer,
   isArrowTable,
   makeArrowTable,
+  resolveBlobInputs,
 } from "./arrow";
 import {
   Table as ArrowTable,
@@ -324,10 +325,6 @@ export abstract class Connection {
    * The view is populated before creation returns. Set `withNoData` to create
    * only its definition and empty backing table. The view is a normal table:
    * it can be queried, indexed and searched, and it appears in `tableNames`.
-   * The source table must have stable row ids (create it with
-   * the `newTableEnableStableRowIds` storage option); they keep the view's
-   * provenance valid across source compactions and cannot be enabled after
-   * a table exists.
    */
   abstract createMaterializedView(
     name: string,
@@ -1133,7 +1130,11 @@ async function parseTableData(
   if (isArrowTable(data)) {
     table = sanitizeTable(data);
   } else {
-    table = makeArrowTable(data as Record<string, unknown>[], options);
+    const records = await resolveBlobInputs(
+      data as Record<string, unknown>[],
+      options?.schema,
+    );
+    table = makeArrowTable(records, options);
   }
   if (streaming) {
     const buf = await fromTableToStreamBuffer(

@@ -5,9 +5,9 @@ import { Connection, LocalConnection } from "./connection";
 import { HeaderProvider } from "./header";
 import {
   JsHeaderProvider,
-  ListDatabasesResponse,
   Catalog as NativeCatalog,
   CatalogOptions as NativeCatalogOptions,
+  DatabaseNames as NativeDatabaseNames,
 } from "./native.js";
 import { OAuthConfig } from "./oauth";
 
@@ -21,7 +21,41 @@ export interface CatalogOptions
     | (() => Record<string, string> | Promise<Record<string, string>>);
 }
 
-export type { ListDatabasesResponse } from "./native.js";
+/**
+ * A lazy async iterator of database names with pagination state.
+ * Returned by {@link Catalog.listDatabases}.
+ */
+export class DatabaseNames implements AsyncIterableIterator<string> {
+  /** @hidden */
+  constructor(private readonly inner: NativeDatabaseNames) {}
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<string> {
+    return this;
+  }
+
+  /** Fetch the next name, requesting another page only when needed. */
+  async next(): Promise<IteratorResult<string>> {
+    const value = await this.inner.next();
+    return value == null
+      ? { done: true, value: undefined }
+      : { done: false, value };
+  }
+
+  /** Number of names available without another REST request. */
+  numPageResults(): number {
+    return this.inner.numPageResults();
+  }
+
+  /**
+   * Token for the next REST request. Initially this is the supplied starting token.
+   * Returns undefined after the final page is fetched, even if names remain cached.
+   * Drain the cache before saving a token to avoid skipping names when resuming.
+   * A failed request terminates iteration and retains its token for a new iterator.
+   */
+  pageToken(): string | undefined {
+    return this.inner.pageToken() ?? undefined;
+  }
+}
 
 /** A remote catalog manages databases through the server's root namespace. */
 export class Catalog {
@@ -56,21 +90,35 @@ export class Catalog {
     await this.inner.dropDatabase(name, options.ignoreMissing);
   }
 
-  /** List one page of databases; pass pageToken from a response for the next page. */
-  async listDatabases(
-    options: { limit?: number; pageToken?: string } = {},
-  ): Promise<ListDatabasesResponse> {
+  /**
+   * Iterate lazily over all database names using `for await...of`.
+   * pageToken resumes from a saved token; omitted starts at the beginning.
+   * pageLimit limits each REST response, not the total; omitted uses the server default.
+   * Request errors are raised during iteration and terminate the iterator.
+   *
+   * @example
+   * ```ts
+   * for await (const name of catalog.listDatabases({ pageLimit: 20 })) {
+   *   console.log(name);
+   * }
+   * ```
+   */
+  listDatabases(
+    options: { pageLimit?: number; pageToken?: string } = {},
+  ): DatabaseNames {
     if (
-      options.limit !== undefined &&
-      (!Number.isInteger(options.limit) ||
-        options.limit <= 0 ||
-        options.limit > 2147483647)
+      options.pageLimit !== undefined &&
+      (!Number.isInteger(options.pageLimit) ||
+        options.pageLimit <= 0 ||
+        options.pageLimit > 2147483647)
     ) {
       throw new Error(
         "Database list limit must be an integer between 1 and 2147483647",
       );
     }
-    return this.inner.listDatabases(options.limit, options.pageToken);
+    return new DatabaseNames(
+      this.inner.listDatabases(options.pageToken, options.pageLimit),
+    );
   }
 }
 
@@ -82,7 +130,9 @@ export class Catalog {
  * ```ts
  * const catalog = await connectCatalog("https://my-server.example", { apiKey: "secret" });
  * const db = await catalog.createDatabase("analytics", { existOk: true });
- * const page = await catalog.listDatabases({ limit: 20 });
+ * for await (const name of catalog.listDatabases({ pageLimit: 20 })) {
+ *   console.log(name);
+ * }
  * ```
  */
 export async function connectCatalog(

@@ -255,8 +255,6 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
-        *,
-        vector_source_json: Optional[str] = None,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
@@ -266,8 +264,6 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
-        *,
-        vector_source_json: Optional[str] = None,
     ) -> Job: ...
     async def list_materialized_views(self) -> List[str]: ...
     async def drop_materialized_view(
@@ -500,10 +496,10 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, full: bool = False, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, full: bool = False, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -946,9 +942,15 @@ class Catalog:
     async def drop_database(
         self, name: str, *, ignore_missing: bool = False
     ) -> None: ...
-    async def list_databases(
-        self, *, limit: Optional[int] = None, page_token: Optional[str] = None
-    ) -> tuple[list[str], Optional[str]]: ...
+    def list_databases(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> DatabaseNames: ...
+
+class DatabaseNames:
+    def num_page_results(self) -> int: ...
+    def page_token(self) -> Optional[str]: ...
+    def __aiter__(self) -> DatabaseNames: ...
+    async def __anext__(self) -> str: ...
 
 async def connect_catalog(
     endpoint: str,
