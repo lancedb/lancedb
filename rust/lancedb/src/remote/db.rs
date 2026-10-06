@@ -1475,6 +1475,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let data_schema = request.data.schema();
         let body = stream_as_body(request.data.scan_as_stream())?;
 
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
@@ -1505,7 +1506,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                             managed_versioning: None,
                         };
                         let req = (callback)(req);
-                        self.open_table(req).await
+                        let table = self.open_table(req).await?;
+                        let table_schema = table.schema().await?;
+
+                        if table_schema.as_ref() != data_schema.as_ref() {
+                            return Err(Error::Schema {
+                                message: "Provided schema does not match existing table schema"
+                                    .to_string(),
+                            });
+                        }
+
+                        Ok(table)
                     }
 
                     // This should not happen, as we explicitly set the mode to overwrite and the server
@@ -1901,6 +1912,7 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
+    use rstest::rstest;
 
     use crate::connection::ConnectBuilder;
     use crate::database::Database;
@@ -2508,6 +2520,75 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case::matching(Field::new("a", DataType::Int32, false), true)]
+    #[case::different_name(Field::new("x", DataType::Int32, false), false)]
+    #[case::different_type(Field::new("a", DataType::Int64, false), false)]
+    #[case::different_nullability(Field::new("a", DataType::Int32, true), false)]
+    #[tokio::test]
+    async fn test_create_table_exist_ok_validates_schema(
+        #[case] existing_field: Field,
+        #[case] matches: bool,
+        #[values(false, true)] empty: bool,
+        #[values(false, true)] cached: bool,
+    ) {
+        let existing_schema = Schema::new(vec![existing_field]);
+        let description = serde_json::json!({
+            "version": 1,
+            "schema": lance::arrow::json::JsonSchema::try_from(&existing_schema).unwrap(),
+        })
+        .to_string();
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            match request.url().path() {
+                "/v1/table/table1/create/" => {
+                    assert_eq!(request.url().query(), Some("mode=exist_ok"));
+                    http::Response::builder()
+                        .status(400)
+                        .body("Table table1 already exists".to_string())
+                        .unwrap()
+                }
+                "/v1/table/table1/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(description.clone())
+                    .unwrap(),
+                path => panic!("unexpected path: {path}"),
+            }
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        if cached {
+            conn.open_table("table1").execute().await.unwrap();
+        }
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let builder = if empty {
+            conn.create_empty_table("table1", schema.clone())
+        } else {
+            let data = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            conn.create_table("table1", data)
+        };
+        let result = builder
+            .mode(CreateTableMode::exist_ok(|b| b))
+            .execute()
+            .await;
+        if matches {
+            let table = result.unwrap();
+            assert_eq!(table.name(), "table1");
+            assert_eq!(table.schema().await.unwrap(), schema);
+        } else {
+            assert!(matches!(result, Err(Error::Schema { message })
+                if message == "Provided schema does not match existing table schema"));
+        }
+    }
+
     #[tokio::test]
     async fn test_create_table_modes() {
         let test_cases = [
@@ -2547,7 +2628,14 @@ mod tests {
                 .status(400)
                 .body("Table table1 already exists")
                 .unwrap(),
-            "/v1/table/table1/describe/" => http::Response::builder().status(200).body("").unwrap(),
+            "/v1/table/table1/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": [
+                        {"name": "a", "type": {"type": "int32"}, "nullable": false}
+                    ]}}"#,
+                )
+                .unwrap(),
             _ => {
                 panic!("unexpected path: {:?}", request.url().path());
             }
