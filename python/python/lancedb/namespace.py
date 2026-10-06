@@ -11,7 +11,7 @@ through a namespace abstraction.
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 from uuid import UUID
 
 if sys.version_info >= (3, 12):
@@ -19,8 +19,6 @@ if sys.version_info >= (3, 12):
 else:
     from overrides import override
 
-if TYPE_CHECKING:
-    from lancedb.listing import AsyncListing, Listing
 from lancedb.query import Query
 
 from datetime import timedelta
@@ -53,6 +51,7 @@ from lancedb.background_loop import LOOP
 from lancedb.arrow import AsyncRecordBatchReader
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.job import AsyncJob, Job
+from lancedb.listing import AsyncListing, Listing
 from lancedb.sql import AsyncQuery as AsyncSqlQuery
 from lancedb.sql import QueryDescription
 from lance_namespace import (
