@@ -5197,6 +5197,7 @@ def _infer_target_schema(
                 field.name,  # preserve original field name
                 target_type,
                 nullable=field.nullable,
+                metadata=field.metadata,
             )
 
             schema = schema.set(i, new_field)

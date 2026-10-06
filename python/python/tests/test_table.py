@@ -4313,6 +4313,58 @@ async def test_alter_columns_rejects_invalid_async(
     assert await table.schema() == initial_schema
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("list_type", [pa.list_, pa.large_list])
+@pytest.mark.parametrize(
+    "value_type, values, inferred_type",
+    [
+        (pa.float64(), [1.25, 2.5], pa.float32()),
+        (pa.int32(), [0, 255], pa.uint8()),
+        (pa.int32(), [-1, 256], pa.float32()),
+    ],
+)
+async def test_inferred_vector_field_metadata(
+    tmp_db: DBConnection,
+    tmp_db_async: AsyncConnection,
+    asynchronous,
+    list_type,
+    value_type,
+    values,
+    inferred_type,
+):
+    metadata = {
+        "lancedb:description": "Embedding values",
+        "lancedb:tag:model": "test-model",
+    }
+    schema = pa.schema(
+        [
+            pa.field(
+                "vector", list_type(value_type), nullable=False, metadata=metadata
+            ),
+            pa.field("text", pa.string(), metadata={"description": "Source text"}),
+        ],
+        metadata={"description": "Source dataset"},
+    )
+    rows = [{"vector": values, "text": "first"}, {"vector": values, "text": "second"}]
+    data = pa.Table.from_pylist(rows, schema=schema)
+    if asynchronous:
+        await tmp_db_async.create_table("vector_metadata", data=data)
+        table = await tmp_db_async.open_table("vector_metadata")
+        actual_schema = await table.schema()
+        actual_data = await table.to_arrow()
+    else:
+        tmp_db.create_table("vector_metadata", data=data)
+        table = tmp_db.open_table("vector_metadata")
+        actual_schema = table.schema
+        actual_data = table.to_arrow()
+    expected_schema = schema.set(
+        0, schema.field("vector").with_type(pa.list_(inferred_type, 2))
+    )
+    assert actual_schema.equals(expected_schema, check_metadata=True)
+    assert actual_data.to_pylist() == rows
+
+
 def test_update_field_metadata(mem_db: DBConnection):
     data = pa.table({"id": [0, 1], "category": ["a", "b"]})
     table = mem_db.create_table("my_table", data=data)
