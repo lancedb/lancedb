@@ -46,7 +46,6 @@ from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewDefinition,
-    vector_dedup as vector_dedup,
 )
 from .view import ViewDescription as ViewDescription
 from .table import AsyncTable, Table
@@ -62,7 +61,6 @@ from .namespace import (
 from .catalog import (
     AsyncCatalog,
     Catalog,
-    ListDatabasesResponse,
     connect_catalog,
     connect_catalog_async,
 )
@@ -578,7 +576,6 @@ async def connect_async(
 __all__ = [
     "Catalog",
     "AsyncCatalog",
-    "ListDatabasesResponse",
     "connect_catalog",
     "connect_catalog_async",
     "AsyncMaterializedView",

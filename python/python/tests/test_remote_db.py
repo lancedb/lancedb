@@ -16,7 +16,8 @@ import uuid
 from packaging.version import Version
 
 import lancedb
-from lancedb.conftest import MockTextEmbeddingFunction
+import numpy as np
+from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.query import AsyncQuery, ColumnOrdering, LanceVectorQueryBuilder
 from lancedb.remote import ClientConfig
@@ -593,6 +594,106 @@ def test_remote_permutation_is_picklable():
             {"a": 2},
             {"a": 0},
             {"a": 4},
+        ]
+
+
+@pytest.mark.parametrize("with_schema", [True, False])
+def test_create_table_embedding_functions(with_schema):
+    func = MockNonNormTextEmbeddingFunction.create()
+    config = EmbeddingFunctionConfig(
+        source_column="text", vector_column="vector", function=func
+    )
+    schema = pa.schema(
+        [pa.field("text", pa.string()), pa.field("vector", pa.list_(pa.float32(), 10))]
+    )
+    received = {}
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            # Echo the metadata actually sent by create_table, as the server does.
+            metadata = received["create"].schema.metadata or {}
+            send_json(
+                request,
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "text",
+                                "type": {"type": "string"},
+                                "nullable": True,
+                            },
+                            {
+                                "name": "vector",
+                                "type": {
+                                    "type": "fixed_size_list",
+                                    "fields": [
+                                        {
+                                            "name": "item",
+                                            "type": {"type": "float"},
+                                            "nullable": True,
+                                        }
+                                    ],
+                                    "length": 10,
+                                },
+                                "nullable": True,
+                            },
+                        ],
+                        "metadata": {
+                            k.decode(): v.decode() for k, v in metadata.items()
+                        },
+                    },
+                },
+            )
+        elif request.path in (
+            "/v1/table/test/create/?mode=create",
+            "/v1/table/test/insert/",
+        ):
+            if request.headers.get("Transfer-Encoding") == "chunked":
+                body = bytearray()
+                while True:
+                    size = int(request.rfile.readline(), 16)
+                    if size == 0:
+                        request.rfile.readline()
+                        break
+                    body.extend(request.rfile.read(size))
+                    request.rfile.read(2)
+            else:
+                body = request.rfile.read(int(request.headers["Content-Length"]))
+            operation = "create" if "/create/" in request.path else "insert"
+            received[operation] = pa.ipc.open_stream(body).read_all()
+            send_json(request, {})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table(
+            "test",
+            schema=schema if with_schema else None,
+            data=None if with_schema else [{"text": "hello world"}],
+            embedding_functions=[config],
+        )
+        metadata = pa.schema(
+            [],
+            metadata=EmbeddingFunctionRegistry.get_instance().get_table_metadata(
+                [config]
+            ),
+        ).metadata
+        assert received["create"].schema.metadata == metadata
+        assert table.schema.metadata == metadata
+        assert table.schema.field("vector").type == pa.list_(pa.float32(), 10)
+        assert table.embedding_functions["vector"].source_column == "text"
+        if with_schema:
+            assert received["create"].num_rows == 0
+        else:
+            assert received["create"]["vector"].to_pylist() == [
+                func.compute_source_embeddings(["hello world"])[0].tolist()
+            ]
+
+        table.add([{"text": "goodbye world"}])
+        assert received["insert"]["vector"].to_pylist() == [
+            func.compute_source_embeddings(["goodbye world"])[0].tolist()
         ]
 
 
@@ -1708,6 +1809,20 @@ def test_query_sync_empty_query(vector_columns):
         assert data == expected
 
 
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+@pytest.mark.parametrize("vector_column_name", [None, "vector"])
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+def test_query_sync_empty_vector(query, vector_column_name, query_type):
+    def handler(body):
+        pytest.fail("An empty query vector must be rejected before sending a query")
+
+    with query_test_table(handler) as table:
+        with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+            table.search(
+                query, vector_column_name=vector_column_name, query_type=query_type
+            ).limit(3).to_arrow()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("search_kwargs", [{}, {"query": None}])
 async def test_async_search_without_query(search_kwargs):
@@ -1806,6 +1921,53 @@ def test_query_sync_maximal():
             .select(["id", "name"])
             .to_list()
         )
+
+
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_query_sync_nprobes_zero(hybrid):
+    query_requests = []
+
+    def handler(body):
+        query_requests.append(body)
+        return pa.table({"id": []})
+
+    with query_test_table(handler) as table:
+        if hybrid:
+            query = table.search(query_type="hybrid").vector([1, 2, 3]).text("dog")
+        else:
+            query = table.search([1, 2, 3])
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert query_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_query_async_nprobes_zero(hybrid):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        if request.path == "/v1/table/test/describe/":
+            send_json(request, {"version": 1, "schema": {"fields": []}})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = table.query().nearest_to([1, 2, 3])
+        if hybrid:
+            query = query.nearest_to_text("dog")
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert requests == ["/v1/table/test/describe/"]
 
 
 def test_query_sync_nprobes():

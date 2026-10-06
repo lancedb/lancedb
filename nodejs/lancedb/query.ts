@@ -519,6 +519,8 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   /**
    * Set the number of partitions to search (probe)
    *
+   * The number of probes must be greater than 0.
+   *
    * This argument is only used when the vector column has an IVF PQ index.
    * If there is no index then this value is ignored.
    *

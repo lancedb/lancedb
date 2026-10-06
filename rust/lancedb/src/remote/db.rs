@@ -47,6 +47,10 @@ use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 
+fn quote_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
 struct RemoteCloneTableRequest {
@@ -860,42 +864,22 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         &self,
         request: CreateMaterializedViewRequest,
     ) -> Result<Job> {
-        let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/materialized_view/{identifier}/create"))
-            .json(&serde_json::json!({
-                "query": request.query,
-                "with_no_data": request.with_no_data,
-            }));
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        let job_id = extract_job_id(&body);
-
         if request.with_no_data {
-            return Ok(match job_id {
-                Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
-                None => Job::new_done(),
+            return Err(Error::NotSupported {
+                message: "remote materialized views are always populated by their SQL job"
+                    .to_string(),
             });
         }
-        if status != StatusCode::ACCEPTED {
-            return Err(Error::Http {
-                source: "materialized-view creation with data must return 202 Accepted".into(),
-                request_id,
-                status_code: Some(status),
-            });
-        }
-        let job_id = job_id.ok_or_else(|| Error::Http {
-            source: "materialized-view creation response did not contain a valid job_id".into(),
-            request_id,
-            status_code: Some(status),
+        let client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
+            message: "SQL is unavailable for this remote database client".to_string(),
         })?;
-        Ok(Job::new(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+        let namespace = request.namespace_path;
+        let statement = format!(
+            "CREATE MATERIALIZED VIEW {} AS {}",
+            quote_sql_identifier(&request.name),
+            request.query
+        );
+        Ok(client.submit_as_job(statement, namespace, || async { Ok(()) }))
     }
 
     async fn drop_materialized_view_async(
@@ -1491,6 +1475,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let data_schema = request.data.schema();
         let body = stream_as_body(request.data.scan_as_stream())?;
 
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
@@ -1521,7 +1506,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                             managed_versioning: None,
                         };
                         let req = (callback)(req);
-                        self.open_table(req).await
+                        let table = self.open_table(req).await?;
+                        let table_schema = table.schema().await?;
+
+                        if table_schema.as_ref() != data_schema.as_ref() {
+                            return Err(Error::Schema {
+                                message: "Provided schema does not match existing table schema"
+                                    .to_string(),
+                            });
+                        }
+
+                        Ok(table)
                     }
 
                     // This should not happen, as we explicitly set the mode to overwrite and the server
@@ -1547,12 +1542,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let version = parse_server_version(&request_id, &rsp)?;
         let table_identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
-        let table = Arc::new(RemoteTable::new(
+        let table = Arc::new(RemoteTable::new_with_sql_client(
             self.client.clone(),
             request.name.clone(),
             request.namespace_path.clone(),
             table_identifier,
             version.clone(),
+            self.sql_client.clone(),
         ));
         self.table_cache.insert(cache_key, version).await;
 
@@ -1589,12 +1585,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         let version = parse_server_version(&request_id, &rsp)?;
         let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace_path);
-        let table = Arc::new(RemoteTable::new(
+        let table = Arc::new(RemoteTable::new_with_sql_client(
             self.client.clone(),
             request.target_table_name.clone(),
             request.target_namespace_path.clone(),
             table_identifier,
             version.clone(),
+            self.sql_client.clone(),
         ));
         self.table_cache.insert(cache_key, version).await;
 
@@ -1607,12 +1604,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         // Every open gets its own checkout, schema cache, and freshness state.
         if let Some(version) = self.table_cache.get(&cache_key).await {
-            Ok(Arc::new(RemoteTable::new(
+            Ok(Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
                 request.name,
                 request.namespace_path,
                 identifier,
                 version,
+                self.sql_client.clone(),
             )))
         } else {
             // Describe the table to confirm it exists before moving on.
@@ -1625,12 +1623,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
             let describe_body = rsp.text().await.ok();
-            let table = Arc::new(RemoteTable::new(
+            let table = Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
                 request.name.clone(),
                 request.namespace_path.clone(),
                 identifier,
                 version.clone(),
+                self.sql_client.clone(),
             ));
             // This describe already carries the schema, so hand it to the table
             // instead of making the first schema read fetch it again. A version or
@@ -1913,6 +1912,7 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
+    use rstest::rstest;
 
     use crate::connection::ConnectBuilder;
     use crate::database::Database;
@@ -1957,29 +1957,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_materialized_view_uses_item_route_and_job() {
-        let db = super::RemoteDatabase::new_mock(|request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/materialized_view/analytics$adults/create"
-            );
-            let body = request
-                .body()
-                .and_then(reqwest::Body::as_bytes)
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
-                .unwrap();
-            assert_eq!(
-                body["query"],
-                "SELECT age AS \"age\" FROM \"raw\".\"people\" WHERE age >= 18 LIMIT 10"
-            );
-            assert_eq!(body["with_no_data"], false);
-            http::Response::builder()
-                .status(202)
-                .body(serde_json::json!({"job_id": "j1-mv-create"}).to_string())
-                .unwrap()
+    async fn test_create_materialized_view_requires_sql_client() {
+        let db = super::RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path())
         });
-        let job = db
+        let error = db
             .create_materialized_view_async(CreateMaterializedViewRequest {
                 name: "adults".into(),
                 namespace_path: vec!["analytics".into()],
@@ -1988,8 +1970,8 @@ mod tests {
                 with_no_data: false,
             })
             .await
-            .unwrap();
-        assert_eq!(job.id(), Some("j1-mv-create"));
+            .unwrap_err();
+        assert!(error.to_string().contains("SQL is unavailable"));
     }
 
     #[tokio::test]
@@ -2538,6 +2520,75 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case::matching(Field::new("a", DataType::Int32, false), true)]
+    #[case::different_name(Field::new("x", DataType::Int32, false), false)]
+    #[case::different_type(Field::new("a", DataType::Int64, false), false)]
+    #[case::different_nullability(Field::new("a", DataType::Int32, true), false)]
+    #[tokio::test]
+    async fn test_create_table_exist_ok_validates_schema(
+        #[case] existing_field: Field,
+        #[case] matches: bool,
+        #[values(false, true)] empty: bool,
+        #[values(false, true)] cached: bool,
+    ) {
+        let existing_schema = Schema::new(vec![existing_field]);
+        let description = serde_json::json!({
+            "version": 1,
+            "schema": lance::arrow::json::JsonSchema::try_from(&existing_schema).unwrap(),
+        })
+        .to_string();
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            match request.url().path() {
+                "/v1/table/table1/create/" => {
+                    assert_eq!(request.url().query(), Some("mode=exist_ok"));
+                    http::Response::builder()
+                        .status(400)
+                        .body("Table table1 already exists".to_string())
+                        .unwrap()
+                }
+                "/v1/table/table1/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(description.clone())
+                    .unwrap(),
+                path => panic!("unexpected path: {path}"),
+            }
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        if cached {
+            conn.open_table("table1").execute().await.unwrap();
+        }
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let builder = if empty {
+            conn.create_empty_table("table1", schema.clone())
+        } else {
+            let data = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            conn.create_table("table1", data)
+        };
+        let result = builder
+            .mode(CreateTableMode::exist_ok(|b| b))
+            .execute()
+            .await;
+        if matches {
+            let table = result.unwrap();
+            assert_eq!(table.name(), "table1");
+            assert_eq!(table.schema().await.unwrap(), schema);
+        } else {
+            assert!(matches!(result, Err(Error::Schema { message })
+                if message == "Provided schema does not match existing table schema"));
+        }
+    }
+
     #[tokio::test]
     async fn test_create_table_modes() {
         let test_cases = [
@@ -2577,7 +2628,14 @@ mod tests {
                 .status(400)
                 .body("Table table1 already exists")
                 .unwrap(),
-            "/v1/table/table1/describe/" => http::Response::builder().status(200).body("").unwrap(),
+            "/v1/table/table1/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": [
+                        {"name": "a", "type": {"type": "int32"}, "nullable": false}
+                    ]}}"#,
+                )
+                .unwrap(),
             _ => {
                 panic!("unexpected path: {:?}", request.url().path());
             }

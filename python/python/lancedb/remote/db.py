@@ -608,6 +608,9 @@ class RemoteDBConnection(DBConnection):
             One of "error", "drop", "fill".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        embedding_functions: list of EmbeddingFunctionConfig, optional
+            The embedding functions to store in the table schema and use to
+            generate vectors when creating the table or adding data.
 
         Returns
         -------
@@ -682,12 +685,6 @@ class RemoteDBConnection(DBConnection):
         if namespace_path is None:
             namespace_path = []
         validate_table_name(name)
-        if embedding_functions is not None:
-            logging.warning(
-                "embedding_functions is not yet supported on LanceDB Cloud."
-                "Please vote https://github.com/lancedb/lancedb/issues/626 "
-                "for this feature."
-            )
 
         from .table import RemoteTable
 
@@ -700,6 +697,7 @@ class RemoteDBConnection(DBConnection):
                 schema=schema,
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
+                embedding_functions=embedding_functions,
             )
         )
         return RemoteTable(
