@@ -3120,6 +3120,16 @@ impl NativeTable {
         })
     }
 
+    /// Refuse `operation` when this table is a materialized view.
+    pub(crate) async fn ensure_not_a_view(&self, operation: &str) -> Result<()> {
+        let dataset = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(
+            &self.name,
+            &dataset.schema().metadata,
+            operation,
+        )
+    }
+
     /// Merge new data into this table.
     pub async fn merge(
         &mut self,
@@ -3128,6 +3138,7 @@ impl NativeTable {
         right_on: &str,
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
+        self.ensure_not_a_view("merge into").await?;
         let mut dataset = (*self.dataset.get().await?).clone();
         dataset.merge(batches, left_on, right_on).await?;
         self.dataset.update(dataset);
@@ -3430,6 +3441,7 @@ impl BaseTable for NativeTable {
         self.dataset.ensure_mutable()?;
         let ds_wrapper = self.dataset.clone();
         let ds = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(&self.name, &ds.schema().metadata, "add to")?;
 
         let table_schema = Schema::from(&ds.schema().clone());
         computed_columns::ensure_supported_function_metadata(&table_schema)?;
@@ -3604,6 +3616,7 @@ impl BaseTable for NativeTable {
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
         let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
+        self.ensure_not_a_view("merge insert into").await?;
         computed_columns::ensure_not_written(
             &Schema::from(self.dataset.get().await?.schema()),
             source_schema.fields().iter().map(|f| f.name().as_str()),
@@ -4034,6 +4047,11 @@ impl BaseTable for NativeTable {
         write_params: WriteParams,
     ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
         let ds = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(
+            &self.name,
+            &ds.schema().metadata,
+            "insert into",
+        )?;
         let dataset = Arc::new((*ds).clone());
         Ok(Arc::new(datafusion::insert::InsertExec::new(
             self.dataset.clone(),
