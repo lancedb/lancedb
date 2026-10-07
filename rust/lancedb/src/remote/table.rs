@@ -1242,7 +1242,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let body = response.text().await.err_to_http(request_id.clone())?;
         let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
             source: format!("Failed to parse multipart create response: {}", e).into(),
-            request_id,
+            request_id: request_id.clone(),
             status_code: None,
         })?;
         parsed["upload_id"]
@@ -1250,7 +1250,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .map(|s| s.to_string())
             .ok_or_else(|| Error::Http {
                 source: "Missing upload_id in multipart create response".into(),
-                request_id: String::new(),
+                request_id,
                 status_code: None,
             })
     }
@@ -1269,12 +1269,12 @@ impl<S: HttpSend> RemoteTable<S> {
         let body = response.text().await.err_to_http(request_id.clone())?;
         let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
             source: format!("Failed to parse multipart complete response: {}", e).into(),
-            request_id,
+            request_id: request_id.clone(),
             status_code: None,
         })?;
         let version = parsed["version"].as_u64().ok_or_else(|| Error::Http {
             source: "Missing version in multipart complete response".into(),
-            request_id: String::new(),
+            request_id,
             status_code: None,
         })?;
         Ok(AddResult { version })
@@ -11610,6 +11610,67 @@ mod tests {
             "All requests should use the same upload_id, got: {:?}",
             *ids
         );
+    }
+
+    #[rstest]
+    #[case("create", "{}")]
+    #[case("create", r#"{"upload_id": 1}"#)]
+    #[case("create", "not json")]
+    #[case("complete", "{}")]
+    #[case("complete", r#"{"version": "invalid"}"#)]
+    #[case("complete", "not json")]
+    #[tokio::test]
+    async fn test_multipart_write_error_preserves_request_id(
+        #[case] failed_stage: &str,
+        #[case] body: &str,
+    ) {
+        let failed_stage = failed_stage.to_string();
+        let body = body.to_string();
+        let request_id = Arc::new(std::sync::Mutex::new(String::new()));
+        let observed_request_id = request_id.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+                if path == format!("/v1/table/my_table/multipart_write/{failed_stage}") {
+                    *observed_request_id.lock().unwrap() = request.headers()["x-request-id"]
+                        .to_str()
+                        .unwrap()
+                        .to_string();
+                    return http::Response::builder()
+                        .status(200)
+                        .body(body.clone())
+                        .unwrap();
+                }
+                let response = match path {
+                    "/v1/table/my_table/multipart_write/create" => r#"{"upload_id":"upload-1"}"#,
+                    "/v1/table/my_table/insert/" => r#"{"version":1}"#,
+                    "/v1/table/my_table/multipart_write/abort" => "",
+                    _ => panic!("Unexpected request path: {path}"),
+                };
+                http::Response::builder()
+                    .status(200)
+                    .body(response.to_string())
+                    .unwrap()
+            },
+        );
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let error = table
+            .add(vec![batch])
+            .write_parallelism(2)
+            .execute()
+            .await
+            .unwrap_err();
+        let expected = request_id.lock().unwrap();
+        assert!(!expected.is_empty());
+        match error {
+            Error::Http { request_id, .. } => assert_eq!(request_id, *expected),
+            other => panic!("Expected Http error, got {other:?}"),
+        }
     }
 
     #[tokio::test]
