@@ -137,9 +137,6 @@ Row metadata, available only when named — so it stays out of `SELECT *`:
 their validity bitmap is reused internally as a selection vector. Do not read a
 null there as meaningful.
 
-`_rowid` is what [materialized views](/management/materialized-view) depend on,
-which is why a source table needs stable row ids enabled at creation.
-
 ## Casting {#casting}
 
 ```sql

@@ -8,7 +8,7 @@ keywords: ["materialized view", "create_materialized_view", "catalog", "ddl"]
 
 A materialized view is a table whose contents are defined by a query over
 another table. The query is recorded in the view's schema, and a refresh
-brings its stored rows up to date with the source.
+computes its stored rows again from the source.
 
 The result is an ordinary table -- queryable, indexable, searchable, and present
 in `table_names()`. Nothing about reading it is special.
@@ -41,18 +41,9 @@ const view = await db.createMaterializedView("recent_docs", {
 ```
 </CodeGroup>
 
-`source` names the table it derives from. `select`, `where` and `limit` record
-the query -- there is no separate definition step.
-
-<Warning>
-The source table must have **stable row ids**, and they cannot be enabled after
-a table exists. A table created without them cannot become a view's source
-without being recreated.
-
-Set `new_table_enable_stable_row_ids` in
-[storage options](/management/database#storage-options) when you create the
-source, not when you create the view.
-</Warning>
+`source` names the table it derives from; any table can be one, with no special
+storage option. `select`, `where` and `limit` record the query -- there is no
+separate definition step.
 
 ## Opening, listing and dropping {#manage}
 
@@ -92,7 +83,7 @@ across the cluster rather than in your process, and SQL can drive it.
 
 <CardGroup cols={2}>
   <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
-    Incremental refreshes, and what they cost.
+    What a refresh recomputes, and what it writes.
   </Card>
   <Card title="Views" icon="eye" href="/management/view">
     The non-materialized counterpart, defined in SQL.

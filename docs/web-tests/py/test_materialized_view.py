@@ -10,10 +10,7 @@ def test_materialized_view_create_and_refresh(tmp_path, monkeypatch):
     # --8<-- [start:materialized_view_create]
     import lancedb
 
-    db = lancedb.connect(
-        "./.lancedb",
-        storage_options={"new_table_enable_stable_row_ids": "true"},
-    )
+    db = lancedb.connect("./.lancedb")
     table = db.create_table(
         "people", [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
     )
@@ -34,9 +31,10 @@ def test_materialized_view_create_and_refresh(tmp_path, monkeypatch):
 
     result = view.refresh()
     print(result.rows_written)
-    # 1
+    # 2
     # --8<-- [end:materialized_view_refresh]
-    assert result.rows_written == 1
+    assert result.mode == "rebuild"
+    assert result.rows_written == 2
     assert sorted(row["shout"] for row in view.table.to_arrow().to_pylist()) == [
         "ADA",
         "BEA",
@@ -46,12 +44,26 @@ def test_materialized_view_create_and_refresh(tmp_path, monkeypatch):
 def test_materialized_view_with_no_data(tmp_path):
     import lancedb
 
-    db = lancedb.connect(
-        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
-    )
-    db.create_table("people", [{"name": "ada", "age": 36}])
+    db = lancedb.connect(tmp_path)
+    db.create_table("people", [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}])
     view = db.create_materialized_view(
         "adults", "people", where="age >= 18", with_no_data=True
     )
     assert view.table.count_rows() == 0
     assert view.refresh().rows_written == 1
+    assert view.table.count_rows() == 1
+
+
+def test_materialized_view_refresh_to_source_version(tmp_path):
+    import lancedb
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("people", [{"name": "ada", "age": 36}])
+    view = db.create_materialized_view("adults", "people", where="age >= 18")
+    first = table.version
+    table.add([{"name": "bea", "age": 41}])
+    assert view.refresh().rows_written == 2
+
+    result = view.refresh(source_version=first)
+    assert (result.source_version, result.rows_written) == (first, 1)
+    assert view.table.count_rows() == 1

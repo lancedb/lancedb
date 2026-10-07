@@ -1,9 +1,9 @@
 ---
 title: "Refresh a materialized view"
 sidebarTitle: "Materialized View Refresh"
-description: "A lakehouse object: a table defined by a query over another table, kept current incrementally."
+description: "A lakehouse object: a table defined by a query over another table, recomputed by each refresh."
 icon: table
-keywords: ["materialized view", "create_materialized_view", "refresh", "incremental"]
+keywords: ["materialized view", "create_materialized_view", "refresh", "full refresh"]
 ---
 
 import {
@@ -13,7 +13,7 @@ import {
 
 A materialized view is a lakehouse object: a table whose contents are defined by
 a query over another table. The query is recorded in the view's schema;
-creating the view computes its rows, and a refresh brings them up to date.
+creating the view computes its rows, and a refresh computes them again.
 
 The result is an ordinary table. It can be queried, indexed, and searched, and
 it appears in `table_names()` — nothing about reading it is special.
@@ -37,9 +37,11 @@ reach the view through a refresh:
 </CodeBlock>
 
 <Note>
-These results were verified with the development SDK 0.40.0b12, built from
-lancedb main. With the published 0.39.0, `create_materialized_view` creates the
-view empty and has no `with_no_data`, so the first `refresh()` writes every
+These results were verified with the development SDK 0.40.0b13, built from
+lancedb main. The published 0.39.0 differs: the source must be created with
+stable row ids (the `new_table_enable_stable_row_ids` storage option),
+`create_materialized_view` creates the view empty and has no `with_no_data`,
+and `refresh()` still accepts `full`. Its first `refresh()` writes every
 matching row, two in this example.
 </Note>
 
@@ -47,42 +49,25 @@ matching row, two in this example.
 Omitting it selects every source column, expanded against the schema as it was
 at creation time. `where` filters source rows; `limit` caps the view.
 
-## The source needs stable row ids {#stable-row-ids}
+## Any table can be the source {#stable-row-ids}
 
-<Warning>
-The source table must have been created with stable row ids:
+The source needs no special storage option. A refresh does not track which
+source rows the view came from, so stable row ids
+(`new_table_enable_stable_row_ids`) are not required: the example above creates
+its source with the defaults. Earlier development builds, and the published
+0.39.0, required them.
 
-```python
-db = lancedb.connect(uri, storage_options={"new_table_enable_stable_row_ids": "true"})
-```
+## Every refresh rebuilds the view {#incremental}
 
-They are what keeps the view's provenance valid when the source is compacted,
-and **they cannot be enabled after a table exists**. A table created without
-them cannot later become the source of a view — it has to be recreated.
-</Warning>
+`refresh()` runs the view's query against the source and replaces everything
+the view holds with the result, in one commit. It does not reconcile changes:
+`rows_written` is the size of the whole result — two after adding Bea, not
+one — and a refresh with nothing new to read still rewrites the view and
+commits a new table version.
 
-This is the one decision here that is hard to undo, so it is worth setting the
-option on any table you might later want to derive from.
-
-## Refreshes are incremental {#incremental}
-
-`refresh()` reconciles the source's changes into the view — rows added, changed,
-or removed since the last refresh — rather than recomputing from scratch. It
-falls back to a full rebuild when the changes cannot be reconciled.
-
-Two arguments override that:
-
-- `full=True` forces a rebuild.
-- `source_version=N` refreshes against that source version instead of the
-  latest, which is how you make a view reproduce a known point in time.
-
-Concurrent refreshes of one view do not duplicate rows. If two plan the same
-source rows, they conflict on commit and the loser raises rather than writing
-them twice — so a retry loop around `refresh()` is safe.
-
-<Note>
-**Enterprise job type:** `mat_view_refresh`.
-</Note>
+`source_version=N` refreshes against that source version instead of the latest,
+which is how a view reproduces a known point in time. There is no `full`
+argument; every refresh is a full one.
 
 ## Against a deployment {#availability}
 

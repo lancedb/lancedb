@@ -55,10 +55,8 @@ See [Jobs](/basics/jobs).
 | `IVF_RQ` vector dimensions | must be divisible by 8 |
 | FTS `max_token_length` | 40 by default; longer tokens are dropped |
 
-Stable row ids **cannot be enabled after a table exists**. A table created
-without them cannot become a
-[materialized view](/management/materialized-view) source without being
-recreated -- the one schema decision here that is genuinely irreversible.
+Stable row ids **cannot be enabled after a table exists** -- the one schema
+decision here that is genuinely irreversible.
 
 See [Data types](/sql/data-types).
 
