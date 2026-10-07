@@ -607,6 +607,7 @@ class TestModel(lancedb.pydantic.LanceModel):
         lambda: pa.table({"a": [1], "b": [2]}),
         lambda: pa.table({"a": [1], "b": [2]}).to_reader(),
         lambda: iter(pa.table({"a": [1], "b": [2]}).to_batches()),
+        lambda: tuple(pa.table({"a": [1], "b": [2]}).to_batches()),
         lambda: lance.write_dataset(
             pa.table({"a": [1], "b": [2]}),
             "memory://test",
@@ -626,6 +627,7 @@ class TestModel(lancedb.pydantic.LanceModel):
         "pa.Table",
         "pa.RecordBatchReader",
         "batch_iter",
+        "batch_tuple",
         "lance.LanceDataset",
         "lance.LanceScanner",
         "pd.DataFrame",
@@ -638,6 +640,12 @@ def test_into_pyarrow_table(data):
     expected = pa.table({"a": [1], "b": [2]})
     output = _into_pyarrow_reader(data()).read_all()
     assert output == expected
+
+
+@pytest.mark.parametrize("data", ["score", ""])
+def test_into_pyarrow_reader_rejects_text(data):
+    with pytest.raises(TypeError, match="Unknown data type"):
+        _into_pyarrow_reader(data)
 
 
 def test_infer_target_schema():

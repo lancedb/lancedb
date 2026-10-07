@@ -9,6 +9,7 @@ import json
 import deprecation
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -432,7 +433,7 @@ def _into_pyarrow_reader(
         and data.__class__.__name__ == "LazyFrame"
     ):
         return data.collect().to_arrow().to_reader()
-    elif isinstance(data, Iterable):
+    elif isinstance(data, Iterable) and not isinstance(data, str):
         return _iterator_to_reader(data)
     else:
         raise TypeError(
@@ -446,6 +447,7 @@ def _into_pyarrow_reader(
 def _iterator_to_reader(data: Iterable) -> pa.RecordBatchReader:
     # Each batch is treated as it's own reader, mainly so we can
     # re-use the _into_pyarrow_reader logic.
+    data = iter(data)
     first = _into_pyarrow_reader(next(data))
     schema = first.schema
 
@@ -2532,7 +2534,7 @@ class Table(ABC):
     @abstractmethod
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
@@ -2550,7 +2552,7 @@ class Table(ABC):
 
         Parameters
         ----------
-        transforms: Dict[str, str | FunctionApplication], FunctionApplication,
+        transforms: Mapping[str, str | FunctionApplication], FunctionApplication,
             pa.Field, List[pa.Field], pa.Schema, pandas.DataFrame,
             polars.DataFrame, pa.Table, pa.RecordBatch, pa.RecordBatchReader
             A map of column name to a SQL expression to use to calculate the
@@ -4794,7 +4796,7 @@ class LanceTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
@@ -6847,7 +6849,7 @@ class AsyncTable:
 
     async def add_columns(
         self,
-        transforms: dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
@@ -6865,7 +6867,7 @@ class AsyncTable:
 
         Parameters
         ----------
-        transforms: Dict[str, str | FunctionApplication], FunctionApplication,
+        transforms: Mapping[str, str | FunctionApplication], FunctionApplication,
             pa.Field, List[pa.Field], pa.Schema, pandas.DataFrame,
             polars.DataFrame, pa.Table, pa.RecordBatch, pa.RecordBatchReader
             A map of column name to a SQL expression to use to calculate the
@@ -6920,7 +6922,7 @@ class AsyncTable:
         function_output_name = None
         if isinstance(transforms, FunctionApplication):
             function_application = transforms
-        elif isinstance(transforms, dict) and any(
+        elif isinstance(transforms, Mapping) and any(
             isinstance(value, FunctionApplication) for value in transforms.values()
         ):
             if len(transforms) != 1 or not all(
@@ -6950,7 +6952,8 @@ class AsyncTable:
             transforms = pa.schema(transforms)
         if computed:
             if transforms is not None and (
-                not isinstance(transforms, (dict, list, pa.Schema)) or bool(transforms)
+                not isinstance(transforms, (Mapping, list, pa.Schema))
+                or bool(transforms)
             ):
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
@@ -6960,7 +6963,7 @@ class AsyncTable:
             raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
             return await self._inner.add_columns_with_schema(transforms)
-        if isinstance(transforms, dict):
+        if isinstance(transforms, Mapping):
             return await self._inner.add_columns(list(transforms.items()))
         return await self._inner.add_columns_from_reader(
             _into_pyarrow_reader(transforms)

@@ -10,11 +10,13 @@ import sys
 import threading
 import warnings
 import weakref
+from collections import UserDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from decimal import Decimal, localcontext
 from time import sleep
 from typing import List
+from types import MappingProxyType
 from unittest.mock import patch
 
 import lancedb
@@ -4253,6 +4255,32 @@ def test_restore_consistency(tmp_path):
 
 
 # Schema evolution
+@pytest.mark.parametrize("mapping_type", [dict, UserDict, MappingProxyType])
+def test_add_columns_sql_mapping(mem_db, mapping_type):
+    table = mem_db.create_table("mapping_columns", pa.table({"id": [0, 1]}))
+    result = table.add_columns(mapping_type({"score": "id + 10"}))
+    assert result.version == 2
+    assert table.to_arrow().to_pydict() == {"id": [0, 1], "score": [10, 11]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mapping_type", [dict, UserDict, MappingProxyType])
+async def test_add_columns_sql_mapping_async(mem_db_async, mapping_type):
+    table = await mem_db_async.create_table("mapping_columns", pa.table({"id": [0, 1]}))
+    result = await table.add_columns(mapping_type({"score": "id + 10"}))
+    assert result.version == 2
+    assert (await table.to_arrow()).to_pydict() == {"id": [0, 1], "score": [10, 11]}
+
+
+def test_add_columns_tuple_batches(mem_db):
+    table = mem_db.create_table("tuple_columns", pa.table({"id": [0, 1]}))
+    result = table.add_columns(
+        (pa.record_batch({"score": [10]}), pa.record_batch({"score": [20]}))
+    )
+    assert result.version == 2
+    assert table.to_arrow().to_pydict() == {"id": [0, 1], "score": [10, 20]}
+
+
 def _add_columns_input(kind):
     values = pa.table({"score": [10, None, 30]})
     if kind == "pandas":
@@ -4991,7 +5019,9 @@ def test_add_columns_dataframe_computed_conflict(mem_db):
     assert table.to_arrow().equals(before)
 
 
-@pytest.mark.parametrize("transforms", [{}, pa.schema([])])
+@pytest.mark.parametrize(
+    "transforms", [{}, pa.schema([]), UserDict(), MappingProxyType({})]
+)
 def test_add_columns_computed_with_empty_transforms(mem_db, transforms):
     table = mem_db.create_table("empty_transforms", pa.table({"id": [0, 1]}))
     result = table.add_columns(transforms, computed={"x": "id + 1"})
