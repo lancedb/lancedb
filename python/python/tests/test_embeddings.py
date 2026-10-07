@@ -64,6 +64,37 @@ def test_embedding_function(tmp_path):
     assert np.allclose(actual, expected)
 
 
+def test_embedding_function_registered_without_alias(tmp_path):
+    registry = EmbeddingFunctionRegistry.get_instance()
+
+    @registry.register()
+    class NoAliasEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 2
+
+        def generate_embeddings(self, texts):
+            return [np.array([1.0, 2.0]) for _ in texts]
+
+    assert registry.get("NoAliasEmbeddingFunction") is NoAliasEmbeddingFunction
+
+    func = NoAliasEmbeddingFunction.create()
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(2) = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    db.create_table("test", schema=Schema)
+
+    # The class name is written to the table metadata, so the function can be
+    # resolved again when the table is reopened.
+    table = lancedb.connect(tmp_path).open_table("test")
+    table.add([{"text": "hello"}])
+    conf = table.embedding_functions["vector"]
+    assert isinstance(conf.function, NoAliasEmbeddingFunction)
+    assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0]]
+
+
 def test_instructor_ndims_uses_instruction():
     instructor = get_registry().get("instructor").create()
     model = MagicMock()
