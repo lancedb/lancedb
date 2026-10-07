@@ -10,6 +10,7 @@ import pytest
 import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from lancedb.listing import AsyncListing, Listing
 from lancedb.namespace import _MAX_QUERY_K
 from lancedb.table import AsyncTable, LanceTable
 
@@ -103,6 +104,18 @@ class TestNamespaceConnection:
 
         assert isinstance(db, lancedb.LanceNamespaceDBConnection)
         assert len(list(db.table_names())) == 0
+
+    def test_list_materialized_views(self):
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        db.create_table("source", [{"id": 1}])
+        db.create_materialized_view("view", "source", with_no_data=True)
+
+        names = db.list_materialized_views(page_limit=1)
+        assert isinstance(names, Listing)
+        assert names.num_page_results() == 0
+        assert list(names) == ["view"]
+        assert names.num_page_results() == 0
+        assert names.page_token() is None
 
     def test_sync_builtin_namespace_uses_rust_without_python_client(self, monkeypatch):
         """Built-in sync namespace connections should not construct or call the
@@ -604,6 +617,18 @@ class TestAsyncNamespaceConnection:
         # Initially no tables in root
         table_names = await db.table_names()
         assert len(list(table_names)) == 0
+
+    async def test_list_materialized_views(self):
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        await db.create_table("source", [{"id": 1}])
+        await db.create_materialized_view("view", "source", with_no_data=True)
+
+        names = db.list_materialized_views(page_limit=1)
+        assert isinstance(names, AsyncListing)
+        assert names.num_page_results() == 0
+        assert [name async for name in names] == ["view"]
+        assert names.num_page_results() == 0
+        assert names.page_token() is None
 
     async def test_async_builtin_namespace_uses_rust_without_python_client(
         self, monkeypatch

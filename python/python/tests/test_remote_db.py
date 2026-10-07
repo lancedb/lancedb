@@ -3125,7 +3125,7 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        jobs = db.list_jobs()
+        jobs = list(db.list_jobs())
         assert [job.job_id for job in jobs] == ["job-1", "job-2"]
         assert jobs[0].state == "running"
         assert jobs[0].table == "t1"
@@ -3285,7 +3285,7 @@ def test_view_crud_addresses_its_own_routes():
         described = db.describe_view("adults", namespace_path=["analytics"])
         assert described.schema == view.schema
 
-        assert db.list_views(namespace_path=["analytics"]) == ["adults"]
+        assert list(db.list_views(namespace_path=["analytics"])) == ["adults"]
         db.drop_view("adults", namespace_path=["analytics"])
 
     assert paths == [

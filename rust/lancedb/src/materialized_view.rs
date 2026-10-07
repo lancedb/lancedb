@@ -27,6 +27,7 @@ use crate::database::{CreateTableRequest, Database, OpenTableRequest};
 use crate::embeddings::EmbeddingDefinition;
 use crate::function::FunctionBinding;
 use crate::job::Job;
+use crate::listing::{Listing, ListingOptions};
 use crate::table::Table;
 use crate::table::computed_columns::{
     FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,
@@ -1805,8 +1806,26 @@ impl Connection {
     }
 
     /// The names of materialized views in the root namespace.
-    pub async fn list_materialized_views(&self) -> Result<Vec<String>> {
-        self.database().list_materialized_views(&[]).await
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_materialized_views(Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_materialized_views(&self, options: ListingOptions) -> Listing<String> {
+        let database = self.database().clone();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            async move { database.list_materialized_views(&[], options).await }
+        })
     }
 
     /// Drop a materialized view.

@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+from __future__ import annotations
+
 from dataclasses import replace
 from datetime import timedelta
 import json
@@ -34,6 +36,7 @@ from lancedb.remote import ClientConfig, RetryConfig, TimeoutConfig, TlsConfig
 import pyarrow as pa
 
 from ..common import DATA
+from lancedb.listing import Listing
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
@@ -769,8 +772,20 @@ class RemoteDBConnection(DBConnection):
         return view
 
     @override
-    def list_materialized_views(self) -> List[str]:
-        return LOOP.run(self._conn.list_materialized_views())
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[str]:
+        """List materialized views.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
 
     @override
     def drop_materialized_view(
@@ -885,9 +900,25 @@ class RemoteDBConnection(DBConnection):
 
     @override
     def list_functions(
-        self, *, namespace_path: Optional[List[str]] = None
-    ) -> List[FunctionVersion]:
-        return LOOP.run(self._conn.list_functions(namespace_path=namespace_path))
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[FunctionVersion]:
+        """List functions.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_functions(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
 
     @override
     def drop_function(
@@ -937,8 +968,26 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
 
     @override
-    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
-        return LOOP.run(self._conn.list_secrets(namespace_path=namespace_path))
+    def list_secrets(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List secrets.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_secrets(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
 
     @override
     def drop_secret(
@@ -974,13 +1023,40 @@ class RemoteDBConnection(DBConnection):
         return Job(job)
 
     @override
-    def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
-        return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
+    def list_views(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List views.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
 
     @override
-    def list_jobs(self) -> List["JobInfo"]:
-        """List server-side jobs across the database's tables."""
-        return LOOP.run(self._conn.list_jobs())
+    def list_jobs(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[JobInfo]:
+        """List server-side jobs across the database's tables.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_jobs(page_token=page_token, page_limit=page_limit)
+        )
 
     @override
     def cancel_job(self, job_id: str) -> bool:
