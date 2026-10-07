@@ -646,6 +646,6 @@ export async function connectNamespace(
 export {
   Catalog,
   CatalogOptions,
-  ListDatabasesResponse,
+  DatabaseNames,
   connectCatalog,
 } from "./catalog";
